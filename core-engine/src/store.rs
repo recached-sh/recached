@@ -1393,6 +1393,10 @@ struct DenseKeys {
 }
 
 impl DenseKeys {
+    fn contains(&self, key: &str) -> bool {
+        self.positions.contains_key(key)
+    }
+
     fn insert(&mut self, key: &str) {
         if self.positions.contains_key(key) {
             return;
@@ -1421,16 +1425,36 @@ struct KeyIndex {
 }
 
 impl KeyIndex {
+    /// Bring the index into line with a key's current state.
+    ///
+    /// Called on **every** write, so the overwhelmingly common case — a write
+    /// to a key that is already indexed and whose TTL-ness has not changed —
+    /// has to cost as little as possible. It used to cost the most: the
+    /// unconditional `ordered.insert(key.to_string())` allocated a `String`
+    /// and walked a `BTreeSet<String>`, comparing strings at every level, only
+    /// to discover the key was already there. Together with the rest of this
+    /// function that was ~25-30% of a single-threaded `SET`, and because it
+    /// all runs under one store-wide lock it cost proportionally more as
+    /// worker threads were added.
+    ///
+    /// `ordered` and `all` are maintained in lockstep and always hold exactly
+    /// the same key set, so one hash lookup in `all` decides whether either
+    /// needs touching at all. That is the invariant this relies on; keep the
+    /// two in step in any future edit.
     fn sync(&mut self, key: &str, live_ttl: Option<bool>) {
         match live_ttl {
             None => {
-                self.ordered.remove(key);
-                self.all.remove(key);
+                if self.all.contains(key) {
+                    self.ordered.remove(key);
+                    self.all.remove(key);
+                }
                 self.volatile.remove(key);
             }
             Some(has_ttl) => {
-                self.ordered.insert(key.to_string());
-                self.all.insert(key);
+                if !self.all.contains(key) {
+                    self.ordered.insert(key.to_string());
+                    self.all.insert(key);
+                }
                 if has_ttl {
                     self.volatile.insert(key);
                 } else {
@@ -2098,11 +2122,44 @@ impl KeyValueStore {
                     });
                 let before = keys.iter().map(|key| self.entry_memory(key)).sum();
                 let out = self.execute_inner(cmd, &mut evicted);
-                let after = keys.iter().map(|key| self.entry_memory(key)).sum();
-                self.adjust_memory(before, after);
+                // One lookup per key, not two. Reading the post-write size and
+                // reading the key's TTL state both need the same entry, and
+                // hash lookups are the largest single cost on the write path
+                // (~21% of a `SET` between the probe and its key comparison),
+                // so they share one. The index is then locked once for the
+                // whole command rather than once per key.
+                //
+                // The two phases stay separate on purpose: `sync_key_metadata`
+                // takes a `data` guard and then the index lock, so holding the
+                // index lock across a `data` lookup here would invert that
+                // order and risk a deadlock.
+                let mut after = 0usize;
+                let mut ttl_states: SmallVec<[Option<bool>; 4]> =
+                    SmallVec::with_capacity(keys.len());
                 for key in &keys {
-                    self.sync_key_metadata(key);
+                    // Expired-but-unswept entries stay in the TTL index on
+                    // purpose: dropping them here would make them unreachable
+                    // to the bounded sweeper and suppress the expiry
+                    // notification. So this asks whether the entry is present,
+                    // not whether it is live — matching `sync_key_metadata`.
+                    ttl_states.push(match self.data.get(key) {
+                        Some(entry) => {
+                            after = after.saturating_add(entry_size(key, entry.value()));
+                            Some(entry.value().expires_at_ms.is_some())
+                        }
+                        None => None,
+                    });
                 }
+                {
+                    let mut index = self
+                        .index
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    for (key, live_ttl) in keys.iter().zip(ttl_states) {
+                        index.sync(key, live_ttl);
+                    }
+                }
+                self.adjust_memory(before, after);
                 if self.max_memory_bytes.is_some() {
                     let within_limit = self.try_evict_for_memory_inner(&mut evicted);
                     if !within_limit
@@ -9635,6 +9692,95 @@ mod storage_regression_tests {
             replica.execute(Command::Get("current".into())),
             Value::BulkString(Some(b"new".to_vec()))
         );
+    }
+
+    /// `KeyIndex::sync` skips both `ordered` and `all` on one hash lookup in
+    /// `all`, which is only sound while the two hold exactly the same keys.
+    ///
+    /// That invariant is invisible at the call sites and easy to break — an
+    /// edit that touches one collection and forgets the other would leave
+    /// `SCAN` silently missing keys that `RANDOMKEY` and eviction can still
+    /// see, with nothing failing until a user noticed. So drive every path
+    /// that mutates the index and check it directly.
+    #[test]
+    fn the_ordered_and_dense_key_indexes_never_diverge() {
+        let store = KeyValueStore::new();
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
+            state
+        };
+
+        let check = |label: &str| {
+            let index = store.index.lock().unwrap_or_else(|e| e.into_inner());
+            let ordered: std::collections::BTreeSet<&str> =
+                index.ordered.iter().map(String::as_str).collect();
+            let dense: std::collections::BTreeSet<&str> =
+                index.all.keys.iter().map(String::as_str).collect();
+            assert_eq!(
+                ordered,
+                dense,
+                "ordered and all diverged after {label}: only-in-ordered {:?}, only-in-all {:?}",
+                ordered.difference(&dense).collect::<Vec<_>>(),
+                dense.difference(&ordered).collect::<Vec<_>>()
+            );
+            // Every volatile key must still be a live key.
+            for key in &index.volatile.keys {
+                assert!(
+                    dense.contains(key.as_str()),
+                    "volatile holds {key}, which is not in the key set, after {label}"
+                );
+            }
+            // The dense position map must agree with its own vector.
+            assert_eq!(index.all.keys.len(), index.all.positions.len());
+            for (position, key) in index.all.keys.iter().enumerate() {
+                assert_eq!(index.all.positions.get(key), Some(&position));
+            }
+        };
+
+        for step in 0..3000u64 {
+            let n = next();
+            let key = format!("k{}", n % 48);
+            match n % 10 {
+                0..=2 => {
+                    store.execute(Command::Set(key, "v".into(), SetOptions::default()));
+                }
+                3 => {
+                    // Same key, now volatile.
+                    store.execute(Command::SetEx(key, 100, "v".into()));
+                }
+                4 => {
+                    store.execute(Command::Expire(key, 100));
+                }
+                5 => {
+                    store.execute(Command::Persist(key));
+                }
+                6 => {
+                    store.execute(Command::Del(vec![key]));
+                }
+                7 => {
+                    store.execute(Command::HSet(key, vec![("f".into(), "v".into())]));
+                }
+                8 => {
+                    // A TTL short enough to lapse, so the sweeper path runs too.
+                    store.execute(Command::PSetEx(key, 1, "v".into()));
+                }
+                _ => {
+                    store.execute(Command::Rename(key, format!("r{}", n % 16)));
+                }
+            }
+            if step % 250 == 0 {
+                store.sweep_expired();
+                check("a sweep");
+            }
+        }
+        check("the mixed workload");
+
+        store.execute(Command::FlushDb);
+        check("FLUSHDB");
     }
 
     /// The incremental byte counters must agree with a full recount.
