@@ -9,15 +9,18 @@ sent. *Keys* and other identifiers must be text — see [Binary values](#binary-
 
 That is where the similarity with Redis ends — in two directions.
 
-**Recached is multi-threaded by default, command path included.** Redis and Valkey keep command
-execution on a single thread and offer *I/O* threading as an opt-in (`io-threads`, off by default).
-That is a reasonable choice in C, where sharing mutable state across threads is enforced by review
-rather than by the compiler; Rust's ownership model makes it a build-time property, so Recached
-threads execution itself over a sharded keyspace with no configuration. You can
+**Recached is multi-threaded by default, command path included.** Rust's ownership model makes
+cross-thread state sharing a build-time property, so Recached threads execution itself over a
+sharded keyspace with no configuration. You can
 [verify the scaling directly](/guide/benchmarks#thread-scaling) by varying the worker count and
 nothing else.
 
-Two qualifications matter. This is an architectural difference, **not** a current throughput claim; compare the exact releases and configuration you plan to run using the [benchmark harness](/guide/benchmarks). It also does not provide fully isolated cross-key reads. See [Concurrency model](/server/commands#concurrency-model).
+Three qualifications matter. This is an architectural property, **not** a throughput claim, and
+certainly not a claim about any other cache — the project publishes no cross-project comparison, so
+measure the exact releases and configuration you plan to run. Scaling also depends on your writes
+being spread across keys: a single hot key lives on a single shard and does not get faster with more
+workers. And it does not provide fully isolated cross-key reads. See
+[Concurrency model](/server/commands#concurrency-model).
 
 **The distinguishing feature is elsewhere: the same engine runs where there is no server at all.**
 That is the `core-engine` crate: a pure Rust state machine with no network dependencies, no file I/O, and no OS-specific code. It compiles to native x86-64/ARM64 for the server **and** to `wasm32-unknown-unknown` for the browser. Both targets run the same cache logic from the same source. The WebSocket sync layer (port 6380) keeps the two sides consistent in real time.

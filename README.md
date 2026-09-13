@@ -17,9 +17,9 @@ Every caching solution forces a choice: server-side caches like Redis mean every
 
 The same Rust cache engine runs natively on your server (RESP on port 6379) and as WebAssembly inside the browser. Common Redis clients work with Recached's documented command subset. Browser reads come from local WASM memory; the WebSocket is a sync path, not a read path.
 
-**Multi-threaded is the default, not a flag.** Recached executes commands on every core, over a sharded keyspace, with no configuration. Redis and Valkey keep the command path on a single thread and offer *I/O* threading as an opt-in (`io-threads`, off by default) — a reasonable choice in C, where sharing mutable state across threads is checked by review rather than by the compiler. Rust's ownership model makes that checkable at build time, so threading the command path is a design decision rather than a risk to be opted into. You can [verify the scaling directly](#benchmarks) by varying the worker count and nothing else.
+**Multi-threaded is the default, not a flag.** Recached executes commands on every core, over a sharded keyspace, with no configuration. Rust's ownership model makes cross-thread state sharing checkable at build time, so threading the command path is a design decision rather than a risk to be opted into. You can [verify the scaling directly](#benchmarks) by varying the worker count and nothing else — though note that scaling depends on your keys being spread, not concentrated on a few hot ones.
 
-**And the round-trip is the part no server-side cache can answer.** Redis and Valkey can be tuned, sharded and scaled, and every frontend read still costs a network hop, because the hop *is* the architecture. That is the half of Recached with no equivalent.
+**And the round-trip is the part no server-side cache can remove.** However well a cache server is tuned, sharded and scaled, every frontend read still costs a network hop, because the hop *is* the architecture. That is the half of Recached with no equivalent.
 
 > [!NOTE]
 > Recached is not a full Redis replacement. It covers the subset most applications actually need: strings, expiry, counters, all collection types, transactions, pub/sub, and observable keys. Best fit: reactive UIs, session caches, browser-side API response caching, and rate limiting.
@@ -125,7 +125,7 @@ What you give up is what needs a peer: pub/sub, live queries and cross-device sy
 
 ## Benchmarks
 
-Recached's measured performance claim is narrow: command execution scales across worker threads. The project does not publish a current Redis or Valkey comparison. The previous three-way table used Recached v0.1.8 and Redis 7.2.5, so it was removed instead of presenting stale results as current evidence.
+Recached's measured performance claim is narrow: command execution scales across worker threads. The project publishes no cross-project performance comparison, and these numbers are not one — they say nothing about how any other cache performs on this or any host.
 
 The scaling run below changed only `RECACHED_WORKER_THREADS`. One binary, one workload, one fixed four-core CPU set — Intel i5-9400F, `powersave` governor, `PIN=1 SERVER_CPUS=0-3 BENCH_CPUS=4-5`, no persistence. Measured 2026-09-13 with `redis-benchmark` 8.10.1 (`-n 1000000 -c 50 -d 64 -r 100000 -P 16`):
 
@@ -139,11 +139,9 @@ The scaling run below changed only `RECACHED_WORKER_THREADS`. One binary, one wo
 
 **Scaling requires your writes to be spread across keys.** `redis-benchmark`'s collection tests (`LPUSH`, `SADD`, `HSET`, `ZADD`) push every operation into a single key, and that workload does not scale — it *regresses* about 27%, from 1,550,566 req/s on one thread to 1,134,772 on four, because one key lives on one shard and extra workers only add contention. Which half describes your deployment depends on whether you have hot keys. See [the benchmark guide](https://recached.dev/guide/benchmarks) for both tables.
 
-One thread is the baseline because that is how Redis and Valkey execute commands — it is not a recommended deployment. This is evidence for parallel command execution on this build and host, not a cross-project claim. Run [`scripts/bench-scaling.sh`](scripts/bench-scaling.sh) against the commit you plan to deploy.
+One thread is the baseline the ratio is measured against, not a recommended deployment. This is evidence for parallel command execution on this build and host, nothing wider. Run [`scripts/bench-scaling.sh`](scripts/bench-scaling.sh) against the commit you plan to deploy.
 
 On the same host, a server-side write reaches a subscribed browser over WebSocket in **151 µs at p50** (p99 698 µs) — measured with the project's own harness, since no RESP benchmark can see that path. Browser *reads* are a local WebAssembly memory lookup and never leave the tab.
-
-For a current cross-project run, use [`scripts/bench-docker.sh`](scripts/bench-docker.sh). It pins server and load-generator CPU sets, records image versions, measures pipelined and unpipelined workloads, and writes RSS delta per live key for strings, small hashes, and small sets. Publish the generated `conditions.txt` with any numbers.
 
 Recached's product distinction remains the browser engine: browser reads use local WebAssembly memory and avoid a server round trip.
 
