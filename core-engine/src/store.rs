@@ -104,6 +104,9 @@ pub(crate) struct ZSetInner {
     /// instead of paying to keep it in step forever because of one range query
     /// long ago. `AtomicU32` so a range query can reset it through `&self`.
     writes_since_range: AtomicU32,
+    /// Running `member.len() + 8` total. See [`CompactHash`] for why this is
+    /// maintained incrementally rather than summed on demand.
+    bytes: usize,
 }
 
 /// Writes without an intervening range query after which a materialised
@@ -121,6 +124,7 @@ impl Clone for ZSetInner {
             scores: self.scores.clone(),
             index: self.index.clone(),
             writes_since_range: AtomicU32::new(self.writes_since_range.load(Ordering::Relaxed)),
+            bytes: self.bytes,
         }
     }
 }
@@ -131,11 +135,17 @@ impl ZSetInner {
             scores: HashMap::new(),
             index: std::sync::OnceLock::new(),
             writes_since_range: AtomicU32::new(0),
+            bytes: 0,
         }
     }
 
     fn len(&self) -> usize {
         self.scores.len()
+    }
+
+    /// Sum of `member.len() + 8` (the score) across the set. O(1).
+    fn heap_bytes(&self) -> usize {
+        self.bytes
     }
 
     fn score(&self, member: &str) -> Option<f64> {
@@ -162,6 +172,9 @@ impl ZSetInner {
                 let key: Arc<str> = Arc::from(member);
                 self.reindex(None, score, &key);
                 self.scores.insert(Arc::clone(&key), score);
+                // Only a genuinely new member changes the total; a score
+                // update replaces eight bytes with eight bytes.
+                self.bytes = self.bytes.saturating_add(member.len() + 8);
                 None
             }
         }
@@ -212,6 +225,7 @@ impl ZSetInner {
     /// Removes `member`, returning its previous score.
     fn remove(&mut self, member: &str) -> Option<f64> {
         let (key, old) = self.scores.remove_entry(member)?;
+        self.bytes = self.bytes.saturating_sub(key.len() + 8);
         if let Some(index) = self.index.get_mut() {
             index.remove(&(Score(old), key));
         }
@@ -461,23 +475,50 @@ impl<'de> Deserialize<'de> for Blob {
 
 const INLINE_HASH_FIELDS: usize = 2;
 
+/// A hash plus a running byte total.
+///
+/// The total is maintained incrementally rather than computed on demand
+/// because [`entry_size`] is called before *and* after every write. Walking
+/// the fields there made building an N-field hash O(N²): measured at 2,838
+/// `HSET`/s into a 100k-field hash against 349,650 `SET`/s, and halving with
+/// every doubling. The same reasoning applies to [`CompactSet`],
+/// [`CompactList`] and [`ZSetInner`].
+///
+/// `bytes` counts exactly what `entry_size` used to sum — `key.len() +
+/// value.len()` per field — so `INFO used_memory` is unchanged.
 #[derive(Clone)]
-enum CompactHash {
+struct CompactHash {
+    repr: CompactHashRepr,
+    bytes: usize,
+}
+
+#[derive(Clone)]
+enum CompactHashRepr {
     Inline(SmallVec<[(String, Blob); INLINE_HASH_FIELDS]>),
     Table(HashMap<String, Blob>),
 }
 
 impl CompactHash {
     fn new() -> Self {
-        Self::Inline(SmallVec::new())
+        Self {
+            repr: CompactHashRepr::Inline(SmallVec::new()),
+            bytes: 0,
+        }
     }
 
     fn from_map(map: HashMap<String, Blob>) -> Self {
-        if map.len() <= INLINE_HASH_FIELDS {
-            Self::Inline(map.into_iter().collect())
+        let bytes = map.iter().map(|(key, value)| key.len() + value.len()).sum();
+        let repr = if map.len() <= INLINE_HASH_FIELDS {
+            CompactHashRepr::Inline(map.into_iter().collect())
         } else {
-            Self::Table(map)
-        }
+            CompactHashRepr::Table(map)
+        };
+        Self { repr, bytes }
+    }
+
+    /// Sum of `key.len() + value.len()` across every field. O(1).
+    fn heap_bytes(&self) -> usize {
+        self.bytes
     }
 
     fn to_map(&self) -> HashMap<String, Blob> {
@@ -487,9 +528,9 @@ impl CompactHash {
     }
 
     fn len(&self) -> usize {
-        match self {
-            Self::Inline(fields) => fields.len(),
-            Self::Table(fields) => fields.len(),
+        match &self.repr {
+            CompactHashRepr::Inline(fields) => fields.len(),
+            CompactHashRepr::Table(fields) => fields.len(),
         }
     }
 
@@ -498,32 +539,44 @@ impl CompactHash {
     }
 
     fn get(&self, key: &str) -> Option<&Blob> {
-        match self {
-            Self::Inline(fields) => fields
+        match &self.repr {
+            CompactHashRepr::Inline(fields) => fields
                 .iter()
                 .find_map(|(field, value)| (field == key).then_some(value)),
-            Self::Table(fields) => fields.get(key),
+            CompactHashRepr::Table(fields) => fields.get(key),
         }
     }
 
     fn insert(&mut self, key: String, value: Blob) -> Option<Blob> {
-        match self {
-            Self::Inline(fields) => {
-                if let Some((_, old)) = fields.iter_mut().find(|(field, _)| field == &key) {
-                    return Some(std::mem::replace(old, value));
-                }
-                if fields.len() < INLINE_HASH_FIELDS {
+        let (key_len, value_len) = (key.len(), value.len());
+        let old = match &mut self.repr {
+            CompactHashRepr::Inline(fields) => {
+                if let Some((_, slot)) = fields.iter_mut().find(|(field, _)| field == &key) {
+                    Some(std::mem::replace(slot, value))
+                } else if fields.len() < INLINE_HASH_FIELDS {
                     fields.push((key, value));
-                    return None;
+                    None
+                } else {
+                    let mut table = HashMap::with_capacity(fields.len() + 1);
+                    table.extend(fields.drain(..));
+                    let old = table.insert(key, value);
+                    self.repr = CompactHashRepr::Table(table);
+                    old
                 }
-                let mut table = HashMap::with_capacity(fields.len() + 1);
-                table.extend(fields.drain(..));
-                let old = table.insert(key, value);
-                *self = Self::Table(table);
-                old
             }
-            Self::Table(fields) => fields.insert(key, value),
+            CompactHashRepr::Table(fields) => fields.insert(key, value),
+        };
+        match &old {
+            // Overwrite: the field name is already counted, only the value moved.
+            Some(previous) => {
+                self.bytes = self
+                    .bytes
+                    .saturating_add(value_len)
+                    .saturating_sub(previous.len());
+            }
+            None => self.bytes = self.bytes.saturating_add(key_len + value_len),
         }
+        old
     }
 
     fn insert_if_absent(&mut self, key: String, value: Blob) -> bool {
@@ -536,19 +589,23 @@ impl CompactHash {
     }
 
     fn remove(&mut self, key: &str) -> Option<Blob> {
-        match self {
-            Self::Inline(fields) => fields
+        let removed = match &mut self.repr {
+            CompactHashRepr::Inline(fields) => fields
                 .iter()
                 .position(|(field, _)| field == key)
                 .map(|position| fields.swap_remove(position).1),
-            Self::Table(fields) => fields.remove(key),
+            CompactHashRepr::Table(fields) => fields.remove(key),
+        };
+        if let Some(ref value) = removed {
+            self.bytes = self.bytes.saturating_sub(key.len() + value.len());
         }
+        removed
     }
 
     fn iter(&self) -> CompactHashIter<'_> {
-        match self {
-            Self::Inline(fields) => CompactHashIter::Inline(fields.iter()),
-            Self::Table(fields) => CompactHashIter::Table(fields.iter()),
+        match &self.repr {
+            CompactHashRepr::Inline(fields) => CompactHashIter::Inline(fields.iter()),
+            CompactHashRepr::Table(fields) => CompactHashIter::Table(fields.iter()),
         }
     }
 }
@@ -573,29 +630,48 @@ impl<'a> Iterator for CompactHashIter<'a> {
 
 const INLINE_SET_MEMBERS: usize = 4;
 
+/// A set plus a running byte total. See [`CompactHash`] for why the total is
+/// incremental. `bytes` sums `member.len()`, matching what `entry_size` used
+/// to walk.
 #[derive(Clone)]
-enum CompactSet {
+struct CompactSet {
+    repr: CompactSetRepr,
+    bytes: usize,
+}
+
+#[derive(Clone)]
+enum CompactSetRepr {
     Inline(SmallVec<[String; INLINE_SET_MEMBERS]>),
     Table(IndexSet<String>),
 }
 
 impl CompactSet {
     fn new() -> Self {
-        Self::Inline(SmallVec::new())
-    }
-
-    fn from_index_set(set: IndexSet<String>) -> Self {
-        if set.len() <= INLINE_SET_MEMBERS {
-            Self::Inline(set.into_iter().collect())
-        } else {
-            Self::Table(set)
+        Self {
+            repr: CompactSetRepr::Inline(SmallVec::new()),
+            bytes: 0,
         }
     }
 
+    fn from_index_set(set: IndexSet<String>) -> Self {
+        let bytes = set.iter().map(String::len).sum();
+        let repr = if set.len() <= INLINE_SET_MEMBERS {
+            CompactSetRepr::Inline(set.into_iter().collect())
+        } else {
+            CompactSetRepr::Table(set)
+        };
+        Self { repr, bytes }
+    }
+
+    /// Sum of `member.len()` across the set. O(1).
+    fn heap_bytes(&self) -> usize {
+        self.bytes
+    }
+
     fn len(&self) -> usize {
-        match self {
-            Self::Inline(members) => members.len(),
-            Self::Table(members) => members.len(),
+        match &self.repr {
+            CompactSetRepr::Inline(members) => members.len(),
+            CompactSetRepr::Table(members) => members.len(),
         }
     }
 
@@ -604,68 +680,84 @@ impl CompactSet {
     }
 
     fn contains(&self, member: &str) -> bool {
-        match self {
-            Self::Inline(members) => members.iter().any(|candidate| candidate == member),
-            Self::Table(members) => members.contains(member),
+        match &self.repr {
+            CompactSetRepr::Inline(members) => members.iter().any(|candidate| candidate == member),
+            CompactSetRepr::Table(members) => members.contains(member),
         }
     }
 
     fn insert(&mut self, member: String) -> bool {
-        match self {
-            Self::Inline(members) => {
+        let member_len = member.len();
+        let inserted = match &mut self.repr {
+            CompactSetRepr::Inline(members) => {
                 if members.iter().any(|candidate| candidate == &member) {
-                    return false;
-                }
-                if members.len() < INLINE_SET_MEMBERS {
+                    false
+                } else if members.len() < INLINE_SET_MEMBERS {
                     members.push(member);
-                    return true;
+                    true
+                } else {
+                    let mut table = IndexSet::with_capacity(members.len() + 1);
+                    table.extend(members.drain(..));
+                    let inserted = table.insert(member);
+                    self.repr = CompactSetRepr::Table(table);
+                    inserted
                 }
-                let mut table = IndexSet::with_capacity(members.len() + 1);
-                table.extend(members.drain(..));
-                let inserted = table.insert(member);
-                *self = Self::Table(table);
-                inserted
             }
-            Self::Table(members) => members.insert(member),
+            CompactSetRepr::Table(members) => members.insert(member),
+        };
+        if inserted {
+            self.bytes = self.bytes.saturating_add(member_len);
         }
+        inserted
     }
 
     fn swap_remove(&mut self, member: &str) -> bool {
-        match self {
-            Self::Inline(members) => members
+        let removed = match &mut self.repr {
+            CompactSetRepr::Inline(members) => members
                 .iter()
                 .position(|candidate| candidate == member)
                 .map(|position| members.swap_remove(position))
                 .is_some(),
-            Self::Table(members) => members.swap_remove(member),
+            CompactSetRepr::Table(members) => members.swap_remove(member),
+        };
+        if removed {
+            self.bytes = self.bytes.saturating_sub(member.len());
         }
+        removed
     }
 
     fn swap_remove_index(&mut self, index: usize) -> Option<String> {
-        match self {
-            Self::Inline(members) => (index < members.len()).then(|| members.swap_remove(index)),
-            Self::Table(members) => members.swap_remove_index(index),
+        let removed = match &mut self.repr {
+            CompactSetRepr::Inline(members) => {
+                (index < members.len()).then(|| members.swap_remove(index))
+            }
+            CompactSetRepr::Table(members) => members.swap_remove_index(index),
+        };
+        if let Some(ref member) = removed {
+            self.bytes = self.bytes.saturating_sub(member.len());
         }
+        removed
     }
 
     fn get_index(&self, index: usize) -> Option<&String> {
-        match self {
-            Self::Inline(members) => members.get(index),
-            Self::Table(members) => members.get_index(index),
+        match &self.repr {
+            CompactSetRepr::Inline(members) => members.get(index),
+            CompactSetRepr::Table(members) => members.get_index(index),
         }
     }
 
     fn drain_all(&mut self) -> Vec<String> {
-        match self {
-            Self::Inline(members) => members.drain(..).collect(),
-            Self::Table(members) => members.drain(..).collect(),
+        self.bytes = 0;
+        match &mut self.repr {
+            CompactSetRepr::Inline(members) => members.drain(..).collect(),
+            CompactSetRepr::Table(members) => members.drain(..).collect(),
         }
     }
 
     fn iter(&self) -> CompactSetIter<'_> {
-        match self {
-            Self::Inline(members) => CompactSetIter::Inline(members.iter()),
-            Self::Table(members) => CompactSetIter::Table(members.iter()),
+        match &self.repr {
+            CompactSetRepr::Inline(members) => CompactSetIter::Inline(members.iter()),
+            CompactSetRepr::Table(members) => CompactSetIter::Table(members.iter()),
         }
     }
 }
@@ -692,17 +784,139 @@ impl<'a> Iterator for CompactSetIter<'a> {
     }
 }
 
+// ── Compact list encoding ─────────────────────────────────────────────────────
+
+/// A list plus a running byte total. See [`CompactHash`] for why the total is
+/// incremental. `bytes` sums `element.len()`.
+///
+/// The inner `VecDeque` is deliberately private and there is no `DerefMut`:
+/// every mutation has to go through a method here, because one that bypassed
+/// the counter would desynchronise `INFO used_memory` and, with a memory cap
+/// configured, eviction along with it.
+#[derive(Clone, Default)]
+struct CompactList {
+    items: VecDeque<Blob>,
+    bytes: usize,
+}
+
+impl CompactList {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sum of `element.len()` across the list. O(1).
+    fn heap_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    fn iter(&self) -> std::collections::vec_deque::Iter<'_, Blob> {
+        self.items.iter()
+    }
+
+    fn get(&self, index: usize) -> Option<&Blob> {
+        self.items.get(index)
+    }
+
+    fn push_front(&mut self, value: Blob) {
+        self.bytes = self.bytes.saturating_add(value.len());
+        self.items.push_front(value);
+    }
+
+    fn push_back(&mut self, value: Blob) {
+        self.bytes = self.bytes.saturating_add(value.len());
+        self.items.push_back(value);
+    }
+
+    fn pop_front(&mut self) -> Option<Blob> {
+        let value = self.items.pop_front()?;
+        self.bytes = self.bytes.saturating_sub(value.len());
+        Some(value)
+    }
+
+    fn pop_back(&mut self) -> Option<Blob> {
+        let value = self.items.pop_back()?;
+        self.bytes = self.bytes.saturating_sub(value.len());
+        Some(value)
+    }
+
+    /// Replace the element at `index`, returning false when out of range.
+    fn set(&mut self, index: usize, value: Blob) -> bool {
+        let Some(slot) = self.items.get_mut(index) else {
+            return false;
+        };
+        self.bytes = self
+            .bytes
+            .saturating_add(value.len())
+            .saturating_sub(slot.len());
+        *slot = value;
+        true
+    }
+
+    fn remove(&mut self, index: usize) -> Option<Blob> {
+        let value = self.items.remove(index)?;
+        self.bytes = self.bytes.saturating_sub(value.len());
+        Some(value)
+    }
+
+    /// Remove and return the first `count` elements.
+    fn drain_front(&mut self, count: usize) -> Vec<Blob> {
+        let taken: Vec<Blob> = self.items.drain(..count.min(self.items.len())).collect();
+        let freed: usize = taken.iter().map(Blob::len).sum();
+        self.bytes = self.bytes.saturating_sub(freed);
+        taken
+    }
+
+    /// Remove and return the last `count` elements, last-first — the order
+    /// `RPOP key <count>` reports them in.
+    fn drain_back(&mut self, count: usize) -> Vec<Blob> {
+        let mut taken = Vec::with_capacity(count.min(self.items.len()));
+        for _ in 0..count.min(self.items.len()) {
+            if let Some(value) = self.pop_back() {
+                taken.push(value);
+            }
+        }
+        taken
+    }
+
+    /// Keep only `start..=end`, discarding everything outside it.
+    fn retain_range(&mut self, start: usize, end: usize) {
+        let kept: VecDeque<Blob> = self.items.drain(start..=end).collect();
+        self.bytes = kept.iter().map(Blob::len).sum();
+        self.items = kept;
+    }
+
+    fn clear(&mut self) {
+        self.items.clear();
+        self.bytes = 0;
+    }
+}
+
+impl FromIterator<Blob> for CompactList {
+    fn from_iter<T: IntoIterator<Item = Blob>>(iter: T) -> Self {
+        let items: VecDeque<Blob> = iter.into_iter().collect();
+        let bytes = items.iter().map(Blob::len).sum();
+        Self { items, bytes }
+    }
+}
+
 // ── Entry value type ──────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 enum EntryValue {
     Str(Blob),
     Hash(Box<CompactHash>),
-    List(VecDeque<Blob>),
+    List(CompactList),
     // IndexSet rather than HashSet: SPOP / SRANDMEMBER need O(1) access to a
     // random member by index, which a hash table cannot provide.
     Set(Box<CompactSet>),
-    ZSet(ZSetInner),
+    // Boxed for the same reason as `Hash` and `Set`: `ZSetInner` is 96 bytes
+    // and `EntryValue` is stored inline in every entry, so leaving it unboxed
+    // makes every string key pay for the largest collection variant.
+    ZSet(Box<ZSetInner>),
     RateLimiter(RateLimiterInner),
     Json(serde_json::Value),
 }
@@ -1179,6 +1393,10 @@ struct DenseKeys {
 }
 
 impl DenseKeys {
+    fn contains(&self, key: &str) -> bool {
+        self.positions.contains_key(key)
+    }
+
     fn insert(&mut self, key: &str) {
         if self.positions.contains_key(key) {
             return;
@@ -1207,16 +1425,36 @@ struct KeyIndex {
 }
 
 impl KeyIndex {
+    /// Bring the index into line with a key's current state.
+    ///
+    /// Called on **every** write, so the overwhelmingly common case — a write
+    /// to a key that is already indexed and whose TTL-ness has not changed —
+    /// has to cost as little as possible. It used to cost the most: the
+    /// unconditional `ordered.insert(key.to_string())` allocated a `String`
+    /// and walked a `BTreeSet<String>`, comparing strings at every level, only
+    /// to discover the key was already there. Together with the rest of this
+    /// function that was ~25-30% of a single-threaded `SET`, and because it
+    /// all runs under one store-wide lock it cost proportionally more as
+    /// worker threads were added.
+    ///
+    /// `ordered` and `all` are maintained in lockstep and always hold exactly
+    /// the same key set, so one hash lookup in `all` decides whether either
+    /// needs touching at all. That is the invariant this relies on; keep the
+    /// two in step in any future edit.
     fn sync(&mut self, key: &str, live_ttl: Option<bool>) {
         match live_ttl {
             None => {
-                self.ordered.remove(key);
-                self.all.remove(key);
+                if self.all.contains(key) {
+                    self.ordered.remove(key);
+                    self.all.remove(key);
+                }
                 self.volatile.remove(key);
             }
             Some(has_ttl) => {
-                self.ordered.insert(key.to_string());
-                self.all.insert(key);
+                if !self.all.contains(key) {
+                    self.ordered.insert(key.to_string());
+                    self.all.insert(key);
+                }
                 if has_ttl {
                     self.volatile.insert(key);
                 } else {
@@ -1784,7 +2022,9 @@ impl KeyValueStore {
                 SnapshotValue::Hash(m) => EntryValue::Hash(Box::new(CompactHash::from_map(m))),
                 SnapshotValue::List(l) => EntryValue::List(l.into_iter().collect()),
                 SnapshotValue::Set(s) => EntryValue::Set(Box::new(s.into_iter().collect())),
-                SnapshotValue::ZSet(pairs) => EntryValue::ZSet(ZSetInner::from_pairs(pairs)),
+                SnapshotValue::ZSet(pairs) => {
+                    EntryValue::ZSet(Box::new(ZSetInner::from_pairs(pairs)))
+                }
                 SnapshotValue::RateLimiter {
                     limit,
                     window_ms,
@@ -1882,11 +2122,44 @@ impl KeyValueStore {
                     });
                 let before = keys.iter().map(|key| self.entry_memory(key)).sum();
                 let out = self.execute_inner(cmd, &mut evicted);
-                let after = keys.iter().map(|key| self.entry_memory(key)).sum();
-                self.adjust_memory(before, after);
+                // One lookup per key, not two. Reading the post-write size and
+                // reading the key's TTL state both need the same entry, and
+                // hash lookups are the largest single cost on the write path
+                // (~21% of a `SET` between the probe and its key comparison),
+                // so they share one. The index is then locked once for the
+                // whole command rather than once per key.
+                //
+                // The two phases stay separate on purpose: `sync_key_metadata`
+                // takes a `data` guard and then the index lock, so holding the
+                // index lock across a `data` lookup here would invert that
+                // order and risk a deadlock.
+                let mut after = 0usize;
+                let mut ttl_states: SmallVec<[Option<bool>; 4]> =
+                    SmallVec::with_capacity(keys.len());
                 for key in &keys {
-                    self.sync_key_metadata(key);
+                    // Expired-but-unswept entries stay in the TTL index on
+                    // purpose: dropping them here would make them unreachable
+                    // to the bounded sweeper and suppress the expiry
+                    // notification. So this asks whether the entry is present,
+                    // not whether it is live — matching `sync_key_metadata`.
+                    ttl_states.push(match self.data.get(key) {
+                        Some(entry) => {
+                            after = after.saturating_add(entry_size(key, entry.value()));
+                            Some(entry.value().expires_at_ms.is_some())
+                        }
+                        None => None,
+                    });
                 }
+                {
+                    let mut index = self
+                        .index
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    for (key, live_ttl) in keys.iter().zip(ttl_states) {
+                        index.sync(key, live_ttl);
+                    }
+                }
+                self.adjust_memory(before, after);
                 if self.max_memory_bytes.is_some() {
                     let within_limit = self.try_evict_for_memory_inner(&mut evicted);
                     if !within_limit
@@ -2715,7 +2988,7 @@ impl KeyValueStore {
                     key,
                     now,
                     EntryValue::List,
-                    VecDeque::new()
+                    CompactList::new()
                 );
                 for v in vals {
                     list.push_front(v.into());
@@ -2732,7 +3005,7 @@ impl KeyValueStore {
                     key,
                     now,
                     EntryValue::List,
-                    VecDeque::new()
+                    CompactList::new()
                 );
                 for v in vals {
                     list.push_back(v.into());
@@ -2790,7 +3063,8 @@ impl KeyValueStore {
                                 // at roughly 240 years on an empty list.
                                 let take = n.min(list.len() as u64) as usize;
                                 let items: Vec<Value> = list
-                                    .drain(..take)
+                                    .drain_front(take)
+                                    .into_iter()
                                     .map(|v| Value::BulkString(Some(v.into_bytes())))
                                     .collect();
                                 Value::Array(Some(items))
@@ -2818,10 +3092,9 @@ impl KeyValueStore {
                                 // which is what the repeated `pop_back` this
                                 // replaces produced.
                                 let take = n.min(list.len() as u64) as usize;
-                                let from = list.len() - take;
                                 let items: Vec<Value> = list
-                                    .drain(from..)
-                                    .rev()
+                                    .drain_back(take)
+                                    .into_iter()
                                     .map(|v| Value::BulkString(Some(v.into_bytes())))
                                     .collect();
                                 Value::Array(Some(items))
@@ -2900,7 +3173,7 @@ impl KeyValueStore {
                             match resolve_idx(idx, len) {
                                 None => Value::Error("ERR index out of range".to_string()),
                                 Some(i) => {
-                                    list[i] = val.into();
+                                    list.set(i, val.into());
                                     Value::SimpleString("OK".to_string())
                                 }
                             }
@@ -2922,7 +3195,10 @@ impl KeyValueStore {
                             if count >= 0 {
                                 let mut i = 0;
                                 while i < list.len() && (count == 0 || removed < abs as i64) {
-                                    if list[i].as_slice() == element.as_slice() {
+                                    if list
+                                        .get(i)
+                                        .is_some_and(|v| v.as_slice() == element.as_slice())
+                                    {
                                         list.remove(i);
                                         removed += 1;
                                     } else {
@@ -2933,7 +3209,10 @@ impl KeyValueStore {
                                 let mut i = list.len();
                                 while i > 0 && removed < abs as i64 {
                                     i -= 1;
-                                    if list[i].as_slice() == element.as_slice() {
+                                    if list
+                                        .get(i)
+                                        .is_some_and(|v| v.as_slice() == element.as_slice())
+                                    {
                                         list.remove(i);
                                         removed += 1;
                                     }
@@ -2956,10 +3235,7 @@ impl KeyValueStore {
                             let len = list.len();
                             match resolve_range(start, stop, len) {
                                 None => list.clear(),
-                                Some((s, e)) => {
-                                    let trimmed: VecDeque<Blob> = list.drain(s..=e).collect();
-                                    *list = trimmed;
-                                }
+                                Some((s, e)) => list.retain_range(s, e),
                             }
                             Value::SimpleString("OK".to_string())
                         }
@@ -3378,7 +3654,7 @@ impl KeyValueStore {
                     key,
                     now,
                     EntryValue::ZSet,
-                    ZSetInner::new()
+                    Box::new(ZSetInner::new())
                 );
                 zadd_exec(zset, opts, pairs)
             }
@@ -3530,7 +3806,7 @@ impl KeyValueStore {
                     key,
                     now,
                     EntryValue::ZSet,
-                    ZSetInner::new()
+                    Box::new(ZSetInner::new())
                 );
                 let prev_score = zset.score(&member).unwrap_or(0.0);
                 let new_score = prev_score + delta;
@@ -4059,13 +4335,20 @@ fn write_cost(cmd: &Command) -> usize {
 /// Approximate heap footprint of a single entry: key + value bytes plus a fixed
 /// per-entry overhead. Shared by `approximate_memory_bytes` and the eviction
 /// loop so both agree on what a key "costs".
+/// Logical byte cost of one entry.
+///
+/// Every collection answers in O(1) from a total it maintains as it is
+/// mutated. It used to walk the value instead, and because the write path
+/// calls this before *and* after each command, that made building an
+/// N-element collection O(N^2) — 2,838 `HSET`/s into a 100k-field hash where
+/// `SET` managed 349,650/s, halving again with every doubling.
 fn entry_size(key: &str, e: &Entry) -> usize {
     let val_size = match &e.value {
         EntryValue::Str(s) => s.len(),
-        EntryValue::Hash(m) => m.iter().map(|(k, v)| k.len() + v.len()).sum(),
-        EntryValue::List(l) => l.iter().map(|s| s.len()).sum(),
-        EntryValue::Set(s) => s.iter().map(|m| m.len()).sum::<usize>(),
-        EntryValue::ZSet(z) => z.members().map(|(m, _)| m.len() + 8).sum(),
+        EntryValue::Hash(m) => m.heap_bytes(),
+        EntryValue::List(l) => l.heap_bytes(),
+        EntryValue::Set(s) => s.heap_bytes(),
+        EntryValue::ZSet(z) => z.heap_bytes(),
         EntryValue::RateLimiter(rl) => rl.buckets.len() * 16 + 16,
         EntryValue::Json(doc) => json_approx_size(doc),
     };
@@ -9382,7 +9665,7 @@ mod ttl_rounding_tests {
 #[cfg(test)]
 mod storage_regression_tests {
     use super::*;
-    use crate::cmd::SetOptions;
+    use crate::cmd::{SetOptions, ZAddOptions};
 
     #[test]
     fn replica_snapshot_replacement_drops_stale_keys() {
@@ -9411,10 +9694,186 @@ mod storage_regression_tests {
         );
     }
 
+    /// `KeyIndex::sync` skips both `ordered` and `all` on one hash lookup in
+    /// `all`, which is only sound while the two hold exactly the same keys.
+    ///
+    /// That invariant is invisible at the call sites and easy to break — an
+    /// edit that touches one collection and forgets the other would leave
+    /// `SCAN` silently missing keys that `RANDOMKEY` and eviction can still
+    /// see, with nothing failing until a user noticed. So drive every path
+    /// that mutates the index and check it directly.
+    #[test]
+    fn the_ordered_and_dense_key_indexes_never_diverge() {
+        let store = KeyValueStore::new();
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
+            state
+        };
+
+        let check = |label: &str| {
+            let index = store.index.lock().unwrap_or_else(|e| e.into_inner());
+            let ordered: std::collections::BTreeSet<&str> =
+                index.ordered.iter().map(String::as_str).collect();
+            let dense: std::collections::BTreeSet<&str> =
+                index.all.keys.iter().map(String::as_str).collect();
+            assert_eq!(
+                ordered,
+                dense,
+                "ordered and all diverged after {label}: only-in-ordered {:?}, only-in-all {:?}",
+                ordered.difference(&dense).collect::<Vec<_>>(),
+                dense.difference(&ordered).collect::<Vec<_>>()
+            );
+            // Every volatile key must still be a live key.
+            for key in &index.volatile.keys {
+                assert!(
+                    dense.contains(key.as_str()),
+                    "volatile holds {key}, which is not in the key set, after {label}"
+                );
+            }
+            // The dense position map must agree with its own vector.
+            assert_eq!(index.all.keys.len(), index.all.positions.len());
+            for (position, key) in index.all.keys.iter().enumerate() {
+                assert_eq!(index.all.positions.get(key), Some(&position));
+            }
+        };
+
+        for step in 0..3000u64 {
+            let n = next();
+            let key = format!("k{}", n % 48);
+            match n % 10 {
+                0..=2 => {
+                    store.execute(Command::Set(key, "v".into(), SetOptions::default()));
+                }
+                3 => {
+                    // Same key, now volatile.
+                    store.execute(Command::SetEx(key, 100, "v".into()));
+                }
+                4 => {
+                    store.execute(Command::Expire(key, 100));
+                }
+                5 => {
+                    store.execute(Command::Persist(key));
+                }
+                6 => {
+                    store.execute(Command::Del(vec![key]));
+                }
+                7 => {
+                    store.execute(Command::HSet(key, vec![("f".into(), "v".into())]));
+                }
+                8 => {
+                    // A TTL short enough to lapse, so the sweeper path runs too.
+                    store.execute(Command::PSetEx(key, 1, "v".into()));
+                }
+                _ => {
+                    store.execute(Command::Rename(key, format!("r{}", n % 16)));
+                }
+            }
+            if step % 250 == 0 {
+                store.sweep_expired();
+                check("a sweep");
+            }
+        }
+        check("the mixed workload");
+
+        store.execute(Command::FlushDb);
+        check("FLUSHDB");
+    }
+
+    /// The incremental byte counters must agree with a full recount.
+    ///
+    /// `entry_size` reads a total each collection maintains as it is mutated,
+    /// which is what makes writes O(1) instead of O(collection). The risk that
+    /// buys is drift: one mutation path that forgets to adjust its counter
+    /// silently corrupts `INFO used_memory` and, with a memory cap set,
+    /// eviction decisions with it. So drive every collection command over a
+    /// deterministic pseudo-random workload and audit the cached total against
+    /// the walk it replaced.
+    #[test]
+    fn incremental_byte_counters_match_a_full_recount() {
+        fn audit(value: &EntryValue) -> usize {
+            match value {
+                EntryValue::Str(s) => s.len(),
+                EntryValue::Hash(m) => m.iter().map(|(k, v)| k.len() + v.len()).sum(),
+                EntryValue::List(l) => l.iter().map(|s| s.len()).sum(),
+                EntryValue::Set(s) => s.iter().map(|m| m.len()).sum::<usize>(),
+                EntryValue::ZSet(z) => z.members().map(|(m, _)| m.len() + 8).sum(),
+                EntryValue::RateLimiter(rl) => rl.buckets.len() * 16 + 16,
+                EntryValue::Json(doc) => json_approx_size(doc),
+            }
+        }
+
+        let store = KeyValueStore::new();
+        // xorshift: a fixed sequence, so a failure reproduces exactly.
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
+            state
+        };
+
+        for step in 0..4000u64 {
+            let n = next();
+            let field = format!("f{}", n % 64);
+            let member = format!("m{}", n % 64);
+            let value = "v".repeat((n % 37) as usize + 1);
+            match n % 14 {
+                0 => drop(store.execute(Command::HSet(
+                    "h".into(),
+                    vec![(field, value.clone().into())],
+                ))),
+                1 => drop(store.execute(Command::HDel("h".into(), vec![field]))),
+                2 => drop(store.execute(Command::HIncrBy("h".into(), "counter".into(), 3))),
+                3 => drop(store.execute(Command::LPush("l".into(), vec![value.clone().into()]))),
+                4 => drop(store.execute(Command::RPush("l".into(), vec![value.clone().into()]))),
+                5 => drop(store.execute(Command::LPop("l".into(), Some(n % 3)))),
+                6 => drop(store.execute(Command::RPop("l".into(), None))),
+                7 => drop(store.execute(Command::LSet("l".into(), 0, value.clone().into()))),
+                8 => drop(store.execute(Command::LRem("l".into(), 0, value.clone().into()))),
+                9 => drop(store.execute(Command::LTrim("l".into(), 0, 40))),
+                10 => drop(store.execute(Command::SAdd("s".into(), vec![member]))),
+                11 => drop(store.execute(Command::SRem("s".into(), vec![format!("m{}", n % 32)]))),
+                12 => drop(store.execute(Command::ZAdd(
+                    "z".into(),
+                    ZAddOptions::default(),
+                    vec![((n % 100) as f64, member)],
+                ))),
+                _ => drop(store.execute(Command::ZRem("z".into(), vec![member]))),
+            }
+
+            for key in ["h", "l", "s", "z"] {
+                if let Some(entry) = store.data.get(key) {
+                    let cached = entry_size(key, entry.value()) - key.len() - 64;
+                    let walked = audit(&entry.value().value);
+                    assert_eq!(
+                        cached, walked,
+                        "byte counter drifted for {key} at step {step} (cached {cached}, actual {walked})"
+                    );
+                }
+            }
+        }
+
+        // And the store-wide total must match the sum of its entries.
+        let expected: usize = store
+            .data
+            .iter()
+            .map(|e| entry_size(e.key(), e.value()))
+            .sum();
+        assert_eq!(store.approximate_memory_bytes(), expected);
+    }
+
     #[test]
     fn collection_inline_storage_does_not_inflate_every_entry_value() {
+        // Was 96 until the sorted set was boxed alongside the hash and the
+        // set. `EntryValue` is stored inline in every entry, so the largest
+        // variant is a tax on every key including plain strings.
         assert!(
-            std::mem::size_of::<EntryValue>() <= 96,
+            std::mem::size_of::<EntryValue>() <= 48,
             "EntryValue is {} bytes",
             std::mem::size_of::<EntryValue>()
         );
@@ -9439,16 +9898,16 @@ mod storage_regression_tests {
         for i in 0..INLINE_HASH_FIELDS {
             hash.insert(format!("f{i}"), Blob::from("v"));
         }
-        assert!(matches!(hash, CompactHash::Inline(_)));
+        assert!(matches!(hash.repr, CompactHashRepr::Inline(_)));
         hash.insert("spill".into(), Blob::from("v"));
-        assert!(matches!(hash, CompactHash::Table(_)));
+        assert!(matches!(hash.repr, CompactHashRepr::Table(_)));
 
         let mut set = CompactSet::new();
         for i in 0..INLINE_SET_MEMBERS {
             set.insert(format!("m{i}"));
         }
-        assert!(matches!(set, CompactSet::Inline(_)));
+        assert!(matches!(set.repr, CompactSetRepr::Inline(_)));
         set.insert("spill".into());
-        assert!(matches!(set, CompactSet::Table(_)));
+        assert!(matches!(set.repr, CompactSetRepr::Table(_)));
     }
 }

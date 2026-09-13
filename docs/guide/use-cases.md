@@ -129,7 +129,7 @@ Being specific here is more useful than a feature grid.
 rate-limit counters read only by your API. Recached will do this correctly, but you would be adopting
 a young project to solve a problem two extremely mature ones already solve.
 
-**Raw single-node throughput above all → benchmark Valkey, Redis, and Recached on your target host.** Recached does not publish a current cross-project winner. Its worker threads provide parallel command execution, but that architectural property does not predict the fastest server for your command mix, pipeline depth, persistence settings, or hardware. Use the [reproducible benchmark harness](/guide/benchmarks) before switching.
+**Raw single-node throughput above all → measure the candidates yourself on your target hardware.** Recached publishes no cross-project comparison and does not claim to be the fastest cache server. Its worker threads provide parallel command execution, but that architectural property does not predict the fastest server for your command mix, pipeline depth, persistence settings, or hardware — and it does nothing for a workload concentrated on a few hot keys. Measure before switching.
 
 **Pure memory-efficient blob caching at scale → Memcached.** Memcached's slab allocator and
 multi-threaded simplicity are excellent for large, uniform, ephemeral values. Recached is not

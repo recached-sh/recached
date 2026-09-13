@@ -2,14 +2,18 @@
 
 All notable changes to Recached are documented here.
 
-## [0.3.4] (2026-09-013)
+## [0.3.4] (2026-09-13)
 
 - Fixed concurrent writes, transactions, `WATCH`, and expiry and eviction propagation
+- Removed three costs from the command path: the mutation fan-out ran even with no WebSocket clients attached, the key index rebuilt itself on writes that changed nothing, and every RESP length header was parsed by validating UTF-8 and running the generic `str::parse`. `SET` improves from 316,857 to 546,746 ops/s on one worker thread and from 769,823 to about 1,520,000 on four
+- Fixed quadratic write cost on collections: hashes, lists, sets and sorted sets now track their own size instead of being walked before and after every write. `HSET` into a 100k-field hash goes from 2,838 to 380,228 ops/s and no longer degrades as the collection grows
 - Made snapshots, AOF, and dedup persistence atomic, fail-closed, and observable
 - Bounded pub/sub, live-query, and replication queues and added partial replica resync
-- Bounded keyspace maintenance and reduced small-value and collection memory use
+- Bounded keyspace maintenance and reduced small-value and collection memory use, including halving `EntryValue` from 96 to 48 bytes for every key in the store
 - Improved live-query snapshots and collection hydration
-- Expanded metrics, fault coverage, benchmarks, and operational documentation
+- Closed a WebSocket sync client that falls behind the mutation fan-out instead of silently resubscribing, so a browser can no longer hold a permanently stale local replica while reporting itself in sync
+- Capped WebSocket message and frame reassembly at 8 MiB, configurable, replacing the 64 MiB library default that an unauthenticated client could hold per connection
+- Expanded metrics, fault coverage, benchmarks, and operational documentation, including `recached_sync_lag_disconnects_total`, WebSocket close code `4001`, and a current Linux thread-scaling measurement
 - Closed replica transaction and strict live-query scope authorization bypasses
 - Enforced `noeviction` memory caps and rejected ambiguous persistence and capacity configuration
 - Fixed RESP framing, integer overflow, duplicate pub/sub registration, and crash-safe browser outbox restoration

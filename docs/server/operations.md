@@ -47,6 +47,7 @@ Traffic metrics are event-driven:
 | `recached_last_save_age_seconds` | gauge | — | Seconds since the last successful checkpoint. |
 | `recached_aof_bytes` | gauge | — | Current AOF file size when AOF is enabled. |
 | `recached_notification_overflows_total` | counter | — | WATCH/QSUB clients disconnected because their bounded notification queue filled. |
+| `recached_sync_lag_disconnects_total` | counter | — | WebSocket sync clients closed (code `4001`) because they fell behind the mutation fan-out far enough to miss frames. They reconnect and resynchronise via `qstate`, so this is a backpressure signal, not data loss — but a sustained rate means clients cannot drain as fast as you are writing. |
 | `recached_pubsub_overflows_total` | counter | — | Pub/sub clients disconnected because their bounded delivery queue filled. |
 
 ### Capacity and sync

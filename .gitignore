@@ -60,7 +60,16 @@ scripts/*
 *.aof
 *.msgpack
 
-# Benchmark output — scripts/bench-docker.sh and scripts/bench-scaling.sh
+# Benchmark output — scripts/bench-scaling.sh and scripts/benchmark.sh
 bench-results/
+
+# Cross-project comparison harness (Recached vs Redis vs Valkey).
+#
+# Kept out of the repo deliberately. Recached is currently slower per core
+# than both, so shipping a ready-made comparison invites numbers that the
+# project does not stand behind and has never published. Bring it back into
+# scripts/ when the engine is competitive enough that the result is one we
+# would put our name to.
+bench-private/
 
 brand

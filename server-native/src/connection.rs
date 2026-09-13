@@ -917,7 +917,20 @@ where
         Err(err)
     };
 
-    match tokio::time::timeout(timeout, accept_hdr_async(socket, check_origin)).await {
+    // Bound reassembly before it happens. Without these, tungstenite's 64 MiB
+    // message / 16 MiB frame defaults apply, and a client that never finishes a
+    // fragmented message holds that memory having sent no command at all — so
+    // neither the RESP parser's limits nor the `NOAUTH` check are reached.
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(ws_max_message_bytes()))
+        .max_frame_size(Some(ws_max_frame_bytes()));
+
+    match tokio::time::timeout(
+        timeout,
+        accept_hdr_async_with_config(socket, check_origin, Some(config)),
+    )
+    .await
+    {
         Ok(Ok(ws)) => Some(ws),
         Ok(Err(e)) => {
             warn!("WS handshake failed on conn {}: {}", conn_id, e);
@@ -1651,9 +1664,31 @@ pub(crate) async fn handle_ws<S>(
                         }
                     }
                     Ok(_) => {}
+                    // The fan-out overran this connection. Resubscribing here
+                    // would keep the socket open having silently skipped `n`
+                    // mutations: `SyncPush` carries no sequence number, so the
+                    // client cannot detect the gap, and its local replica stays
+                    // wrong for as long as the page is open. There is no way to
+                    // resynchronise in place — the same reasoning `SyncClient`
+                    // already applies to an unparseable frame — so close the
+                    // socket and let the client reconnect, which replays AUTH,
+                    // SYNC TOKEN and every QSUB and returns a fresh `qstate`.
+                    //
+                    // This matches what the live-query path already does when
+                    // its notification queue overflows.
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!("WS conn {} lagged, missed {} messages, resubscribing", conn_id, n);
-                        rx = tx.subscribe();
+                        warn!(
+                            "WS conn {} lagged, missed {} mutations; closing so the client resynchronises",
+                            conn_id, n
+                        );
+                        counter!("recached_sync_lag_disconnects_total").increment(1);
+                        let _ = ws_sender
+                            .send(Message::Close(Some(CloseFrame {
+                                code: CloseCode::Library(WS_CLOSE_SYNC_GAP),
+                                reason: "sync stream gap; reconnect to resynchronise".into(),
+                            })))
+                            .await;
+                        break;
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }

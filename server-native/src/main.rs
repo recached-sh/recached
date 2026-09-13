@@ -87,12 +87,15 @@ use tokio_rustls::rustls::pki_types::pem::PemObject;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
-use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::accept_hdr_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{
     ErrorResponse, Request as HandshakeRequest, Response as HandshakeResponse,
 };
 use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tracing::{debug, error, info, warn};
 
 // ── metrics ───────────────────────────────────────────────────────────────────
@@ -708,7 +711,7 @@ async fn run(
     // Carries (sender_conn_id, resp_encoded_mutation). WS receivers skip their
     // own messages. Created before replication so a replica can push the writes
     // it receives from the primary to its own local WebSocket clients.
-    let (tx, _rx) = broadcast::channel::<SyncMsg>(BROADCAST_CHANNEL_CAPACITY);
+    let (tx, _) = broadcast::channel::<SyncMsg>(BROADCAST_CHANNEL_CAPACITY);
 
     // ── start replication ─────────────────────────────────────────────────
     // Opt-in. The listener may run on a replica as well as a primary, so a

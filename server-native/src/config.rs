@@ -52,6 +52,39 @@ pub(crate) fn max_qsub_initial_keys() -> usize {
     *V.get_or_init(|| env_limit("RECACHED_MAX_QSUB_INITIAL_KEYS", 10_000))
 }
 
+/// Largest complete WebSocket message the browser-facing port will reassemble.
+/// Override: `RECACHED_WS_MAX_MESSAGE_BYTES`.
+///
+/// tungstenite defaults to 64 MiB per message and 16 MiB per frame, and it
+/// buffers the whole message before the RESP parser — and therefore before
+/// `MAX_BULK_STRING_BYTES` and before the `NOAUTH` check — ever sees a byte.
+/// An unauthenticated client that opens a fragmented message and never
+/// finishes it holds that much memory per connection: measured at ~68 MiB
+/// each, so the default `RECACHED_MAX_CONNECTIONS` of 1024 puts tens of
+/// gigabytes within reach of anyone who can reach the port.
+///
+/// 8 MiB is far above any real browser-sync frame (a `qstate` is bounded by
+/// `RECACHED_MAX_QSUB_INITIAL_KEYS`) while capping the exposure at 8 GiB of
+/// worst case rather than 64.
+pub(crate) fn ws_max_message_bytes() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| env_limit("RECACHED_WS_MAX_MESSAGE_BYTES", 8 * 1024 * 1024))
+}
+
+/// Largest single WebSocket frame. Override: `RECACHED_WS_MAX_FRAME_BYTES`.
+/// Never larger than one whole message, which is the real bound.
+pub(crate) fn ws_max_frame_bytes() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        env_limit("RECACHED_WS_MAX_FRAME_BYTES", 8 * 1024 * 1024).min(ws_max_message_bytes())
+    })
+}
+
+/// Close code sent to a browser whose mutation stream developed a gap. In the
+/// private 4000-4999 range, so it can never collide with an RFC 6455 code.
+/// The client resynchronises by reconnecting; see `handle_ws`.
+pub(crate) const WS_CLOSE_SYNC_GAP: u16 = 4001;
+
 pub(crate) const BROADCAST_CHANNEL_CAPACITY: usize = 512;
 
 pub(crate) const DEFAULT_MAX_CONNECTIONS: usize = 1024;

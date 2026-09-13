@@ -263,12 +263,85 @@ impl Value {
     }
 
     fn read_until_crlf(buffer: &[u8]) -> Option<(&[u8], usize)> {
-        for i in 0..buffer.len().saturating_sub(1) {
-            if buffer[i] == b'\r' && buffer[i + 1] == b'\n' {
-                return Some((&buffer[1..i], i + 2));
+        // Searches for CR and checks the byte behind it, rather than testing
+        // every adjacent pair: one comparison per byte instead of two, and
+        // `position` drops the bounds checks the indexed loop carried.
+        //
+        // The scan semantics are deliberately unchanged — still the *first*
+        // CR immediately followed by LF. Stopping at the first LF instead
+        // would be faster again, but a header containing a bare LF would then
+        // report `Incomplete` rather than `InvalidHeader`, telling the caller
+        // to wait for more bytes on a frame that is already malformed.
+        let mut from = 0;
+        while let Some(offset) = buffer[from..].iter().position(|&b| b == b'\r') {
+            let cr = from + offset;
+            match buffer.get(cr + 1) {
+                Some(b'\n') => return Some((&buffer[1..cr], cr + 2)),
+                Some(_) => from = cr + 1,
+                None => return None,
             }
         }
         None
+    }
+
+    /// Parse a RESP header integer straight from its bytes.
+    ///
+    /// The five header sites used to run `String::from_utf8_lossy(data)` and
+    /// then the generic `str::parse`, which validates UTF-8 across the header
+    /// and walks `FromStr` for what is almost always one to three ASCII
+    /// digits. Parsing was ~8% of a `SET` on the profile.
+    ///
+    /// Accepts exactly what `i64::from_str` accepts — an optional `+` or `-`
+    /// followed by at least one ASCII digit, nothing else — and accumulates
+    /// negatives downward so `i64::MIN` still parses rather than overflowing.
+    fn parse_header_int(data: &[u8]) -> Option<i64> {
+        let (negative, digits) = match data.first()? {
+            b'-' => (true, &data[1..]),
+            b'+' => (false, &data[1..]),
+            _ => (false, data),
+        };
+        if digits.is_empty() {
+            return None;
+        }
+        let mut acc: i64 = 0;
+        for &byte in digits {
+            if !byte.is_ascii_digit() {
+                return None;
+            }
+            let digit = (byte - b'0') as i64;
+            acc = acc.checked_mul(10)?;
+            acc = if negative {
+                acc.checked_sub(digit)?
+            } else {
+                acc.checked_add(digit)?
+            };
+        }
+        Some(acc)
+    }
+
+    /// The unsigned form, for the headers that were parsed as `u64`.
+    ///
+    /// Separate from [`parse_header_int`] rather than a signed parse plus a
+    /// sign check, because those headers must reject a negative outright: a
+    /// `>-1\r\n` push frame parsed as `-1` would sail past an upper-bound
+    /// check that only looks for values that are too large.
+    fn parse_header_uint(data: &[u8]) -> Option<u64> {
+        let digits = match data.first()? {
+            b'+' => &data[1..],
+            b'-' => return None,
+            _ => data,
+        };
+        if digits.is_empty() {
+            return None;
+        }
+        let mut acc: u64 = 0;
+        for &byte in digits {
+            if !byte.is_ascii_digit() {
+                return None;
+            }
+            acc = acc.checked_mul(10)?.checked_add((byte - b'0') as u64)?;
+        }
+        Some(acc)
     }
 
     /// The `Incomplete` bound for a header whose terminating CRLF has not
@@ -326,12 +399,10 @@ impl Value {
     fn parse_integer(buffer: &[u8], build: bool) -> Result<(Option<Value>, usize), ParseError> {
         match Self::read_until_crlf(buffer) {
             Some((data, len)) => {
-                let s = String::from_utf8_lossy(data);
                 // Validated even when only measuring, so `frame_len` rejects
-                // exactly what `parse` rejects.
-                let i = s
-                    .parse::<i64>()
-                    .map_err(|_| ParseError::InvalidHeader("Invalid integer format"))?;
+                // exactly what a build rejects.
+                let i = Self::parse_header_int(data)
+                    .ok_or(ParseError::InvalidHeader("Invalid integer format"))?;
                 Ok((build.then_some(Value::Integer(i)), len))
             }
             None => Err(Self::need_more(buffer)),
@@ -342,8 +413,7 @@ impl Value {
         const BAD_LEN: ParseError = ParseError::InvalidHeader("Invalid bulk string length");
         match Self::read_until_crlf(buffer) {
             Some((data, head_len)) => {
-                let s = String::from_utf8_lossy(data);
-                let length: i64 = s.parse().map_err(|_| BAD_LEN)?;
+                let length = Self::parse_header_int(data).ok_or(BAD_LEN)?;
 
                 if length == -1 {
                     return Ok((build.then_some(Value::BulkString(None)), head_len));
@@ -397,10 +467,8 @@ impl Value {
         }
         match Self::read_until_crlf(buffer) {
             Some((data, mut offset)) => {
-                let s = String::from_utf8_lossy(data);
-                let count: u64 = s
-                    .parse()
-                    .map_err(|_| ParseError::InvalidHeader("Invalid push frame length"))?;
+                let count = Self::parse_header_uint(data)
+                    .ok_or(ParseError::InvalidHeader("Invalid push frame length"))?;
                 // Compared as u64: see `parse_bulk_string`.
                 if count > MAX_ARRAY_ELEMENTS as u64 {
                     return Err(ParseError::TooLarge {
@@ -437,10 +505,8 @@ impl Value {
         }
         match Self::read_until_crlf(buffer) {
             Some((data, mut offset)) => {
-                let s = String::from_utf8_lossy(data);
-                let count: u64 = s
-                    .parse()
-                    .map_err(|_| ParseError::InvalidHeader("Invalid map length"))?;
+                let count = Self::parse_header_uint(data)
+                    .ok_or(ParseError::InvalidHeader("Invalid map length"))?;
                 // Each pair is two values, so the element budget is halved.
                 const MAX_PAIRS: usize = MAX_ARRAY_ELEMENTS / 2;
                 if count > MAX_PAIRS as u64 {
@@ -492,8 +558,7 @@ impl Value {
 
         match Self::read_until_crlf(buffer) {
             Some((data, mut offset)) => {
-                let s = String::from_utf8_lossy(data);
-                let count: i64 = s.parse().map_err(|_| BAD_LEN)?;
+                let count = Self::parse_header_int(data).ok_or(BAD_LEN)?;
 
                 if count == -1 {
                     return Ok((build.then_some(Value::Array(None)), offset));
@@ -538,6 +603,118 @@ impl Value {
         } else {
             Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod header_parse_equivalence_tests {
+    use super::*;
+
+    /// The byte-wise header parsers must accept and reject exactly what the
+    /// `String::from_utf8_lossy(..).parse()` pair they replaced did.
+    ///
+    /// This is a hardened parser reached by unauthenticated clients, so
+    /// "faster and probably the same" is not good enough — a widened accept
+    /// set here is a protocol-level hole. Compared against the originals over
+    /// every shape that has ever mattered: signs, padding, overflow, empties,
+    /// invalid UTF-8, and embedded NULs.
+    fn reference_int(data: &[u8]) -> Option<i64> {
+        String::from_utf8_lossy(data).parse::<i64>().ok()
+    }
+
+    fn reference_uint(data: &[u8]) -> Option<u64> {
+        String::from_utf8_lossy(data).parse::<u64>().ok()
+    }
+
+    fn cases() -> Vec<Vec<u8>> {
+        let mut out: Vec<Vec<u8>> = vec![
+            b"".to_vec(),
+            b"-".to_vec(),
+            b"+".to_vec(),
+            b"0".to_vec(),
+            b"-0".to_vec(),
+            b"+0".to_vec(),
+            b"1".to_vec(),
+            b"-1".to_vec(),
+            b"+1".to_vec(),
+            b"007".to_vec(),
+            b"64".to_vec(),
+            b"1000000".to_vec(),
+            b" 1".to_vec(),
+            b"1 ".to_vec(),
+            b"1\t".to_vec(),
+            b"1.0".to_vec(),
+            b"1e3".to_vec(),
+            b"--1".to_vec(),
+            b"1-".to_vec(),
+            b"0x10".to_vec(),
+            b"1_000".to_vec(),
+            b"abc".to_vec(),
+            b"9223372036854775807".to_vec(),  // i64::MAX
+            b"9223372036854775808".to_vec(),  // i64::MAX + 1
+            b"-9223372036854775808".to_vec(), // i64::MIN
+            b"-9223372036854775809".to_vec(), // i64::MIN - 1
+            b"18446744073709551615".to_vec(), // u64::MAX
+            b"18446744073709551616".to_vec(), // u64::MAX + 1
+            b"99999999999999999999999999".to_vec(),
+            vec![0xff, 0xfe],       // invalid UTF-8
+            vec![b'1', 0x00, b'2'], // embedded NUL
+            vec![b'1', 0xff],
+        ];
+        for n in [-3i64, -2, -1, 0, 1, 2, 3, 9, 10, 11, 99, 100, 12345] {
+            out.push(n.to_string().into_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn the_signed_header_parser_matches_the_std_parse_it_replaced() {
+        for case in cases() {
+            assert_eq!(
+                Value::parse_header_int(&case),
+                reference_int(&case),
+                "signed mismatch on {:?}",
+                String::from_utf8_lossy(&case)
+            );
+        }
+    }
+
+    #[test]
+    fn the_unsigned_header_parser_matches_the_std_parse_it_replaced() {
+        for case in cases() {
+            assert_eq!(
+                Value::parse_header_uint(&case),
+                reference_uint(&case),
+                "unsigned mismatch on {:?}",
+                String::from_utf8_lossy(&case)
+            );
+        }
+    }
+
+    /// A negative push/map count must be refused outright rather than sliding
+    /// past an upper-bound check that only looks for values that are too big.
+    #[test]
+    fn a_negative_push_or_map_count_is_rejected() {
+        for frame in [b">-1\r\n".as_slice(), b"%-1\r\n".as_slice()] {
+            let err = Value::parse(frame).expect_err("a negative count must not parse");
+            assert!(
+                matches!(err, ParseError::InvalidHeader(_)),
+                "expected InvalidHeader for {:?}, got {err:?}",
+                String::from_utf8_lossy(frame)
+            );
+        }
+    }
+
+    /// A bare LF inside a header must stay a protocol error. Scanning to the
+    /// first LF instead of the first CRLF would report `Incomplete` and leave
+    /// the connection waiting on a frame that is already malformed.
+    #[test]
+    fn a_bare_lf_in_a_header_is_a_protocol_error_not_incomplete() {
+        let err = Value::parse(b"$5\nhello\r\n").expect_err("bare LF must not parse");
+        assert!(
+            !err.is_incomplete(),
+            "a malformed header must not report Incomplete, got {err:?}"
+        );
     }
 }
 
