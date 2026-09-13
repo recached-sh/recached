@@ -1964,6 +1964,146 @@ async fn ws_without_an_allowlist_accepts_any_origin() {
         .expect("no allowlist means no origin restriction");
 }
 
+#[tokio::test]
+async fn ws_refuses_a_message_larger_than_the_reassembly_cap() {
+    // tungstenite buffers a whole message before the RESP parser — and so
+    // before MAX_BULK_STRING_BYTES and before the NOAUTH check — sees a byte
+    // of it. Left at its 64 MiB default, an unauthenticated client that opens
+    // a fragmented message and never finishes it holds that much memory per
+    // connection. Measured at ~68 MiB each before this cap existed.
+    let srv = spawn_ws_server().await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{}", srv.tcp_addr))
+        .await
+        .unwrap();
+
+    let oversized = ws_max_message_bytes() + 1024;
+    let body = "z".repeat(oversized);
+    // The client's own config would reject this before it reached the wire.
+    let _ = ws.send(Message::Text(body.into())).await;
+
+    // The server must drop the connection rather than reassemble it.
+    let closed = tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+        loop {
+            match ws.next().await {
+                Some(Ok(_)) => continue,
+                _ => return,
+            }
+        }
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "a message over the cap must close the connection, not be buffered"
+    );
+}
+
+#[tokio::test]
+async fn the_websocket_reassembly_caps_are_bounded_by_default() {
+    // A frame can never exceed a whole message; that is the real bound.
+    assert!(ws_max_frame_bytes() <= ws_max_message_bytes());
+    // Well under tungstenite's 64 MiB default, which is the point.
+    assert!(
+        ws_max_message_bytes() <= 16 * 1024 * 1024,
+        "default reassembly cap regressed to {}",
+        ws_max_message_bytes()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ws_closes_a_client_whose_mutation_stream_developed_a_gap() {
+    // The regression this locks down: the lag branch used to resubscribe and
+    // keep the socket open, so the browser's local replica silently lost every
+    // mutation in the gap. `SyncPush` carries no sequence number, so the client
+    // cannot notice. Reproduced against 0.3.4 at 1,043 of 20,000 mutations
+    // delivered, connection still open.
+    //
+    // Driven through the broadcast channel directly: a client that never reads
+    // stops the send path, the channel overruns, and the only correct answer is
+    // to close so the client reconnects and re-runs QSUB.
+    let store = Arc::new(KeyValueStore::new());
+    let (tx, _rx) = broadcast::channel::<SyncMsg>(16);
+    let pubsub: SharedPubSub = Arc::new(tokio::sync::Mutex::new(PubSubHub::new()));
+    let watch_registry: WatchRegistry = WatchHub::new();
+    let state = Arc::new(ServerState {
+        snap: Arc::new(SnapshotConfig {
+            path: tmp_path("ws_gap.rdb"),
+            last_save: AtomicI64::new(now_unix_secs()),
+            checkpoint_id: AtomicU64::new(0),
+        }),
+        aof: None,
+        replicas: ReplHub::new(),
+        is_replica: AtomicBool::new(false),
+        dedup: std::sync::Mutex::new(HashMap::new()),
+        ephemeral: std::sync::Mutex::new(HashMap::new()),
+        dedup_dirty: std::sync::atomic::AtomicBool::new(false),
+        dedup_order: tokio::sync::Mutex::new(()),
+        save_lock: tokio::sync::Mutex::new(()),
+        persistence_healthy: AtomicBool::new(true),
+        persistence_failures: AtomicU64::new(0),
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (s, t, ps, wr, st) = (
+        Arc::clone(&store),
+        tx.clone(),
+        Arc::clone(&pubsub),
+        Arc::clone(&watch_registry),
+        Arc::clone(&state),
+    );
+    let _task = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let id = next_conn_id();
+        handle_ws(
+            socket,
+            s,
+            t,
+            Arc::new(None),
+            id,
+            ps,
+            wr,
+            st,
+            Arc::new(None),
+            Arc::new(None),
+            "test".to_string(),
+        )
+        .await;
+    });
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+        .await
+        .unwrap();
+
+    // Never read. Big payloads so the socket buffer fills and the server's
+    // send path stops draining the broadcast, which is what makes it lag.
+    let payload = resp_push(&[b"set", b"k", &vec![b'v'; 128 * 1024]]);
+    for _ in 0..512 {
+        let _ = tx.send(Arc::new(SyncPush {
+            origin: 999,
+            keys: vec!["k".to_string()],
+            resp: payload.clone(),
+        }));
+        tokio::task::yield_now().await;
+    }
+
+    // Now drain: the stream must end rather than continue with a silent hole.
+    let ended = tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+        while let Some(frame) = ws.next().await {
+            if matches!(frame, Ok(Message::Close(_)) | Err(_)) {
+                return true;
+            }
+        }
+        true
+    })
+    .await;
+
+    assert_eq!(
+        ended,
+        Ok(true),
+        "a connection that missed mutations must be closed, not silently resubscribed"
+    );
+}
+
 async fn spawn_ws_server_full(
     sync_secret: Option<String>,
     allowed_origins: Option<Vec<String>>,

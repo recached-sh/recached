@@ -76,6 +76,17 @@ A successful `qstate` is complete for its pattern, so reconnect reconciliation c
 WATCH, QSUB, and pub/sub delivery queues are limited to 256 messages and 8 MiB per connection. A
 client that cannot drain its queue is disconnected and must reconcile after reconnecting.
 
+The same rule governs the mutation fan-out that feeds scoped and legacy sync connections, which is
+buffered separately from the queues above. A client that falls far enough behind that the server can
+no longer replay the mutations it missed is **closed with WebSocket code `4001`** and the reason
+`sync stream gap; reconnect to resynchronise`. It is not left connected: a mutation frame carries no
+sequence number, so a client cannot detect a gap on its own, and a silently truncated stream would
+leave the local replica permanently wrong while still reporting itself in sync. On reconnect the
+client replays `AUTH`, `SYNC TOKEN` and every `QSUB`, and the resulting `qstate` is authoritative for
+its pattern — which is what makes reconciliation correct. Server-side, the close is counted by
+`recached_sync_lag_disconnects_total`; a non-zero rate means clients are being fed faster than they
+can drain, not that anything is corrupt.
+
 Expiry deletion is eventual. A local copy does not expire on its own clock, and the bounded sweep may take multiple ticks to reach a key in a large volatile keyspace. Carry and compare a deadline in the value when exact expiry matters.
 
 ## The ordering invariant (acknowledgment correlation)

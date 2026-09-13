@@ -127,14 +127,21 @@ What you give up is what needs a peer: pub/sub, live queries and cross-device sy
 
 Recached's measured performance claim is narrow: command execution scales across worker threads. The project does not publish a current Redis or Valkey comparison. The previous three-way table used Recached v0.1.8 and Redis 7.2.5, so it was removed instead of presenting stale results as current evidence.
 
-The historical scaling run changed only `RECACHED_WORKER_THREADS`. It used one binary, one workload, and a fixed four-core Linux CPU set:
+The scaling run below changed only `RECACHED_WORKER_THREADS`. One binary, one workload, one fixed four-core CPU set — Intel i5-9400F, `powersave` governor, `PIN=1 SERVER_CPUS=0-3 BENCH_CPUS=4-5`, no persistence. Measured 2026-09-13 with `redis-benchmark` 8.10.1 (`-n 1000000 -c 50 -d 64 -r 100000 -P 16`):
 
 | Worker threads | 1 | 2 | 4 |
 |---|---:|---:|---:|
-| Aggregate requests/s | 481,280 | 854,111 | 1,044,313 |
-| Change from one thread | baseline | +77% | +117% |
+| `GET` | 819,672 | 1,689,189 | 1,658,375 |
+| `SET` | 316,857 | 580,720 | 769,823 |
+| `INCR` | 330,688 | 602,047 | 761,615 |
+| **Total, keys spread over 100k** | **1,467,217** | **2,871,956** | **3,189,812** |
+| Change from one thread | baseline | +96% | **+117%** |
 
-Treat this table as historical evidence for parallel command execution, not current release throughput. Run [`scripts/bench-scaling.sh`](scripts/bench-scaling.sh) against the commit you plan to deploy.
+**Scaling requires your writes to be spread across keys.** `redis-benchmark`'s collection tests (`LPUSH`, `SADD`, `HSET`, `ZADD`) push every operation into a single key, and that workload does not scale — it *regresses* about 27%, from 1,550,566 req/s on one thread to 1,134,772 on four, because one key lives on one shard and extra workers only add contention. Which half describes your deployment depends on whether you have hot keys. See [the benchmark guide](https://recached.dev/guide/benchmarks) for both tables.
+
+One thread is the baseline because that is how Redis and Valkey execute commands — it is not a recommended deployment. This is evidence for parallel command execution on this build and host, not a cross-project claim. Run [`scripts/bench-scaling.sh`](scripts/bench-scaling.sh) against the commit you plan to deploy.
+
+On the same host, a server-side write reaches a subscribed browser over WebSocket in **151 µs at p50** (p99 698 µs) — measured with the project's own harness, since no RESP benchmark can see that path. Browser *reads* are a local WebAssembly memory lookup and never leave the tab.
 
 For a current cross-project run, use [`scripts/bench-docker.sh`](scripts/bench-docker.sh). It pins server and load-generator CPU sets, records image versions, measures pipelined and unpipelined workloads, and writes RSS delta per live key for strings, small hashes, and small sets. Publish the generated `conditions.txt` with any numbers.
 
