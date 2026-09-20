@@ -11,6 +11,7 @@ pub(crate) fn is_write_command(cmd: &Command) -> bool {
         cmd,
         Command::Set(..)
             | Command::ESet(..)
+            | Command::EAdd(..)
             | Command::Del(..)
             | Command::Unlink(..)
             | Command::Append(..)
@@ -72,6 +73,7 @@ pub(crate) fn primary_keys(cmd: &Command) -> Vec<String> {
     }
     match cmd {
         Command::ESet(k, _)
+        | Command::EAdd(k, _)
         | Command::Set(k, _, _)
         | Command::Append(k, _)
         | Command::GetSet(k, _)
@@ -209,6 +211,9 @@ pub(crate) async fn execute_ordered_write(
         if let Command::ESet(key, _) = effective {
             state.claim_ephemeral(key, origin);
         }
+        if let Command::EAdd(key, members) = effective {
+            state.claim_ephemeral_members(key, members, origin);
+        }
         if let Some((client, id)) = dedup {
             state.commit_dedup(client, id);
         }
@@ -269,6 +274,7 @@ mod eviction_propagation_tests {
             is_replica: AtomicBool::new(false),
             dedup: std::sync::Mutex::new(HashMap::new()),
             ephemeral: std::sync::Mutex::new(HashMap::new()),
+            ephemeral_members: std::sync::Mutex::new(HashMap::new()),
             dedup_dirty: AtomicBool::new(false),
             dedup_order: tokio::sync::Mutex::new(()),
             save_lock: tokio::sync::Mutex::new(()),
@@ -354,7 +360,7 @@ pub(crate) fn delta_for(cmd: &Command) -> Option<(String, KeyDelta)> {
         // to every viewer before this.
         Command::Append(k, v) => (k, "append", vec![v.clone()]),
 
-        Command::SAdd(k, members) => (k, "sadd", bytes(members)),
+        Command::SAdd(k, members) | Command::EAdd(k, members) => (k, "sadd", bytes(members)),
         Command::SRem(k, members) => (k, "srem", bytes(members)),
         Command::LPush(k, values) => (k, "lpush", values.clone()),
         Command::RPush(k, values) => (k, "rpush", values.clone()),
@@ -650,6 +656,18 @@ pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Opt
         // Replays as SET: a replica has no connection to scope the lifetime to,
         // and the owning server broadcasts the DEL when the connection closes.
         Command::ESet(k, v) => Some(resp_push(&[b"SET", k.as_bytes(), v.as_slice()])),
+        // Replays as SADD, for the same reason ESET replays as SET: a replica
+        // has no connection to bind the lifetime to, and the owning server
+        // broadcasts the SREM when the last holder's connection closes.
+        Command::EAdd(k, members) => match response {
+            Value::Integer(n) if *n > 0 => {
+                let mut parts: Vec<&[u8]> = vec![b"SADD", k.as_bytes()];
+                let m_refs: Vec<&[u8]> = members.iter().map(|s| s.as_bytes()).collect();
+                parts.extend_from_slice(&m_refs);
+                Some(resp_push(&parts))
+            }
+            _ => None,
+        },
         Command::Set(k, v, opts) => {
             // Without GET: nil response means NX/XX condition failed — don't broadcast.
             // With GET: nil means key didn't exist before, but SET still happened.

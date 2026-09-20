@@ -1809,12 +1809,28 @@ pub(crate) async fn handle_ws<S>(
     }
     unregister_all_qsubs(&watch_registry, conn_id, &mut qsub_patterns).await;
 
-    // Delete ephemeral keys this connection still owns and fan the deletions
+    // Release the ephemeral state this connection held and fan the removals
     // out, so every subscriber sees the peer go away immediately rather than
-    // waiting for a heartbeat TTL to lapse.
+    // waiting for a heartbeat TTL to lapse. Only what this connection was the
+    // *last* holder of is removed — another tab keeps its own presence.
     let expired = state.take_ephemeral_for(conn_id);
     if !expired.is_empty() {
         let del = Command::Del(expired);
         execute_ordered_write(&del, &tx, conn_id, &state, &watch_registry, &store).await;
+    }
+    for (key, members) in state.take_ephemeral_members_for(conn_id) {
+        let srem = Command::SRem(key.clone(), members);
+        execute_ordered_write(&srem, &tx, conn_id, &state, &watch_registry, &store).await;
+        // `SREM` leaves the key behind when it removes the last member, so an
+        // emptied room would otherwise linger for the life of the server —
+        // one dead key per room ever opened. Removing it here keeps presence
+        // self-cleaning; the general case is unchanged.
+        if matches!(
+            store.execute(Command::SCard(key.clone())),
+            Value::Integer(0)
+        ) {
+            let del = Command::Del(vec![key]);
+            execute_ordered_write(&del, &tx, conn_id, &state, &watch_registry, &store).await;
+        }
     }
 }

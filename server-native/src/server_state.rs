@@ -15,13 +15,20 @@ pub(crate) struct ServerState {
     /// client suffices — no seen-set. Marks are committed only after the
     /// wrapped write succeeds and are persisted with snapshot checkpoints.
     pub(crate) dedup: std::sync::Mutex<HashMap<String, (u64, u64)>>,
-    /// Ephemeral (`ESET`) keys → the connection that currently owns them.
+    /// Ephemeral (`ESET`) keys → every connection currently holding them.
     ///
-    /// Ownership transfers on each `ESET`, which is what makes multiple tabs
-    /// work: two tabs both setting `presence:user:42` leave the *later* one as
-    /// owner, so the first tab closing does not mark the user offline. Only the
-    /// owning connection's close deletes the key.
-    pub(crate) ephemeral: std::sync::Mutex<HashMap<String, u64>>,
+    /// A *set* of holders rather than one owner, because presence is the case
+    /// this exists for and a user has more than one tab. With a single owner,
+    /// each `ESET` transferred it, so closing the **most recent** tab deleted
+    /// the key while every earlier tab was still open — the user went offline
+    /// while still looking at the page. The key now outlives every holder and
+    /// is removed when the last one goes.
+    pub(crate) ephemeral: std::sync::Mutex<HashMap<String, HashSet<u64>>>,
+    /// Ephemeral (`EADD`) set memberships → the connections holding each one,
+    /// keyed by `(set key, member)`. Same lifetime rule as `ephemeral`, one
+    /// level down: a member survives while any connection that added it is
+    /// open, and the set is deleted once it empties.
+    pub(crate) ephemeral_members: std::sync::Mutex<HashMap<(String, String), HashSet<u64>>>,
     /// Set when a dedup high-water mark advances; cleared once persisted.
     pub(crate) dedup_dirty: std::sync::atomic::AtomicBool,
     /// Serializes DEDUP checks through successful execution and mark commit.
@@ -35,29 +42,61 @@ pub(crate) struct ServerState {
 }
 
 impl ServerState {
-    /// Record `conn_id` as the owner of an ephemeral key, replacing any
-    /// previous owner.
+    /// Record `conn_id` as a holder of an ephemeral key. Repeating an `ESET`
+    /// from the same connection is idempotent.
     pub(crate) fn claim_ephemeral(&self, key: &str, conn_id: u64) {
         if let Ok(mut map) = self.ephemeral.lock() {
-            map.insert(key.to_string(), conn_id);
+            map.entry(key.to_string()).or_default().insert(conn_id);
         }
     }
 
-    /// Keys still owned by `conn_id`, removed from the registry. Called once
-    /// when a connection closes.
+    /// Record `conn_id` as a holder of each ephemeral set membership.
+    pub(crate) fn claim_ephemeral_members(&self, key: &str, members: &[String], conn_id: u64) {
+        if let Ok(mut map) = self.ephemeral_members.lock() {
+            for member in members {
+                map.entry((key.to_string(), member.clone()))
+                    .or_default()
+                    .insert(conn_id);
+            }
+        }
+    }
+
+    /// Ephemeral set memberships `conn_id` was the last holder of, grouped by
+    /// set key. Called once when a connection closes.
+    pub(crate) fn take_ephemeral_members_for(&self, conn_id: u64) -> Vec<(String, Vec<String>)> {
+        let Ok(mut map) = self.ephemeral_members.lock() else {
+            return Vec::new();
+        };
+        let mut released: HashMap<String, Vec<String>> = HashMap::new();
+        map.retain(|(key, member), holders| {
+            if !holders.remove(&conn_id) || !holders.is_empty() {
+                return true;
+            }
+            released
+                .entry(key.clone())
+                .or_default()
+                .push(member.clone());
+            false
+        });
+        released.into_iter().collect()
+    }
+
+    /// Keys `conn_id` was the **last** holder of, removed from the registry.
+    /// Called once when a connection closes. A key another connection still
+    /// holds is left alone, which is what keeps a second tab online.
     pub(crate) fn take_ephemeral_for(&self, conn_id: u64) -> Vec<String> {
         let Ok(mut map) = self.ephemeral.lock() else {
             return Vec::new();
         };
-        let owned: Vec<String> = map
-            .iter()
-            .filter(|(_, id)| **id == conn_id)
-            .map(|(k, _)| k.clone())
-            .collect();
-        for k in &owned {
-            map.remove(k);
-        }
-        owned
+        let mut released = Vec::new();
+        map.retain(|key, holders| {
+            if !holders.remove(&conn_id) || !holders.is_empty() {
+                return true;
+            }
+            released.push(key.clone());
+            false
+        });
+        released
     }
 }
 

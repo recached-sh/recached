@@ -321,6 +321,7 @@ pub(crate) fn command_scope(cmd: &Command) -> CommandScope {
         // classified here and require only Write: every grant that confers
         // write confers read too.
         Command::ESet(k, _)
+        | Command::EAdd(k, _)
         | Command::Set(k, _, _)
         | Command::Append(k, _)
         | Command::GetSet(k, _)

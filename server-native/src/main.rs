@@ -640,6 +640,7 @@ async fn run(
         is_replica: std::sync::atomic::AtomicBool::new(is_replica_start),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),

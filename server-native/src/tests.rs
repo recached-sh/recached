@@ -54,6 +54,7 @@ async fn spawn_server_cfg(
         is_replica: AtomicBool::new(start_as_replica),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -874,6 +875,7 @@ async fn integration_aof_replay() {
         is_replica: AtomicBool::new(false),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1056,6 +1058,7 @@ fn state_with_snapshot_path(path: PathBuf) -> Arc<ServerState> {
         is_replica: AtomicBool::new(false),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1377,6 +1380,7 @@ async fn integration_replica_receives_write() {
             is_replica: AtomicBool::new(false),
             dedup: std::sync::Mutex::new(HashMap::new()),
             ephemeral: std::sync::Mutex::new(HashMap::new()),
+            ephemeral_members: std::sync::Mutex::new(HashMap::new()),
             dedup_dirty: std::sync::atomic::AtomicBool::new(false),
             dedup_order: tokio::sync::Mutex::new(()),
             save_lock: tokio::sync::Mutex::new(()),
@@ -1435,6 +1439,7 @@ async fn integration_replica_receives_write() {
         is_replica: AtomicBool::new(true),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1726,6 +1731,7 @@ async fn integration_connection_limit() {
         is_replica: AtomicBool::new(false),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1851,6 +1857,7 @@ async fn integration_failover_timeout_does_not_promote() {
         is_replica: AtomicBool::new(true),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -2035,6 +2042,7 @@ async fn ws_closes_a_client_whose_mutation_stream_developed_a_gap() {
         is_replica: AtomicBool::new(false),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -2124,6 +2132,7 @@ async fn spawn_ws_server_full(
         is_replica: AtomicBool::new(false),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -2787,6 +2796,10 @@ fn all_commands() -> Vec<(Command, Expect)> {
         ),
         (Command::Get("k".into()), Expect::Keys(&["k"])),
         (Command::ESet("k".into(), "v".into()), Expect::Keys(&["k"])),
+        (
+            Command::EAdd("k".into(), vec!["m".into()]),
+            Expect::Keys(&["k"]),
+        ),
         (Command::Del(vec!["k".into()]), Expect::Keys(&["k"])),
         (Command::Unlink(vec!["k".into()]), Expect::Keys(&["k"])),
         (
@@ -4590,6 +4603,161 @@ async fn integration_ws_sync_strict_mode_gates_and_filters() {
     );
 }
 
+// ── Presence: connection-bound keys and set membership ────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_a_second_tab_keeps_the_user_online() {
+    // The bug this fixes: ownership of an ESET key transferred to whichever
+    // connection wrote it last, so closing the *most recent* tab deleted the
+    // key while every earlier tab was still open — the user went offline
+    // while still looking at the page.
+    let srv = spawn_ws_server().await;
+    let mut tab_a = WsClient::connect(srv.tcp_addr).await;
+    let mut tab_b = WsClient::connect(srv.tcp_addr).await;
+    let mut observer = WsClient::connect(srv.tcp_addr).await;
+
+    assert_eq!(tab_a.cmd(&["ESET", "presence:42", "online"]).await, ok());
+    assert_eq!(tab_b.cmd(&["ESET", "presence:42", "online"]).await, ok());
+
+    // The later tab closes; the earlier one is still open.
+    drop(tab_b);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(
+        observer.cmd(&["GET", "presence:42"]).await,
+        bulk("online"),
+        "closing the later tab must not take the user offline"
+    );
+
+    // The last holder closing does remove it.
+    drop(tab_a);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(
+        observer.cmd(&["GET", "presence:42"]).await,
+        Value::BulkString(None)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_eadd_membership_follows_the_connection() {
+    // "Who is in this room" — membership that cleans itself up, readable with
+    // the ordinary set commands and observable through a live query.
+    let srv = spawn_ws_server().await;
+    let mut alice = WsClient::connect(srv.tcp_addr).await;
+    let mut bob = WsClient::connect(srv.tcp_addr).await;
+    let mut observer = WsClient::connect(srv.tcp_addr).await;
+
+    assert_eq!(alice.cmd(&["EADD", "room:1", "alice"]).await, int(1));
+    assert_eq!(bob.cmd(&["EADD", "room:1", "bob"]).await, int(1));
+    assert_eq!(observer.cmd(&["SCARD", "room:1"]).await, int(2));
+
+    // Bob leaves: his membership goes, Alice's stays.
+    drop(bob);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(
+        observer.cmd(&["SMEMBERS", "room:1"]).await,
+        Value::Array(Some(vec![bulk("alice")]))
+    );
+
+    // The set disappears once the room empties.
+    drop(alice);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(observer.cmd(&["EXISTS", "room:1"]).await, int(0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_eadd_membership_survives_a_second_tab() {
+    // Same rule one level down: a member is held by every connection that
+    // added it, so one of a user's tabs closing does not remove them.
+    let srv = spawn_ws_server().await;
+    let mut tab_a = WsClient::connect(srv.tcp_addr).await;
+    let mut tab_b = WsClient::connect(srv.tcp_addr).await;
+    let mut observer = WsClient::connect(srv.tcp_addr).await;
+
+    assert_eq!(tab_a.cmd(&["EADD", "room:2", "alice"]).await, int(1));
+    // The second tab re-adds the same member; SADD semantics make it a no-op
+    // in the set, but it takes a hold on the membership.
+    assert_eq!(tab_b.cmd(&["EADD", "room:2", "alice"]).await, int(0));
+
+    drop(tab_b);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(observer.cmd(&["SCARD", "room:2"]).await, int(1));
+
+    drop(tab_a);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(observer.cmd(&["EXISTS", "room:2"]).await, int(0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_presence_departure_reaches_live_queries() {
+    // A departure is a real mutation, so it fans out like any other — a UI
+    // showing the room updates without polling.
+    let srv = spawn_ws_server().await;
+    let mut viewer = WsClient::connect(srv.tcp_addr).await;
+    let mut bob = WsClient::connect(srv.tcp_addr).await;
+
+    assert_eq!(bob.cmd(&["EADD", "room:3", "bob"]).await, int(1));
+    // qstate is [tag, pattern, key, value] — the value being a type-tagged
+    // collection.
+    assert_eq!(
+        viewer.cmd(&["QSUB", "room:3"]).await,
+        Value::Array(Some(vec![
+            bulk("qstate"),
+            bulk("room:3"),
+            bulk("room:3"),
+            Value::Array(Some(vec![bulk("set"), bulk("bob")])),
+        ]))
+    );
+
+    drop(bob);
+    let push = viewer
+        .recv_any(1000)
+        .await
+        .expect("the room must be told bob left");
+    assert!(push.contains("room:3"), "unexpected frame: {push}");
+}
+
+#[test]
+fn ephemeral_holds_are_released_only_by_the_last_holder() {
+    let state = state_with_snapshot_path(tmp_path("presence_holds.rdb"));
+    state.claim_ephemeral("presence:42", 1);
+    state.claim_ephemeral("presence:42", 2);
+    // Repeating from the same connection is idempotent.
+    state.claim_ephemeral("presence:42", 2);
+
+    assert!(
+        state.take_ephemeral_for(2).is_empty(),
+        "connection 1 still holds the key"
+    );
+    assert_eq!(state.take_ephemeral_for(1), vec!["presence:42".to_string()]);
+    // And it is gone from the registry, not merely unreported.
+    assert!(state.take_ephemeral_for(1).is_empty());
+}
+
+#[test]
+fn ephemeral_members_are_released_per_member_and_grouped_by_key() {
+    let state = state_with_snapshot_path(tmp_path("presence_holds.rdb"));
+    state.claim_ephemeral_members("room:1", &["alice".to_string()], 1);
+    state.claim_ephemeral_members("room:1", &["bob".to_string()], 2);
+    state.claim_ephemeral_members("room:2", &["bob".to_string()], 2);
+
+    assert!(state.take_ephemeral_members_for(3).is_empty());
+
+    let mut released = state.take_ephemeral_members_for(2);
+    released.sort();
+    assert_eq!(
+        released,
+        vec![
+            ("room:1".to_string(), vec!["bob".to_string()]),
+            ("room:2".to_string(), vec!["bob".to_string()]),
+        ],
+        "one SREM per set, so each fans out as its own mutation"
+    );
+    assert_eq!(
+        state.take_ephemeral_members_for(1),
+        vec![("room:1".to_string(), vec!["alice".to_string()])]
+    );
+}
+
 // ── Delta frames ──────────────────────────────────────────────────────────
 //
 // A keychange carries the key's whole value, so appending one token to an
@@ -5640,6 +5808,7 @@ async fn failed_checkpoint_keeps_dirty_state_and_aof_until_recovery() {
         is_replica: AtomicBool::new(false),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),

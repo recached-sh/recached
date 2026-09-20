@@ -2202,6 +2202,9 @@ impl KeyValueStore {
                 Command::Set(key, value, crate::cmd::SetOptions::default()),
                 evicted,
             ),
+            // Same division of labour for ephemeral set membership: to the
+            // engine this is SADD, and the server enforces the lifetime.
+            Command::EAdd(key, members) => self.execute_inner(Command::SAdd(key, members), evicted),
 
             // ── Core ─────────────────────────────────────────────────────────
             Command::Ping(msg) => match msg {
@@ -4096,6 +4099,7 @@ fn mutation_scope(cmd: &Command) -> MutationScope {
     match cmd {
         Command::Set(key, _, _)
         | Command::ESet(key, _)
+        | Command::EAdd(key, _)
         | Command::Append(key, _)
         | Command::GetSet(key, _)
         | Command::SetNx(key, _)
@@ -4195,7 +4199,7 @@ fn write_cost(cmd: &Command) -> usize {
             k.len() + OVERHEAD + vals.iter().map(Vec::len).sum::<usize>()
         }
         Command::LSet(k, _, v) => k.len() + v.len(),
-        Command::SAdd(k, members) => {
+        Command::SAdd(k, members) | Command::EAdd(k, members) => {
             k.len() + OVERHEAD + members.iter().map(String::len).sum::<usize>()
         }
         Command::ZAdd(k, _, pairs) => {
