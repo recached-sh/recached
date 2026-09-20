@@ -2487,7 +2487,7 @@ fn sync_token_roundtrip_and_rejections() {
     let tok = mint_sync_token("s3cret", "cart:42:*,profile:42");
     assert_eq!(
         verify_sync_token("s3cret", &tok).unwrap(),
-        vec!["cart:42:*".to_string(), "profile:42".to_string()]
+        vec![Grant::rw("cart:42:*"), Grant::rw("profile:42")]
     );
     // Wrong secret → invalid signature.
     assert_eq!(
@@ -2523,7 +2523,7 @@ fn sync_token_roundtrip_and_rejections() {
 
 #[test]
 fn scopes_match_globs_and_flushdb() {
-    let scopes = vec!["cart:42:*".to_string(), "catalog:*".to_string()];
+    let scopes = vec![Grant::rw("cart:42:*"), Grant::rw("catalog:*")];
     assert!(scopes_match(&scopes, &["cart:42:item:1".to_string()]));
     assert!(scopes_match(&scopes, &["catalog:books".to_string()]));
     assert!(!scopes_match(&scopes, &["cart:7:item:1".to_string()]));
@@ -2552,16 +2552,23 @@ fn command_scope_classification() {
         CommandScope::Admin
     ));
     match command_scope(&Command::Get("a".into())) {
-        CommandScope::Keys(k) => assert_eq!(k, vec!["a".to_string()]),
+        CommandScope::Keys(k) => assert_eq!(k, vec![("a".to_string(), Access::Read)]),
         _ => panic!("GET should be key-scoped"),
     }
+    // The store family splits access: the sources are read, the destination
+    // is written.
     match command_scope(&Command::SInterStore(
         "dst".into(),
         vec!["a".into(), "b".into()],
     )) {
-        CommandScope::Keys(k) => {
-            assert!(k.contains(&"dst".to_string()) && k.contains(&"a".to_string()))
-        }
+        CommandScope::Keys(k) => assert_eq!(
+            k,
+            vec![
+                ("a".to_string(), Access::Read),
+                ("b".to_string(), Access::Read),
+                ("dst".to_string(), Access::Write),
+            ]
+        ),
         _ => panic!("SINTERSTORE should be key-scoped"),
     }
 }
@@ -2576,6 +2583,10 @@ fn command_scope_classification() {
 // tests guard against the remaining risk: classifying one wrongly.
 
 fn scoped_keys(cmd: Command) -> Vec<String> {
+    scoped_access(cmd).into_iter().map(|(k, _)| k).collect()
+}
+
+fn scoped_access(cmd: Command) -> Vec<(String, Access)> {
     match command_scope(&cmd) {
         CommandScope::Keys(k) => k,
         other => panic!("{cmd:?} should be key-scoped, got {other:?}"),
@@ -2725,7 +2736,7 @@ fn dedup_envelope_inherits_the_inner_command_scope() {
     let inner = Command::Set("secret:1".into(), "v".into(), SetOptions::default());
     let wrapped = Command::Dedup("client".into(), 1, Box::new(inner));
     match command_scope(&wrapped) {
-        CommandScope::Keys(k) => assert_eq!(k, vec!["secret:1".to_string()]),
+        CommandScope::Keys(k) => assert_eq!(k, vec![("secret:1".to_string(), Access::Write)]),
         other => panic!("DEDUP must inherit inner scope, got {other:?}"),
     }
 
@@ -2739,12 +2750,12 @@ fn scopes_match_allows_when_there_are_no_keys_to_check() {
     // Documented consequence of the design: an empty key list is allowed.
     // That is only safe because `command_scope` returns `Keys(..)` for every
     // key-touching command — the test above is what keeps it safe.
-    assert!(scopes_match(&["cart:*".to_string()], &[]));
+    assert!(scopes_match(&[Grant::rw("cart:*")], &[]));
 }
 
 #[test]
 fn scopes_match_requires_every_key_to_match() {
-    let scopes = vec!["cart:42:*".to_string()];
+    let scopes = vec![Grant::rw("cart:42:*")];
     assert!(scopes_match(&scopes, &["cart:42:a".to_string()]));
     // One in-scope key does not license an out-of-scope sibling.
     assert!(!scopes_match(&scopes, &["cart:99:a".to_string()]));
@@ -3036,7 +3047,7 @@ fn every_command_is_classified_for_scope_enforcement() {
             (CommandScope::Keys(got), Expect::Keys(want)) => {
                 for k in *want {
                     assert!(
-                        got.contains(&k.to_string()),
+                        got.iter().any(|(g, _)| g == k),
                         "{cmd:?} must scope-check key '{k}', reported {got:?}"
                     );
                 }
@@ -4508,7 +4519,7 @@ async fn integration_ws_sync_scope_filters_fanout() {
     let mut writer = WsClient::connect(srv.tcp_addr).await;
 
     // Open mode: SYNC with literal patterns.
-    assert_eq!(scoped.cmd(&["SYNC", "cart:*"]).await, arr(&["cart:*"]));
+    assert_eq!(scoped.cmd(&["SYNC", "cart:*"]).await, arr(&["rw=cart:*"]));
 
     assert_eq!(writer.cmd(&["SET", "cart:1", "x"]).await, ok());
     assert_eq!(writer.cmd(&["SET", "other:1", "y"]).await, ok());
@@ -4527,7 +4538,7 @@ async fn integration_ws_sync_scope_filters_fanout() {
     assert!(p1.contains("cart:1") && p2.contains("other:1"));
 
     // Bare SYNC reports current scopes.
-    assert_eq!(scoped.cmd(&["SYNC"]).await, arr(&["cart:*"]));
+    assert_eq!(scoped.cmd(&["SYNC"]).await, arr(&["rw=cart:*"]));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4548,7 +4559,10 @@ async fn integration_ws_sync_strict_mode_gates_and_filters() {
 
     // Valid token: scoped to cart:* only.
     let tok = mint_sync_token(secret, "cart:*");
-    assert_eq!(client.cmd(&["SYNC", "TOKEN", &tok]).await, arr(&["cart:*"]));
+    assert_eq!(
+        client.cmd(&["SYNC", "TOKEN", &tok]).await,
+        arr(&["rw=cart:*"])
+    );
 
     // In-scope commands work; out-of-scope and admin are refused.
     assert_eq!(client.cmd(&["SET", "cart:1", "x"]).await, ok());
@@ -4563,7 +4577,7 @@ async fn integration_ws_sync_strict_mode_gates_and_filters() {
     let wtok = mint_sync_token(secret, "cart:*,other:*");
     assert_eq!(
         writer.cmd(&["SYNC", "TOKEN", &wtok]).await,
-        arr(&["cart:*", "other:*"])
+        arr(&["rw=cart:*", "rw=other:*"])
     );
     assert_eq!(writer.cmd(&["SET", "cart:2", "a"]).await, ok());
     assert_eq!(writer.cmd(&["SET", "other:2", "b"]).await, ok());
@@ -4574,6 +4588,232 @@ async fn integration_ws_sync_strict_mode_gates_and_filters() {
         client.recv_push(300).await.is_none(),
         "out-of-scope push leaked on strict connection"
     );
+}
+
+// ── Write scoping: read-only vs read-write grants ─────────────────────────
+//
+// A grant pattern authorizes reads and writes separately. Without that, a
+// browser handed `catalog:*` so it could read the catalog could also rewrite
+// it, which makes every shared read model unsafe to sync.
+
+#[test]
+fn token_entries_carry_their_access() {
+    let secret = "access-secret";
+    let tok = mint_sync_token(secret, "r=catalog:*,rw=cart:42:*,session:42");
+    assert_eq!(
+        verify_sync_token(secret, &tok).unwrap(),
+        vec![
+            Grant::ro("catalog:*"),
+            Grant::rw("cart:42:*"),
+            // A bare entry is read-write, which is what every token minted
+            // before write scoping existed meant.
+            Grant::rw("session:42"),
+        ]
+    );
+}
+
+#[test]
+fn a_grant_with_no_pattern_is_refused() {
+    let secret = "empty-secret";
+    // `r=` alone matches only the empty key — always a minting bug, and one
+    // that would otherwise mint a token granting nothing at all.
+    assert_eq!(
+        verify_sync_token(secret, &mint_sync_token(secret, "r=")).unwrap_err(),
+        "token grants an empty pattern"
+    );
+    assert_eq!(
+        verify_sync_token(secret, &mint_sync_token(secret, "cart:*,rw=")).unwrap_err(),
+        "token grants an empty pattern"
+    );
+}
+
+#[test]
+fn read_only_grants_permit_reads_and_refuse_writes() {
+    let grants = vec![Grant::ro("catalog:*"), Grant::rw("cart:42:*")];
+
+    assert!(scopes_allow(&grants, "catalog:books", Access::Read));
+    assert!(!scopes_allow(&grants, "catalog:books", Access::Write));
+
+    // A read-write grant satisfies both, so read-modify-write commands need
+    // only ask for Write.
+    assert!(scopes_allow(&grants, "cart:42:total", Access::Read));
+    assert!(scopes_allow(&grants, "cart:42:total", Access::Write));
+
+    // Outside every grant, neither.
+    assert!(!scopes_allow(&grants, "session:1", Access::Read));
+    assert!(!scopes_allow(&grants, "session:1", Access::Write));
+}
+
+#[test]
+fn read_only_grants_still_receive_the_fan_out() {
+    // Visibility is read access, so a read-only grant is still pushed its
+    // keys. The whole point of a read-only catalog scope is to receive
+    // catalog changes without being able to cause them.
+    assert!(scopes_match(
+        &[Grant::ro("catalog:*")],
+        &["catalog:books".to_string()]
+    ));
+}
+
+#[test]
+fn every_write_command_demands_write_access_on_the_key_it_writes() {
+    // The drift guard for the access split. `is_write_command` already
+    // decides what reaches the AOF, replicas and live queries; if the two
+    // classifications disagree, either a mutation is authorized as a read —
+    // the security bug — or a read demands write access and a correct grant
+    // stops working.
+    for (cmd, _) in all_commands() {
+        let CommandScope::Keys(keys) = command_scope(&cmd) else {
+            // FLUSHDB is the one write that is Admin rather than key-scoped;
+            // it is refused on scoped connections outright.
+            continue;
+        };
+        let writes = keys.iter().any(|(_, a)| *a == Access::Write);
+        assert_eq!(
+            writes,
+            is_write_command(&cmd),
+            "{cmd:?} is classified {:?} for scope enforcement but \
+             is_write_command() says {}",
+            keys,
+            is_write_command(&cmd)
+        );
+    }
+}
+
+#[test]
+fn every_key_a_command_writes_demands_write_access() {
+    // `primary_keys` names the keys a command mutates. Each one must be
+    // classified Write — a key that is mutated but scope-checked as a read
+    // is writable from a read-only grant.
+    for (cmd, _) in all_commands() {
+        let CommandScope::Keys(keys) = command_scope(&cmd) else {
+            continue;
+        };
+        for written in primary_keys(&cmd) {
+            assert!(
+                keys.iter()
+                    .any(|(k, a)| *k == written && *a == Access::Write),
+                "{cmd:?} writes '{written}' but scope-checks it as {keys:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_store_family_reads_its_sources_and_writes_its_destination() {
+    // The case that makes access per key rather than per command: copying
+    // another namespace into your own must not require write access to it.
+    let grants = vec![Grant::ro("theirs:*"), Grant::rw("mine:*")];
+    let cmd = Command::SInterStore(
+        "mine:out".into(),
+        vec!["theirs:a".into(), "theirs:b".into()],
+    );
+    let CommandScope::Keys(keys) = command_scope(&cmd) else {
+        panic!("SINTERSTORE should be key-scoped");
+    };
+    for (key, need) in &keys {
+        assert!(
+            scopes_allow(&grants, key, *need),
+            "'{key}' needs {need:?}, which the grants do not permit"
+        );
+    }
+    // The reverse grant does not work: writing the destination is a write.
+    let reversed = vec![Grant::rw("theirs:*"), Grant::ro("mine:*")];
+    assert!(
+        keys.iter()
+            .any(|(k, need)| !scopes_allow(&reversed, k, *need))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_ws_read_only_scope_refuses_writes() {
+    let secret = "read-only-secret";
+    let srv = spawn_ws_server_cfg(Some(secret.to_string())).await;
+
+    // A backend seeds the catalog over the trusted TCP port.
+    let mut backend = WsClient::connect(srv.tcp_addr).await;
+    let btok = mint_sync_token(secret, "catalog:*,cart:7:*");
+    assert_eq!(
+        backend.cmd(&["SYNC", "TOKEN", &btok]).await,
+        arr(&["rw=catalog:*", "rw=cart:7:*"])
+    );
+    assert_eq!(backend.cmd(&["SET", "catalog:book", "10"]).await, ok());
+
+    // The browser reads the catalog and owns its cart.
+    let mut browser = WsClient::connect(srv.tcp_addr).await;
+    let tok = mint_sync_token(secret, "r=catalog:*,rw=cart:7:*");
+    assert_eq!(
+        browser.cmd(&["SYNC", "TOKEN", &tok]).await,
+        arr(&["r=catalog:*", "rw=cart:7:*"])
+    );
+
+    // Reads inside the read-only grant work.
+    assert_eq!(browser.cmd(&["GET", "catalog:book"]).await, bulk("10"));
+
+    // Writes to it do not — and say so specifically, rather than claiming
+    // the key is outside the connection's scopes.
+    let r = browser.cmd(&["SET", "catalog:book", "0"]).await;
+    assert!(
+        matches!(&r, Value::Error(e) if e.contains("NOSCOPE") && e.contains("read-only")),
+        "expected a read-only refusal, got {r:?}"
+    );
+    // Every shape of write is refused, not just SET.
+    for write in [
+        vec!["DEL", "catalog:book"],
+        vec!["INCR", "catalog:book"],
+        vec!["APPEND", "catalog:book", "x"],
+        vec!["EXPIRE", "catalog:book", "1"],
+        vec!["RENAME", "catalog:book", "catalog:other"],
+        vec!["JMERGE", "catalog:book", "{}"],
+        vec!["DEDUP", "c1", "1", "SET", "catalog:book", "0"],
+    ] {
+        let r = browser.cmd(&write).await;
+        assert!(
+            matches!(&r, Value::Error(e) if e.contains("NOSCOPE")),
+            "{write:?} was not refused: {r:?}"
+        );
+    }
+    // The value is untouched.
+    assert_eq!(browser.cmd(&["GET", "catalog:book"]).await, bulk("10"));
+
+    // A key outside every grant still reports as out of scope.
+    let r = browser.cmd(&["GET", "secret:1"]).await;
+    assert!(
+        matches!(&r, Value::Error(e) if e.contains("outside")),
+        "expected an out-of-scope refusal, got {r:?}"
+    );
+
+    // The read-write half of the same token still works.
+    assert_eq!(browser.cmd(&["SET", "cart:7:item", "1"]).await, ok());
+
+    // And the read-only grant still receives pushes: a catalog change made
+    // by the backend reaches the browser it may not write.
+    assert_eq!(backend.cmd(&["SET", "catalog:book", "12"]).await, ok());
+    let push = browser
+        .recv_push(1000)
+        .await
+        .expect("read-only grants still receive their keys");
+    assert!(push.contains("catalog:book"), "unexpected push: {push}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_ws_read_only_scope_allows_live_queries() {
+    // A live query only reads, so a read-only grant must be able to hold one
+    // — that is how a browser follows a catalog it cannot change.
+    let secret = "qsub-ro-secret";
+    let srv = spawn_ws_server_cfg(Some(secret.to_string())).await;
+    let mut client = WsClient::connect(srv.tcp_addr).await;
+    let tok = mint_sync_token(secret, "r=catalog:*");
+    assert_eq!(
+        client.cmd(&["SYNC", "TOKEN", &tok]).await,
+        arr(&["r=catalog:*"])
+    );
+    assert_eq!(
+        client.cmd(&["QSUB", "catalog:books:*"]).await,
+        arr(&["qstate", "catalog:books:*"])
+    );
+    // WATCH observes a key, which is also a read.
+    assert_eq!(client.cmd(&["WATCH", "catalog:book"]).await, ok());
 }
 
 // ── Duplicate-suppressed delivery (DEDUP) ─────────────────────────────────
@@ -4620,7 +4860,7 @@ async fn integration_dedup_respects_sync_scopes() {
     let srv = spawn_ws_server_cfg(Some(secret.to_string())).await;
     let mut c = WsClient::connect(srv.tcp_addr).await;
     let tok = mint_sync_token(secret, "cart:*");
-    assert_eq!(c.cmd(&["SYNC", "TOKEN", &tok]).await, arr(&["cart:*"]));
+    assert_eq!(c.cmd(&["SYNC", "TOKEN", &tok]).await, arr(&["rw=cart:*"]));
 
     // Scope enforcement applies to the wrapped command.
     assert_eq!(
@@ -4719,7 +4959,10 @@ async fn integration_ws_qsub_strict_scope() {
     let mut client = WsClient::connect(srv.tcp_addr).await;
 
     let tok = mint_sync_token(secret, "cart:*");
-    assert_eq!(client.cmd(&["SYNC", "TOKEN", &tok]).await, arr(&["cart:*"]));
+    assert_eq!(
+        client.cmd(&["SYNC", "TOKEN", &tok]).await,
+        arr(&["rw=cart:*"])
+    );
 
     // A narrower pattern under the grant is allowed (prefix-style cover).
     assert_eq!(

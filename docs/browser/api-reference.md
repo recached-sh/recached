@@ -352,7 +352,7 @@ getMatching(pattern: string): Array<[string, string | null]>
 
 #### `syncToken(token)` / `syncScopes(patterns)`
 
-Scope this connection's sync. `syncToken` presents a signed scope token — required on servers running with `RECACHED_SYNC_SECRET`; `syncScopes` sets plain glob patterns as a bandwidth filter on servers without one. Usually you pass these via `createCache({ connect: { syncToken } })` instead. See [Sync Scopes](/server/sync-scopes).
+Scope this connection's sync. `syncToken` presents a signed scope token — required on servers running with `RECACHED_SYNC_SECRET`; `syncScopes` sets plain glob patterns as a bandwidth filter on servers without one. Either way, an entry may state its access: `r=catalog:*` is read-only, `rw=cart:42:*` and bare patterns are read-write. Usually you pass these via `createCache({ connect: { syncToken } })` instead. See [Sync Scopes](/server/sync-scopes).
 
 ```typescript
 syncToken(token: string): void

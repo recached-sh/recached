@@ -415,9 +415,11 @@ Controls which keys a WebSocket connection receives pushes for and may operate o
 
 | Command | Description |
 |---|---|
-| `SYNC` | Returns this connection's current scope patterns. |
-| `SYNC TOKEN token` | Sets scopes from a token signed with `RECACHED_SYNC_SECRET` (HMAC-SHA256). Required before any key access when the secret is configured (strict mode). Returns the granted patterns. |
+| `SYNC` | Returns this connection's current grants, in `r=`/`rw=` notation. |
+| `SYNC TOKEN token` | Sets scopes from a token signed with `RECACHED_SYNC_SECRET` (HMAC-SHA256). Required before any key access when the secret is configured (strict mode). Returns the granted entries. |
 | `SYNC pattern [pattern ...]` | Sets scopes directly from glob patterns. Only available when no sync secret is configured — a bandwidth filter, not a security boundary. |
+
+Each scope entry may state its access: `r=catalog:*` is read-only, `rw=cart:42:*` is read-write, and a bare pattern is read-write. A write to a read-only key is refused with `-NOSCOPE key '...' is read-only on this connection`. Access is checked per key, so `SINTERSTORE` needs write only on its destination.
 
 On the TCP port, `SYNC` returns an error — backend connections are trusted and unscoped.
 

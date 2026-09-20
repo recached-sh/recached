@@ -999,7 +999,7 @@ pub(crate) async fn handle_ws<S>(
     // Without a secret, scopes are an opt-in bandwidth filter (legacy fan-out
     // of everything when None).
     let strict = sync_secret.is_some();
-    let mut sync_scopes: Option<Vec<String>> = None;
+    let mut sync_scopes: Option<Vec<Grant>> = None;
     // Live-query subscriptions (QSUB). Keychange notifications for matching
     // keys arrive on their own channel so they never dirty WATCH transactions.
     let mut qsub_patterns: HashSet<String> = HashSet::new();
@@ -1124,14 +1124,29 @@ pub(crate) async fn handle_ws<S>(
                                         ws_send!(b"-NOSCOPE send SYNC TOKEN <token> before issuing commands\r\n");
                                         continue;
                                     };
-                                    if let Some(denied) = keys
+                                    // Two distinct denials: the key is outside
+                                    // every grant, or it is inside a read-only
+                                    // one and the command would write it. They
+                                    // are reported apart so a misconfigured
+                                    // grant is distinguishable from a missing
+                                    // one.
+                                    if let Some((denied, need)) = keys
                                         .iter()
-                                        .find(|k| !scopes_match(scopes, std::slice::from_ref(k)))
+                                        .find(|(k, need)| !scopes_allow(scopes, k, *need))
                                     {
-                                        let err = Value::Error(format!(
-                                            "NOSCOPE key '{}' is outside this connection's sync scopes",
-                                            denied
-                                        ))
+                                        let err = Value::Error(if *need == Access::Write
+                                            && scopes_allow(scopes, denied, Access::Read)
+                                        {
+                                            format!(
+                                                "NOSCOPE key '{}' is read-only on this connection",
+                                                denied
+                                            )
+                                        } else {
+                                            format!(
+                                                "NOSCOPE key '{}' is outside this connection's sync scopes",
+                                                denied
+                                            )
+                                        })
                                         .serialize();
                                         ws_send!(&err);
                                         continue;
@@ -1431,10 +1446,12 @@ pub(crate) async fn handle_ws<S>(
                                 // prove containment, so ambiguous wildcard grants are only
                                 // accepted on exact equality.
                                 if strict {
+                                    // A live query only reads, so any grant
+                                    // covering the pattern is enough.
                                     let allowed = sync_scopes.as_ref().is_some_and(|scopes| {
                                         scopes
                                             .iter()
-                                            .any(|scope| scope_covers_pattern(scope, &pattern))
+                                            .any(|g| scope_covers_pattern(&g.pattern, &pattern))
                                     });
                                     if !allowed {
                                         ws_send!(b"-NOSCOPE pattern is outside this connection's sync scopes\r\n");
