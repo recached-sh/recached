@@ -1,6 +1,6 @@
 {
   "name": "@recached/vue",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Official Vue 3 composables for Recached \u2014 local reactive cache",
   "type": "module",
   "main": "./dist/index.js",
