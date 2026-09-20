@@ -227,6 +227,8 @@ Redis's `SAMPLES` bounds how much of a nested value it walks before extrapolatin
 
 The other `MEMORY` subcommands — `DOCTOR`, `STATS`, `PURGE`, `MALLOC-STATS` — are refused. They describe an allocator arena that Recached has no equivalent of: it holds Rust values in a concurrent map and has nothing to defragment or free on demand. `INFO memory` reports what it can actually measure.
 
+`CLIENT DELTA ON|OFF` asks for compact `keydelta` push frames in place of whole-value `keychange` frames, where the mutation has a compact form (`APPEND`, `SADD`, `SREM`, `LPUSH`, `RPUSH`, `HSET`, `HDEL`, `ZADD`, `ZREM`). Off by default, because a client that did not understand the frame would ignore it and silently hold a stale copy. See [the protocol reference](/server/protocol#key-deltas-client-delta-on).
+
 `MEMORY USAGE` reads a key, so it is scoped like one: a WebSocket connection granted `cart:*` may measure `cart:42` and not `session:8f21`. See [Sync Scoping](/server/sync-scopes).
 
 ---

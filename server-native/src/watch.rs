@@ -10,10 +10,22 @@ use crate::*;
 const NOTIFICATION_QUEUE_ITEMS: usize = 256;
 const NOTIFICATION_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 
+/// What a queued notification carries. The choice is made per subscriber, at
+/// queue time, so a connection receiving deltas is charged for the bytes it
+/// will actually be sent — an agent appending to a 1 MiB key must not be
+/// disconnected for backpressure it is not causing.
+#[derive(Debug)]
+pub(crate) enum NotifPayload {
+    /// The key's whole current value.
+    Full(Value),
+    /// The mutation, for a connection that sent `CLIENT DELTA ON`.
+    Delta(KeyDelta),
+}
+
 #[derive(Debug)]
 pub(crate) struct WatchNotif {
     pub(crate) key: String,
-    pub(crate) value: Value,
+    pub(crate) payload: NotifPayload,
     charged_bytes: usize,
     budget: Arc<NotificationBudget>,
 }
@@ -49,15 +61,31 @@ pub(crate) struct WatchSubscriber {
     tx: mpsc::Sender<WatchNotif>,
     overflow: mpsc::Sender<()>,
     budget: Arc<NotificationBudget>,
+    /// Mirrors this connection's `CLIENT DELTA` setting. Shared rather than
+    /// copied because the toggle can flip while subscriptions are live.
+    deltas: Arc<AtomicBool>,
 }
 
 impl WatchSubscriber {
     /// Queue a notification without ever waiting behind a slow socket. A full
     /// queue signals the owning connection and removes this registration.
-    pub(crate) fn notify(&self, key: &str, value: &Value) -> bool {
+    ///
+    /// `delta` is the mutation's compact form when it has one; this subscriber
+    /// takes it only if its connection asked for deltas.
+    pub(crate) fn notify(&self, key: &str, value: &Value, delta: Option<&KeyDelta>) -> bool {
+        let payload = match delta {
+            Some(delta) if self.deltas.load(Ordering::Relaxed) => {
+                NotifPayload::Delta(delta.clone())
+            }
+            _ => NotifPayload::Full(value.clone()),
+        };
+        let payload_bytes = match &payload {
+            NotifPayload::Full(value) => value_heap_bytes(value),
+            NotifPayload::Delta(delta) => delta.heap_bytes(),
+        };
         let charged_bytes = key
             .len()
-            .saturating_add(value_heap_bytes(value))
+            .saturating_add(payload_bytes)
             .saturating_add(std::mem::size_of::<WatchNotif>());
         if !self.budget.reserve(charged_bytes) {
             self.signal_overflow();
@@ -66,7 +94,7 @@ impl WatchSubscriber {
 
         let notification = WatchNotif {
             key: key.to_string(),
-            value: value.clone(),
+            payload,
             charged_bytes,
             budget: Arc::clone(&self.budget),
         };
@@ -87,6 +115,7 @@ impl WatchSubscriber {
 pub(crate) fn notification_channel(
     conn_id: u64,
     overflow: mpsc::Sender<()>,
+    deltas: Arc<AtomicBool>,
 ) -> (WatchSubscriber, mpsc::Receiver<WatchNotif>) {
     let (tx, rx) = mpsc::channel(NOTIFICATION_QUEUE_ITEMS);
     (
@@ -97,6 +126,7 @@ pub(crate) fn notification_channel(
             budget: Arc::new(NotificationBudget {
                 pending_bytes: AtomicUsize::new(0),
             }),
+            deltas,
         },
         rx,
     )

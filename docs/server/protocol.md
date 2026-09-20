@@ -60,10 +60,44 @@ Every frame a client receives is exactly one of:
 | Kind | Shape | Meaning |
 |---|---|---|
 | **Reply** | any RESP value not matching the rows below | Response to one command this connection sent |
-| **Mutation push** | RESP3 Push `>N` whose elements form a replayable command (`SET`, `HSET`, `JSET`, `JMERGE`, …) | Another client/backend mutated a key in scope — apply to the local store |
+| **Mutation push** | RESP3 Push `>N` whose elements form a replayable command (`SET`, `HSET`, `JSET`, `JMERGE`, …) | Another client/backend mutated a key in scope — apply to the local store. **Not sent** when every key it touches is covered by one of this connection's live queries or `WATCH`es, because the keychange below already delivers those authoritatively; sending both would apply a non-idempotent mutation twice |
 | **Pub/sub push** | RESP3 Push `>3` = `["message", channel, payload]` | Pub/sub delivery. The WebSocket transport is always RESP3 — `HELLO 2` on it is refused, because the frame taxonomy below depends on the push type existing |
 | **Keychange push** | Array `["keychange", key, value]` | A watched or live-queried key changed, or the server removed it on its own initiative. `value` is a full string, nil for deletion, or a type-tagged collection containing its complete current value. |
+| **Key delta push** | Array `["keydelta", key, op, arg…]` | The same event as a keychange, carrying the *mutation* instead of the resulting value. Only sent to connections that asked with `CLIENT DELTA ON` |
 | **Query state** | Array `["qstate", pattern, k1, v1, …]` | **Both** the reply to a `QSUB` **and** initial state to apply (same value encoding as keychange) |
+
+### Key deltas (`CLIENT DELTA ON`)
+
+A keychange carries the key's whole current value. For a growing value that is
+quadratic: appending one token to a 50 KB transcript re-sends 50 KB to every
+subscriber, and one `SADD` into a 10,000-member set re-sends all 10,000.
+
+A delta carries the operation instead:
+
+```
+["keydelta", "agent:42:out", "append", " token"]
+["keydelta", "room:1:members", "sadd", "alice", "bob"]
+```
+
+**A delta is the command, not a computed diff.** The client runs the same
+engine, so applying one is executing that command against the local copy —
+there is no diff format to misinterpret. That also bounds which mutations have
+a delta: only those replayable verbatim to the same result. `APPEND`, `SADD`,
+`SREM`, `LPUSH`, `RPUSH`, `HSET`, `HDEL`, `ZADD` and `ZREM` qualify. `ZADD`
+with `NX`, `XX`, `GT`, `LT` or `INCR` does not, because the client would
+compute a different score, so it falls back to a whole value. So does
+everything already as small as its result — `SET`, `DEL`, expiry.
+
+**Deltas are opt-in.** A client that ignored an unknown frame would silently
+hold a stale local copy, which is worse than an error, so the server keeps
+sending whole values until a connection sends `CLIENT DELTA ON`. The toggle is
+connection state: it is re-sent on every reconnect, and `CLIENT DELTA OFF`
+reverts to whole values. `recached-edge` enables it automatically, before its
+`QSUB`s, so live-query traffic is compact from the first frame.
+
+Deltas are safe to apply blind because the stream has no silent gaps: a
+connection that falls behind the fan-out is closed with code `4001` rather than
+skipped, and reconnects onto an authoritative `qstate`.
 
 ### Server-initiated removal
 
@@ -100,9 +134,10 @@ This is the invariant that makes reply correlation cheap: a client keeps a FIFO 
 On every (re)connect, in this order:
 
 1. `AUTH password` — required first when `RECACHED_PASSWORD` is set
-2. `SYNC TOKEN token` (strict scoping) or `SYNC pattern…` (open mode) — see [Sync Scopes](/server/sync-scopes)
-3. `QSUB pattern` per live query — the `qstate` replies re-hydrate local state
-4. Replay of the outbox (unacknowledged writes), oldest first
+2. `CLIENT DELTA ON` — connection state, so it is re-sent every time, and sent before `QSUB` so the live query's own traffic is already compact
+3. `SYNC TOKEN token` (strict scoping) or `SYNC pattern…` (open mode) — see [Sync Scopes](/server/sync-scopes)
+4. `QSUB pattern` per live query — the `qstate` replies re-hydrate local state
+5. Replay of the outbox (unacknowledged writes), oldest first
 
 ## Deduplicated write replay (`DEDUP`)
 

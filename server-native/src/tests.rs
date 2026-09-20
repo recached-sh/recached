@@ -4590,6 +4590,210 @@ async fn integration_ws_sync_strict_mode_gates_and_filters() {
     );
 }
 
+// ── Delta frames ──────────────────────────────────────────────────────────
+//
+// A keychange carries the key's whole value, so appending one token to an
+// agent's output re-sent the entire transcript to every viewer, and one SADD
+// into a 10k-member set re-sent all 10k. A delta carries the mutation instead.
+
+#[test]
+fn delta_is_the_command_not_a_diff() {
+    let (key, delta) = delta_for(&Command::Append("out".into(), b" tok".to_vec()))
+        .expect("APPEND is the case deltas exist for");
+    assert_eq!(key, "out");
+    assert_eq!(delta.op, "append");
+    assert_eq!(delta.args, vec![b" tok".to_vec()]);
+
+    let (_, delta) = delta_for(&Command::SAdd("s".into(), vec!["a".into(), "b".into()])).unwrap();
+    assert_eq!(delta.op, "sadd");
+    assert_eq!(delta.args, vec![b"a".to_vec(), b"b".to_vec()]);
+
+    // HSET flattens field/value so the delta parses back as the command.
+    let (_, delta) = delta_for(&Command::HSet(
+        "h".into(),
+        vec![("f".to_string(), b"v".to_vec())],
+    ))
+    .unwrap();
+    assert_eq!(delta.op, "hset");
+    assert_eq!(delta.args, vec![b"f".to_vec(), b"v".to_vec()]);
+
+    // DEDUP is transparent: the wrapped write is what gets replayed.
+    let wrapped = Command::Dedup(
+        "c".into(),
+        1,
+        Box::new(Command::SRem("s".into(), vec!["a".into()])),
+    );
+    let (key, delta) = delta_for(&wrapped).unwrap();
+    assert_eq!((key.as_str(), delta.op), ("s", "srem"));
+}
+
+#[test]
+fn commands_that_cannot_be_replayed_verbatim_have_no_delta() {
+    // SET is already as small as its result — a delta would buy nothing.
+    assert!(
+        delta_for(&Command::Set(
+            "k".into(),
+            b"v".to_vec(),
+            SetOptions::default()
+        ))
+        .is_none()
+    );
+    assert!(delta_for(&Command::Del(vec!["k".into()])).is_none());
+    assert!(delta_for(&Command::Incr("n".into())).is_none());
+
+    // ZADD options change what is stored, so replaying without them would
+    // compute a different score on the client.
+    let conditional = Command::ZAdd(
+        "z".into(),
+        ZAddOptions {
+            condition: Some(ZAddCondition::Nx),
+            ..Default::default()
+        },
+        vec![(1.0, "m".to_string())],
+    );
+    assert!(delta_for(&conditional).is_none());
+
+    let incr = Command::ZAdd(
+        "z".into(),
+        ZAddOptions {
+            incr: true,
+            ..Default::default()
+        },
+        vec![(1.0, "m".to_string())],
+    );
+    assert!(delta_for(&incr).is_none());
+
+    // CH only changes the integer reply, so it keeps its delta.
+    let ch = Command::ZAdd(
+        "z".into(),
+        ZAddOptions {
+            ch: true,
+            ..Default::default()
+        },
+        vec![(1.0, "m".to_string())],
+    );
+    assert!(delta_for(&ch).is_some());
+}
+
+#[test]
+fn every_delta_names_a_key_the_command_actually_writes() {
+    // A delta applied to the wrong key silently corrupts it, and a delta for
+    // a command that did not write is a phantom mutation. Both are ruled out
+    // by tying the delta's key to `primary_keys`.
+    for (cmd, _) in all_commands() {
+        let Some((key, _)) = delta_for(&cmd) else {
+            continue;
+        };
+        assert!(
+            is_write_command(&cmd),
+            "{cmd:?} is not a write but produced a delta"
+        );
+        assert!(
+            primary_keys(&cmd).contains(&key),
+            "{cmd:?} produced a delta for '{key}', which it does not write"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_ws_deltas_are_opt_in() {
+    let srv = spawn_ws_server().await;
+    let mut plain = WsClient::connect(srv.tcp_addr).await;
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(plain.cmd(&["QSUB", "d:*"]).await, arr(&["qstate", "d:*"]));
+
+    // A client that never asked keeps receiving whole values, because one
+    // that ignored an unknown frame would silently hold a stale copy.
+    assert_eq!(writer.cmd(&["RPUSH", "d:l", "a"]).await, int(1));
+    let push = plain.recv_any(1000).await.expect("expected a push");
+    assert!(push.contains("keychange"), "unexpected frame: {push}");
+    assert!(!push.contains("keydelta"), "unexpected frame: {push}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_ws_delta_frames_replace_whole_values() {
+    let srv = spawn_ws_server().await;
+    let mut viewer = WsClient::connect(srv.tcp_addr).await;
+    let mut agent = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(viewer.cmd(&["CLIENT", "DELTA", "ON"]).await, ok());
+    assert_eq!(
+        viewer.cmd(&["QSUB", "agent:*"]).await,
+        arr(&["qstate", "agent:*"])
+    );
+
+    // Seed a long transcript, then append one token to it.
+    let transcript = "x".repeat(4096);
+    assert_eq!(agent.cmd(&["SET", "agent:out", &transcript]).await, ok());
+    let _ = viewer.recv_any(1000).await.expect("the SET reaches us");
+
+    assert_eq!(
+        agent.cmd(&["APPEND", "agent:out", " token"]).await,
+        int(transcript.len() as i64 + 6)
+    );
+    let push = viewer.recv_any(1000).await.expect("expected a delta");
+    assert!(push.contains("keydelta"), "unexpected frame: {push}");
+    assert!(push.contains("append"), "unexpected frame: {push}");
+    assert!(push.contains(" token"), "unexpected frame: {push}");
+    // The point of the exercise: the 4 KiB transcript is not in the frame.
+    assert!(
+        push.len() < 200,
+        "delta carried the whole value ({} bytes)",
+        push.len()
+    );
+
+    // Collections take the same path — one SADD no longer re-sends the set.
+    assert_eq!(agent.cmd(&["SADD", "agent:seen", "alice"]).await, int(1));
+    let push = viewer.recv_any(1000).await.expect("expected a delta");
+    assert!(push.contains("keydelta") && push.contains("sadd"));
+
+    // A mutation with no compact form still arrives whole.
+    assert_eq!(agent.cmd(&["SET", "agent:state", "done"]).await, ok());
+    let push = viewer.recv_any(1000).await.expect("expected a keychange");
+    assert!(push.contains("keychange"), "unexpected frame: {push}");
+
+    // And the toggle is reversible.
+    assert_eq!(viewer.cmd(&["CLIENT", "DELTA", "OFF"]).await, ok());
+    assert_eq!(
+        agent.cmd(&["APPEND", "agent:out", "!"]).await,
+        int(transcript.len() as i64 + 7)
+    );
+    let push = viewer.recv_any(1000).await.expect("expected a keychange");
+    assert!(push.contains("keychange"), "unexpected frame: {push}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_ws_a_watched_key_is_delivered_once() {
+    // A live-queried key used to arrive twice: once as the propagation frame
+    // every WebSocket client gets, and once as the keychange for the
+    // subscription. Applying both replays a non-idempotent mutation twice;
+    // it was masked only because the keychange carries the whole value and
+    // happened to land second. A delta could not repair it at all.
+    let srv = spawn_ws_server().await;
+    let mut viewer = WsClient::connect(srv.tcp_addr).await;
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(
+        viewer.cmd(&["QSUB", "once:*"]).await,
+        arr(&["qstate", "once:*"])
+    );
+
+    assert_eq!(writer.cmd(&["RPUSH", "once:l", "a"]).await, int(1));
+    let first = viewer.recv_any(1000).await.expect("expected one push");
+    assert!(first.contains("keychange"), "unexpected frame: {first}");
+    assert!(
+        viewer.recv_any(400).await.is_none(),
+        "the same mutation was delivered twice"
+    );
+
+    // A key *outside* the live query still arrives on the propagation path,
+    // which is the only way an unsubscribed client learns about it.
+    assert_eq!(writer.cmd(&["SET", "other:k", "v"]).await, ok());
+    let push = viewer
+        .recv_any(1000)
+        .await
+        .expect("expected a propagation push");
+    assert!(push.contains("other:k"), "unexpected frame: {push}");
+}
+
 // ── Write scoping: read-only vs read-write grants ─────────────────────────
 //
 // A grant pattern authorizes reads and writes separately. Without that, a
@@ -5830,7 +6034,7 @@ mod sweep_notification {
         pattern: &str,
     ) -> mpsc::Receiver<WatchNotif> {
         let (overflow, _overflow_rx) = mpsc::channel(1);
-        let (subscriber, rx) = notification_channel(1, overflow);
+        let (subscriber, rx) = notification_channel(1, overflow, Arc::new(AtomicBool::new(false)));
         let mut pats = registry.patterns.lock().await;
         pats.insert(pattern.to_string(), vec![subscriber]);
         registry.sync_patterns_len(&pats);
@@ -5868,9 +6072,8 @@ mod sweep_notification {
 
         let notification = rx.try_recv().expect("live query was never told");
         assert_eq!(notification.key, "fare:MNL-CEB");
-        assert_eq!(
-            notification.value,
-            Value::BulkString(None),
+        assert!(
+            matches!(&notification.payload, NotifPayload::Full(v) if *v == Value::BulkString(None)),
             "nil is already the delete encoding, so existing clients apply it unchanged"
         );
     }
@@ -5880,7 +6083,8 @@ mod sweep_notification {
         let store = KeyValueStore::new();
         let registry: WatchRegistry = WatchHub::new();
         let (overflow, _overflow_rx) = mpsc::channel(1);
-        let (subscriber, mut rx) = notification_channel(1, overflow);
+        let (subscriber, mut rx) =
+            notification_channel(1, overflow, Arc::new(AtomicBool::new(false)));
         {
             let mut map = registry.map.lock().await;
             map.insert("session:abc".to_string(), vec![subscriber]);
@@ -5895,7 +6099,9 @@ mod sweep_notification {
 
         let notification = rx.try_recv().expect("WATCH-er was never told");
         assert_eq!(notification.key, "session:abc");
-        assert_eq!(notification.value, Value::BulkString(None));
+        assert!(
+            matches!(&notification.payload, NotifPayload::Full(v) if *v == Value::BulkString(None))
+        );
     }
 
     #[tokio::test]
@@ -5940,7 +6146,7 @@ mod sweep_notification {
     async fn a_full_notification_queue_signals_and_drops_the_subscriber() {
         let registry: WatchRegistry = WatchHub::new();
         let (overflow, mut overflow_rx) = mpsc::channel(1);
-        let (subscriber, _rx) = notification_channel(7, overflow);
+        let (subscriber, _rx) = notification_channel(7, overflow, Arc::new(AtomicBool::new(false)));
         {
             let mut map = registry.map.lock().await;
             map.insert("hot".to_string(), vec![subscriber]);

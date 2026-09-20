@@ -92,9 +92,11 @@ fn a_binary_write_replays_unchanged_after_reconnect() {
     let e = c.enqueue_write(&to_resp_bytes(&[b"SET", b"k", binary]), true, false);
 
     let frames = c.on_open();
-    assert_eq!(frames.len(), 1);
+    // CLIENT DELTA ON, then the queued write.
+    assert_eq!(frames.len(), 2);
+    assert!(t(&frames[0]).contains("DELTA"));
     assert_eq!(
-        frames[0], e.frame,
+        frames[1], e.frame,
         "replayed frame must be byte-identical to the queued one"
     );
 }
@@ -132,19 +134,26 @@ fn on_open_replays_session_then_outbox_in_order() {
     let w2 = c.enqueue_write(&to_resp(&["SET", "b", "2"]), true, false);
 
     let frames = c.on_open();
-    assert_eq!(frames.len(), 5);
+    assert_eq!(frames.len(), 6);
     assert!(t(&frames[0]).contains("AUTH"));
-    assert!(t(&frames[1]).contains("TOKEN"));
-    assert!(t(&frames[2]).contains("QSUB"));
-    assert_eq!(frames[3], w1.frame);
-    assert_eq!(frames[4], w2.frame);
+    // Before QSUB, so the live query's own traffic can already be deltas.
+    assert!(t(&frames[1]).contains("DELTA"));
+    assert!(t(&frames[2]).contains("TOKEN"));
+    assert!(t(&frames[3]).contains("QSUB"));
+    assert_eq!(frames[4], w1.frame);
+    assert_eq!(frames[5], w2.frame);
 }
 
 #[test]
 fn session_commands_sent_while_open_occupy_reply_slots() {
     let mut c = client();
-    // Open with nothing queued.
-    assert!(c.on_open().is_empty());
+    // Open with nothing queued: CLIENT DELTA ON is the only session frame,
+    // and it occupies a reply slot like any other.
+    assert_eq!(c.on_open().len(), 1);
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply { retired: None }
+    );
     // A session command on the live socket...
     let frame = c.set_sync_token("tok", true);
     assert!(frame.is_some());
@@ -244,7 +253,13 @@ fn replies_retire_outbox_rows_in_order() {
     let w1 = c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, false);
     let w2 = c.enqueue_write(&to_resp(&["SET", "b", "2"]), true, false);
     let frames = c.on_open();
-    assert_eq!(frames.len(), 2);
+    // CLIENT DELTA ON, then the two writes.
+    assert_eq!(frames.len(), 3);
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply { retired: None },
+        "the delta opt-in retires no outbox row"
+    );
 
     assert_eq!(
         c.handle_frame(b"+OK\r\n"),
@@ -267,12 +282,14 @@ fn replies_retire_outbox_rows_in_order() {
 fn unacked_rows_survive_reconnect_and_replay() {
     let mut c = client();
     let w = c.enqueue_write(&to_resp(&["INCRBY", "n", "1"]), true, false);
-    assert_eq!(c.on_open().len(), 1);
+    assert_eq!(c.on_open().len(), 2);
     // Connection dies before the reply arrives.
     c.on_close();
-    // The row is still queued; the next open replays the identical frame.
+    // The row is still queued; the next open replays the identical frame,
+    // behind the session's delta opt-in.
     let frames = c.on_open();
-    assert_eq!(frames, vec![w.frame]);
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[1], w.frame);
 }
 
 #[test]
@@ -280,6 +297,11 @@ fn pushes_are_not_replies() {
     let mut c = client();
     let w = c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, false);
     c.on_open();
+    // Retire the session's CLIENT DELTA ON reply first.
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply { retired: None }
+    );
     // A mutation push and a keychange arrive before our reply — neither may
     // consume the reply slot.
     assert_eq!(
@@ -429,10 +451,11 @@ fn restore_renumbers_without_collisions_and_preserves_order() {
     );
     // Replay order: restored rows first (oldest first), then this session's.
     let frames = c.on_open();
-    assert_eq!(frames.len(), 3);
-    assert_eq!(t(&frames[0]), old_frame_a);
-    assert_eq!(t(&frames[1]), old_frame_b);
-    assert_eq!(frames[2], session_write.frame);
+    assert_eq!(frames.len(), 4);
+    assert!(t(&frames[0]).contains("DELTA"));
+    assert_eq!(t(&frames[1]), old_frame_a);
+    assert_eq!(t(&frames[2]), old_frame_b);
+    assert_eq!(frames[3], session_write.frame);
 
     let next = c.enqueue_write(&to_resp(&["SET", "later", "1"]), true, false);
     assert_eq!(next.id, 3);
@@ -448,7 +471,9 @@ fn restore_cannot_collide_with_a_same_numbered_session_write() {
     let rewrites = c.restore_outbox(vec![(0, old.clone())]);
     assert_eq!(rewrites[0].1, 1);
     let frames = c.on_open();
-    assert_eq!(frames, vec![old, session.frame]);
+    assert_eq!(frames.len(), 3);
+    assert!(t(&frames[0]).contains("DELTA"));
+    assert_eq!(frames[1..], [old, session.frame]);
 }
 
 // ── Sync scopes ───────────────────────────────────────────────────────────────
@@ -926,4 +951,119 @@ fn a_cap_of_zero_is_clamped_to_one() {
     assert_eq!(c.max_pending(), 1);
     c.enqueue_write(&to_resp(&["SET", "k", "v"]), true, false);
     assert_eq!(c.outbox_len(), 1);
+}
+
+// ── delta frames ──────────────────────────────────────────────────────────────
+//
+// A delta is the mutation, not a diff, so applying one is executing that
+// command against the local store — the same engine the server ran it on.
+
+#[test]
+fn on_open_asks_for_deltas_before_subscribing() {
+    let mut c = client();
+    assert!(c.add_live_query("cart:*", false).is_none());
+    let frames = c.on_open();
+    let texts: Vec<String> = frames.iter().map(|f| t(f)).collect();
+    let delta = texts.iter().position(|f| f.contains("DELTA")).unwrap();
+    let qsub = texts.iter().position(|f| f.contains("QSUB")).unwrap();
+    assert!(
+        delta < qsub,
+        "the opt-in must precede QSUB so the live query's own traffic is compact"
+    );
+}
+
+#[test]
+fn an_append_delta_is_applied_to_the_local_value() {
+    let mut c = client();
+    c.store().execute(Command::Set(
+        "out".into(),
+        b"hello".to_vec(),
+        Default::default(),
+    ));
+    assert_eq!(
+        c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$3\r\nout\r\n$6\r\nappend\r\n$6\r\n world\r\n"),
+        Incoming::Applied
+    );
+    assert_eq!(get(&c, "out"), bulk("hello world"));
+}
+
+#[test]
+fn collection_deltas_are_applied_to_the_local_collection() {
+    let mut c = client();
+    assert_eq!(
+        c.handle_frame(
+            b"*5\r\n$8\r\nkeydelta\r\n$4\r\ntags\r\n$4\r\nsadd\r\n$1\r\na\r\n$1\r\nb\r\n"
+        ),
+        Incoming::Applied
+    );
+    assert_eq!(
+        c.store().execute(Command::SCard("tags".into())),
+        Value::Integer(2)
+    );
+    assert_eq!(
+        c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$4\r\ntags\r\n$4\r\nsrem\r\n$1\r\na\r\n"),
+        Incoming::Applied
+    );
+    assert_eq!(
+        c.store().execute(Command::SCard("tags".into())),
+        Value::Integer(1)
+    );
+
+    // A push delta lands in order on the local list.
+    assert_eq!(
+        c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$1\r\nq\r\n$5\r\nrpush\r\n$1\r\nx\r\n"),
+        Incoming::Applied
+    );
+    assert_eq!(
+        c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$1\r\nq\r\n$5\r\nrpush\r\n$1\r\ny\r\n"),
+        Incoming::Applied
+    );
+    assert_eq!(
+        c.store().execute(Command::LRange("q".into(), 0, -1)),
+        Value::Array(Some(vec![bulk("x"), bulk("y")]))
+    );
+}
+
+#[test]
+fn a_delta_never_consumes_a_reply_slot() {
+    // Same invariant as keychange: notifications are not replies.
+    let mut c = client();
+    let w = c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, false);
+    c.on_open();
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply { retired: None },
+        "the delta opt-in's own reply"
+    );
+    assert_eq!(
+        c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$1\r\nk\r\n$6\r\nappend\r\n$1\r\nz\r\n"),
+        Incoming::Applied
+    );
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply {
+            retired: Some(w.id)
+        }
+    );
+}
+
+#[test]
+fn a_malformed_or_unknown_delta_is_reported_rather_than_swallowed() {
+    // Dropping one silently would leave the local copy wrong with no signal.
+    let mut c = client();
+    // Too few parts.
+    assert_eq!(
+        c.handle_frame(b"*3\r\n$8\r\nkeydelta\r\n$1\r\nk\r\n$6\r\nappend\r\n"),
+        Incoming::Ignored
+    );
+    // An op that is not a replayable mutation.
+    assert_eq!(
+        c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$1\r\nk\r\n$3\r\nget\r\n$1\r\nx\r\n"),
+        Incoming::Ignored
+    );
+    // An op that does not exist at all.
+    assert_eq!(
+        c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$1\r\nk\r\n$6\r\nnosuch\r\n$1\r\nx\r\n"),
+        Incoming::Ignored
+    );
 }

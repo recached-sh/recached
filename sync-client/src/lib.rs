@@ -273,6 +273,14 @@ impl SyncClient {
             frames.push(to_resp(&["AUTH", pwd]));
             self.inflight.push_back(None);
         }
+        // This client understands `keydelta`, so say so. Sent every time the
+        // socket opens because it is connection state, not session state, and
+        // sent before QSUB so the initial live-query traffic already benefits.
+        // An older server answers with an error, which `ack_reply` retires
+        // like any other reply and which changes nothing: it simply keeps
+        // sending whole values.
+        frames.push(to_resp(&["CLIENT", "DELTA", "ON"]));
+        self.inflight.push_back(None);
         if let Some(tok) = &self.sync_token {
             frames.push(to_resp(&["SYNC", "TOKEN", tok]));
             self.inflight.push_back(None);
@@ -459,6 +467,12 @@ impl SyncClient {
                 if tag == b"keychange" {
                     self.apply_keychange(&items);
                     Incoming::Applied
+                } else if tag == b"keydelta" {
+                    if self.apply_keydelta(&items) {
+                        Incoming::Applied
+                    } else {
+                        Incoming::Ignored
+                    }
                 } else if tag == b"qstate" {
                     let retired = self.ack_reply();
                     self.apply_qstate(&items);
@@ -482,6 +496,51 @@ impl SyncClient {
         let id = self.inflight.pop_front()??;
         self.outbox.retain(|(i, _)| *i != id);
         Some(id)
+    }
+
+    /// Apply a `["keydelta", key, op, arg...]` frame.
+    ///
+    /// The delta is a command, so applying it is executing that command
+    /// against the local store — the same engine the server ran it on. That
+    /// is the whole reason deltas are safe to replay: there is no diff to
+    /// misinterpret.
+    ///
+    /// Returns false for a frame this client cannot rebuild, which it then
+    /// reports as ignored rather than applied. That should be unreachable —
+    /// a server only sends deltas after `CLIENT DELTA ON`, and only for ops
+    /// defined here — but silently dropping one would leave the local copy
+    /// wrong with no signal, so it is surfaced rather than swallowed.
+    fn apply_keydelta(&self, items: &[Value]) -> bool {
+        if items.len() < 4 {
+            return false;
+        }
+        let Value::BulkString(Some(key)) = &items[1] else {
+            return false;
+        };
+        let Value::BulkString(Some(op)) = &items[2] else {
+            return false;
+        };
+        // Rebuild the original command text and let the ordinary parser
+        // produce it, so the delta path cannot drift from the command path.
+        let mut parts: Vec<Value> = Vec::with_capacity(items.len() - 1);
+        parts.push(Value::BulkString(Some(op.clone())));
+        parts.push(Value::BulkString(Some(key.clone())));
+        for arg in &items[3..] {
+            match arg {
+                Value::BulkString(Some(bytes)) => {
+                    parts.push(Value::BulkString(Some(bytes.clone())))
+                }
+                _ => return false,
+            }
+        }
+        let Ok(cmd) = Command::from_value(Value::Array(Some(parts))) else {
+            return false;
+        };
+        if !is_replayable_mutation(&cmd) {
+            return false;
+        }
+        self.store.execute(cmd);
+        true
     }
 
     fn apply_keychange(&self, items: &[Value]) {
@@ -683,6 +742,11 @@ pub fn is_replayable_mutation(cmd: &Command) -> bool {
     matches!(
         cmd,
         Command::Set(_, _, _)
+            // `broadcast_for` emits APPEND verbatim, so leaving it out here
+            // meant a client syncing on the propagation path applied every
+            // mutation except this one and held a stale value with no signal.
+            // It is also the op `keydelta` exists for.
+            | Command::Append(_, _)
             | Command::Del(_)
             | Command::Unlink(_)
             | Command::MSet(_)

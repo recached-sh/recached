@@ -71,6 +71,9 @@ pub(crate) struct ClientMeta {
     pub(crate) resp: u8,
     pub(crate) sub: usize,
     pub(crate) psub: usize,
+    /// Set by `CLIENT DELTA ON`: this connection accepts `keydelta` frames in
+    /// place of a full `keychange` where the mutation has a compact form.
+    pub(crate) deltas: bool,
 }
 
 impl ClientMeta {
@@ -84,6 +87,7 @@ impl ClientMeta {
             lib_ver: String::new(),
             since: SystemTime::now(),
             resp: 2,
+            deltas: false,
             sub: 0,
             psub: 0,
         }
