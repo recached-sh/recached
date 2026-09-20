@@ -4,9 +4,9 @@ All notable changes to Recached are documented here.
 
 ## [0.3.5] (Unreleased)
 
-- Added read-only sync scopes: a scope entry may now be written `r=catalog:*` (read-only) or `rw=cart:42:*` (read-write), and a bare pattern stays read-write, so existing tokens are unchanged. Previously a single grant authorized reads *and* writes, so a browser handed `catalog:*` in order to read a shared catalog could also overwrite it — which made every shared read model unsafe to sync. Access is checked per key rather than per command, so `SINTERSTORE mine:out theirs:a` requires write only on the destination. Read-only grants still receive the mutation fan-out and may hold `QSUB` live queries and `WATCH`
-- **Breaking (beta):** `SYNC` and `SYNC TOKEN` now echo grants in `r=`/`rw=` notation (`rw=cart:*` where the reply was `cart:*`), so the reply round-trips back into `SYNC`. No shipped client parses this reply
-- A scope entry with an empty pattern (`r=`) is now refused at token verification instead of minting a token that matches only the empty key
+- Added read-only sync scopes: a scope entry can now be written `r=catalog:*` (read-only) or `rw=cart:42:*` (read-write), so a browser can follow shared data without being able to overwrite it. Bare patterns stay read-write, leaving existing tokens unchanged
+- **Breaking (beta):** `SYNC` and `SYNC TOKEN` now echo grants in `r=`/`rw=` notation where the reply was a bare pattern
+- Refused sync tokens that grant an empty pattern
 
 ## [0.3.4] (2026-09-13)
 
