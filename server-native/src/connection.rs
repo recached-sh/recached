@@ -1116,20 +1116,22 @@ pub(crate) async fn handle_ws<S>(
                             match command_scope(&cmd) {
                                 CommandScope::KeyLess => {}
                                 CommandScope::Admin => {
+                                    record_scope_denial("admin");
                                     ws_send!(b"-NOSCOPE keyspace-wide and administrative commands are not available on scoped WebSocket connections\r\n");
                                     continue;
                                 }
                                 CommandScope::Keys(keys) => {
                                     let Some(ref scopes) = sync_scopes else {
+                                        record_scope_denial("no_token");
                                         ws_send!(b"-NOSCOPE send SYNC TOKEN <token> before issuing commands\r\n");
                                         continue;
                                     };
                                     // Two distinct denials: the key is outside
                                     // every grant, or it is inside a read-only
                                     // one and the command would write it. They
-                                    // are reported apart so a misconfigured
-                                    // grant is distinguishable from a missing
-                                    // one.
+                                    // are reported apart — in the error and in
+                                    // the metric — so a misconfigured grant is
+                                    // distinguishable from a missing one.
                                     if let Some((denied, need)) = keys
                                         .iter()
                                         .find(|(k, need)| !scopes_allow(scopes, k, *need))
@@ -1137,11 +1139,13 @@ pub(crate) async fn handle_ws<S>(
                                         let err = Value::Error(if *need == Access::Write
                                             && scopes_allow(scopes, denied, Access::Read)
                                         {
+                                            record_scope_denial("read_only");
                                             format!(
                                                 "NOSCOPE key '{}' is read-only on this connection",
                                                 denied
                                             )
                                         } else {
+                                            record_scope_denial("out_of_scope");
                                             format!(
                                                 "NOSCOPE key '{}' is outside this connection's sync scopes",
                                                 denied
@@ -1454,6 +1458,7 @@ pub(crate) async fn handle_ws<S>(
                                             .any(|g| scope_covers_pattern(&g.pattern, &pattern))
                                     });
                                     if !allowed {
+                                        record_scope_denial("qsub_pattern");
                                         ws_send!(b"-NOSCOPE pattern is outside this connection's sync scopes\r\n");
                                         continue 'outer;
                                     }

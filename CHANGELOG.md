@@ -7,6 +7,7 @@ All notable changes to Recached are documented here.
 - Added read-only sync scopes: a scope entry can now be written `r=catalog:*` (read-only) or `rw=cart:42:*` (read-write), so a browser can follow shared data without being able to overwrite it. Bare patterns stay read-write, leaving existing tokens unchanged
 - **Breaking (beta):** `SYNC` and `SYNC TOKEN` now echo grants in `r=`/`rw=` notation where the reply was a bare pattern
 - Refused sync tokens that grant an empty pattern
+- Added `recached_scope_denials_total`, counting commands refused on scope-limited WebSocket connections by reason, so a misconfigured scope is visible instead of just a page that stopped working
 
 ## [0.3.4] (2026-09-13)
 

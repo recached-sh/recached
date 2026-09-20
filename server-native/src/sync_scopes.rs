@@ -98,6 +98,19 @@ pub(crate) fn scopes_match(grants: &[Grant], keys: &[String]) -> bool {
         })
 }
 
+/// Count one refused command on a scoped connection.
+///
+/// A scoped connection that is misconfigured fails silently from the server's
+/// side — the page simply stops working — so the refusals are the only signal
+/// an operator gets. The `reason` separates the four that mean different
+/// things: `read_only` is a grant that is too narrow, `out_of_scope` a grant
+/// that is missing, `no_token` a client that never authenticated its scopes,
+/// and `admin` a keyspace-wide command that is refused by design and is
+/// expected to be non-zero in normal operation.
+pub(crate) fn record_scope_denial(reason: &'static str) {
+    counter!("recached_scope_denials_total", "reason" => reason).increment(1);
+}
+
 /// True when `grants` permit `need` on `key`.
 pub(crate) fn scopes_allow(grants: &[Grant], key: &str, need: Access) -> bool {
     grants
