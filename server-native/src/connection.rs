@@ -500,10 +500,14 @@ pub(crate) async fn handle_tcp<S>(
                                                                     Value::Integer(count)
                                                                 }
                                                                 _ if is_write_command(&qcmd) => {
-                                                                    let (resp, evicted) = execute_and_record_with_evictions(&store, qcmd.clone());
-                                                                    apply_write_effects(&qcmd, &resp, &tx, 0, &state, &watch_registry, &store).await;
-                                                                    apply_eviction_effects(&evicted, &tx, 0, &state, &watch_registry, &store).await;
-                                                                    resp
+                                                                    execute_locked_write(
+                                                                        &qcmd,
+                                                                        &tx,
+                                                                        conn_id,
+                                                                        &state,
+                                                                        &watch_registry,
+                                                                        &store,
+                                                                    ).await
                                                                 }
                                                                 _ => execute_and_record(&store, qcmd),
                                                             };
@@ -784,7 +788,7 @@ pub(crate) async fn handle_tcp<S>(
                                                 execute_ordered_write(
                                                     &cmd,
                                                     &tx,
-                                                    0,
+                                                    conn_id,
                                                     &state,
                                                     &watch_registry,
                                                     &store,
@@ -876,6 +880,7 @@ pub(crate) async fn handle_tcp<S>(
         pubsub.lock().await.unsubscribe_all(conn_id);
     }
     unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
+    release_ephemeral_state(conn_id, &tx, &state, &watch_registry, &store).await;
 }
 
 // ── WebSocket handler ─────────────────────────────────────────────────────────
@@ -1281,10 +1286,14 @@ pub(crate) async fn handle_ws<S>(
                                                         Value::Integer(count)
                                                     }
                                                     _ if is_write_command(&qcmd) => {
-                                                        let (resp, evicted) = execute_and_record_with_evictions(&store, qcmd.clone());
-                                                        apply_write_effects(&qcmd, &resp, &tx, conn_id, &state, &watch_registry, &store).await;
-                                                        apply_eviction_effects(&evicted, &tx, conn_id, &state, &watch_registry, &store).await;
-                                                        resp
+                                                        execute_locked_write(
+                                                            &qcmd,
+                                                            &tx,
+                                                            conn_id,
+                                                            &state,
+                                                            &watch_registry,
+                                                            &store,
+                                                        ).await
                                                     }
                                                     _ => execute_and_record(&store, qcmd),
                                                 };
@@ -1808,13 +1817,5 @@ pub(crate) async fn handle_ws<S>(
         watch_registry.sync_len(&reg);
     }
     unregister_all_qsubs(&watch_registry, conn_id, &mut qsub_patterns).await;
-
-    // Delete ephemeral keys this connection still owns and fan the deletions
-    // out, so every subscriber sees the peer go away immediately rather than
-    // waiting for a heartbeat TTL to lapse.
-    let expired = state.take_ephemeral_for(conn_id);
-    if !expired.is_empty() {
-        let del = Command::Del(expired);
-        execute_ordered_write(&del, &tx, conn_id, &state, &watch_registry, &store).await;
-    }
+    release_ephemeral_state(conn_id, &tx, &state, &watch_registry, &store).await;
 }

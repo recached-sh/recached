@@ -11,6 +11,7 @@ pub(crate) fn is_write_command(cmd: &Command) -> bool {
         cmd,
         Command::Set(..)
             | Command::ESet(..)
+            | Command::EAdd(..)
             | Command::Del(..)
             | Command::Unlink(..)
             | Command::Append(..)
@@ -72,6 +73,7 @@ pub(crate) fn primary_keys(cmd: &Command) -> Vec<String> {
     }
     match cmd {
         Command::ESet(k, _)
+        | Command::EAdd(k, _)
         | Command::Set(k, _, _)
         | Command::Append(k, _)
         | Command::GetSet(k, _)
@@ -146,6 +148,125 @@ pub(crate) fn ordering_keys(cmd: &Command) -> Option<Vec<String>> {
     }
 }
 
+fn claimable_eadd_members(
+    cmd: &Command,
+    state: &ServerState,
+    store: &KeyValueStore,
+) -> Vec<String> {
+    let Command::EAdd(key, members) = cmd else {
+        return Vec::new();
+    };
+    members
+        .iter()
+        .filter(|member| {
+            state.is_ephemeral_member(key, member)
+                || matches!(
+                    store.execute(Command::SIsMember(key.clone(), (*member).clone())),
+                    Value::Integer(0)
+                )
+        })
+        .cloned()
+        .collect()
+}
+
+fn reconcile_ephemeral_state(
+    cmd: &Command,
+    response: &Value,
+    claimable_members: &[String],
+    origin: u64,
+    state: &ServerState,
+) {
+    if matches!(response, Value::Error(_)) {
+        return;
+    }
+    match cmd {
+        Command::ESet(key, _) => {
+            state.forget_ephemeral_members_for_key(key);
+            state.claim_ephemeral(key, origin);
+        }
+        Command::EAdd(key, _) => {
+            state.forget_ephemeral_key(key);
+            state.claim_ephemeral_members(key, claimable_members, origin);
+        }
+        Command::Del(keys) | Command::Unlink(keys) => {
+            state.forget_ephemeral_keys(keys.iter().map(String::as_str));
+        }
+        Command::FlushDb => state.forget_all_ephemeral(),
+        Command::Set(key, _, opts) => {
+            let happened = opts.get || !matches!(response, Value::BulkString(None));
+            if happened {
+                state.forget_ephemeral_keys(std::iter::once(key.as_str()));
+            }
+        }
+        Command::GetSet(key, _)
+        | Command::SetEx(key, _, _)
+        | Command::PSetEx(key, _, _)
+        | Command::Incr(key)
+        | Command::Decr(key)
+        | Command::IncrBy(key, _)
+        | Command::DecrBy(key, _) => {
+            state.forget_ephemeral_keys(std::iter::once(key.as_str()));
+        }
+        Command::SetNx(key, _) if matches!(response, Value::Integer(1)) => {
+            state.forget_ephemeral_keys(std::iter::once(key.as_str()));
+        }
+        Command::MSet(pairs) => {
+            state.forget_ephemeral_keys(pairs.iter().map(|(key, _)| key.as_str()));
+        }
+        Command::SRem(key, members) => state.forget_ephemeral_members(key, members),
+        Command::SPop(key, _) => {
+            let members: Vec<String> = match response {
+                Value::BulkString(Some(member)) => {
+                    vec![String::from_utf8_lossy(member).into_owned()]
+                }
+                Value::Array(Some(values)) => values
+                    .iter()
+                    .filter_map(|value| match value {
+                        Value::BulkString(Some(member)) => {
+                            Some(String::from_utf8_lossy(member).into_owned())
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            state.forget_ephemeral_members(key, &members);
+        }
+        Command::SMove(source, destination, member) if matches!(response, Value::Integer(1)) => {
+            state.forget_ephemeral_members(source, std::slice::from_ref(member));
+            state.forget_ephemeral_members(destination, std::slice::from_ref(member));
+        }
+        Command::Rename(source, destination) if matches!(response, Value::SimpleString(_)) => {
+            state.forget_ephemeral_keys([source.as_str(), destination.as_str()]);
+        }
+        Command::SInterStore(destination, _)
+        | Command::SUnionStore(destination, _)
+        | Command::SDiffStore(destination, _) => {
+            state.forget_ephemeral_keys(std::iter::once(destination.as_str()));
+        }
+        _ => {}
+    }
+}
+
+/// Execute a write while the caller already holds all of its ordering guards.
+/// Transaction execution and disconnect cleanup share this with the ordinary
+/// write path so ephemeral ownership cannot be bypassed.
+pub(crate) async fn execute_locked_write(
+    cmd: &Command,
+    tx: &broadcast::Sender<SyncMsg>,
+    origin: u64,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+) -> Value {
+    let claimable_members = claimable_eadd_members(cmd, state, store);
+    let (response, evicted) = execute_and_record_with_evictions(store, cmd.clone());
+    apply_write_effects(cmd, &response, tx, origin, state, watch_registry, store).await;
+    apply_eviction_effects(&evicted, tx, origin, state, watch_registry, store).await;
+    reconcile_ephemeral_state(cmd, &response, &claimable_members, origin, state);
+    response
+}
+
 /// Execute one write while its key-order guards remain held through durable
 /// logging and fan-out. This makes the store commit order the observable AOF,
 /// replica, watcher, and browser-sync order for every pair of conflicting
@@ -193,27 +314,61 @@ pub(crate) async fn execute_ordered_write(
             .lock_commands(std::slice::from_ref(effective))
             .await
     };
-    let (response, evicted) = execute_and_record_with_evictions(store, effective.clone());
-    apply_write_effects(
-        effective,
-        &response,
-        tx,
-        origin,
-        state,
-        watch_registry,
-        store,
-    )
-    .await;
-    apply_eviction_effects(&evicted, tx, origin, state, watch_registry, store).await;
-    if !matches!(response, Value::Error(_)) {
-        if let Command::ESet(key, _) = effective {
-            state.claim_ephemeral(key, origin);
-        }
-        if let Some((client, id)) = dedup {
-            state.commit_dedup(client, id);
-        }
+    let response = execute_locked_write(effective, tx, origin, state, watch_registry, store).await;
+    if !matches!(response, Value::Error(_))
+        && let Some((client, id)) = dedup
+    {
+        state.commit_dedup(client, id);
     }
     response
+}
+
+/// Release one connection's ephemeral holds while keeping the affected keys
+/// locked from the last-holder decision through the final DEL/SREM. This closes
+/// the disconnect race where a concurrent writer could recreate a key between
+/// cleanup's cardinality check and delete.
+pub(crate) async fn release_ephemeral_state(
+    conn_id: u64,
+    tx: &broadcast::Sender<SyncMsg>,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+) {
+    let (candidate_keys, candidate_members) = state.ephemeral_claims_for(conn_id);
+    if candidate_keys.is_empty() && candidate_members.is_empty() {
+        return;
+    }
+    let mut commands = Vec::new();
+    if !candidate_keys.is_empty() {
+        commands.push(Command::Del(candidate_keys));
+    }
+    commands.extend(
+        candidate_members
+            .into_iter()
+            .map(|(key, members)| Command::SRem(key, members)),
+    );
+    let _guards = if store.has_capacity_limits() {
+        state.replicas.lock_all_writes().await
+    } else {
+        state.replicas.lock_commands(&commands).await
+    };
+
+    let expired = state.take_ephemeral_for(conn_id);
+    if !expired.is_empty() {
+        let del = Command::Del(expired);
+        execute_locked_write(&del, tx, conn_id, state, watch_registry, store).await;
+    }
+    for (key, members) in state.take_ephemeral_members_for(conn_id) {
+        let srem = Command::SRem(key.clone(), members);
+        execute_locked_write(&srem, tx, conn_id, state, watch_registry, store).await;
+        if matches!(
+            store.execute(Command::SCard(key.clone())),
+            Value::Integer(0)
+        ) {
+            let del = Command::Del(vec![key]);
+            execute_locked_write(&del, tx, conn_id, state, watch_registry, store).await;
+        }
+    }
 }
 
 /// Propagate implicit capacity victims as DEL operations. The caller holds the
@@ -228,6 +383,7 @@ pub(crate) async fn apply_eviction_effects(
     store: &KeyValueStore,
 ) {
     for key in evicted {
+        state.forget_ephemeral_keys(std::iter::once(key.as_str()));
         let deletion = Command::Del(vec![key.clone()]);
         apply_write_effects(
             &deletion,
@@ -269,6 +425,7 @@ mod eviction_propagation_tests {
             is_replica: AtomicBool::new(false),
             dedup: std::sync::Mutex::new(HashMap::new()),
             ephemeral: std::sync::Mutex::new(HashMap::new()),
+            ephemeral_members: std::sync::Mutex::new(HashMap::new()),
             dedup_dirty: AtomicBool::new(false),
             dedup_order: tokio::sync::Mutex::new(()),
             save_lock: tokio::sync::Mutex::new(()),
@@ -354,7 +511,7 @@ pub(crate) fn delta_for(cmd: &Command) -> Option<(String, KeyDelta)> {
         // to every viewer before this.
         Command::Append(k, v) => (k, "append", vec![v.clone()]),
 
-        Command::SAdd(k, members) => (k, "sadd", bytes(members)),
+        Command::SAdd(k, members) | Command::EAdd(k, members) => (k, "sadd", bytes(members)),
         Command::SRem(k, members) => (k, "srem", bytes(members)),
         Command::LPush(k, values) => (k, "lpush", values.clone()),
         Command::RPush(k, values) => (k, "rpush", values.clone()),
@@ -479,11 +636,24 @@ pub(crate) async fn notify_removed(registry: &WatchRegistry, keys: &[String]) {
 /// Deliver one batch of `(key, current value)` pairs to exact-key watchers and
 /// to every live query whose pattern matches.
 async fn fan_out(registry: &WatchRegistry, key_values: &[(String, Value, Option<KeyDelta>)]) {
+    // A connection may WATCH a key and QSUB one or more overlapping patterns.
+    // Deliver each changed key once per connection: deltas such as APPEND and
+    // INCR are not idempotent when clients apply them to a local replica.
+    let mut delivered: HashMap<String, HashSet<u64>> = HashMap::new();
     if registry.watched_keys.load(Ordering::Relaxed) > 0 {
         let mut reg = registry.map.lock().await;
         for (key, value, delta) in key_values {
             if let Some(subs) = reg.get_mut(key) {
-                subs.retain(|sub| sub.notify(key, value, delta.as_ref()));
+                subs.retain(|sub| {
+                    let alive = sub.notify(key, value, delta.as_ref());
+                    if alive {
+                        delivered
+                            .entry(key.clone())
+                            .or_default()
+                            .insert(sub.conn_id);
+                    }
+                    alive
+                });
                 if subs.is_empty() {
                     reg.remove(key);
                 }
@@ -499,7 +669,22 @@ async fn fan_out(registry: &WatchRegistry, key_values: &[(String, Value, Option<
         for (pattern, subs) in pats.iter_mut() {
             for (key, value, delta) in key_values {
                 if core_engine::store::glob_match(pattern, key) {
-                    subs.retain(|sub| sub.notify(key, value, delta.as_ref()));
+                    subs.retain(|sub| {
+                        if delivered
+                            .get(key)
+                            .is_some_and(|connections| connections.contains(&sub.conn_id))
+                        {
+                            return true;
+                        }
+                        let alive = sub.notify(key, value, delta.as_ref());
+                        if alive {
+                            delivered
+                                .entry(key.clone())
+                                .or_default()
+                                .insert(sub.conn_id);
+                        }
+                        alive
+                    });
                 }
             }
             emptied |= subs.is_empty();
@@ -647,9 +832,20 @@ pub(crate) fn resp_push(parts: &[&[u8]]) -> Vec<u8> {
 /// rewrites relative expiries to absolute ones at propagation time.
 pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Option<Vec<u8>> {
     match cmd {
-        // Replays as SET: a replica has no connection to scope the lifetime to,
-        // and the owning server broadcasts the DEL when the connection closes.
-        Command::ESet(k, v) => Some(resp_push(&[b"SET", k.as_bytes(), v.as_slice()])),
+        // Keep the ephemeral verb in the durable stream so AOF replay can
+        // discard any connection-scoped state whose owner vanished in a crash.
+        // Replicas and browser stores still apply it as an ordinary mutation;
+        // only the owning server tracks the connection lifetime.
+        Command::ESet(k, v) => Some(resp_push(&[b"ESET", k.as_bytes(), v.as_slice()])),
+        Command::EAdd(k, members) => match response {
+            Value::Integer(n) if *n > 0 => {
+                let mut parts: Vec<&[u8]> = vec![b"EADD", k.as_bytes()];
+                let m_refs: Vec<&[u8]> = members.iter().map(|s| s.as_bytes()).collect();
+                parts.extend_from_slice(&m_refs);
+                Some(resp_push(&parts))
+            }
+            _ => None,
+        },
         Command::Set(k, v, opts) => {
             // Without GET: nil response means NX/XX condition failed — don't broadcast.
             // With GET: nil means key didn't exist before, but SET still happened.

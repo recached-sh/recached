@@ -158,6 +158,7 @@ pub(crate) fn command_name(cmd: &Command) -> &'static str {
         Command::Memory(_) | Command::MemoryUsage(_) => "memory",
         Command::Get(_) => "get",
         Command::ESet(_, _) => "eset",
+        Command::EAdd(_, _) => "eadd",
         Command::Set(_, _, _) => "set",
         Command::Del(_) => "del",
         Command::Unlink(_) => "unlink",

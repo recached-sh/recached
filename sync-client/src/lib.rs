@@ -742,6 +742,8 @@ pub fn is_replayable_mutation(cmd: &Command) -> bool {
     matches!(
         cmd,
         Command::Set(_, _, _)
+            | Command::ESet(_, _)
+            | Command::EAdd(_, _)
             // `broadcast_for` emits APPEND verbatim, so leaving it out here
             // meant a client syncing on the propagation path applied every
             // mutation except this one and held a stale value with no signal.

@@ -133,6 +133,10 @@ pub enum Command {
     /// The engine stores it like any string; the *server* deletes it when that
     /// connection closes. Presence, cursors, "who is online".
     ESet(String, Vec<u8>),
+    /// EADD — a SADD whose members are bound to the connection that added
+    /// them. The server removes a member when the last connection holding it
+    /// closes, and deletes the set once it empties. "Who is in this room."
+    EAdd(String, Vec<String>),
     Del(Vec<String>),
     Unlink(Vec<String>),
     Append(String, Vec<u8>),
@@ -511,6 +515,13 @@ impl Command {
                         Ok(Command::ESet(
                             extract_key(&arr[1])?,
                             extract_bytes(&arr[2]).unwrap_or_default(),
+                        ))
+                    }
+                    "EADD" => {
+                        need!(3);
+                        Ok(Command::EAdd(
+                            extract_key(&arr[1])?,
+                            collect_strings(&mut arr[2..]),
                         ))
                     }
                     "DEL" => {

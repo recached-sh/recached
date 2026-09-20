@@ -6,7 +6,7 @@
 //! route on those numbers — a wrong `first_key` sends a command to the wrong
 //! shard, and a wrong arity makes a client reject a call the server would have
 //! accepted — so the reference implementation is the only honest source. The
-//! nine commands Recached invents have no Redis entry and are declared here
+//! commands Recached invents have no Redis entry and are declared here
 //! directly.
 //!
 //! Summaries come from `docs/server/commands.md`, so the text a client sees is
@@ -1222,6 +1222,16 @@ pub const CATALOG: &[CommandSpec] = &[
         1,
         "strings",
         "Ephemeral set: stores a string whose lifetime is bound to the connection that wrote it.",
+    ),
+    spec(
+        "eadd",
+        -3,
+        &["write", "denyoom", "fast"],
+        1,
+        1,
+        1,
+        "set",
+        "Ephemeral add: adds set members whose lifetime is bound to the connection that added them.",
     ),
     spec(
         "jset",
