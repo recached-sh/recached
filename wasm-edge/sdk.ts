@@ -19,6 +19,9 @@ export interface ConnectOptions {
    * Glob patterns to scope this connection's sync to, e.g. `['cart:*']`.
    * Only honoured by servers *without* a sync secret — a bandwidth filter,
    * not an authorization boundary. Use `syncToken` for security.
+   *
+   * An entry may state its access — `'r=catalog:*'` for read-only,
+   * `'rw=cart:42:*'` or a bare pattern for read-write.
    */
   syncScopes?: string[];
   /**

@@ -382,6 +382,10 @@ export class Cache {
     /**
      * Scope this connection's sync to glob patterns (servers without a sync
      * secret only). A bandwidth filter, not an authorization boundary.
+     *
+     * An entry may state its access — `'r=catalog:*'` for read-only,
+     * `'rw=cart:42:*'` or a bare pattern for read-write — matching the grant
+     * notation a signed token uses.
      */
     syncScopes(patterns) {
         this.raw.sync_scopes(patterns.join(','));
