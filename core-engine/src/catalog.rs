@@ -1143,7 +1143,7 @@ pub const CATALOG: &[CommandSpec] = &[
         0,
         0,
         "core",
-        "Connection introspection: ID, INFO, LIST, GETNAME, SETNAME, SETINFO.",
+        "Connection introspection and push settings: ID, INFO, LIST, GETNAME, SETNAME, SETINFO, DELTA.",
     ),
     spec(
         "config",

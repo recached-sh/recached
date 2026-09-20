@@ -304,6 +304,117 @@ mod eviction_propagation_tests {
     }
 }
 
+/// The compact form of a mutation: an operation and its arguments, which a
+/// client replays against its own copy of the key.
+///
+/// A delta is the *command*, not a computed diff, which is what makes it safe
+/// — the client runs the same engine, so replaying `sadd k a` reproduces
+/// exactly what the server did. It also keeps the set of delta-able commands
+/// honest: if an operation cannot be replayed verbatim to the same result, it
+/// has no delta and the key falls back to a whole-value `keychange`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeyDelta {
+    pub(crate) op: &'static str,
+    pub(crate) args: Vec<Vec<u8>>,
+}
+
+impl KeyDelta {
+    /// Bytes this delta will occupy on the wire, for queue accounting.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.args
+            .iter()
+            .map(|a| a.len().saturating_add(std::mem::size_of::<Vec<u8>>()))
+            .sum::<usize>()
+            .saturating_add(self.op.len())
+    }
+}
+
+/// The compact form of `cmd`, if it has one.
+///
+/// Only commands that are **replayable verbatim** appear here. Two rules keep
+/// that true:
+///
+/// * The caller has already confirmed the mutation happened (`broadcast_for`),
+///   so a conditional push such as `LPUSHX` on a missing key never reaches
+///   this point and cannot be replayed into a key that should not exist.
+/// * Where a command's outcome depends on options — `ZADD` with `NX`, `XX`,
+///   `GT`, `LT` or `INCR` — the delta is withheld rather than replayed without
+///   them, because the client would compute a different score.
+///
+/// `SET`, `DEL`, expiry and everything else keep sending whole values: they
+/// are already as small as their result, so a delta would buy nothing.
+pub(crate) fn delta_for(cmd: &Command) -> Option<(String, KeyDelta)> {
+    fn bytes(items: &[String]) -> Vec<Vec<u8>> {
+        items.iter().map(|s| s.clone().into_bytes()).collect()
+    }
+    let (key, op, args) = match cmd {
+        Command::Dedup(_, _, inner) => return delta_for(inner),
+
+        // A token appended to an agent's output re-sent the whole transcript
+        // to every viewer before this.
+        Command::Append(k, v) => (k, "append", vec![v.clone()]),
+
+        Command::SAdd(k, members) => (k, "sadd", bytes(members)),
+        Command::SRem(k, members) => (k, "srem", bytes(members)),
+        Command::LPush(k, values) => (k, "lpush", values.clone()),
+        Command::RPush(k, values) => (k, "rpush", values.clone()),
+        Command::LPushX(k, values) => (k, "lpush", values.clone()),
+        Command::RPushX(k, values) => (k, "rpush", values.clone()),
+        Command::HDel(k, fields) => (k, "hdel", bytes(fields)),
+        Command::HSet(k, pairs) => {
+            let mut args = Vec::with_capacity(pairs.len() * 2);
+            for (field, value) in pairs {
+                args.push(field.clone().into_bytes());
+                args.push(value.clone());
+            }
+            (k, "hset", args)
+        }
+        Command::ZRem(k, members) => (k, "zrem", bytes(members)),
+        Command::ZAdd(k, options, entries) => {
+            // `CH` only changes the integer reply, not the resulting zset, so
+            // it is safe to replay without. The rest change what is stored.
+            if options.condition.is_some() || options.gt || options.lt || options.incr {
+                return None;
+            }
+            let mut args = Vec::with_capacity(entries.len() * 2);
+            for (score, member) in entries {
+                args.push(score.to_string().into_bytes());
+                args.push(member.clone().into_bytes());
+            }
+            (k, "zadd", args)
+        }
+        _ => return None,
+    };
+    Some((key.clone(), KeyDelta { op, args }))
+}
+
+/// Encode a delta push: `["keydelta", key, op, arg...]`.
+///
+/// A distinct tag rather than a variant of `keychange`, so a client that does
+/// not understand it can be detected by its absence of `CLIENT DELTA ON`
+/// rather than by silently mis-parsing a frame it half-recognises.
+pub(crate) fn encode_keydelta(key: &str, delta: &KeyDelta) -> Vec<u8> {
+    let mut parts = Vec::with_capacity(delta.args.len() + 3);
+    parts.push(Value::BulkString(Some(b"keydelta".to_vec())));
+    parts.push(Value::BulkString(Some(key.as_bytes().to_vec())));
+    parts.push(Value::BulkString(Some(delta.op.as_bytes().to_vec())));
+    parts.extend(
+        delta
+            .args
+            .iter()
+            .map(|a| Value::BulkString(Some(a.clone()))),
+    );
+    Value::Array(Some(parts)).serialize()
+}
+
+/// Encode a queued notification in whichever form it was queued as.
+pub(crate) fn encode_notification(notif: &WatchNotif) -> Vec<u8> {
+    match &notif.payload {
+        NotifPayload::Full(value) => encode_keychange(&notif.key, value),
+        NotifPayload::Delta(delta) => encode_keydelta(&notif.key, delta),
+    }
+}
+
 pub(crate) fn encode_keychange(key: &str, value: &Value) -> Vec<u8> {
     Value::Array(Some(vec![
         Value::BulkString(Some(b"keychange".to_vec())),
@@ -327,11 +438,21 @@ pub(crate) async fn notify_watchers(
     if keys.is_empty() {
         return;
     }
+    // The compact form, for subscribers that asked for deltas. Computed once
+    // here rather than per subscriber, and only ever for the key it names —
+    // a command touching several keys (MSET, RENAME) has no delta.
+    let delta = delta_for(cmd);
     // Fetch current values from DashMap *before* acquiring the registry lock
     // to avoid holding two locks simultaneously.
-    let key_values: Vec<(String, Value)> = keys
+    let key_values: Vec<(String, Value, Option<KeyDelta>)> = keys
         .iter()
-        .map(|k| (k.clone(), store.get_current(k)))
+        .map(|k| {
+            let delta = delta
+                .as_ref()
+                .filter(|(delta_key, _)| delta_key == k)
+                .map(|(_, delta)| delta.clone());
+            (k.clone(), store.get_current(k), delta)
+        })
         .collect();
     fan_out(registry, &key_values).await;
 }
@@ -348,21 +469,21 @@ pub(crate) async fn notify_removed(registry: &WatchRegistry, keys: &[String]) {
     if registry.is_empty() || keys.is_empty() {
         return;
     }
-    let key_values: Vec<(String, Value)> = keys
+    let key_values: Vec<(String, Value, Option<KeyDelta>)> = keys
         .iter()
-        .map(|k| (k.clone(), Value::BulkString(None)))
+        .map(|k| (k.clone(), Value::BulkString(None), None))
         .collect();
     fan_out(registry, &key_values).await;
 }
 
 /// Deliver one batch of `(key, current value)` pairs to exact-key watchers and
 /// to every live query whose pattern matches.
-async fn fan_out(registry: &WatchRegistry, key_values: &[(String, Value)]) {
+async fn fan_out(registry: &WatchRegistry, key_values: &[(String, Value, Option<KeyDelta>)]) {
     if registry.watched_keys.load(Ordering::Relaxed) > 0 {
         let mut reg = registry.map.lock().await;
-        for (key, value) in key_values {
+        for (key, value, delta) in key_values {
             if let Some(subs) = reg.get_mut(key) {
-                subs.retain(|sub| sub.notify(key, value));
+                subs.retain(|sub| sub.notify(key, value, delta.as_ref()));
                 if subs.is_empty() {
                     reg.remove(key);
                 }
@@ -376,9 +497,9 @@ async fn fan_out(registry: &WatchRegistry, key_values: &[(String, Value)]) {
         let mut pats = registry.patterns.lock().await;
         let mut emptied = false;
         for (pattern, subs) in pats.iter_mut() {
-            for (key, value) in key_values {
+            for (key, value, delta) in key_values {
                 if core_engine::store::glob_match(pattern, key) {
-                    subs.retain(|sub| sub.notify(key, value));
+                    subs.retain(|sub| sub.notify(key, value, delta.as_ref()));
                 }
             }
             emptied |= subs.is_empty();
@@ -406,7 +527,7 @@ pub(crate) async fn notify_flushdb(registry: &WatchRegistry, watched_before: Vec
         let mut reg = registry.map.lock().await;
         for key in &watched_before {
             if let Some(subs) = reg.get_mut(key) {
-                subs.retain(|sub| sub.notify(key, &Value::BulkString(None)));
+                subs.retain(|sub| sub.notify(key, &Value::BulkString(None), None));
             }
         }
         registry.sync_len(&reg);
@@ -416,7 +537,7 @@ pub(crate) async fn notify_flushdb(registry: &WatchRegistry, watched_before: Vec
         let mut emptied = false;
         for (pattern, subs) in pats.iter_mut() {
             let sentinel = pattern.clone();
-            subs.retain(|sub| sub.notify(&sentinel, &Value::BulkString(None)));
+            subs.retain(|sub| sub.notify(&sentinel, &Value::BulkString(None), None));
             emptied |= subs.is_empty();
         }
         if emptied {

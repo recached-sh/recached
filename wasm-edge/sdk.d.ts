@@ -17,6 +17,9 @@ export interface ConnectOptions {
      * Glob patterns to scope this connection's sync to, e.g. `['cart:*']`.
      * Only honoured by servers *without* a sync secret — a bandwidth filter,
      * not an authorization boundary. Use `syncToken` for security.
+     *
+     * An entry may state its access — `'r=catalog:*'` for read-only,
+     * `'rw=cart:42:*'` or a bare pattern for read-write.
      */
     syncScopes?: string[];
     /**
@@ -334,6 +337,10 @@ export declare class Cache {
     /**
      * Scope this connection's sync to glob patterns (servers without a sync
      * secret only). A bandwidth filter, not an authorization boundary.
+     *
+     * An entry may state its access — `'r=catalog:*'` for read-only,
+     * `'rw=cart:42:*'` or a bare pattern for read-write — matching the grant
+     * notation a signed token uses.
      */
     syncScopes(patterns: string[]): void;
     /** @internal Ref-counts per live-query pattern so components sharing a

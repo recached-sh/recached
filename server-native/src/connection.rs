@@ -243,7 +243,13 @@ pub(crate) async fn handle_tcp<S>(
     // handler, TCP clients are not sent keychange pushes — WATCH is pure CAS.
     let mut watched_keys: HashSet<String> = HashSet::new();
     let mut watch_dirty = false;
-    let (watch_subscriber, mut watch_rx) = notification_channel(conn_id, overflow_tx.clone());
+    // TCP clients are never sent keychange pushes, so the payload form is
+    // moot here; a constant `false` keeps them on whole values.
+    let (watch_subscriber, mut watch_rx) = notification_channel(
+        conn_id,
+        overflow_tx.clone(),
+        Arc::new(AtomicBool::new(false)),
+    );
 
     'outer: loop {
         let is_subscribed = !subscribed_channels.is_empty() || !subscribed_patterns.is_empty();
@@ -993,17 +999,22 @@ pub(crate) async fn handle_ws<S>(
     let mut watched_keys: HashSet<String> = HashSet::new();
     // Set when any watched key changes; EXEC aborts (returns nil) if true.
     let mut watch_dirty = false;
-    let (watch_subscriber, mut watch_rx) = notification_channel(conn_id, overflow_tx.clone());
+    // Shared with both subscribers so `CLIENT DELTA ON` takes effect on
+    // subscriptions that already exist.
+    let deltas = Arc::new(AtomicBool::new(false));
+    let (watch_subscriber, mut watch_rx) =
+        notification_channel(conn_id, overflow_tx.clone(), Arc::clone(&deltas));
     // Sync scopes for this connection. `strict` (RECACHED_SYNC_SECRET set)
     // means: no pushes and no key commands until a signed token is presented.
     // Without a secret, scopes are an opt-in bandwidth filter (legacy fan-out
     // of everything when None).
     let strict = sync_secret.is_some();
-    let mut sync_scopes: Option<Vec<String>> = None;
+    let mut sync_scopes: Option<Vec<Grant>> = None;
     // Live-query subscriptions (QSUB). Keychange notifications for matching
     // keys arrive on their own channel so they never dirty WATCH transactions.
     let mut qsub_patterns: HashSet<String> = HashSet::new();
-    let (qsub_subscriber, mut q_rx) = notification_channel(conn_id, overflow_tx);
+    let (qsub_subscriber, mut q_rx) =
+        notification_channel(conn_id, overflow_tx, Arc::clone(&deltas));
 
     // Replies go out as *text* frames whenever the RESP bytes are valid UTF-8,
     // which is the overwhelming majority and is what every existing client
@@ -1116,22 +1127,41 @@ pub(crate) async fn handle_ws<S>(
                             match command_scope(&cmd) {
                                 CommandScope::KeyLess => {}
                                 CommandScope::Admin => {
+                                    record_scope_denial("admin");
                                     ws_send!(b"-NOSCOPE keyspace-wide and administrative commands are not available on scoped WebSocket connections\r\n");
                                     continue;
                                 }
                                 CommandScope::Keys(keys) => {
                                     let Some(ref scopes) = sync_scopes else {
+                                        record_scope_denial("no_token");
                                         ws_send!(b"-NOSCOPE send SYNC TOKEN <token> before issuing commands\r\n");
                                         continue;
                                     };
-                                    if let Some(denied) = keys
+                                    // Two distinct denials: the key is outside
+                                    // every grant, or it is inside a read-only
+                                    // one and the command would write it. They
+                                    // are reported apart — in the error and in
+                                    // the metric — so a misconfigured grant is
+                                    // distinguishable from a missing one.
+                                    if let Some((denied, need)) = keys
                                         .iter()
-                                        .find(|k| !scopes_match(scopes, std::slice::from_ref(k)))
+                                        .find(|(k, need)| !scopes_allow(scopes, k, *need))
                                     {
-                                        let err = Value::Error(format!(
-                                            "NOSCOPE key '{}' is outside this connection's sync scopes",
-                                            denied
-                                        ))
+                                        let err = Value::Error(if *need == Access::Write
+                                            && scopes_allow(scopes, denied, Access::Read)
+                                        {
+                                            record_scope_denial("read_only");
+                                            format!(
+                                                "NOSCOPE key '{}' is read-only on this connection",
+                                                denied
+                                            )
+                                        } else {
+                                            record_scope_denial("out_of_scope");
+                                            format!(
+                                                "NOSCOPE key '{}' is outside this connection's sync scopes",
+                                                denied
+                                            )
+                                        })
                                         .serialize();
                                         ws_send!(&err);
                                         continue;
@@ -1431,12 +1461,15 @@ pub(crate) async fn handle_ws<S>(
                                 // prove containment, so ambiguous wildcard grants are only
                                 // accepted on exact equality.
                                 if strict {
+                                    // A live query only reads, so any grant
+                                    // covering the pattern is enough.
                                     let allowed = sync_scopes.as_ref().is_some_and(|scopes| {
                                         scopes
                                             .iter()
-                                            .any(|scope| scope_covers_pattern(scope, &pattern))
+                                            .any(|g| scope_covers_pattern(&g.pattern, &pattern))
                                     });
                                     if !allowed {
+                                        record_scope_denial("qsub_pattern");
                                         ws_send!(b"-NOSCOPE pattern is outside this connection's sync scopes\r\n");
                                         continue 'outer;
                                     }
@@ -1580,7 +1613,11 @@ pub(crate) async fn handle_ws<S>(
                                         continue 'outer;
                                     }
                                     Command::Client(args) => {
-                                        ws_send!(&handle_client_command(args, &mut client_meta).serialize());
+                                        let reply = handle_client_command(args, &mut client_meta);
+                                        // Mirror the toggle to the subscribers,
+                                        // which hold their own handle to it.
+                                        deltas.store(client_meta.deltas, Ordering::Relaxed);
+                                        ws_send!(&reply.serialize());
                                         continue 'outer;
                                     }
                                     Command::Config(args) => {
@@ -1659,7 +1696,29 @@ pub(crate) async fn handle_ws<S>(
                             Some(scopes) => scopes_match(scopes, &push.keys),
                             None => !strict,
                         };
-                        if visible {
+                        // A key this connection watches or live-queries is
+                        // already delivered authoritatively on the
+                        // notification channel, so forwarding the mutation
+                        // here too would apply it twice. That was previously
+                        // masked: the keychange carries the key's whole value,
+                        // so arriving second it overwrote the double-applied
+                        // result. The two channels are independent arms of
+                        // this `select!` though, so that ordering was never
+                        // guaranteed — and a `keydelta` is not a snapshot and
+                        // could not repair it at all.
+                        //
+                        // Suppressed only when *every* key is covered: a
+                        // multi-key mutation with one watched key still needs
+                        // this frame for the others, and FLUSHDB names no keys
+                        // at all.
+                        let superseded = !push.keys.is_empty()
+                            && push.keys.iter().all(|k| {
+                                watched_keys.contains(k)
+                                    || qsub_patterns.iter().any(|p| {
+                                        core_engine::store::glob_match(p, k)
+                                    })
+                            });
+                        if visible && !superseded {
                             ws_send!(&push.resp);
                         }
                     }
@@ -1710,7 +1769,7 @@ pub(crate) async fn handle_ws<S>(
                     // following EXEC aborts) and still push the keychange to the
                     // client for the observable-keys feature.
                     watch_dirty = true;
-                    let bytes = encode_keychange(&notif.key, &notif.value);
+                    let bytes = encode_notification(&notif);
                     ws_send!(&bytes);
                 }
             }
@@ -1719,7 +1778,7 @@ pub(crate) async fn handle_ws<S>(
             // dirties transactions.
             notif = q_rx.recv(), if !qsub_patterns.is_empty() => {
                 if let Some(notif) = notif {
-                    let bytes = encode_keychange(&notif.key, &notif.value);
+                    let bytes = encode_notification(&notif);
                     ws_send!(&bytes);
                 }
             }

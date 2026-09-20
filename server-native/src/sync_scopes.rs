@@ -15,13 +15,107 @@ pub(crate) struct SyncPush {
 
 pub(crate) type SyncMsg = Arc<SyncPush>;
 
-/// True when a mutation touching `keys` is visible to a connection whose sync
-/// scopes are `scopes`. A mutation with no keys (FLUSHDB) affects every scope.
-pub(crate) fn scopes_match(scopes: &[String], keys: &[String]) -> bool {
+/// What a grant confers on a key, and what a command requires of one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Access {
+    /// Reading the key, and receiving its mutations on the sync fan-out.
+    Read,
+    /// Mutating the key. Implies `Read`, which is why a read-modify-write
+    /// command such as `INCR` or `GETSET` requires only `Write`: no grant
+    /// confers write without read, so there is nothing extra to check.
+    Write,
+}
+
+/// One granted pattern and the access it carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Grant {
+    pub(crate) pattern: String,
+    pub(crate) access: Access,
+}
+
+impl Grant {
+    /// Whether this grant satisfies a requirement of `need`.
+    fn permits(&self, need: Access) -> bool {
+        matches!(
+            (self.access, need),
+            (Access::Write, _) | (Access::Read, Access::Read)
+        )
+    }
+}
+
+#[cfg(test)]
+impl Grant {
+    /// A read-write grant on `pattern`.
+    pub(crate) fn rw(pattern: &str) -> Self {
+        Grant {
+            pattern: pattern.to_string(),
+            access: Access::Write,
+        }
+    }
+    /// A read-only grant on `pattern`.
+    pub(crate) fn ro(pattern: &str) -> Self {
+        Grant {
+            pattern: pattern.to_string(),
+            access: Access::Read,
+        }
+    }
+}
+
+/// Parse one scope entry into a grant.
+///
+/// `rw=cart:42:*` and `r=catalog:*` state the access; a bare pattern is
+/// read-write, which is what every scope minted before write scoping existed
+/// meant, so old tokens keep working unchanged.
+///
+/// `r=` and `rw=` are therefore reserved entry prefixes: a pattern whose own
+/// text begins with one cannot be expressed. The failure is closed — such an
+/// entry grants less than its author wrote, on a different prefix, rather than
+/// more — and key patterns do not look like that in practice.
+fn parse_grant(entry: &str) -> Grant {
+    let (access, pattern) = match entry.split_once('=') {
+        Some(("r", rest)) => (Access::Read, rest),
+        Some(("rw", rest)) => (Access::Write, rest),
+        _ => (Access::Write, entry),
+    };
+    Grant {
+        pattern: pattern.to_string(),
+        access,
+    }
+}
+
+/// True when a mutation touching `keys` is visible to a connection holding
+/// `grants`. A mutation with no keys (FLUSHDB) affects every scope.
+///
+/// Visibility is read access, and every grant confers read, so this does not
+/// inspect `access`. Were a write-only grant ever added, the fan-out filter
+/// would have to start distinguishing them here.
+pub(crate) fn scopes_match(grants: &[Grant], keys: &[String]) -> bool {
     keys.is_empty()
-        || keys
-            .iter()
-            .any(|k| scopes.iter().any(|p| core_engine::store::glob_match(p, k)))
+        || keys.iter().any(|k| {
+            grants
+                .iter()
+                .any(|g| core_engine::store::glob_match(&g.pattern, k))
+        })
+}
+
+/// Count one refused command on a scoped connection.
+///
+/// A scoped connection that is misconfigured fails silently from the server's
+/// side — the page simply stops working — so the refusals are the only signal
+/// an operator gets. The `reason` separates the four that mean different
+/// things: `read_only` is a grant that is too narrow, `out_of_scope` a grant
+/// that is missing, `no_token` a client that never authenticated its scopes,
+/// and `admin` a keyspace-wide command that is refused by design and is
+/// expected to be non-zero in normal operation.
+pub(crate) fn record_scope_denial(reason: &'static str) {
+    counter!("recached_scope_denials_total", "reason" => reason).increment(1);
+}
+
+/// True when `grants` permit `need` on `key`.
+pub(crate) fn scopes_allow(grants: &[Grant], key: &str, need: Access) -> bool {
+    grants
+        .iter()
+        .any(|g| g.permits(need) && core_engine::store::glob_match(&g.pattern, key))
 }
 
 /// Conservatively prove that every key matched by `requested` is also covered
@@ -44,14 +138,16 @@ pub(crate) fn scope_covers_pattern(grant: &str, requested: &str) -> bool {
     requested_prefix.starts_with(prefix)
 }
 
-/// Verify a signed sync-scope token and return the granted patterns.
+/// Verify a signed sync-scope token and return the grants it carries.
 ///
 /// Token format: `base64url(payload) "." base64url(hmac_sha256(secret, base64url(payload)))`
-/// where payload is comma-separated glob patterns with an optional
-/// `|<unix_expiry_secs>` suffix. The HMAC is computed over the *encoded*
-/// payload string, so minting in JS is one `createHmac` call on the base64url
-/// text — no byte-level canonicalisation questions.
-pub(crate) fn verify_sync_token(secret: &str, token: &str) -> Result<Vec<String>, &'static str> {
+/// where payload is comma-separated scope entries with an optional
+/// `|<unix_expiry_secs>` suffix. Each entry is a glob pattern, optionally
+/// prefixed `r=` (read-only) or `rw=`; bare entries are read-write. The HMAC is
+/// computed over the *encoded* payload string, so minting in JS is one
+/// `createHmac` call on the base64url text — no byte-level canonicalisation
+/// questions.
+pub(crate) fn verify_sync_token(secret: &str, token: &str) -> Result<Vec<Grant>, &'static str> {
     use base64::Engine as _;
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -83,27 +179,33 @@ pub(crate) fn verify_sync_token(secret: &str, token: &str) -> Result<Vec<String>
             return Err("token expired");
         }
     }
-    let patterns: Vec<String> = patterns_str
+    let grants: Vec<Grant> = patterns_str
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(String::from)
+        .map(parse_grant)
         .collect();
-    if patterns.is_empty() {
+    if grants.is_empty() {
         return Err("token grants no patterns");
+    }
+    // A bare `r=` or `rw=` leaves an empty pattern, which matches only the
+    // empty key. That is always a minting bug, and one that would otherwise
+    // fail silently as a token granting nothing.
+    if grants.iter().any(|g| g.pattern.is_empty()) {
+        return Err("token grants an empty pattern");
     }
     // Token patterns reach `glob_match` without passing through the command
     // parser, so the cap `check_pattern` applies to `KEYS`/`SCAN`/`PSUBSCRIBE`
     // has to be repeated here. These are matched once per key per write, so an
     // over-long one is the most expensive place to put a pattern — and a
     // compromised or careless minting service should not be able to.
-    if patterns
+    if grants
         .iter()
-        .any(|p| p.len() > core_engine::store::MAX_PATTERN_BYTES)
+        .any(|g| g.pattern.len() > core_engine::store::MAX_PATTERN_BYTES)
     {
         return Err("token grants an over-long pattern");
     }
-    Ok(patterns)
+    Ok(grants)
 }
 
 /// What a command touches, for scope enforcement on token-scoped WebSocket
@@ -112,8 +214,9 @@ pub(crate) fn verify_sync_token(secret: &str, token: &str) -> Result<Vec<String>
 pub(crate) enum CommandScope {
     /// No key access (PING, AUTH, MULTI, SYNC, pub/sub) — always allowed.
     KeyLess,
-    /// Touches exactly these keys — every one must match a scope pattern.
-    Keys(Vec<String>),
+    /// Touches exactly these keys, each with the access it requires. Every
+    /// one must be permitted by a grant at that access.
+    Keys(Vec<(String, Access)>),
     /// Keyspace-wide or administrative — denied on scoped connections.
     Admin,
 }
@@ -174,12 +277,52 @@ pub(crate) fn command_scope(cmd: &Command) -> CommandScope {
         | Command::PubSub(_)
         | Command::ReplicaOfNoOne => CommandScope::Admin,
 
-        Command::ESet(k, _)
-        | Command::Set(k, _, _)
-        | Command::Get(k)
-        | Command::Append(k, _)
+        // ── Single-key reads ────────────────────────────────────────────
+        Command::Get(k)
         | Command::Strlen(k)
         | Command::GetRange(k, _, _)
+        | Command::Ttl(k)
+        | Command::PTtl(k)
+        | Command::Type(k)
+        | Command::MemoryUsage(k)
+        | Command::HGet(k, _)
+        | Command::HGetAll(k)
+        | Command::HKeys(k)
+        | Command::HVals(k)
+        | Command::HLen(k)
+        | Command::HExists(k, _)
+        | Command::HMGet(k, _)
+        | Command::HScan(k, _)
+        | Command::SScan(k, _)
+        | Command::ZScan(k, _)
+        | Command::LRange(k, _, _)
+        | Command::LLen(k)
+        | Command::LIndex(k, _)
+        | Command::SMembers(k)
+        | Command::SCard(k)
+        | Command::SIsMember(k, _)
+        | Command::SMIsMember(k, _)
+        // SRANDMEMBER reads; SPOP removes and is a write, below.
+        | Command::SRandMember(k, _)
+        | Command::ZRange(k, _, _, _)
+        | Command::ZRevRange(k, _, _, _)
+        | Command::ZRangeByScore(k, _, _, _, _)
+        | Command::ZRevRangeByScore(k, _, _, _, _)
+        | Command::ZScore(k, _)
+        | Command::ZMScore(k, _)
+        | Command::ZRank(k, _)
+        | Command::ZRevRank(k, _)
+        | Command::ZCard(k)
+        | Command::ZCount(k, _, _)
+        | Command::JGet(k, _) => CommandScope::Keys(vec![(k.clone(), Access::Read)]),
+
+        // ── Single-key writes ───────────────────────────────────────────
+        // Read-modify-write commands (INCR, APPEND, GETSET, RLCHECK) are
+        // classified here and require only Write: every grant that confers
+        // write confers read too.
+        Command::ESet(k, _)
+        | Command::Set(k, _, _)
+        | Command::Append(k, _)
         | Command::GetSet(k, _)
         | Command::SetNx(k, _)
         | Command::SetEx(k, _, _)
@@ -192,84 +335,67 @@ pub(crate) fn command_scope(cmd: &Command) -> CommandScope {
         | Command::PExpire(k, _)
         | Command::ExpireAt(k, _)
         | Command::PExpireAt(k, _)
-        | Command::Ttl(k)
-        | Command::PTtl(k)
         | Command::Persist(k)
-        | Command::Type(k)
-        | Command::MemoryUsage(k)
         | Command::HSet(k, _)
-        | Command::HGet(k, _)
-        | Command::HGetAll(k)
         | Command::HDel(k, _)
-        | Command::HKeys(k)
-        | Command::HVals(k)
-        | Command::HLen(k)
         | Command::HIncrBy(k, _, _)
         | Command::HIncrByFloat(k, _, _)
-        | Command::HExists(k, _)
         | Command::HSetNx(k, _, _)
-        | Command::HMGet(k, _)
-        | Command::HScan(k, _)
-        | Command::SScan(k, _)
-        | Command::ZScan(k, _)
         | Command::LPush(k, _)
         | Command::RPush(k, _)
         | Command::LPushX(k, _)
         | Command::RPushX(k, _)
         | Command::LPop(k, _)
         | Command::RPop(k, _)
-        | Command::LRange(k, _, _)
-        | Command::LLen(k)
-        | Command::LIndex(k, _)
         | Command::LSet(k, _, _)
         | Command::LRem(k, _, _)
         | Command::LTrim(k, _, _)
         | Command::SAdd(k, _)
-        | Command::SMembers(k)
         | Command::SRem(k, _)
-        | Command::SCard(k)
-        | Command::SIsMember(k, _)
-        | Command::SMIsMember(k, _)
         | Command::SPop(k, _)
-        | Command::SRandMember(k, _)
         | Command::ZAdd(k, _, _)
-        | Command::ZRange(k, _, _, _)
-        | Command::ZRevRange(k, _, _, _)
-        | Command::ZRangeByScore(k, _, _, _, _)
-        | Command::ZRevRangeByScore(k, _, _, _, _)
-        | Command::ZScore(k, _)
-        | Command::ZMScore(k, _)
-        | Command::ZRank(k, _)
-        | Command::ZRevRank(k, _)
         | Command::ZRem(k, _)
-        | Command::ZCard(k)
         | Command::ZIncrBy(k, _, _)
-        | Command::ZCount(k, _, _)
+        // RLCHECK records the attempt it reports on — a write, not a probe.
         | Command::RlSet(k, _, _)
         | Command::RlCheck(k, _)
         | Command::JSet(k, _, _)
-        | Command::JGet(k, _)
-        | Command::JMerge(k, _) => CommandScope::Keys(vec![k.clone()]),
+        | Command::JMerge(k, _) => CommandScope::Keys(vec![(k.clone(), Access::Write)]),
 
-        Command::Del(keys)
-        | Command::Unlink(keys)
-        | Command::MGet(keys)
+        // ── Multi-key reads ─────────────────────────────────────────────
+        // WATCH and UNWATCH observe a key's changes, which is read access.
+        Command::MGet(keys)
         | Command::Exists(keys)
         | Command::SInter(keys)
         | Command::SUnion(keys)
         | Command::SDiff(keys)
         | Command::Watch(keys)
-        | Command::Unwatch(keys) => CommandScope::Keys(keys.clone()),
-
-        Command::MSet(pairs) => CommandScope::Keys(pairs.iter().map(|(k, _)| k.clone()).collect()),
-        Command::Rename(src, dst) | Command::SMove(src, dst, _) => {
-            CommandScope::Keys(vec![src.clone(), dst.clone()])
+        | Command::Unwatch(keys) => {
+            CommandScope::Keys(keys.iter().map(|k| (k.clone(), Access::Read)).collect())
         }
+
+        // ── Multi-key writes ────────────────────────────────────────────
+        Command::Del(keys) | Command::Unlink(keys) => {
+            CommandScope::Keys(keys.iter().map(|k| (k.clone(), Access::Write)).collect())
+        }
+        Command::MSet(pairs) => {
+            CommandScope::Keys(pairs.iter().map(|(k, _)| (k.clone(), Access::Write)).collect())
+        }
+        // RENAME destroys the source; SMOVE removes the member from it. Both
+        // ends are writes.
+        Command::Rename(src, dst) | Command::SMove(src, dst, _) => CommandScope::Keys(vec![
+            (src.clone(), Access::Write),
+            (dst.clone(), Access::Write),
+        ]),
+        // The store family reads its sources and writes only the destination,
+        // which is the case that makes access per key rather than per command:
+        // `SINTERSTORE mine r=theirs` must not demand write on `theirs`.
         Command::SInterStore(dst, keys)
         | Command::SUnionStore(dst, keys)
         | Command::SDiffStore(dst, keys) => {
-            let mut all = keys.clone();
-            all.push(dst.clone());
+            let mut all: Vec<(String, Access)> =
+                keys.iter().map(|k| (k.clone(), Access::Read)).collect();
+            all.push((dst.clone(), Access::Write));
             CommandScope::Keys(all)
         }
 
@@ -289,14 +415,22 @@ pub(crate) fn command_scope(cmd: &Command) -> CommandScope {
 pub(crate) fn handle_sync_command(
     args: &[String],
     secret: Option<&str>,
-    scopes: &mut Option<Vec<String>>,
+    scopes: &mut Option<Vec<Grant>>,
     conn_id: u64,
 ) -> Vec<u8> {
-    fn patterns_reply(patterns: &[String]) -> Vec<u8> {
+    /// Grants are echoed in the same notation they are written in, so a
+    /// client can tell a read-only grant from a read-write one.
+    fn patterns_reply(grants: &[Grant]) -> Vec<u8> {
         Value::Array(Some(
-            patterns
+            grants
                 .iter()
-                .map(|p| Value::BulkString(Some(p.clone().into_bytes())))
+                .map(|g| {
+                    let text = match g.access {
+                        Access::Read => format!("r={}", g.pattern),
+                        Access::Write => format!("rw={}", g.pattern),
+                    };
+                    Value::BulkString(Some(text.into_bytes()))
+                })
                 .collect(),
         ))
         .serialize()
@@ -323,7 +457,12 @@ pub(crate) fn handle_sync_command(
                 return b"-ERR this server requires signed scopes: use SYNC TOKEN <token>\r\n"
                     .to_vec();
             }
-            let pats: Vec<String> = patterns.iter().filter(|p| !p.is_empty()).cloned().collect();
+            let pats: Vec<Grant> = patterns
+                .iter()
+                .filter(|p| !p.is_empty())
+                .map(|p| parse_grant(p))
+                .filter(|g| !g.pattern.is_empty())
+                .collect();
             if pats.is_empty() {
                 return b"-ERR SYNC requires at least one pattern\r\n".to_vec();
             }

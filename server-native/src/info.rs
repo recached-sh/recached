@@ -195,6 +195,24 @@ pub(crate) fn handle_client_command(args: &[String], meta: &mut ClientMeta) -> V
             publish_client(meta.clone());
             Value::SimpleString("OK".to_string())
         }
+        // A Recached extension, in the place Redis puts its other
+        // per-connection push toggles (`CLIENT TRACKING`, `CLIENT NO-EVICT`).
+        // Opt-in because a client that does not understand `keydelta` would
+        // ignore the frame and silently hold a stale local copy — worse than
+        // an error — so the server keeps sending whole values until asked.
+        ("DELTA", 2) => match args[1].to_uppercase().as_str() {
+            "ON" => {
+                meta.deltas = true;
+                publish_client(meta.clone());
+                Value::SimpleString("OK".to_string())
+            }
+            "OFF" => {
+                meta.deltas = false;
+                publish_client(meta.clone());
+                Value::SimpleString("OK".to_string())
+            }
+            other => Value::Error(format!("ERR CLIENT DELTA expects ON or OFF, got '{other}'")),
+        },
         ("SETINFO", 3) => match args[1].to_uppercase().as_str() {
             "LIB-NAME" => {
                 meta.lib_name = args[2].clone();
@@ -217,6 +235,7 @@ pub(crate) fn handle_client_command(args: &[String], meta: &mut ClientMeta) -> V
                 "GETNAME -- Return this connection's name.",
                 "SETNAME <name> -- Set this connection's name.",
                 "SETINFO <LIB-NAME|LIB-VER> <value> -- Identify the client library.",
+                "DELTA <ON|OFF> -- Receive compact keydelta frames for mutations that have one.",
             ]
             .iter()
             .map(|l| Value::SimpleString(l.to_string()))

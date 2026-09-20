@@ -11,7 +11,7 @@ resolver = "2"
 # ── Single source of truth for all crate versions ────────────────────────────
 # Members inherit with:  version.workspace = true  /  edition.workspace = true
 [workspace.package]
-version = "0.3.4"
+version = "0.3.5"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["ThinkGrid Labs"]

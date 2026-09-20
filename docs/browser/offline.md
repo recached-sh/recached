@@ -15,7 +15,8 @@ Browsers go offline. Recached is built so that when they do, the app keeps worki
 **When the connection returns**, the client re-establishes the session in order:
 
 1. `AUTH` (the password is remembered)
-2. `SYNC TOKEN` / sync scopes (remembered)
+2. `CLIENT DELTA ON` (connection state, so re-sent every time)
+3. `SYNC TOKEN` / sync scopes (remembered)
 3. Every active live query is re-subscribed — the fresh `qstate` re-hydrates local keys with whatever happened server-side while you were away
 4. The outbox replays FIFO
 

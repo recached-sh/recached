@@ -126,6 +126,13 @@ administrative commands (`KEYS`, `SCAN`, `DBSIZE`, `FLUSHDB`, `SAVE`, `BGSAVE`, 
 refused outright on scoped connections. Out-of-scope key access is refused with
 `NOSCOPE key '<key>' is outside this connection's sync scopes`.
 
+**Each grant also states its access**: `r=catalog:*` is read-only, `rw=cart:42:*` is read-write, and
+a bare pattern is read-write. Grant `r=` to anything the browser should follow but never change —
+catalogs, feature flags, tenant config, prices — and a write to it is refused with
+`NOSCOPE key '<key>' is read-only on this connection`. Read-only grants still receive the mutation
+fan-out and may hold live queries, so the page stays current without being able to rewrite what it
+is reading.
+
 Read [Sync Scopes](/server/sync-scopes) in full before you design your token scheme — the model is
 prefix-based and the details matter.
 
@@ -135,7 +142,8 @@ Tokens are minted **server-side**, from a session your backend has already authe
 secret must never reach the browser:
 
 1. User authenticates with your application as normal.
-2. Your backend derives the patterns that user may touch — for example `cart:42:*`, `user:42:*`.
+2. Your backend derives the grants that user gets — for example `rw=cart:42:*`, `rw=user:42:*`,
+   `r=catalog:*` — writing each one at the narrowest access that still works.
 3. Your backend signs a token with `RECACHED_SYNC_SECRET` and returns it.
 4. The browser passes it to `createCache({ connect: { syncToken } })`.
 

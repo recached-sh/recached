@@ -152,6 +152,17 @@ Check what the token actually granted before widening it — the scopes are a se
 the instinct to broaden them until the error stops is how that boundary gets lost. See
 [Sync Scopes](/server/sync-scopes).
 
+### `NOSCOPE key '<key>' is read-only on this connection`
+
+The key is inside a grant, but a read-only one (`r=catalog:*`), and the command would write it.
+Reads of the same key succeed, which is what distinguishes this from the error above.
+
+Either the command belongs on your backend over the trusted TCP port, or the grant is wrong. Widen
+it to `rw=` only if that page is genuinely allowed to change the data — a read-only grant on shared
+state is usually the deliberate choice, not the oversight. Note that read-modify-write commands
+(`INCR`, `APPEND`, `GETSET`, `RLCHECK`, `JMERGE`) count as writes. See
+[Sync Scopes](/server/sync-scopes).
+
 ### Keyspace-wide commands fail on a browser connection
 
 `KEYS`, `SCAN`, `DBSIZE`, `FLUSHDB`, `SAVE`, `BGSAVE`, and `REPLICAOF` are refused entirely on scoped

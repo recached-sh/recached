@@ -227,6 +227,8 @@ Redis's `SAMPLES` bounds how much of a nested value it walks before extrapolatin
 
 The other `MEMORY` subcommands — `DOCTOR`, `STATS`, `PURGE`, `MALLOC-STATS` — are refused. They describe an allocator arena that Recached has no equivalent of: it holds Rust values in a concurrent map and has nothing to defragment or free on demand. `INFO memory` reports what it can actually measure.
 
+`CLIENT DELTA ON|OFF` asks for compact `keydelta` push frames in place of whole-value `keychange` frames, where the mutation has a compact form (`APPEND`, `SADD`, `SREM`, `LPUSH`, `RPUSH`, `HSET`, `HDEL`, `ZADD`, `ZREM`). Off by default, because a client that did not understand the frame would ignore it and silently hold a stale copy. See [the protocol reference](/server/protocol#key-deltas-client-delta-on).
+
 `MEMORY USAGE` reads a key, so it is scoped like one: a WebSocket connection granted `cart:*` may measure `cart:42` and not `session:8f21`. See [Sync Scoping](/server/sync-scopes).
 
 ---
@@ -415,9 +417,11 @@ Controls which keys a WebSocket connection receives pushes for and may operate o
 
 | Command | Description |
 |---|---|
-| `SYNC` | Returns this connection's current scope patterns. |
-| `SYNC TOKEN token` | Sets scopes from a token signed with `RECACHED_SYNC_SECRET` (HMAC-SHA256). Required before any key access when the secret is configured (strict mode). Returns the granted patterns. |
+| `SYNC` | Returns this connection's current grants, in `r=`/`rw=` notation. |
+| `SYNC TOKEN token` | Sets scopes from a token signed with `RECACHED_SYNC_SECRET` (HMAC-SHA256). Required before any key access when the secret is configured (strict mode). Returns the granted entries. |
 | `SYNC pattern [pattern ...]` | Sets scopes directly from glob patterns. Only available when no sync secret is configured — a bandwidth filter, not a security boundary. |
+
+Each scope entry may state its access: `r=catalog:*` is read-only, `rw=cart:42:*` is read-write, and a bare pattern is read-write. A write to a read-only key is refused with `-NOSCOPE key '...' is read-only on this connection`. Access is checked per key, so `SINTERSTORE` needs write only on its destination.
 
 On the TCP port, `SYNC` returns an error — backend connections are trusted and unscoped.
 

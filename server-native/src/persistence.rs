@@ -648,11 +648,17 @@ mod durability_tests {
         let at_cap = "a".repeat(core_engine::store::MAX_PATTERN_BYTES);
         assert_eq!(
             verify_sync_token(secret, &mint(&at_cap)),
-            Ok(vec![at_cap.clone()])
+            Ok(vec![Grant::rw(&at_cap)])
         );
         assert_eq!(
             verify_sync_token(secret, &mint("cart:42:*,user:1:*")),
-            Ok(vec!["cart:42:*".to_string(), "user:1:*".to_string()])
+            Ok(vec![Grant::rw("cart:42:*"), Grant::rw("user:1:*")])
+        );
+        // The cap applies to the pattern, not the entry: an access prefix
+        // does not eat into a grant's pattern budget.
+        assert_eq!(
+            verify_sync_token(secret, &mint(&format!("r={at_cap}"))),
+            Ok(vec![Grant::ro(&at_cap)])
         );
     }
 }
