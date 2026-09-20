@@ -245,6 +245,25 @@ async fn replay_aof_basic() {
 }
 
 #[tokio::test]
+async fn replay_aof_discards_abandoned_ephemeral_state() {
+    let store = KeyValueStore::new();
+    let path = tmp_path("aof_ephemeral.aof");
+    let resp = "*3\r\n$4\r\nESET\r\n$8\r\npresence\r\n$2\r\non\r\n\
+                *3\r\n$4\r\nSADD\r\n$4\r\nroom\r\n$7\r\ndurable\r\n\
+                *3\r\n$4\r\nEADD\r\n$4\r\nroom\r\n$9\r\ntransient\r\n";
+    tokio::fs::write(&path, resp.as_bytes()).await.unwrap();
+
+    assert_eq!(replay_aof(&store, &path).await.unwrap(), 3);
+    assert_eq!(store.execute(Command::Get("presence".into())), nil());
+    assert_eq!(
+        store.execute(Command::SMembers("room".into())),
+        Value::Array(Some(vec![bulk("durable")]))
+    );
+
+    let _ = tokio::fs::remove_file(&path).await;
+}
+
+#[tokio::test]
 async fn replay_aof_push_frames() {
     // The live server records writes via `on_write`, which stores them in
     // RESP3 Push (`>`) form. Replay must accept those, not just `*` arrays.
@@ -287,6 +306,107 @@ async fn snapshot_save_and_load() {
         Value::BulkString(Some(b"world".to_vec()))
     );
     let _ = tokio::fs::remove_file(&path).await;
+}
+
+#[tokio::test]
+async fn server_snapshot_excludes_ephemeral_state() {
+    let path = tmp_path("ephemeral_snapshot.rdb");
+    let state = state_with_snapshot_path(path.clone());
+    let store = KeyValueStore::new();
+    assert_eq!(
+        store.execute(Command::Set(
+            "durable".into(),
+            "value".into(),
+            SetOptions::default()
+        )),
+        ok()
+    );
+    assert_eq!(
+        store.execute(Command::ESet("presence".into(), "on".into())),
+        ok()
+    );
+    state.claim_ephemeral("presence", 1);
+    assert_eq!(
+        store.execute(Command::SAdd("room".into(), vec!["durable".into()])),
+        int(1)
+    );
+    assert_eq!(
+        store.execute(Command::EAdd("room".into(), vec!["transient".into()])),
+        int(1)
+    );
+    state.claim_ephemeral_members("room", &["transient".into()], 1);
+
+    state.save(&store).await.unwrap();
+    let restored = KeyValueStore::new();
+    assert!(load_snapshot(&restored, &path).await.unwrap());
+    assert_eq!(restored.execute(Command::Get("presence".into())), nil());
+    assert_eq!(
+        restored.execute(Command::Get("durable".into())),
+        bulk("value")
+    );
+    assert_eq!(
+        restored.execute(Command::SMembers("room".into())),
+        Value::Array(Some(vec![bulk("durable")]))
+    );
+
+    let _ = tokio::fs::remove_file(&path).await;
+    let _ = tokio::fs::remove_file(path.with_extension("dedup")).await;
+}
+
+#[tokio::test]
+async fn checkpoint_reseeds_live_ephemeral_keys_before_later_mutations() {
+    let snapshot_path = tmp_path("ephemeral_checkpoint.rdb");
+    let aof_path = tmp_path("ephemeral_checkpoint.aof");
+    let _ = tokio::fs::remove_file(&snapshot_path).await;
+    let _ = tokio::fs::remove_file(&aof_path).await;
+    let state = Arc::new(ServerState {
+        snap: Arc::new(SnapshotConfig {
+            path: snapshot_path.clone(),
+            last_save: AtomicI64::new(0),
+            checkpoint_id: AtomicU64::new(0),
+        }),
+        aof: Some(Arc::new(
+            AofWriter::open(aof_path.clone(), AofSync::No)
+                .await
+                .unwrap(),
+        )),
+        replicas: ReplHub::new(),
+        is_replica: AtomicBool::new(false),
+        dedup: std::sync::Mutex::new(HashMap::new()),
+        ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        dedup_dirty: AtomicBool::new(false),
+        dedup_order: tokio::sync::Mutex::new(()),
+        save_lock: tokio::sync::Mutex::new(()),
+        persistence_healthy: AtomicBool::new(true),
+        persistence_failures: AtomicU64::new(0),
+    });
+    let store = KeyValueStore::new();
+    assert_eq!(
+        store.execute(Command::ESet("presence".into(), "on".into())),
+        ok()
+    );
+    state.claim_ephemeral("presence", 1);
+    state.save(&store).await.unwrap();
+
+    let append = Command::Append("presence".into(), b"line".to_vec());
+    let response = store.execute(append.clone());
+    let frame = broadcast_for(&append, &response, now_unix_ms()).unwrap();
+    let aof = state.aof.as_ref().unwrap();
+    aof.append(&frame).await.unwrap();
+    aof.flush().await.unwrap();
+
+    let restored = KeyValueStore::new();
+    let loaded = load_snapshot_checkpoint(&restored, &snapshot_path)
+        .await
+        .unwrap();
+    replay_aof_from_checkpoint(&restored, &aof_path, loaded.aof_checkpoint)
+        .await
+        .unwrap();
+    assert_eq!(restored.execute(Command::Get("presence".into())), nil());
+
+    let _ = tokio::fs::remove_file(&snapshot_path).await;
+    let _ = tokio::fs::remove_file(&aof_path).await;
 }
 
 // ── AofWriter append / truncate ───────────────────────────────────────────
@@ -2537,10 +2657,15 @@ fn scopes_match_globs_and_flushdb() {
     assert!(scopes_match(&scopes, &["catalog:books".to_string()]));
     assert!(!scopes_match(&scopes, &["cart:7:item:1".to_string()]));
     assert!(!scopes_match(&scopes, &["session:42".to_string()]));
-    // Multi-key: any matching key makes the push visible.
-    assert!(scopes_match(
+    // Multi-key frames are all-or-nothing: exposing a matching sibling must
+    // not leak an out-of-scope key in the same RESP command.
+    assert!(!scopes_match(
         &scopes,
         &["session:42".to_string(), "catalog:books".to_string()]
+    ));
+    assert!(scopes_match(
+        &scopes,
+        &["cart:42:item:1".to_string(), "catalog:books".to_string()]
     ));
     // No keys = FLUSHDB — visible to every scope.
     assert!(scopes_match(&scopes, &[]));
@@ -2767,7 +2892,10 @@ fn scopes_match_requires_every_key_to_match() {
     let scopes = vec![Grant::rw("cart:42:*")];
     assert!(scopes_match(&scopes, &["cart:42:a".to_string()]));
     // One in-scope key does not license an out-of-scope sibling.
-    assert!(!scopes_match(&scopes, &["cart:99:a".to_string()]));
+    assert!(!scopes_match(
+        &scopes,
+        &["cart:42:a".to_string(), "cart:99:a".to_string()]
+    ));
 }
 
 // ── Metrics labels ────────────────────────────────────────────────────────
@@ -3037,6 +3165,7 @@ fn all_commands() -> Vec<(Command, Expect)> {
         (Command::ReplicaOfNoOne, Expect::Admin),
         (Command::Quit, Expect::KeyLess),
         (Command::Client(vec!["ID".into()]), Expect::KeyLess),
+        (Command::Client(vec!["LIST".into()]), Expect::Admin),
         (
             Command::Config(vec!["GET".into(), "*".into()]),
             Expect::Admin,
@@ -3101,9 +3230,9 @@ fn eset_is_a_write_and_reports_its_key() {
 }
 
 #[test]
-fn eset_replays_to_replicas_as_a_plain_set() {
-    // A replica has no connection to scope the lifetime to, so it stores an
-    // ordinary key; the owning server broadcasts the DEL on disconnect.
+fn eset_keeps_its_identity_in_the_replay_stream() {
+    // AOF replay needs to distinguish abandoned connection state from durable
+    // SET data. Replicas and browser stores still execute ESET as a write.
     let frame = broadcast_for(
         &Command::ESet("presence:1".into(), "on".into()),
         &Value::SimpleString("OK".into()),
@@ -3111,12 +3240,8 @@ fn eset_replays_to_replicas_as_a_plain_set() {
     )
     .expect("ESET must broadcast");
     let frame = String::from_utf8_lossy(&frame).into_owned();
-    assert!(frame.contains("SET"), "{frame}");
+    assert!(frame.contains("ESET"), "{frame}");
     assert!(frame.contains("presence:1"));
-    assert!(
-        !frame.contains("ESET"),
-        "replica should receive SET, not ESET"
-    );
 }
 
 #[test]
@@ -4584,6 +4709,8 @@ async fn integration_ws_sync_strict_mode_gates_and_filters() {
     assert!(matches!(&r, Value::Error(e) if e.contains("NOSCOPE")));
     let r = client.cmd(&["KEYS", "*"]).await;
     assert!(matches!(&r, Value::Error(e) if e.contains("NOSCOPE")));
+    let r = client.cmd(&["CLIENT", "LIST"]).await;
+    assert!(matches!(&r, Value::Error(e) if e.contains("NOSCOPE")));
 
     // Fan-out: a second scoped client writes in and out of the first's scope.
     let mut writer = WsClient::connect(srv.tcp_addr).await;
@@ -4600,6 +4727,19 @@ async fn integration_ws_sync_strict_mode_gates_and_filters() {
     assert!(
         client.recv_push(300).await.is_none(),
         "out-of-scope push leaked on strict connection"
+    );
+
+    // A multi-key frame containing one permitted key must not expose its
+    // out-of-scope sibling.
+    assert_eq!(
+        writer
+            .cmd(&["MSET", "cart:mixed", "visible", "other:mixed", "secret"])
+            .await,
+        ok()
+    );
+    assert!(
+        client.recv_push(300).await.is_none(),
+        "mixed-scope MSET leaked its full frame"
     );
 }
 
@@ -4685,6 +4825,62 @@ async fn integration_eadd_membership_survives_a_second_tab() {
     drop(tab_a);
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     assert_eq!(observer.cmd(&["EXISTS", "room:2"]).await, int(0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_eadd_does_not_adopt_a_persistent_member() {
+    let srv = spawn_ws_server().await;
+    let mut durable = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(
+        durable.cmd(&["SADD", "room:durable", "alice"]).await,
+        int(1)
+    );
+
+    {
+        let mut ephemeral = WsClient::connect(srv.tcp_addr).await;
+        assert_eq!(
+            ephemeral.cmd(&["EADD", "room:durable", "alice"]).await,
+            int(0)
+        );
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(
+        durable.cmd(&["SISMEMBER", "room:durable", "alice"]).await,
+        int(1),
+        "EADD must not turn an existing durable member into connection state"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tcp_eset_is_released_when_the_connection_closes() {
+    let srv = spawn_server().await;
+    {
+        let mut owner = RespClient::connect(srv.tcp_addr).await;
+        assert_eq!(owner.cmd(&["ESET", "tcp:presence", "on"]).await, ok());
+    }
+    for _ in 0..20 {
+        if srv.store.execute(Command::Get("tcp:presence".into())) == nil() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("TCP ephemeral key outlived its connection");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transaction_eset_is_released_when_the_connection_closes() {
+    let srv = spawn_ws_server().await;
+    {
+        let mut owner = WsClient::connect(srv.tcp_addr).await;
+        assert_eq!(owner.cmd(&["MULTI"]).await, ok());
+        assert_eq!(
+            owner.cmd(&["ESET", "tx:presence", "on"]).await,
+            Value::SimpleString("QUEUED".into())
+        );
+        assert_eq!(owner.cmd(&["EXEC"]).await, Value::Array(Some(vec![ok()])));
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(srv.store.execute(Command::Get("tx:presence".into())), nil());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4963,6 +5159,34 @@ async fn integration_ws_a_watched_key_is_delivered_once() {
 }
 
 // ── Write scoping: read-only vs read-write grants ─────────────────────────
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overlapping_qsubs_deliver_a_non_idempotent_delta_once() {
+    let srv = spawn_ws_server().await;
+    let mut viewer = WsClient::connect(srv.tcp_addr).await;
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(viewer.cmd(&["CLIENT", "DELTA", "ON"]).await, ok());
+    assert_eq!(
+        viewer.cmd(&["QSUB", "dup:*"]).await,
+        arr(&["qstate", "dup:*"])
+    );
+    assert_eq!(viewer.cmd(&["QSUB", "*"]).await, arr(&["qstate", "*"]));
+
+    assert_eq!(writer.cmd(&["SET", "dup:key", "x"]).await, ok());
+    let _ = viewer.recv_any(1000).await.expect("the seed must arrive");
+    assert!(
+        viewer.recv_any(300).await.is_none(),
+        "SET arrived once per pattern"
+    );
+
+    assert_eq!(writer.cmd(&["APPEND", "dup:key", "y"]).await, int(2));
+    let delta = viewer.recv_any(1000).await.expect("the delta must arrive");
+    assert!(delta.contains("keydelta") && delta.contains("append"));
+    assert!(
+        viewer.recv_any(300).await.is_none(),
+        "overlapping patterns delivered the APPEND delta more than once"
+    );
+}
+
 //
 // A grant pattern authorizes reads and writes separately. Without that, a
 // browser handed `catalog:*` so it could read the catalog could also rewrite

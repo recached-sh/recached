@@ -91,7 +91,7 @@ fn parse_grant(entry: &str) -> Grant {
 /// would have to start distinguishing them here.
 pub(crate) fn scopes_match(grants: &[Grant], keys: &[String]) -> bool {
     keys.is_empty()
-        || keys.iter().any(|k| {
+        || keys.iter().all(|k| {
             grants
                 .iter()
                 .any(|g| core_engine::store::glob_match(&g.pattern, k))
@@ -238,11 +238,10 @@ pub(crate) fn command_scope(cmd: &Command) -> CommandScope {
         // QSUB patterns are scope-checked against the grant in the WS handler.
         | Command::QSub(_)
         | Command::QUnsub(_)
-        // QUIT and CLIENT describe the connection itself, which a scoped
-        // connection is entitled to know about; COMMAND describes the server's
-        // vocabulary, which is public.
+        // QUIT and most CLIENT subcommands describe the connection itself,
+        // which a scoped connection is entitled to know about; COMMAND
+        // describes the server's vocabulary, which is public.
         | Command::Quit
-        | Command::Client(_)
         | Command::CommandQuery(_)
         // CLUSTER and MODULE answer the same sentence to everyone — "not a
         // cluster", "no modules" — and describe no state a scope could protect.
@@ -253,6 +252,17 @@ pub(crate) fn command_scope(cmd: &Command) -> CommandScope {
         // classified with the key commands below.
         | Command::Memory(_)
         | Command::Unknown(_) => CommandScope::KeyLess,
+
+        // CLIENT LIST exposes every connected peer, so unlike CLIENT ID and
+        // CLIENT SETNAME it is server-wide metadata.
+        Command::Client(args)
+            if args
+                .first()
+                .is_some_and(|arg| arg.eq_ignore_ascii_case("LIST")) =>
+        {
+            CommandScope::Admin
+        }
+        Command::Client(_) => CommandScope::KeyLess,
 
         Command::Keys(_)
         | Command::Scan(_, _, _)

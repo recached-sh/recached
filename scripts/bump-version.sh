@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Usage: ./scripts/bump-version.sh <new-version>
-# Updates the single version entry in [workspace.package] of the root Cargo.toml.
-# All crates inherit from there, so this is the only file that ever needs editing.
+# Updates Cargo workspace metadata plus every published npm manifest and lockfile.
 set -euo pipefail
 
 NEW_VERSION="${1:?Usage: $0 <new-version>  e.g. $0 0.2.0}"
@@ -35,7 +34,7 @@ echo "Bumped $CURRENT → $NEW_VERSION in $CARGO_TOML"
 update_package_json() {
     local pkg="$1"
     python3 - "$pkg" "$NEW_VERSION" <<'PYEOF'
-import json, sys
+import json, os, sys
 path, version = sys.argv[1], sys.argv[2]
 with open(path) as f:
     data = json.load(f)
@@ -43,8 +42,19 @@ data['version'] = version
 with open(path, 'w') as f:
     json.dump(data, f, indent=2)
     f.write('\n')
+
+lock_path = os.path.join(os.path.dirname(path), 'package-lock.json')
+if os.path.exists(lock_path):
+    with open(lock_path) as f:
+        lock = json.load(f)
+    lock['version'] = version
+    if '' in lock.get('packages', {}):
+        lock['packages']['']['version'] = version
+    with open(lock_path, 'w') as f:
+        json.dump(lock, f, indent=2)
+        f.write('\n')
 PYEOF
-    echo "Bumped $NEW_VERSION in $pkg"
+    echo "Bumped $NEW_VERSION in $pkg and its lockfile"
 }
 
 update_package_json "$ROOT/wasm-edge/package.json"

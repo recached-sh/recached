@@ -61,6 +61,82 @@ impl ServerState {
         }
     }
 
+    /// Whether a membership is already connection-scoped. `EADD` may add a
+    /// second holder to such a membership, but must never adopt a member that
+    /// was created by ordinary `SADD`.
+    pub(crate) fn is_ephemeral_member(&self, key: &str, member: &str) -> bool {
+        self.ephemeral_members
+            .lock()
+            .is_ok_and(|map| map.contains_key(&(key.to_string(), member.to_string())))
+    }
+
+    /// Keys and set memberships currently held by `conn_id`, without changing
+    /// the registry. Disconnect cleanup uses this to reserve all relevant key
+    /// ordering guards before it decides which holds are the last ones.
+    pub(crate) fn ephemeral_claims_for(
+        &self,
+        conn_id: u64,
+    ) -> (Vec<String>, Vec<(String, Vec<String>)>) {
+        let keys = self
+            .ephemeral
+            .lock()
+            .map(|map| {
+                map.iter()
+                    .filter(|(_, holders)| holders.contains(&conn_id))
+                    .map(|(key, _)| key.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut members: HashMap<String, Vec<String>> = HashMap::new();
+        if let Ok(map) = self.ephemeral_members.lock() {
+            for ((key, member), holders) in map.iter() {
+                if holders.contains(&conn_id) {
+                    members.entry(key.clone()).or_default().push(member.clone());
+                }
+            }
+        }
+        (keys, members.into_iter().collect())
+    }
+
+    pub(crate) fn forget_ephemeral_key(&self, key: &str) {
+        if let Ok(mut map) = self.ephemeral.lock() {
+            map.remove(key);
+        }
+    }
+
+    pub(crate) fn forget_ephemeral_members_for_key(&self, key: &str) {
+        if let Ok(mut map) = self.ephemeral_members.lock() {
+            map.retain(|(member_key, _), _| member_key != key);
+        }
+    }
+
+    pub(crate) fn forget_all_ephemeral(&self) {
+        if let Ok(mut map) = self.ephemeral.lock() {
+            map.clear();
+        }
+        if let Ok(mut map) = self.ephemeral_members.lock() {
+            map.clear();
+        }
+    }
+
+    pub(crate) fn forget_ephemeral_keys<'a>(&self, keys: impl IntoIterator<Item = &'a str>) {
+        let keys: HashSet<&str> = keys.into_iter().collect();
+        if let Ok(mut map) = self.ephemeral.lock() {
+            map.retain(|key, _| !keys.contains(key.as_str()));
+        }
+        if let Ok(mut map) = self.ephemeral_members.lock() {
+            map.retain(|(key, _), _| !keys.contains(key.as_str()));
+        }
+    }
+
+    pub(crate) fn forget_ephemeral_members(&self, key: &str, members: &[String]) {
+        if let Ok(mut map) = self.ephemeral_members.lock() {
+            for member in members {
+                map.remove(&(key.to_string(), member.clone()));
+            }
+        }
+    }
+
     /// Ephemeral set memberships `conn_id` was the last holder of, grouped by
     /// set key. Called once when a connection closes.
     pub(crate) fn take_ephemeral_members_for(&self, conn_id: u64) -> Vec<(String, Vec<String>)> {
@@ -79,6 +155,91 @@ impl ServerState {
             false
         });
         released.into_iter().collect()
+    }
+
+    /// Snapshot only durable state. Ephemeral keys and memberships are live
+    /// connection state and must not be resurrected after a clean restart.
+    fn durable_snapshot(&self, store: &KeyValueStore) -> Vec<SnapshotEntry> {
+        let ephemeral_keys: HashSet<String> = self
+            .ephemeral
+            .lock()
+            .expect("ephemeral mutex poisoned")
+            .keys()
+            .cloned()
+            .collect();
+        let mut ephemeral_members: HashMap<String, HashSet<String>> = HashMap::new();
+        for (key, member) in self
+            .ephemeral_members
+            .lock()
+            .expect("ephemeral member mutex poisoned")
+            .keys()
+        {
+            ephemeral_members
+                .entry(key.clone())
+                .or_default()
+                .insert(member.clone());
+        }
+        store
+            .snapshot()
+            .into_iter()
+            .filter_map(|mut entry| {
+                if ephemeral_keys.contains(&entry.key) {
+                    return None;
+                }
+                if let SnapshotValue::Set(members) = &mut entry.value {
+                    if let Some(ephemeral) = ephemeral_members.get(&entry.key) {
+                        members.retain(|member| !ephemeral.contains(member));
+                    }
+                    if members.is_empty() {
+                        return None;
+                    }
+                }
+                Some(entry)
+            })
+            .collect()
+    }
+
+    /// Re-seed the freshly truncated AOF with live ephemeral ownership. The
+    /// snapshot deliberately omits this state, but later relative mutations
+    /// (notably APPEND) still need replay to know that their key must be
+    /// discarded after a crash.
+    fn ephemeral_aof_seed(&self, store: &KeyValueStore) -> Vec<Vec<u8>> {
+        let mut keys: Vec<String> = self
+            .ephemeral
+            .lock()
+            .expect("ephemeral mutex poisoned")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort_unstable();
+        let mut frames = Vec::new();
+        for key in keys {
+            if let Value::BulkString(Some(value)) = store.get_current(&key) {
+                frames.push(resp_push(&[b"ESET", key.as_bytes(), value.as_slice()]));
+            }
+        }
+
+        let mut by_key: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (key, member) in self
+            .ephemeral_members
+            .lock()
+            .expect("ephemeral member mutex poisoned")
+            .keys()
+        {
+            if matches!(
+                store.execute(Command::SIsMember(key.clone(), member.clone())),
+                Value::Integer(1)
+            ) {
+                by_key.entry(key.clone()).or_default().push(member.clone());
+            }
+        }
+        for (key, mut members) in by_key {
+            members.sort_unstable();
+            let mut parts: Vec<&[u8]> = vec![b"EADD", key.as_bytes()];
+            parts.extend(members.iter().map(String::as_bytes));
+            frames.push(resp_push(&parts));
+        }
+        frames
     }
 
     /// Keys `conn_id` was the **last** holder of, removed from the registry.
@@ -289,10 +450,15 @@ impl ServerState {
                 aof.append(&checkpoint_frame(checkpoint_id)).await?;
                 aof.flush().await?;
             }
-            save_snapshot(store, &self.snap, checkpoint_id).await?;
+            let entries = self.durable_snapshot(store);
+            save_snapshot_entries(entries, &self.snap, checkpoint_id).await?;
             self.persist_dedup().await?;
             if let Some(aof) = &self.aof {
                 aof.truncate().await?;
+                for frame in self.ephemeral_aof_seed(store) {
+                    aof.append(&frame).await?;
+                }
+                aof.flush().await?;
             }
             Ok(())
         }
