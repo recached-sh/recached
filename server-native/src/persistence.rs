@@ -107,12 +107,21 @@ pub(crate) struct LoadedSnapshot {
     pub(crate) aof_checkpoint: u64,
 }
 
+#[cfg(test)]
 pub(crate) async fn save_snapshot(
     store: &KeyValueStore,
     cfg: &SnapshotConfig,
     aof_checkpoint: u64,
 ) -> std::io::Result<()> {
     let entries = store.snapshot();
+    save_snapshot_entries(entries, cfg, aof_checkpoint).await
+}
+
+pub(crate) async fn save_snapshot_entries(
+    entries: Vec<SnapshotEntry>,
+    cfg: &SnapshotConfig,
+    aof_checkpoint: u64,
+) -> std::io::Result<()> {
     let count = entries.len();
     let tmp = temp_sibling(&cfg.path, "snap");
     let bytes = rmp_serde::to_vec(&SnapshotFile {
@@ -245,6 +254,110 @@ impl AofWriter {
     }
 }
 
+#[derive(Default)]
+struct ReplayEphemeral {
+    keys: HashSet<String>,
+    members: HashSet<(String, String)>,
+}
+
+impl ReplayEphemeral {
+    fn claimable_members(&self, cmd: &Command, store: &KeyValueStore) -> Vec<String> {
+        let Command::EAdd(key, members) = cmd else {
+            return Vec::new();
+        };
+        members
+            .iter()
+            .filter(|member| {
+                self.members.contains(&(key.clone(), (*member).clone()))
+                    || matches!(
+                        store.execute(Command::SIsMember(key.clone(), (*member).clone())),
+                        Value::Integer(0)
+                    )
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn forget_keys<'a>(&mut self, keys: impl IntoIterator<Item = &'a str>) {
+        let keys: HashSet<&str> = keys.into_iter().collect();
+        self.keys.retain(|key| !keys.contains(key.as_str()));
+        self.members.retain(|(key, _)| !keys.contains(key.as_str()));
+    }
+
+    fn observe(&mut self, cmd: &Command, response: &Value, claimable: Vec<String>) {
+        if matches!(response, Value::Error(_)) {
+            return;
+        }
+        match cmd {
+            Command::ESet(key, _) => {
+                self.members.retain(|(member_key, _)| member_key != key);
+                self.keys.insert(key.clone());
+            }
+            Command::EAdd(key, _) => {
+                self.keys.remove(key);
+                self.members
+                    .extend(claimable.into_iter().map(|member| (key.clone(), member)));
+            }
+            Command::Set(key, _, _) => self.forget_keys(std::iter::once(key.as_str())),
+            Command::MSet(pairs) => {
+                self.forget_keys(pairs.iter().map(|(key, _)| key.as_str()));
+            }
+            Command::Del(keys) | Command::Unlink(keys) => {
+                self.forget_keys(keys.iter().map(String::as_str));
+            }
+            Command::FlushDb => {
+                self.keys.clear();
+                self.members.clear();
+            }
+            Command::SRem(key, members) => {
+                for member in members {
+                    self.members.remove(&(key.clone(), member.clone()));
+                }
+            }
+            Command::SMove(source, destination, member)
+                if matches!(response, Value::Integer(1)) =>
+            {
+                self.members.remove(&(source.clone(), member.clone()));
+                self.members.remove(&(destination.clone(), member.clone()));
+            }
+            Command::Rename(source, destination) if matches!(response, Value::SimpleString(_)) => {
+                self.forget_keys([source.as_str(), destination.as_str()]);
+            }
+            Command::SInterStore(destination, _)
+            | Command::SUnionStore(destination, _)
+            | Command::SDiffStore(destination, _) => {
+                self.forget_keys(std::iter::once(destination.as_str()));
+            }
+            _ => {}
+        }
+    }
+
+    fn discard_abandoned(self, store: &KeyValueStore) -> std::io::Result<()> {
+        if !self.keys.is_empty()
+            && let Value::Error(message) =
+                store.execute(Command::Del(self.keys.into_iter().collect()))
+        {
+            return Err(std::io::Error::new(ErrorKind::InvalidData, message));
+        }
+        let mut by_key: HashMap<String, Vec<String>> = HashMap::new();
+        for (key, member) in self.members {
+            by_key.entry(key).or_default().push(member);
+        }
+        for (key, members) in by_key {
+            if let Value::Error(message) = store.execute(Command::SRem(key.clone(), members)) {
+                return Err(std::io::Error::new(ErrorKind::InvalidData, message));
+            }
+            if matches!(
+                store.execute(Command::SCard(key.clone())),
+                Value::Integer(0)
+            ) {
+                let _ = store.execute(Command::Del(vec![key]));
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 pub(crate) async fn replay_aof(
     store: &KeyValueStore,
@@ -285,6 +398,7 @@ pub(crate) async fn replay_aof_from_checkpoint(
     }
 
     let mut replayed = 0usize;
+    let mut ephemeral = ReplayEphemeral::default();
     let mut offset = replay_start;
     while offset < bytes.len() {
         match Value::parse(&bytes[offset..]) {
@@ -305,7 +419,9 @@ pub(crate) async fn replay_aof_from_checkpoint(
                         format!("invalid AOF command at offset {}: {e}", offset - consumed),
                     )
                 })?;
-                if let Value::Error(message) = store.execute(cmd) {
+                let claimable = ephemeral.claimable_members(&cmd, store);
+                let response = store.execute(cmd.clone());
+                if let Value::Error(message) = &response {
                     return Err(std::io::Error::new(
                         ErrorKind::InvalidData,
                         format!(
@@ -314,6 +430,7 @@ pub(crate) async fn replay_aof_from_checkpoint(
                         ),
                     ));
                 }
+                ephemeral.observe(&cmd, &response, claimable);
                 replayed += 1;
             }
             Err(e) if e.is_incomplete() => {
@@ -328,6 +445,7 @@ pub(crate) async fn replay_aof_from_checkpoint(
             }
         }
     }
+    ephemeral.discard_abandoned(store)?;
     if replayed > 0 {
         info!("AOF replayed: {} commands ← {:?}", replayed, path);
     }
@@ -648,11 +766,17 @@ mod durability_tests {
         let at_cap = "a".repeat(core_engine::store::MAX_PATTERN_BYTES);
         assert_eq!(
             verify_sync_token(secret, &mint(&at_cap)),
-            Ok(vec![at_cap.clone()])
+            Ok(vec![Grant::rw(&at_cap)])
         );
         assert_eq!(
             verify_sync_token(secret, &mint("cart:42:*,user:1:*")),
-            Ok(vec!["cart:42:*".to_string(), "user:1:*".to_string()])
+            Ok(vec![Grant::rw("cart:42:*"), Grant::rw("user:1:*")])
+        );
+        // The cap applies to the pattern, not the entry: an access prefix
+        // does not eat into a grant's pattern budget.
+        assert_eq!(
+            verify_sync_token(secret, &mint(&format!("r={at_cap}"))),
+            Ok(vec![Grant::ro(&at_cap)])
         );
     }
 }

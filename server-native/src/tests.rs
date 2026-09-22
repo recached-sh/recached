@@ -54,6 +54,7 @@ async fn spawn_server_cfg(
         is_replica: AtomicBool::new(start_as_replica),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -244,6 +245,25 @@ async fn replay_aof_basic() {
 }
 
 #[tokio::test]
+async fn replay_aof_discards_abandoned_ephemeral_state() {
+    let store = KeyValueStore::new();
+    let path = tmp_path("aof_ephemeral.aof");
+    let resp = "*3\r\n$4\r\nESET\r\n$8\r\npresence\r\n$2\r\non\r\n\
+                *3\r\n$4\r\nSADD\r\n$4\r\nroom\r\n$7\r\ndurable\r\n\
+                *3\r\n$4\r\nEADD\r\n$4\r\nroom\r\n$9\r\ntransient\r\n";
+    tokio::fs::write(&path, resp.as_bytes()).await.unwrap();
+
+    assert_eq!(replay_aof(&store, &path).await.unwrap(), 3);
+    assert_eq!(store.execute(Command::Get("presence".into())), nil());
+    assert_eq!(
+        store.execute(Command::SMembers("room".into())),
+        Value::Array(Some(vec![bulk("durable")]))
+    );
+
+    let _ = tokio::fs::remove_file(&path).await;
+}
+
+#[tokio::test]
 async fn replay_aof_push_frames() {
     // The live server records writes via `on_write`, which stores them in
     // RESP3 Push (`>`) form. Replay must accept those, not just `*` arrays.
@@ -286,6 +306,107 @@ async fn snapshot_save_and_load() {
         Value::BulkString(Some(b"world".to_vec()))
     );
     let _ = tokio::fs::remove_file(&path).await;
+}
+
+#[tokio::test]
+async fn server_snapshot_excludes_ephemeral_state() {
+    let path = tmp_path("ephemeral_snapshot.rdb");
+    let state = state_with_snapshot_path(path.clone());
+    let store = KeyValueStore::new();
+    assert_eq!(
+        store.execute(Command::Set(
+            "durable".into(),
+            "value".into(),
+            SetOptions::default()
+        )),
+        ok()
+    );
+    assert_eq!(
+        store.execute(Command::ESet("presence".into(), "on".into())),
+        ok()
+    );
+    state.claim_ephemeral("presence", 1);
+    assert_eq!(
+        store.execute(Command::SAdd("room".into(), vec!["durable".into()])),
+        int(1)
+    );
+    assert_eq!(
+        store.execute(Command::EAdd("room".into(), vec!["transient".into()])),
+        int(1)
+    );
+    state.claim_ephemeral_members("room", &["transient".into()], 1);
+
+    state.save(&store).await.unwrap();
+    let restored = KeyValueStore::new();
+    assert!(load_snapshot(&restored, &path).await.unwrap());
+    assert_eq!(restored.execute(Command::Get("presence".into())), nil());
+    assert_eq!(
+        restored.execute(Command::Get("durable".into())),
+        bulk("value")
+    );
+    assert_eq!(
+        restored.execute(Command::SMembers("room".into())),
+        Value::Array(Some(vec![bulk("durable")]))
+    );
+
+    let _ = tokio::fs::remove_file(&path).await;
+    let _ = tokio::fs::remove_file(path.with_extension("dedup")).await;
+}
+
+#[tokio::test]
+async fn checkpoint_reseeds_live_ephemeral_keys_before_later_mutations() {
+    let snapshot_path = tmp_path("ephemeral_checkpoint.rdb");
+    let aof_path = tmp_path("ephemeral_checkpoint.aof");
+    let _ = tokio::fs::remove_file(&snapshot_path).await;
+    let _ = tokio::fs::remove_file(&aof_path).await;
+    let state = Arc::new(ServerState {
+        snap: Arc::new(SnapshotConfig {
+            path: snapshot_path.clone(),
+            last_save: AtomicI64::new(0),
+            checkpoint_id: AtomicU64::new(0),
+        }),
+        aof: Some(Arc::new(
+            AofWriter::open(aof_path.clone(), AofSync::No)
+                .await
+                .unwrap(),
+        )),
+        replicas: ReplHub::new(),
+        is_replica: AtomicBool::new(false),
+        dedup: std::sync::Mutex::new(HashMap::new()),
+        ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        dedup_dirty: AtomicBool::new(false),
+        dedup_order: tokio::sync::Mutex::new(()),
+        save_lock: tokio::sync::Mutex::new(()),
+        persistence_healthy: AtomicBool::new(true),
+        persistence_failures: AtomicU64::new(0),
+    });
+    let store = KeyValueStore::new();
+    assert_eq!(
+        store.execute(Command::ESet("presence".into(), "on".into())),
+        ok()
+    );
+    state.claim_ephemeral("presence", 1);
+    state.save(&store).await.unwrap();
+
+    let append = Command::Append("presence".into(), b"line".to_vec());
+    let response = store.execute(append.clone());
+    let frame = broadcast_for(&append, &response, now_unix_ms()).unwrap();
+    let aof = state.aof.as_ref().unwrap();
+    aof.append(&frame).await.unwrap();
+    aof.flush().await.unwrap();
+
+    let restored = KeyValueStore::new();
+    let loaded = load_snapshot_checkpoint(&restored, &snapshot_path)
+        .await
+        .unwrap();
+    replay_aof_from_checkpoint(&restored, &aof_path, loaded.aof_checkpoint)
+        .await
+        .unwrap();
+    assert_eq!(restored.execute(Command::Get("presence".into())), nil());
+
+    let _ = tokio::fs::remove_file(&snapshot_path).await;
+    let _ = tokio::fs::remove_file(&aof_path).await;
 }
 
 // ── AofWriter append / truncate ───────────────────────────────────────────
@@ -874,6 +995,7 @@ async fn integration_aof_replay() {
         is_replica: AtomicBool::new(false),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1056,6 +1178,7 @@ fn state_with_snapshot_path(path: PathBuf) -> Arc<ServerState> {
         is_replica: AtomicBool::new(false),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1377,6 +1500,7 @@ async fn integration_replica_receives_write() {
             is_replica: AtomicBool::new(false),
             dedup: std::sync::Mutex::new(HashMap::new()),
             ephemeral: std::sync::Mutex::new(HashMap::new()),
+            ephemeral_members: std::sync::Mutex::new(HashMap::new()),
             dedup_dirty: std::sync::atomic::AtomicBool::new(false),
             dedup_order: tokio::sync::Mutex::new(()),
             save_lock: tokio::sync::Mutex::new(()),
@@ -1435,6 +1559,7 @@ async fn integration_replica_receives_write() {
         is_replica: AtomicBool::new(true),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1726,6 +1851,7 @@ async fn integration_connection_limit() {
         is_replica: AtomicBool::new(false),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1851,6 +1977,7 @@ async fn integration_failover_timeout_does_not_promote() {
         is_replica: AtomicBool::new(true),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -2035,6 +2162,7 @@ async fn ws_closes_a_client_whose_mutation_stream_developed_a_gap() {
         is_replica: AtomicBool::new(false),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -2124,6 +2252,7 @@ async fn spawn_ws_server_full(
         is_replica: AtomicBool::new(false),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -2487,7 +2616,7 @@ fn sync_token_roundtrip_and_rejections() {
     let tok = mint_sync_token("s3cret", "cart:42:*,profile:42");
     assert_eq!(
         verify_sync_token("s3cret", &tok).unwrap(),
-        vec!["cart:42:*".to_string(), "profile:42".to_string()]
+        vec![Grant::rw("cart:42:*"), Grant::rw("profile:42")]
     );
     // Wrong secret → invalid signature.
     assert_eq!(
@@ -2523,15 +2652,20 @@ fn sync_token_roundtrip_and_rejections() {
 
 #[test]
 fn scopes_match_globs_and_flushdb() {
-    let scopes = vec!["cart:42:*".to_string(), "catalog:*".to_string()];
+    let scopes = vec![Grant::rw("cart:42:*"), Grant::rw("catalog:*")];
     assert!(scopes_match(&scopes, &["cart:42:item:1".to_string()]));
     assert!(scopes_match(&scopes, &["catalog:books".to_string()]));
     assert!(!scopes_match(&scopes, &["cart:7:item:1".to_string()]));
     assert!(!scopes_match(&scopes, &["session:42".to_string()]));
-    // Multi-key: any matching key makes the push visible.
-    assert!(scopes_match(
+    // Multi-key frames are all-or-nothing: exposing a matching sibling must
+    // not leak an out-of-scope key in the same RESP command.
+    assert!(!scopes_match(
         &scopes,
         &["session:42".to_string(), "catalog:books".to_string()]
+    ));
+    assert!(scopes_match(
+        &scopes,
+        &["cart:42:item:1".to_string(), "catalog:books".to_string()]
     ));
     // No keys = FLUSHDB — visible to every scope.
     assert!(scopes_match(&scopes, &[]));
@@ -2552,16 +2686,23 @@ fn command_scope_classification() {
         CommandScope::Admin
     ));
     match command_scope(&Command::Get("a".into())) {
-        CommandScope::Keys(k) => assert_eq!(k, vec!["a".to_string()]),
+        CommandScope::Keys(k) => assert_eq!(k, vec![("a".to_string(), Access::Read)]),
         _ => panic!("GET should be key-scoped"),
     }
+    // The store family splits access: the sources are read, the destination
+    // is written.
     match command_scope(&Command::SInterStore(
         "dst".into(),
         vec!["a".into(), "b".into()],
     )) {
-        CommandScope::Keys(k) => {
-            assert!(k.contains(&"dst".to_string()) && k.contains(&"a".to_string()))
-        }
+        CommandScope::Keys(k) => assert_eq!(
+            k,
+            vec![
+                ("a".to_string(), Access::Read),
+                ("b".to_string(), Access::Read),
+                ("dst".to_string(), Access::Write),
+            ]
+        ),
         _ => panic!("SINTERSTORE should be key-scoped"),
     }
 }
@@ -2576,6 +2717,10 @@ fn command_scope_classification() {
 // tests guard against the remaining risk: classifying one wrongly.
 
 fn scoped_keys(cmd: Command) -> Vec<String> {
+    scoped_access(cmd).into_iter().map(|(k, _)| k).collect()
+}
+
+fn scoped_access(cmd: Command) -> Vec<(String, Access)> {
     match command_scope(&cmd) {
         CommandScope::Keys(k) => k,
         other => panic!("{cmd:?} should be key-scoped, got {other:?}"),
@@ -2725,7 +2870,7 @@ fn dedup_envelope_inherits_the_inner_command_scope() {
     let inner = Command::Set("secret:1".into(), "v".into(), SetOptions::default());
     let wrapped = Command::Dedup("client".into(), 1, Box::new(inner));
     match command_scope(&wrapped) {
-        CommandScope::Keys(k) => assert_eq!(k, vec!["secret:1".to_string()]),
+        CommandScope::Keys(k) => assert_eq!(k, vec![("secret:1".to_string(), Access::Write)]),
         other => panic!("DEDUP must inherit inner scope, got {other:?}"),
     }
 
@@ -2739,15 +2884,18 @@ fn scopes_match_allows_when_there_are_no_keys_to_check() {
     // Documented consequence of the design: an empty key list is allowed.
     // That is only safe because `command_scope` returns `Keys(..)` for every
     // key-touching command — the test above is what keeps it safe.
-    assert!(scopes_match(&["cart:*".to_string()], &[]));
+    assert!(scopes_match(&[Grant::rw("cart:*")], &[]));
 }
 
 #[test]
 fn scopes_match_requires_every_key_to_match() {
-    let scopes = vec!["cart:42:*".to_string()];
+    let scopes = vec![Grant::rw("cart:42:*")];
     assert!(scopes_match(&scopes, &["cart:42:a".to_string()]));
     // One in-scope key does not license an out-of-scope sibling.
-    assert!(!scopes_match(&scopes, &["cart:99:a".to_string()]));
+    assert!(!scopes_match(
+        &scopes,
+        &["cart:42:a".to_string(), "cart:99:a".to_string()]
+    ));
 }
 
 // ── Metrics labels ────────────────────────────────────────────────────────
@@ -2776,6 +2924,10 @@ fn all_commands() -> Vec<(Command, Expect)> {
         ),
         (Command::Get("k".into()), Expect::Keys(&["k"])),
         (Command::ESet("k".into(), "v".into()), Expect::Keys(&["k"])),
+        (
+            Command::EAdd("k".into(), vec!["m".into()]),
+            Expect::Keys(&["k"]),
+        ),
         (Command::Del(vec!["k".into()]), Expect::Keys(&["k"])),
         (Command::Unlink(vec!["k".into()]), Expect::Keys(&["k"])),
         (
@@ -3013,6 +3165,7 @@ fn all_commands() -> Vec<(Command, Expect)> {
         (Command::ReplicaOfNoOne, Expect::Admin),
         (Command::Quit, Expect::KeyLess),
         (Command::Client(vec!["ID".into()]), Expect::KeyLess),
+        (Command::Client(vec!["LIST".into()]), Expect::Admin),
         (
             Command::Config(vec!["GET".into(), "*".into()]),
             Expect::Admin,
@@ -3036,7 +3189,7 @@ fn every_command_is_classified_for_scope_enforcement() {
             (CommandScope::Keys(got), Expect::Keys(want)) => {
                 for k in *want {
                     assert!(
-                        got.contains(&k.to_string()),
+                        got.iter().any(|(g, _)| g == k),
                         "{cmd:?} must scope-check key '{k}', reported {got:?}"
                     );
                 }
@@ -3077,9 +3230,9 @@ fn eset_is_a_write_and_reports_its_key() {
 }
 
 #[test]
-fn eset_replays_to_replicas_as_a_plain_set() {
-    // A replica has no connection to scope the lifetime to, so it stores an
-    // ordinary key; the owning server broadcasts the DEL on disconnect.
+fn eset_keeps_its_identity_in_the_replay_stream() {
+    // AOF replay needs to distinguish abandoned connection state from durable
+    // SET data. Replicas and browser stores still execute ESET as a write.
     let frame = broadcast_for(
         &Command::ESet("presence:1".into(), "on".into()),
         &Value::SimpleString("OK".into()),
@@ -3087,12 +3240,8 @@ fn eset_replays_to_replicas_as_a_plain_set() {
     )
     .expect("ESET must broadcast");
     let frame = String::from_utf8_lossy(&frame).into_owned();
-    assert!(frame.contains("SET"), "{frame}");
+    assert!(frame.contains("ESET"), "{frame}");
     assert!(frame.contains("presence:1"));
-    assert!(
-        !frame.contains("ESET"),
-        "replica should receive SET, not ESET"
-    );
 }
 
 #[test]
@@ -4508,7 +4657,7 @@ async fn integration_ws_sync_scope_filters_fanout() {
     let mut writer = WsClient::connect(srv.tcp_addr).await;
 
     // Open mode: SYNC with literal patterns.
-    assert_eq!(scoped.cmd(&["SYNC", "cart:*"]).await, arr(&["cart:*"]));
+    assert_eq!(scoped.cmd(&["SYNC", "cart:*"]).await, arr(&["rw=cart:*"]));
 
     assert_eq!(writer.cmd(&["SET", "cart:1", "x"]).await, ok());
     assert_eq!(writer.cmd(&["SET", "other:1", "y"]).await, ok());
@@ -4527,7 +4676,7 @@ async fn integration_ws_sync_scope_filters_fanout() {
     assert!(p1.contains("cart:1") && p2.contains("other:1"));
 
     // Bare SYNC reports current scopes.
-    assert_eq!(scoped.cmd(&["SYNC"]).await, arr(&["cart:*"]));
+    assert_eq!(scoped.cmd(&["SYNC"]).await, arr(&["rw=cart:*"]));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4548,7 +4697,10 @@ async fn integration_ws_sync_strict_mode_gates_and_filters() {
 
     // Valid token: scoped to cart:* only.
     let tok = mint_sync_token(secret, "cart:*");
-    assert_eq!(client.cmd(&["SYNC", "TOKEN", &tok]).await, arr(&["cart:*"]));
+    assert_eq!(
+        client.cmd(&["SYNC", "TOKEN", &tok]).await,
+        arr(&["rw=cart:*"])
+    );
 
     // In-scope commands work; out-of-scope and admin are refused.
     assert_eq!(client.cmd(&["SET", "cart:1", "x"]).await, ok());
@@ -4557,13 +4709,15 @@ async fn integration_ws_sync_strict_mode_gates_and_filters() {
     assert!(matches!(&r, Value::Error(e) if e.contains("NOSCOPE")));
     let r = client.cmd(&["KEYS", "*"]).await;
     assert!(matches!(&r, Value::Error(e) if e.contains("NOSCOPE")));
+    let r = client.cmd(&["CLIENT", "LIST"]).await;
+    assert!(matches!(&r, Value::Error(e) if e.contains("NOSCOPE")));
 
     // Fan-out: a second scoped client writes in and out of the first's scope.
     let mut writer = WsClient::connect(srv.tcp_addr).await;
     let wtok = mint_sync_token(secret, "cart:*,other:*");
     assert_eq!(
         writer.cmd(&["SYNC", "TOKEN", &wtok]).await,
-        arr(&["cart:*", "other:*"])
+        arr(&["rw=cart:*", "rw=other:*"])
     );
     assert_eq!(writer.cmd(&["SET", "cart:2", "a"]).await, ok());
     assert_eq!(writer.cmd(&["SET", "other:2", "b"]).await, ok());
@@ -4574,6 +4728,688 @@ async fn integration_ws_sync_strict_mode_gates_and_filters() {
         client.recv_push(300).await.is_none(),
         "out-of-scope push leaked on strict connection"
     );
+
+    // A multi-key frame containing one permitted key must not expose its
+    // out-of-scope sibling.
+    assert_eq!(
+        writer
+            .cmd(&["MSET", "cart:mixed", "visible", "other:mixed", "secret"])
+            .await,
+        ok()
+    );
+    assert!(
+        client.recv_push(300).await.is_none(),
+        "mixed-scope MSET leaked its full frame"
+    );
+}
+
+// ── Presence: connection-bound keys and set membership ────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_a_second_tab_keeps_the_user_online() {
+    // The bug this fixes: ownership of an ESET key transferred to whichever
+    // connection wrote it last, so closing the *most recent* tab deleted the
+    // key while every earlier tab was still open — the user went offline
+    // while still looking at the page.
+    let srv = spawn_ws_server().await;
+    let mut tab_a = WsClient::connect(srv.tcp_addr).await;
+    let mut tab_b = WsClient::connect(srv.tcp_addr).await;
+    let mut observer = WsClient::connect(srv.tcp_addr).await;
+
+    assert_eq!(tab_a.cmd(&["ESET", "presence:42", "online"]).await, ok());
+    assert_eq!(tab_b.cmd(&["ESET", "presence:42", "online"]).await, ok());
+
+    // The later tab closes; the earlier one is still open.
+    drop(tab_b);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(
+        observer.cmd(&["GET", "presence:42"]).await,
+        bulk("online"),
+        "closing the later tab must not take the user offline"
+    );
+
+    // The last holder closing does remove it.
+    drop(tab_a);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(
+        observer.cmd(&["GET", "presence:42"]).await,
+        Value::BulkString(None)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_eadd_membership_follows_the_connection() {
+    // "Who is in this room" — membership that cleans itself up, readable with
+    // the ordinary set commands and observable through a live query.
+    let srv = spawn_ws_server().await;
+    let mut alice = WsClient::connect(srv.tcp_addr).await;
+    let mut bob = WsClient::connect(srv.tcp_addr).await;
+    let mut observer = WsClient::connect(srv.tcp_addr).await;
+
+    assert_eq!(alice.cmd(&["EADD", "room:1", "alice"]).await, int(1));
+    assert_eq!(bob.cmd(&["EADD", "room:1", "bob"]).await, int(1));
+    assert_eq!(observer.cmd(&["SCARD", "room:1"]).await, int(2));
+
+    // Bob leaves: his membership goes, Alice's stays.
+    drop(bob);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(
+        observer.cmd(&["SMEMBERS", "room:1"]).await,
+        Value::Array(Some(vec![bulk("alice")]))
+    );
+
+    // The set disappears once the room empties.
+    drop(alice);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(observer.cmd(&["EXISTS", "room:1"]).await, int(0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_eadd_membership_survives_a_second_tab() {
+    // Same rule one level down: a member is held by every connection that
+    // added it, so one of a user's tabs closing does not remove them.
+    let srv = spawn_ws_server().await;
+    let mut tab_a = WsClient::connect(srv.tcp_addr).await;
+    let mut tab_b = WsClient::connect(srv.tcp_addr).await;
+    let mut observer = WsClient::connect(srv.tcp_addr).await;
+
+    assert_eq!(tab_a.cmd(&["EADD", "room:2", "alice"]).await, int(1));
+    // The second tab re-adds the same member; SADD semantics make it a no-op
+    // in the set, but it takes a hold on the membership.
+    assert_eq!(tab_b.cmd(&["EADD", "room:2", "alice"]).await, int(0));
+
+    drop(tab_b);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(observer.cmd(&["SCARD", "room:2"]).await, int(1));
+
+    drop(tab_a);
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(observer.cmd(&["EXISTS", "room:2"]).await, int(0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_eadd_does_not_adopt_a_persistent_member() {
+    let srv = spawn_ws_server().await;
+    let mut durable = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(
+        durable.cmd(&["SADD", "room:durable", "alice"]).await,
+        int(1)
+    );
+
+    {
+        let mut ephemeral = WsClient::connect(srv.tcp_addr).await;
+        assert_eq!(
+            ephemeral.cmd(&["EADD", "room:durable", "alice"]).await,
+            int(0)
+        );
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(
+        durable.cmd(&["SISMEMBER", "room:durable", "alice"]).await,
+        int(1),
+        "EADD must not turn an existing durable member into connection state"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tcp_eset_is_released_when_the_connection_closes() {
+    let srv = spawn_server().await;
+    {
+        let mut owner = RespClient::connect(srv.tcp_addr).await;
+        assert_eq!(owner.cmd(&["ESET", "tcp:presence", "on"]).await, ok());
+    }
+    for _ in 0..20 {
+        if srv.store.execute(Command::Get("tcp:presence".into())) == nil() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("TCP ephemeral key outlived its connection");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transaction_eset_is_released_when_the_connection_closes() {
+    let srv = spawn_ws_server().await;
+    {
+        let mut owner = WsClient::connect(srv.tcp_addr).await;
+        assert_eq!(owner.cmd(&["MULTI"]).await, ok());
+        assert_eq!(
+            owner.cmd(&["ESET", "tx:presence", "on"]).await,
+            Value::SimpleString("QUEUED".into())
+        );
+        assert_eq!(owner.cmd(&["EXEC"]).await, Value::Array(Some(vec![ok()])));
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(srv.store.execute(Command::Get("tx:presence".into())), nil());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_presence_departure_reaches_live_queries() {
+    // A departure is a real mutation, so it fans out like any other — a UI
+    // showing the room updates without polling.
+    let srv = spawn_ws_server().await;
+    let mut viewer = WsClient::connect(srv.tcp_addr).await;
+    let mut bob = WsClient::connect(srv.tcp_addr).await;
+
+    assert_eq!(bob.cmd(&["EADD", "room:3", "bob"]).await, int(1));
+    // qstate is [tag, pattern, key, value] — the value being a type-tagged
+    // collection.
+    assert_eq!(
+        viewer.cmd(&["QSUB", "room:3"]).await,
+        Value::Array(Some(vec![
+            bulk("qstate"),
+            bulk("room:3"),
+            bulk("room:3"),
+            Value::Array(Some(vec![bulk("set"), bulk("bob")])),
+        ]))
+    );
+
+    drop(bob);
+    let push = viewer
+        .recv_any(1000)
+        .await
+        .expect("the room must be told bob left");
+    assert!(push.contains("room:3"), "unexpected frame: {push}");
+}
+
+#[test]
+fn ephemeral_holds_are_released_only_by_the_last_holder() {
+    let state = state_with_snapshot_path(tmp_path("presence_holds.rdb"));
+    state.claim_ephemeral("presence:42", 1);
+    state.claim_ephemeral("presence:42", 2);
+    // Repeating from the same connection is idempotent.
+    state.claim_ephemeral("presence:42", 2);
+
+    assert!(
+        state.take_ephemeral_for(2).is_empty(),
+        "connection 1 still holds the key"
+    );
+    assert_eq!(state.take_ephemeral_for(1), vec!["presence:42".to_string()]);
+    // And it is gone from the registry, not merely unreported.
+    assert!(state.take_ephemeral_for(1).is_empty());
+}
+
+#[test]
+fn ephemeral_members_are_released_per_member_and_grouped_by_key() {
+    let state = state_with_snapshot_path(tmp_path("presence_holds.rdb"));
+    state.claim_ephemeral_members("room:1", &["alice".to_string()], 1);
+    state.claim_ephemeral_members("room:1", &["bob".to_string()], 2);
+    state.claim_ephemeral_members("room:2", &["bob".to_string()], 2);
+
+    assert!(state.take_ephemeral_members_for(3).is_empty());
+
+    let mut released = state.take_ephemeral_members_for(2);
+    released.sort();
+    assert_eq!(
+        released,
+        vec![
+            ("room:1".to_string(), vec!["bob".to_string()]),
+            ("room:2".to_string(), vec!["bob".to_string()]),
+        ],
+        "one SREM per set, so each fans out as its own mutation"
+    );
+    assert_eq!(
+        state.take_ephemeral_members_for(1),
+        vec![("room:1".to_string(), vec!["alice".to_string()])]
+    );
+}
+
+// ── Delta frames ──────────────────────────────────────────────────────────
+//
+// A keychange carries the key's whole value, so appending one token to an
+// agent's output re-sent the entire transcript to every viewer, and one SADD
+// into a 10k-member set re-sent all 10k. A delta carries the mutation instead.
+
+#[test]
+fn delta_is_the_command_not_a_diff() {
+    let (key, delta) = delta_for(&Command::Append("out".into(), b" tok".to_vec()))
+        .expect("APPEND is the case deltas exist for");
+    assert_eq!(key, "out");
+    assert_eq!(delta.op, "append");
+    assert_eq!(delta.args, vec![b" tok".to_vec()]);
+
+    let (_, delta) = delta_for(&Command::SAdd("s".into(), vec!["a".into(), "b".into()])).unwrap();
+    assert_eq!(delta.op, "sadd");
+    assert_eq!(delta.args, vec![b"a".to_vec(), b"b".to_vec()]);
+
+    // HSET flattens field/value so the delta parses back as the command.
+    let (_, delta) = delta_for(&Command::HSet(
+        "h".into(),
+        vec![("f".to_string(), b"v".to_vec())],
+    ))
+    .unwrap();
+    assert_eq!(delta.op, "hset");
+    assert_eq!(delta.args, vec![b"f".to_vec(), b"v".to_vec()]);
+
+    // DEDUP is transparent: the wrapped write is what gets replayed.
+    let wrapped = Command::Dedup(
+        "c".into(),
+        1,
+        Box::new(Command::SRem("s".into(), vec!["a".into()])),
+    );
+    let (key, delta) = delta_for(&wrapped).unwrap();
+    assert_eq!((key.as_str(), delta.op), ("s", "srem"));
+}
+
+#[test]
+fn commands_that_cannot_be_replayed_verbatim_have_no_delta() {
+    // SET is already as small as its result — a delta would buy nothing.
+    assert!(
+        delta_for(&Command::Set(
+            "k".into(),
+            b"v".to_vec(),
+            SetOptions::default()
+        ))
+        .is_none()
+    );
+    assert!(delta_for(&Command::Del(vec!["k".into()])).is_none());
+    assert!(delta_for(&Command::Incr("n".into())).is_none());
+
+    // ZADD options change what is stored, so replaying without them would
+    // compute a different score on the client.
+    let conditional = Command::ZAdd(
+        "z".into(),
+        ZAddOptions {
+            condition: Some(ZAddCondition::Nx),
+            ..Default::default()
+        },
+        vec![(1.0, "m".to_string())],
+    );
+    assert!(delta_for(&conditional).is_none());
+
+    let incr = Command::ZAdd(
+        "z".into(),
+        ZAddOptions {
+            incr: true,
+            ..Default::default()
+        },
+        vec![(1.0, "m".to_string())],
+    );
+    assert!(delta_for(&incr).is_none());
+
+    // CH only changes the integer reply, so it keeps its delta.
+    let ch = Command::ZAdd(
+        "z".into(),
+        ZAddOptions {
+            ch: true,
+            ..Default::default()
+        },
+        vec![(1.0, "m".to_string())],
+    );
+    assert!(delta_for(&ch).is_some());
+}
+
+#[test]
+fn every_delta_names_a_key_the_command_actually_writes() {
+    // A delta applied to the wrong key silently corrupts it, and a delta for
+    // a command that did not write is a phantom mutation. Both are ruled out
+    // by tying the delta's key to `primary_keys`.
+    for (cmd, _) in all_commands() {
+        let Some((key, _)) = delta_for(&cmd) else {
+            continue;
+        };
+        assert!(
+            is_write_command(&cmd),
+            "{cmd:?} is not a write but produced a delta"
+        );
+        assert!(
+            primary_keys(&cmd).contains(&key),
+            "{cmd:?} produced a delta for '{key}', which it does not write"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_ws_deltas_are_opt_in() {
+    let srv = spawn_ws_server().await;
+    let mut plain = WsClient::connect(srv.tcp_addr).await;
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(plain.cmd(&["QSUB", "d:*"]).await, arr(&["qstate", "d:*"]));
+
+    // A client that never asked keeps receiving whole values, because one
+    // that ignored an unknown frame would silently hold a stale copy.
+    assert_eq!(writer.cmd(&["RPUSH", "d:l", "a"]).await, int(1));
+    let push = plain.recv_any(1000).await.expect("expected a push");
+    assert!(push.contains("keychange"), "unexpected frame: {push}");
+    assert!(!push.contains("keydelta"), "unexpected frame: {push}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_ws_delta_frames_replace_whole_values() {
+    let srv = spawn_ws_server().await;
+    let mut viewer = WsClient::connect(srv.tcp_addr).await;
+    let mut agent = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(viewer.cmd(&["CLIENT", "DELTA", "ON"]).await, ok());
+    assert_eq!(
+        viewer.cmd(&["QSUB", "agent:*"]).await,
+        arr(&["qstate", "agent:*"])
+    );
+
+    // Seed a long transcript, then append one token to it.
+    let transcript = "x".repeat(4096);
+    assert_eq!(agent.cmd(&["SET", "agent:out", &transcript]).await, ok());
+    let _ = viewer.recv_any(1000).await.expect("the SET reaches us");
+
+    assert_eq!(
+        agent.cmd(&["APPEND", "agent:out", " token"]).await,
+        int(transcript.len() as i64 + 6)
+    );
+    let push = viewer.recv_any(1000).await.expect("expected a delta");
+    assert!(push.contains("keydelta"), "unexpected frame: {push}");
+    assert!(push.contains("append"), "unexpected frame: {push}");
+    assert!(push.contains(" token"), "unexpected frame: {push}");
+    // The point of the exercise: the 4 KiB transcript is not in the frame.
+    assert!(
+        push.len() < 200,
+        "delta carried the whole value ({} bytes)",
+        push.len()
+    );
+
+    // Collections take the same path — one SADD no longer re-sends the set.
+    assert_eq!(agent.cmd(&["SADD", "agent:seen", "alice"]).await, int(1));
+    let push = viewer.recv_any(1000).await.expect("expected a delta");
+    assert!(push.contains("keydelta") && push.contains("sadd"));
+
+    // A mutation with no compact form still arrives whole.
+    assert_eq!(agent.cmd(&["SET", "agent:state", "done"]).await, ok());
+    let push = viewer.recv_any(1000).await.expect("expected a keychange");
+    assert!(push.contains("keychange"), "unexpected frame: {push}");
+
+    // And the toggle is reversible.
+    assert_eq!(viewer.cmd(&["CLIENT", "DELTA", "OFF"]).await, ok());
+    assert_eq!(
+        agent.cmd(&["APPEND", "agent:out", "!"]).await,
+        int(transcript.len() as i64 + 7)
+    );
+    let push = viewer.recv_any(1000).await.expect("expected a keychange");
+    assert!(push.contains("keychange"), "unexpected frame: {push}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_ws_a_watched_key_is_delivered_once() {
+    // A live-queried key used to arrive twice: once as the propagation frame
+    // every WebSocket client gets, and once as the keychange for the
+    // subscription. Applying both replays a non-idempotent mutation twice;
+    // it was masked only because the keychange carries the whole value and
+    // happened to land second. A delta could not repair it at all.
+    let srv = spawn_ws_server().await;
+    let mut viewer = WsClient::connect(srv.tcp_addr).await;
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(
+        viewer.cmd(&["QSUB", "once:*"]).await,
+        arr(&["qstate", "once:*"])
+    );
+
+    assert_eq!(writer.cmd(&["RPUSH", "once:l", "a"]).await, int(1));
+    let first = viewer.recv_any(1000).await.expect("expected one push");
+    assert!(first.contains("keychange"), "unexpected frame: {first}");
+    assert!(
+        viewer.recv_any(400).await.is_none(),
+        "the same mutation was delivered twice"
+    );
+
+    // A key *outside* the live query still arrives on the propagation path,
+    // which is the only way an unsubscribed client learns about it.
+    assert_eq!(writer.cmd(&["SET", "other:k", "v"]).await, ok());
+    let push = viewer
+        .recv_any(1000)
+        .await
+        .expect("expected a propagation push");
+    assert!(push.contains("other:k"), "unexpected frame: {push}");
+}
+
+// ── Write scoping: read-only vs read-write grants ─────────────────────────
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overlapping_qsubs_deliver_a_non_idempotent_delta_once() {
+    let srv = spawn_ws_server().await;
+    let mut viewer = WsClient::connect(srv.tcp_addr).await;
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(viewer.cmd(&["CLIENT", "DELTA", "ON"]).await, ok());
+    assert_eq!(
+        viewer.cmd(&["QSUB", "dup:*"]).await,
+        arr(&["qstate", "dup:*"])
+    );
+    assert_eq!(viewer.cmd(&["QSUB", "*"]).await, arr(&["qstate", "*"]));
+
+    assert_eq!(writer.cmd(&["SET", "dup:key", "x"]).await, ok());
+    let _ = viewer.recv_any(1000).await.expect("the seed must arrive");
+    assert!(
+        viewer.recv_any(300).await.is_none(),
+        "SET arrived once per pattern"
+    );
+
+    assert_eq!(writer.cmd(&["APPEND", "dup:key", "y"]).await, int(2));
+    let delta = viewer.recv_any(1000).await.expect("the delta must arrive");
+    assert!(delta.contains("keydelta") && delta.contains("append"));
+    assert!(
+        viewer.recv_any(300).await.is_none(),
+        "overlapping patterns delivered the APPEND delta more than once"
+    );
+}
+
+//
+// A grant pattern authorizes reads and writes separately. Without that, a
+// browser handed `catalog:*` so it could read the catalog could also rewrite
+// it, which makes every shared read model unsafe to sync.
+
+#[test]
+fn token_entries_carry_their_access() {
+    let secret = "access-secret";
+    let tok = mint_sync_token(secret, "r=catalog:*,rw=cart:42:*,session:42");
+    assert_eq!(
+        verify_sync_token(secret, &tok).unwrap(),
+        vec![
+            Grant::ro("catalog:*"),
+            Grant::rw("cart:42:*"),
+            // A bare entry is read-write, which is what every token minted
+            // before write scoping existed meant.
+            Grant::rw("session:42"),
+        ]
+    );
+}
+
+#[test]
+fn a_grant_with_no_pattern_is_refused() {
+    let secret = "empty-secret";
+    // `r=` alone matches only the empty key — always a minting bug, and one
+    // that would otherwise mint a token granting nothing at all.
+    assert_eq!(
+        verify_sync_token(secret, &mint_sync_token(secret, "r=")).unwrap_err(),
+        "token grants an empty pattern"
+    );
+    assert_eq!(
+        verify_sync_token(secret, &mint_sync_token(secret, "cart:*,rw=")).unwrap_err(),
+        "token grants an empty pattern"
+    );
+}
+
+#[test]
+fn read_only_grants_permit_reads_and_refuse_writes() {
+    let grants = vec![Grant::ro("catalog:*"), Grant::rw("cart:42:*")];
+
+    assert!(scopes_allow(&grants, "catalog:books", Access::Read));
+    assert!(!scopes_allow(&grants, "catalog:books", Access::Write));
+
+    // A read-write grant satisfies both, so read-modify-write commands need
+    // only ask for Write.
+    assert!(scopes_allow(&grants, "cart:42:total", Access::Read));
+    assert!(scopes_allow(&grants, "cart:42:total", Access::Write));
+
+    // Outside every grant, neither.
+    assert!(!scopes_allow(&grants, "session:1", Access::Read));
+    assert!(!scopes_allow(&grants, "session:1", Access::Write));
+}
+
+#[test]
+fn read_only_grants_still_receive_the_fan_out() {
+    // Visibility is read access, so a read-only grant is still pushed its
+    // keys. The whole point of a read-only catalog scope is to receive
+    // catalog changes without being able to cause them.
+    assert!(scopes_match(
+        &[Grant::ro("catalog:*")],
+        &["catalog:books".to_string()]
+    ));
+}
+
+#[test]
+fn every_write_command_demands_write_access_on_the_key_it_writes() {
+    // The drift guard for the access split. `is_write_command` already
+    // decides what reaches the AOF, replicas and live queries; if the two
+    // classifications disagree, either a mutation is authorized as a read —
+    // the security bug — or a read demands write access and a correct grant
+    // stops working.
+    for (cmd, _) in all_commands() {
+        let CommandScope::Keys(keys) = command_scope(&cmd) else {
+            // FLUSHDB is the one write that is Admin rather than key-scoped;
+            // it is refused on scoped connections outright.
+            continue;
+        };
+        let writes = keys.iter().any(|(_, a)| *a == Access::Write);
+        assert_eq!(
+            writes,
+            is_write_command(&cmd),
+            "{cmd:?} is classified {:?} for scope enforcement but \
+             is_write_command() says {}",
+            keys,
+            is_write_command(&cmd)
+        );
+    }
+}
+
+#[test]
+fn every_key_a_command_writes_demands_write_access() {
+    // `primary_keys` names the keys a command mutates. Each one must be
+    // classified Write — a key that is mutated but scope-checked as a read
+    // is writable from a read-only grant.
+    for (cmd, _) in all_commands() {
+        let CommandScope::Keys(keys) = command_scope(&cmd) else {
+            continue;
+        };
+        for written in primary_keys(&cmd) {
+            assert!(
+                keys.iter()
+                    .any(|(k, a)| *k == written && *a == Access::Write),
+                "{cmd:?} writes '{written}' but scope-checks it as {keys:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_store_family_reads_its_sources_and_writes_its_destination() {
+    // The case that makes access per key rather than per command: copying
+    // another namespace into your own must not require write access to it.
+    let grants = vec![Grant::ro("theirs:*"), Grant::rw("mine:*")];
+    let cmd = Command::SInterStore(
+        "mine:out".into(),
+        vec!["theirs:a".into(), "theirs:b".into()],
+    );
+    let CommandScope::Keys(keys) = command_scope(&cmd) else {
+        panic!("SINTERSTORE should be key-scoped");
+    };
+    for (key, need) in &keys {
+        assert!(
+            scopes_allow(&grants, key, *need),
+            "'{key}' needs {need:?}, which the grants do not permit"
+        );
+    }
+    // The reverse grant does not work: writing the destination is a write.
+    let reversed = vec![Grant::rw("theirs:*"), Grant::ro("mine:*")];
+    assert!(
+        keys.iter()
+            .any(|(k, need)| !scopes_allow(&reversed, k, *need))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_ws_read_only_scope_refuses_writes() {
+    let secret = "read-only-secret";
+    let srv = spawn_ws_server_cfg(Some(secret.to_string())).await;
+
+    // A backend seeds the catalog over the trusted TCP port.
+    let mut backend = WsClient::connect(srv.tcp_addr).await;
+    let btok = mint_sync_token(secret, "catalog:*,cart:7:*");
+    assert_eq!(
+        backend.cmd(&["SYNC", "TOKEN", &btok]).await,
+        arr(&["rw=catalog:*", "rw=cart:7:*"])
+    );
+    assert_eq!(backend.cmd(&["SET", "catalog:book", "10"]).await, ok());
+
+    // The browser reads the catalog and owns its cart.
+    let mut browser = WsClient::connect(srv.tcp_addr).await;
+    let tok = mint_sync_token(secret, "r=catalog:*,rw=cart:7:*");
+    assert_eq!(
+        browser.cmd(&["SYNC", "TOKEN", &tok]).await,
+        arr(&["r=catalog:*", "rw=cart:7:*"])
+    );
+
+    // Reads inside the read-only grant work.
+    assert_eq!(browser.cmd(&["GET", "catalog:book"]).await, bulk("10"));
+
+    // Writes to it do not — and say so specifically, rather than claiming
+    // the key is outside the connection's scopes.
+    let r = browser.cmd(&["SET", "catalog:book", "0"]).await;
+    assert!(
+        matches!(&r, Value::Error(e) if e.contains("NOSCOPE") && e.contains("read-only")),
+        "expected a read-only refusal, got {r:?}"
+    );
+    // Every shape of write is refused, not just SET.
+    for write in [
+        vec!["DEL", "catalog:book"],
+        vec!["INCR", "catalog:book"],
+        vec!["APPEND", "catalog:book", "x"],
+        vec!["EXPIRE", "catalog:book", "1"],
+        vec!["RENAME", "catalog:book", "catalog:other"],
+        vec!["JMERGE", "catalog:book", "{}"],
+        vec!["DEDUP", "c1", "1", "SET", "catalog:book", "0"],
+    ] {
+        let r = browser.cmd(&write).await;
+        assert!(
+            matches!(&r, Value::Error(e) if e.contains("NOSCOPE")),
+            "{write:?} was not refused: {r:?}"
+        );
+    }
+    // The value is untouched.
+    assert_eq!(browser.cmd(&["GET", "catalog:book"]).await, bulk("10"));
+
+    // A key outside every grant still reports as out of scope.
+    let r = browser.cmd(&["GET", "secret:1"]).await;
+    assert!(
+        matches!(&r, Value::Error(e) if e.contains("outside")),
+        "expected an out-of-scope refusal, got {r:?}"
+    );
+
+    // The read-write half of the same token still works.
+    assert_eq!(browser.cmd(&["SET", "cart:7:item", "1"]).await, ok());
+
+    // And the read-only grant still receives pushes: a catalog change made
+    // by the backend reaches the browser it may not write.
+    assert_eq!(backend.cmd(&["SET", "catalog:book", "12"]).await, ok());
+    let push = browser
+        .recv_push(1000)
+        .await
+        .expect("read-only grants still receive their keys");
+    assert!(push.contains("catalog:book"), "unexpected push: {push}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_ws_read_only_scope_allows_live_queries() {
+    // A live query only reads, so a read-only grant must be able to hold one
+    // — that is how a browser follows a catalog it cannot change.
+    let secret = "qsub-ro-secret";
+    let srv = spawn_ws_server_cfg(Some(secret.to_string())).await;
+    let mut client = WsClient::connect(srv.tcp_addr).await;
+    let tok = mint_sync_token(secret, "r=catalog:*");
+    assert_eq!(
+        client.cmd(&["SYNC", "TOKEN", &tok]).await,
+        arr(&["r=catalog:*"])
+    );
+    assert_eq!(
+        client.cmd(&["QSUB", "catalog:books:*"]).await,
+        arr(&["qstate", "catalog:books:*"])
+    );
+    // WATCH observes a key, which is also a read.
+    assert_eq!(client.cmd(&["WATCH", "catalog:book"]).await, ok());
 }
 
 // ── Duplicate-suppressed delivery (DEDUP) ─────────────────────────────────
@@ -4620,7 +5456,7 @@ async fn integration_dedup_respects_sync_scopes() {
     let srv = spawn_ws_server_cfg(Some(secret.to_string())).await;
     let mut c = WsClient::connect(srv.tcp_addr).await;
     let tok = mint_sync_token(secret, "cart:*");
-    assert_eq!(c.cmd(&["SYNC", "TOKEN", &tok]).await, arr(&["cart:*"]));
+    assert_eq!(c.cmd(&["SYNC", "TOKEN", &tok]).await, arr(&["rw=cart:*"]));
 
     // Scope enforcement applies to the wrapped command.
     assert_eq!(
@@ -4719,7 +5555,10 @@ async fn integration_ws_qsub_strict_scope() {
     let mut client = WsClient::connect(srv.tcp_addr).await;
 
     let tok = mint_sync_token(secret, "cart:*");
-    assert_eq!(client.cmd(&["SYNC", "TOKEN", &tok]).await, arr(&["cart:*"]));
+    assert_eq!(
+        client.cmd(&["SYNC", "TOKEN", &tok]).await,
+        arr(&["rw=cart:*"])
+    );
 
     // A narrower pattern under the grant is allowed (prefix-style cover).
     assert_eq!(
@@ -5193,6 +6032,7 @@ async fn failed_checkpoint_keeps_dirty_state_and_aof_until_recovery() {
         is_replica: AtomicBool::new(false),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -5587,7 +6427,7 @@ mod sweep_notification {
         pattern: &str,
     ) -> mpsc::Receiver<WatchNotif> {
         let (overflow, _overflow_rx) = mpsc::channel(1);
-        let (subscriber, rx) = notification_channel(1, overflow);
+        let (subscriber, rx) = notification_channel(1, overflow, Arc::new(AtomicBool::new(false)));
         let mut pats = registry.patterns.lock().await;
         pats.insert(pattern.to_string(), vec![subscriber]);
         registry.sync_patterns_len(&pats);
@@ -5625,9 +6465,8 @@ mod sweep_notification {
 
         let notification = rx.try_recv().expect("live query was never told");
         assert_eq!(notification.key, "fare:MNL-CEB");
-        assert_eq!(
-            notification.value,
-            Value::BulkString(None),
+        assert!(
+            matches!(&notification.payload, NotifPayload::Full(v) if *v == Value::BulkString(None)),
             "nil is already the delete encoding, so existing clients apply it unchanged"
         );
     }
@@ -5637,7 +6476,8 @@ mod sweep_notification {
         let store = KeyValueStore::new();
         let registry: WatchRegistry = WatchHub::new();
         let (overflow, _overflow_rx) = mpsc::channel(1);
-        let (subscriber, mut rx) = notification_channel(1, overflow);
+        let (subscriber, mut rx) =
+            notification_channel(1, overflow, Arc::new(AtomicBool::new(false)));
         {
             let mut map = registry.map.lock().await;
             map.insert("session:abc".to_string(), vec![subscriber]);
@@ -5652,7 +6492,9 @@ mod sweep_notification {
 
         let notification = rx.try_recv().expect("WATCH-er was never told");
         assert_eq!(notification.key, "session:abc");
-        assert_eq!(notification.value, Value::BulkString(None));
+        assert!(
+            matches!(&notification.payload, NotifPayload::Full(v) if *v == Value::BulkString(None))
+        );
     }
 
     #[tokio::test]
@@ -5697,7 +6539,7 @@ mod sweep_notification {
     async fn a_full_notification_queue_signals_and_drops_the_subscriber() {
         let registry: WatchRegistry = WatchHub::new();
         let (overflow, mut overflow_rx) = mpsc::channel(1);
-        let (subscriber, _rx) = notification_channel(7, overflow);
+        let (subscriber, _rx) = notification_channel(7, overflow, Arc::new(AtomicBool::new(false)));
         {
             let mut map = registry.map.lock().await;
             map.insert("hot".to_string(), vec![subscriber]);

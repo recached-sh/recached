@@ -68,7 +68,7 @@ use core_engine::catalog;
 use core_engine::cmd::{Command, SetExpiry, ZAddCondition};
 use core_engine::resp::{MAX_BULK_STRING_BYTES, Value};
 use core_engine::store::{
-    EvictionPolicy, KeyValueStore, KeyspaceSample, SnapshotEntry, glob_match,
+    EvictionPolicy, KeyValueStore, KeyspaceSample, SnapshotEntry, SnapshotValue, glob_match,
 };
 use futures_util::{SinkExt, StreamExt};
 use metrics::{counter, gauge, histogram};
@@ -640,6 +640,7 @@ async fn run(
         is_replica: std::sync::atomic::AtomicBool::new(is_replica_start),
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_members: std::sync::Mutex::new(HashMap::new()),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -793,6 +794,7 @@ async fn run(
                 // the TTL-only dense index, so large persistent keyspaces cost
                 // nothing here and large volatile keyspaces are amortized.
                 let expired = store_sweep.sweep_expired_reporting_budget(256);
+                state_sweep.forget_ephemeral_keys(expired.iter().map(String::as_str));
                 if !registry_sweep.is_empty() {
                     notify_removed(&registry_sweep, &expired).await;
                 }

@@ -81,7 +81,7 @@ The reported parameters are `maxmemory`, `maxmemory-policy`, `maxclients`, `port
 | `COMMAND INFO [name ...]` | Name, arity, flags and key positions. A name the server does not have replies nil in its slot, so the reply stays aligned with the request. |
 | `COMMAND DOCS [name ...]` | Summary, group and arity per command. RESP3 returns a map; RESP2 returns the same pairs flattened, as Redis degrades it. |
 
-Arity, flags and key positions are transcribed from a real `redis-server`'s own `COMMAND INFO` rather than written by hand: cluster-aware clients and proxies route on `first_key` and `step`, and a wrong arity makes a client reject a call the server would have accepted. The nine commands with no Redis counterpart — `ESET`, `JSET`, `JGET`, `JMERGE`, `RLSET`, `RLCHECK`, `SYNC`, `DEDUP`, `QSUB`, `QUNSUB` — are declared directly.
+Arity, flags and key positions are transcribed from a real `redis-server`'s own `COMMAND INFO` rather than written by hand: cluster-aware clients and proxies route on `first_key` and `step`, and a wrong arity makes a client reject a call the server would have accepted. The commands with no Redis counterpart — `ESET`, `EADD`, `JSET`, `JGET`, `JMERGE`, `RLSET`, `RLCHECK`, `SYNC`, `DEDUP`, `QSUB`, `QUNSUB` — are declared directly.
 
 Recached has no ACL system and no subcommand tree, so the ACL-categories, tips, key-specs and subcommands elements Redis 7 appends to each `COMMAND INFO` entry are present but empty. A client indexing past the sixth element finds an empty list rather than running off the end of the array.
 
@@ -169,7 +169,8 @@ The most common data type. Values are always stored as byte strings; numeric ope
 | `GETSET key value` | Sets the key to a new value and returns the old value atomically — the read and the write happen under one lock, so two concurrent callers can never be handed the same old value. Deprecated in Redis 6.2 — prefer `SET key value GET`. |
 | `MGET key [key ...]` | Returns the values of multiple keys. Keys that do not exist return nil. |
 | `MSET key value [key value ...]` | Sets multiple keys to their respective values in one command. Applied key by key — see [Concurrency model](#concurrency-model): a concurrent reader can observe some keys updated and others not. |
-| `ESET key value` | **Ephemeral set.** Stores a string like `SET`, but the key's lifetime is bound to the connection that wrote it — when that connection closes, the server deletes the key and the deletion is pushed to live queries. Writing the same key again transfers ownership to the newest connection, so a second browser tab keeps presence alive when the first closes. Intended for presence, cursors, and "who is online"; use `SET` for anything that should outlive a connection. |
+| `ESET key value` | **Ephemeral set.** Stores a string like `SET`, but the key's lifetime is bound to the connection that wrote it. Every connection that writes the key *holds* it, and the key is deleted — and the deletion pushed to live queries — when the **last** holder closes, so a second browser tab keeps presence alive when the first closes, whichever order they close in. Intended for presence, cursors, and "who is online"; use `SET` for anything that should outlive a connection. |
+| `EADD key member [member ...]` | **Ephemeral add.** Adds set members like `SADD`, with each membership bound to the connection that added it. When the last connection holding a member closes, that member is removed and the removal is pushed to live queries; once the set empties, the key is deleted. Read it with the ordinary set commands — `SMEMBERS`, `SCARD`, `SISMEMBER` — and follow it with `QSUB`. This is the "who is in this room" primitive: membership that cleans itself up. |
 | `SETNX key value` | Set a key only if it does not exist. Returns 1 if set, 0 if the key already existed. |
 | `SETEX key seconds value` | Set a key with an integer-second expiry. Equivalent to `SET key value EX seconds`. |
 | `PSETEX key milliseconds value` | Set a key with a millisecond-precision expiry. |
@@ -226,6 +227,8 @@ It counts the bytes Recached stores — key name, value contents, and 64 bytes o
 Redis's `SAMPLES` bounds how much of a nested value it walks before extrapolating. Recached always walks all of it, so the option parses (a client that sends it is not broken) and the count is discarded. The reply is never less accurate than what was asked for.
 
 The other `MEMORY` subcommands — `DOCTOR`, `STATS`, `PURGE`, `MALLOC-STATS` — are refused. They describe an allocator arena that Recached has no equivalent of: it holds Rust values in a concurrent map and has nothing to defragment or free on demand. `INFO memory` reports what it can actually measure.
+
+`CLIENT DELTA ON|OFF` asks for compact `keydelta` push frames in place of whole-value `keychange` frames, where the mutation has a compact form (`APPEND`, `SADD`, `SREM`, `LPUSH`, `RPUSH`, `HSET`, `HDEL`, `ZADD`, `ZREM`). Off by default, because a client that did not understand the frame would ignore it and silently hold a stale copy. See [the protocol reference](/server/protocol#key-deltas-client-delta-on).
 
 `MEMORY USAGE` reads a key, so it is scoped like one: a WebSocket connection granted `cart:*` may measure `cart:42` and not `session:8f21`. See [Sync Scoping](/server/sync-scopes).
 
@@ -415,9 +418,11 @@ Controls which keys a WebSocket connection receives pushes for and may operate o
 
 | Command | Description |
 |---|---|
-| `SYNC` | Returns this connection's current scope patterns. |
-| `SYNC TOKEN token` | Sets scopes from a token signed with `RECACHED_SYNC_SECRET` (HMAC-SHA256). Required before any key access when the secret is configured (strict mode). Returns the granted patterns. |
+| `SYNC` | Returns this connection's current grants, in `r=`/`rw=` notation. |
+| `SYNC TOKEN token` | Sets scopes from a token signed with `RECACHED_SYNC_SECRET` (HMAC-SHA256). Required before any key access when the secret is configured (strict mode). Returns the granted entries. |
 | `SYNC pattern [pattern ...]` | Sets scopes directly from glob patterns. Only available when no sync secret is configured — a bandwidth filter, not a security boundary. |
+
+Each scope entry may state its access: `r=catalog:*` is read-only, `rw=cart:42:*` is read-write, and a bare pattern is read-write. A write to a read-only key is refused with `-NOSCOPE key '...' is read-only on this connection`. Access is checked per key, so `SINTERSTORE` needs write only on its destination.
 
 On the TCP port, `SYNC` returns an error — backend connections are trusted and unscoped.
 

@@ -986,6 +986,9 @@ impl RecachedCache {
     /// Set sync scopes directly from comma-separated glob patterns. Only
     /// honoured by servers without a sync secret — a bandwidth filter, not an
     /// authorization boundary. Re-applied automatically on reconnect.
+    ///
+    /// An entry may state its access: `r=catalog:*` is read-only,
+    /// `rw=cart:42:*` and bare patterns are read-write.
     pub fn sync_scopes(&self, patterns_csv: &str) {
         let open = self.socket_open();
         let frame = self

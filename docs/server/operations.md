@@ -49,6 +49,7 @@ Traffic metrics are event-driven:
 | `recached_notification_overflows_total` | counter | — | WATCH/QSUB clients disconnected because their bounded notification queue filled. |
 | `recached_sync_lag_disconnects_total` | counter | — | WebSocket sync clients closed (code `4001`) because they fell behind the mutation fan-out far enough to miss frames. They reconnect and resynchronise via `qstate`, so this is a backpressure signal, not data loss — but a sustained rate means clients cannot drain as fast as you are writing. |
 | `recached_pubsub_overflows_total` | counter | — | Pub/sub clients disconnected because their bounded delivery queue filled. |
+| `recached_scope_denials_total` | counter | `reason` | Commands refused on scope-limited WebSocket connections. A misconfigured scope fails silently from the server's side — the page just stops working — so this is the signal that it happened. `reason="admin"` is refused by design and is normally non-zero; the other three mean something is wrong. `read_only` is a grant that is too narrow (the key is granted `r=`, the command writes), `out_of_scope` a grant that is missing entirely, and `no_token` a client issuing commands before `SYNC TOKEN`. A rising `read_only` after a deploy usually means a page was given a write it was never granted. |
 
 ### Capacity and sync
 
