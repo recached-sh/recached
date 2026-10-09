@@ -1,11 +1,13 @@
 use core_engine::cmd::{Command, SetOptions};
 use core_engine::resp::Value;
-use core_engine::store::{KeyValueStore, SnapshotEntry, SnapshotValue, format_score};
+use core_engine::store::{KeyValueStore, SnapshotEntry, SnapshotValue, format_score, glob_match};
 use js_sys::Promise;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
-use sync_client::{Incoming, SyncClient, is_replayable_mutation, to_resp, to_resp_bytes};
+use sync_client::{
+    Incoming, SyncClient, is_replayable_mutation, mutation_keys, to_resp, to_resp_bytes,
+};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{BroadcastChannel, Event, MessageEvent, WebSocket};
@@ -381,7 +383,7 @@ fn outbox_put(sh: &WsShared, id: u64, frame: &[u8]) {
 /// Execute the effects the core requested for an incoming frame.
 fn dispatch_incoming(sh: &WsShared, incoming: Incoming) {
     match incoming {
-        Incoming::Applied { .. } => notify_mutation(&sh.on_mutation),
+        Incoming::Applied { keys } => notify_mutation(&sh.on_mutation, &keys),
         Incoming::PubSub { channel, message } => {
             if let Some(f) = sh.on_message.borrow().as_ref() {
                 let payload = match std::str::from_utf8(&message) {
@@ -398,11 +400,11 @@ fn dispatch_incoming(sh: &WsShared, incoming: Incoming) {
                 outbox_delete(sh, id);
             }
         }
-        Incoming::AppliedReply { retired, .. } => {
+        Incoming::AppliedReply { retired, keys } => {
             if let Some(id) = retired {
                 outbox_delete(sh, id);
             }
-            notify_mutation(&sh.on_mutation);
+            notify_mutation(&sh.on_mutation, &keys);
         }
         Incoming::Ignored => {}
         // A frame we could not parse may have been a reply the server already
@@ -624,9 +626,13 @@ fn persist_cmd(idb: &Rc<RefCell<Option<JsValue>>>, seq: &Rc<Cell<u64>>, encoded:
     }
 }
 
-fn notify_mutation(on_mut: &Rc<RefCell<Option<js_sys::Function>>>) {
+/// Tell the SDK which keys just changed. It routes them to per-key and
+/// per-pattern listeners, so a hook reading one key re-reads only when that
+/// key changes, not on every write anywhere in the store.
+fn notify_mutation(on_mut: &Rc<RefCell<Option<js_sys::Function>>>, keys: &[String]) {
     if let Some(f) = on_mut.borrow().as_ref() {
-        let _ = f.call0(&JsValue::NULL);
+        let arr: js_sys::Array = keys.iter().map(|k| JsValue::from_str(k)).collect();
+        let _ = f.call1(&JsValue::NULL, &arr);
     }
 }
 
@@ -893,8 +899,9 @@ impl RecachedCache {
                 && let Ok(cmd) = Command::from_value(value)
                 && is_replayable_mutation(&cmd)
             {
+                let keys = mutation_keys(&cmd, &store_clone);
                 store_clone.execute(cmd);
-                notify_mutation(&on_mut);
+                notify_mutation(&on_mut, &keys);
             }
         }) as Box<dyn FnMut(MessageEvent)>);
 
@@ -1042,7 +1049,7 @@ impl RecachedCache {
             bc_post(bc, &encoded);
         }
         persist_cmd(&self.idb, &self.seq, &encoded);
-        notify_mutation(&self.on_mutation);
+        notify_mutation(&self.on_mutation, &[key.to_string()]);
         Ok(n)
     }
 
@@ -1064,7 +1071,7 @@ impl RecachedCache {
             bc_post(bc, &encoded);
         }
         persist_cmd(&self.idb, &self.seq, &encoded);
-        notify_mutation(&self.on_mutation);
+        notify_mutation(&self.on_mutation, &[key.to_string()]);
         "OK".to_string()
     }
 
@@ -1096,8 +1103,20 @@ impl RecachedCache {
             bc_post(bc, &encoded);
         }
         persist_cmd(&self.idb, &self.seq, &encoded);
-        notify_mutation(&self.on_mutation);
+        notify_mutation(&self.on_mutation, &[key.to_string()]);
         "OK".to_string()
+    }
+
+    /// True when any of `keys` matches the glob `pattern`, using the engine's
+    /// own matcher — the same rules a live query uses on the server, so the
+    /// SDK can never route a change to a pattern the server would not.
+    ///
+    /// Takes the whole change set in one call: a reconnect `qstate` can name
+    /// thousands of keys, and crossing the wasm boundary once per key per
+    /// pattern would cost more than the re-read it saves.
+    #[wasm_bindgen(js_name = "anyKeyMatches")]
+    pub fn any_key_matches(&self, pattern: &str, keys: Vec<String>) -> bool {
+        keys.iter().any(|k| glob_match(pattern, k))
     }
 
     /// Snapshot of local keys matching a glob pattern, as an array of
@@ -1145,7 +1164,7 @@ impl RecachedCache {
             bc_post(bc, &encoded);
         }
         persist_cmd(&self.idb, &self.seq, &encoded);
-        notify_mutation(&self.on_mutation);
+        notify_mutation(&self.on_mutation, &[key.to_string()]);
 
         match resp {
             Value::SimpleString(s) => s,
@@ -1173,7 +1192,7 @@ impl RecachedCache {
             bc_post(bc, &encoded);
         }
         persist_cmd(&self.idb, &self.seq, &encoded);
-        notify_mutation(&self.on_mutation);
+        notify_mutation(&self.on_mutation, &[key.to_string()]);
 
         match resp {
             Value::SimpleString(s) => s,
@@ -1200,7 +1219,7 @@ impl RecachedCache {
             bc_post(bc, &encoded);
         }
         persist_cmd(&self.idb, &self.seq, &encoded);
-        notify_mutation(&self.on_mutation);
+        notify_mutation(&self.on_mutation, &[key.to_string()]);
 
         match resp {
             Value::SimpleString(s) => s,
@@ -1249,7 +1268,7 @@ impl RecachedCache {
             bc_post(bc, &encoded);
         }
         persist_cmd(&self.idb, &self.seq, &encoded);
-        notify_mutation(&self.on_mutation);
+        notify_mutation(&self.on_mutation, &[key.to_string()]);
 
         match resp {
             Value::Integer(i) => i as i32,

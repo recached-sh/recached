@@ -114,8 +114,10 @@ which is why it cannot do goal 1. Mobile has to.
 - [x] `KeyValueStore::snapshot_key(key)` for per-key persistence.
 - [x] Test the reconnect path: a key deleted while the client was offline is
   removed **and reported**.
-- [ ] Decide whether the browser SDKs adopt key-level notification now (it
-  would make `useKey` re-read only on its own key) or later.
+- [x] The browser SDKs use the reported keys too: `onKeyChange` and
+  `onPatternChange` in `recached-edge`. React and Vue hooks now re-read only
+  when their own key or pattern changes, and fall back to `onMutation` on an
+  older `recached-edge`.
 
 ### M1 — `recached-mobile` crate
 

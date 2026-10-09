@@ -59,9 +59,15 @@ function makeRaw() {
     live_query: vi.fn(),
     live_unquery: vi.fn(),
     get_matching: vi.fn(() => [] as Array<[string, string | Uint8Array | null]>),
+    // The engine's glob matcher; `*` and `?` are all these tests use.
+    anyKeyMatches: vi.fn((pattern: string, keys: string[]) => {
+      const source = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`^${source.replace(/\*/g, '.*').replace(/\?/g, '.')}$`);
+      return keys.some((k) => re.test(k));
+    }),
     pending_writes: vi.fn(() => 0),
     // callbacks the Cache constructor installs
-    set_mutation_callback: vi.fn(),
+    set_mutation_callback: vi.fn<(cb: (keys: string[]) => void) => void>(),
     set_message_callback: vi.fn(),
     set_outbox_full_callback: vi.fn(),
     free: vi.fn(),
@@ -74,7 +80,7 @@ let raw: Raw;
 let cache: Cache;
 
 /** Invoke the callback the Cache installed on the raw handle. */
-const fireMutation = () => raw.set_mutation_callback.mock.calls[0]![0]();
+const fireMutation = (keys: string[] = ['k']) => raw.set_mutation_callback.mock.calls[0]![0](keys);
 const fireMessage = (channel: string, msg: string | Uint8Array) =>
   raw.set_message_callback.mock.calls[0]![0](channel, msg);
 const fireOutboxFull = (dropped: number, pending: number) =>
@@ -215,6 +221,74 @@ describe('mutation listeners', () => {
     fireMutation();
     expect(a).toHaveBeenCalledTimes(1);
     expect(b).toHaveBeenCalledTimes(2);
+  });
+
+  it('hands every listener the changed keys', () => {
+    const a = vi.fn();
+    cache.onMutation(a);
+    fireMutation(['x', 'y']);
+    expect(a).toHaveBeenCalledWith(['x', 'y']);
+  });
+
+  it('notifies a key listener only when its own key changes', () => {
+    const theme = vi.fn();
+    const stop = cache.onKeyChange('theme', theme);
+
+    fireMutation(['other']);
+    expect(theme).not.toHaveBeenCalled();
+
+    fireMutation(['other', 'theme']);
+    expect(theme).toHaveBeenCalledTimes(1);
+
+    stop();
+    fireMutation(['theme']);
+    expect(theme).toHaveBeenCalledTimes(1);
+  });
+
+  it('notifies a pattern listener once per mutation that touches a match', () => {
+    const cart = vi.fn();
+    const stop = cache.onPatternChange('cart:*', cart);
+
+    fireMutation(['user:1']);
+    expect(cart).not.toHaveBeenCalled();
+
+    // A snapshot naming many matching keys is still one notification, and the
+    // keys cross into wasm once for the pattern, not once per key.
+    raw.anyKeyMatches.mockClear();
+    fireMutation(['cart:1', 'cart:2', 'cart:3']);
+    expect(cart).toHaveBeenCalledTimes(1);
+    expect(raw.anyKeyMatches).toHaveBeenCalledTimes(1);
+    expect(raw.anyKeyMatches).toHaveBeenCalledWith('cart:*', ['cart:1', 'cart:2', 'cart:3']);
+
+    stop();
+    fireMutation(['cart:1']);
+    expect(cart).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops matching a pattern once its last listener leaves', () => {
+    const stopA = cache.onPatternChange('cart:*', vi.fn());
+    const stopB = cache.onPatternChange('cart:*', vi.fn());
+    stopA();
+    stopA(); // idempotent
+    raw.anyKeyMatches.mockClear();
+    fireMutation(['cart:1']);
+    expect(raw.anyKeyMatches).toHaveBeenCalledTimes(1);
+
+    stopB();
+    raw.anyKeyMatches.mockClear();
+    fireMutation(['cart:1']);
+    expect(raw.anyKeyMatches).not.toHaveBeenCalled();
+  });
+
+  it('routes nothing for a mutation that changed no keys', () => {
+    const all = vi.fn();
+    const one = vi.fn();
+    cache.onMutation(all);
+    cache.onKeyChange('k', one);
+    cache.onPatternChange('*', one);
+    fireMutation([]);
+    expect(all).toHaveBeenCalledWith([]);
+    expect(one).not.toHaveBeenCalled();
   });
 
   it('surfaces outbox overflow with the dropped id and queue depth', () => {

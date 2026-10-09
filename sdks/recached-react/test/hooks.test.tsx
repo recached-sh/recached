@@ -240,6 +240,77 @@ describe('useKeys', () => {
   });
 });
 
+describe('change routing', () => {
+  // Hooks listen to their own key or pattern, so a write elsewhere in the
+  // store costs them nothing — no wasm read, no JSON parse, no getMatching.
+  it.each([
+    ['useKey', () => useKey('theme'), 'get'],
+    ['useKeyJSON', () => useKeyJSON('theme'), 'get'],
+    ['useKeyBytes', () => useKeyBytes('theme'), 'getBytes'],
+  ] as const)('%s does not re-read on a write to another key', (_name, hook, read) => {
+    cache.seed('theme', '"dark"');
+    renderHook(hook, { wrapper });
+    cache[read].mockClear();
+
+    act(() => cache.emit(['other']));
+    expect(cache[read]).not.toHaveBeenCalled();
+
+    act(() => cache.emit(['theme']));
+    expect(cache[read]).toHaveBeenCalled();
+  });
+
+  it('useKey follows a changed key argument', () => {
+    cache.seed('a', '1');
+    cache.seed('b', '2');
+    const { result, rerender } = renderHook(({ k }) => useKey(k), {
+      wrapper,
+      initialProps: { k: 'a' },
+    });
+    rerender({ k: 'b' });
+    expect(result.current).toBe('2');
+
+    act(() => {
+      cache.seed('b', '3');
+      cache.emit(['b']);
+    });
+    expect(result.current).toBe('3');
+    expect(cache.listenerCount).toBe(1);
+  });
+
+  it('useKeys re-reads only when a matching key changes', () => {
+    cache.getMatching.mockImplementation(() => [['cart:1', 'x']]);
+    renderHook(() => useKeys('cart:*'), { wrapper });
+    cache.getMatching.mockClear();
+
+    act(() => cache.emit(['user:1']));
+    expect(cache.getMatching).not.toHaveBeenCalled();
+
+    act(() => cache.emit(['cart:2']));
+    expect(cache.getMatching).toHaveBeenCalledTimes(1);
+  });
+
+  it('useKeys does not re-read on a render with no change', () => {
+    cache.getMatching.mockImplementation(() => [['cart:1', 'x']]);
+    const { rerender } = renderHook(() => useKeys('cart:*'), { wrapper });
+    cache.getMatching.mockClear();
+    rerender();
+    expect(cache.getMatching).not.toHaveBeenCalled();
+  });
+
+  it('falls back to every mutation on a recached-edge without routing', () => {
+    cache = makeFakeCache({ legacy: true });
+    cache.seed('theme', 'dark');
+    const { result } = renderHook(() => useKey('theme'), { wrapper });
+    expect(cache.onMutation).toHaveBeenCalled();
+
+    act(() => {
+      cache.seed('theme', 'light');
+      cache.emit(['theme']);
+    });
+    expect(result.current).toBe('light');
+  });
+});
+
 describe('usePubSub', () => {
   it('subscribes on mount and unsubscribes on unmount', () => {
     const { unmount } = renderHook(() => usePubSub('alerts', vi.fn()), { wrapper });

@@ -162,7 +162,7 @@ ttl(key: string): number
 
 ### Writes
 
-All write methods also notify `onMutation` listeners and, when connected, forward the change to the server and other tabs via BroadcastChannel.
+All write methods also notify the listeners of the key they wrote and, when connected, forward the change to the server and other tabs via BroadcastChannel.
 
 #### `set(key, value)`
 
@@ -222,26 +222,26 @@ del(key: string): boolean
 
 ### Reactivity
 
-#### `onMutation(callback)`
+#### `onKeyChange(key, callback)`
 
-Registers a callback that fires whenever the local store changes from any source — local writes, server pushes, or BroadcastChannel cross-tab messages.
+Registers a callback that fires whenever one key changes, from any source: a local write, a server push, a live-query snapshot, or a BroadcastChannel cross-tab message. Writes to other keys do not fire it.
 
 Returns an unsubscribe function. Pass it directly to React's `useSyncExternalStore` or call it in a cleanup function.
 
 ```typescript
-onMutation(cb: () => void): () => void
+onKeyChange(key: string, cb: () => void): () => void
 ```
 
 ```typescript
 // Manual wiring
-const unsubscribe = cache.onMutation(() => {
+const unsubscribe = cache.onKeyChange('cart:count', () => {
   const count = cache.get('cart:count')
   document.getElementById('badge')!.textContent = count ?? '0'
 })
 
 // React (useSyncExternalStore)
 const count = useSyncExternalStore(
-  (cb) => cache.onMutation(cb),
+  (cb) => cache.onKeyChange('cart:count', cb),
   () => cache.get('cart:count'),
   () => null,
 )
@@ -250,7 +250,25 @@ const count = useSyncExternalStore(
 unsubscribe()
 ```
 
-The callback receives no arguments — it signals that _something_ changed. Read the keys you care about inside the callback.
+The callback can fire when a value is re-sent unchanged, so compare before doing expensive work.
+
+#### `onPatternChange(pattern, callback)`
+
+Registers a callback that fires once for each mutation that changes at least one key matching a glob pattern. Matching uses the same rules as [`liveQuery`](#livequery-pattern). This only listens: call `liveQuery` as well to have the server keep the matching keys in sync.
+
+```typescript
+onPatternChange(pattern: string, cb: () => void): () => void
+```
+
+#### `onMutation(callback)`
+
+Registers a callback that fires on every change to the local store, whatever key it touched. The callback receives the keys the mutation may have changed.
+
+```typescript
+onMutation(cb: (keys: readonly string[]) => void): () => void
+```
+
+Prefer `onKeyChange` or `onPatternChange` for UI bindings. A view bound through `onMutation` does work on every write anywhere in the store.
 
 ---
 
@@ -333,7 +351,7 @@ liveQuery(pattern: string): () => void
 
 ```typescript
 const stop = cache.liveQuery('cart:42:*')
-const unsub = cache.onMutation(() => {
+const unsub = cache.onPatternChange('cart:42:*', () => {
   render(cache.getMatching('cart:42:*'))
 })
 // later:
@@ -457,4 +475,4 @@ get raw(): RawCache
 
 Available methods on `raw`: `set()`, `setBytes()`, `set_ex()`, `get()`, `getBytes()`, `del()`, `ttl()`, `exists()`, `subscribe()`, `unsubscribe()`, `publish()`, `publishBytes()`, `connect()`, `auth()`, `broadcast()`, `enable_persistence()`, `clear_persistence()`, `set_mutation_callback()`, `free()`.
 
-> Writes through `cache.raw` bypass the `onMutation` notification bus. Use the typed `Cache` methods when possible.
+> Writes through `cache.raw` bypass change notification: no `onKeyChange`, `onPatternChange` or `onMutation` listener hears them. Use the typed `Cache` methods when possible.

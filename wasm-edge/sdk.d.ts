@@ -86,7 +86,8 @@ export interface RawCache {
     live_query(pattern: string): void;
     live_unquery(pattern?: string): void;
     get_matching(pattern: string): Array<[string, string | Uint8Array | null]>;
-    set_mutation_callback(cb: () => void): void;
+    anyKeyMatches(pattern: string, keys: string[]): boolean;
+    set_mutation_callback(cb: (keys: string[]) => void): void;
     set_outbox_full_callback(cb: (droppedId: number, pending: number) => void): void;
     pending_writes(): number;
     set_message_callback(cb: (channel: string, message: string) => void): void;
@@ -107,9 +108,14 @@ export declare class Cache {
     /** @internal */
     readonly raw: RawCache;
     private readonly _mutationListeners;
+    private readonly _keyListeners;
+    private readonly _patternListeners;
     private readonly _messageListeners;
     private readonly _outboxFullListeners;
-    /** @internal Arrow function so `this` is always bound when passed as a callback. */
+    /**
+     * @internal Arrow function so `this` is always bound when passed as a
+     * callback. `keys` names every key the mutation may have changed.
+     */
     private readonly _notifyMutation;
     /** @internal */
     private readonly _notifyOutboxFull;
@@ -119,10 +125,13 @@ export declare class Cache {
     constructor(raw: RawCache);
     /**
      * Subscribe to store mutations from any source — local writes, server
-     * WebSocket push, and BroadcastChannel cross-tab sync.
+     * WebSocket push, and BroadcastChannel cross-tab sync. The callback receives
+     * the keys the mutation may have changed.
      *
      * Returns an unsubscribe function. Pass directly to React's
-     * `useSyncExternalStore` `subscribe` parameter.
+     * `useSyncExternalStore` `subscribe` parameter. To watch one key or one
+     * pattern, prefer {@link onKeyChange} or {@link onPatternChange}, which skip
+     * mutations to every other key.
      *
      * ```ts
      * useSyncExternalStore(
@@ -132,7 +141,36 @@ export declare class Cache {
      * );
      * ```
      */
-    onMutation(cb: () => void): () => void;
+    onMutation(cb: (keys: readonly string[]) => void): () => void;
+    /**
+     * Subscribe to changes to one key, from any source. The callback runs only
+     * when that key is written, deleted, or replaced by a server snapshot — not
+     * on writes to other keys.
+     *
+     * Returns an unsubscribe function.
+     *
+     * ```ts
+     * const stop = cache.onKeyChange('theme', () => render(cache.get('theme')));
+     * ```
+     */
+    onKeyChange(key: string, cb: () => void): () => void;
+    /**
+     * Subscribe to changes to any key matching a glob pattern, using the same
+     * matching rules as {@link liveQuery}. The callback runs once per mutation
+     * that touches at least one matching key.
+     *
+     * This only listens; call {@link liveQuery} as well to have the server keep
+     * the matching keys in sync.
+     *
+     * Returns an unsubscribe function.
+     *
+     * ```ts
+     * const stop = cache.onPatternChange('cart:42:*', () => {
+     *   render(cache.getMatching('cart:42:*'));
+     * });
+     * ```
+     */
+    onPatternChange(pattern: string, cb: () => void): () => void;
     /**
      * Called when the offline write queue overflows and the **oldest** queued
      * write is discarded.
@@ -356,7 +394,7 @@ export declare class Cache {
      *
      * ```ts
      * const stop = cache.liveQuery('cart:42:*');
-     * cache.onMutation(() => {
+     * cache.onPatternChange('cart:42:*', () => {
      *   render(cache.getMatching('cart:42:*'));
      * });
      * // later:

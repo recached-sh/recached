@@ -153,6 +153,51 @@ describe('useKeys', () => {
   });
 });
 
+describe('change routing', () => {
+  // A composable listens to its own key or pattern. Before routing, a write
+  // anywhere in the store re-read every composable, and useKeyJSON,
+  // useKeyBytes and useKeys assigned a fresh object each time — re-rendering
+  // their components on writes that had nothing to do with them.
+  it.each([
+    ['useKey', () => useKey('theme'), 'get'],
+    ['useKeyJSON', () => useKeyJSON('theme'), 'getJSON'],
+    ['useKeyBytes', () => useKeyBytes('theme'), 'getBytes'],
+  ] as const)('%s ignores a write to another key', (_name, composable, read) => {
+    cache.seed('theme', '"dark"');
+    withSetup(composable);
+    cache[read].mockClear();
+
+    cache.emit(['other']);
+    expect(cache[read]).not.toHaveBeenCalled();
+
+    cache.emit(['theme']);
+    expect(cache[read]).toHaveBeenCalledTimes(1);
+  });
+
+  it('useKeys refreshes only when a matching key changes', () => {
+    cache.getMatching.mockReturnValue([['cart:1', 'x']]);
+    withSetup(() => useKeys('cart:*'));
+    cache.getMatching.mockClear();
+
+    cache.emit(['user:1']);
+    expect(cache.getMatching).not.toHaveBeenCalled();
+
+    cache.emit(['cart:2']);
+    expect(cache.getMatching).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to every mutation on a recached-edge without routing', () => {
+    cache = makeFakeCache({ legacy: true });
+    cache.seed('theme', 'dark');
+    const { result } = withSetup(() => useKey('theme'));
+    expect(cache.onMutation).toHaveBeenCalled();
+
+    cache.seed('theme', 'light');
+    cache.emit(['theme']);
+    expect(result().value).toBe('light');
+  });
+});
+
 describe('usePubSub', () => {
   it('subscribes on setup and unsubscribes on unmount', () => {
     const { wrapper } = withSetup(() => usePubSub('alerts', vi.fn()));
