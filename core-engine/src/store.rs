@@ -7,7 +7,7 @@ use indexmap::IndexSet;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
@@ -2162,22 +2162,36 @@ impl KeyValueStore {
     }
 
     /// [`evict_one_reporting`](Self::evict_one_reporting), never choosing a
-    /// key in `protect`, which must be sorted (as `execute_reporting`'s
-    /// touched keys are) so membership is a binary search. A linear `contains`
-    /// over a sample widened to cover every protected key made an `MSET` that
-    /// rewrites n existing keys and adds one O(n²) under the capacity gate.
-    ///
-    /// The sample is widened by `protect.len()`. Positions are drawn without
-    /// replacement, so at most that many sampled keys can be protected: the
-    /// usual number of real candidates survives, and when the keyspace is
-    /// smaller than the sample every key is drawn. A victim is found whenever
-    /// an unprotected one exists.
+    /// key in `protect` (sorted; see [`Self::choose_victim`]).
     fn evict_one_except(
         &self,
         now: u64,
         protect: &[String],
         evicted: &mut Vec<String>,
     ) -> Option<usize> {
+        let victim = self.choose_victim(now, protect, &HashSet::new())?;
+        self.remove_victim(&victim, true, evicted)
+    }
+
+    /// Pick, without removing, the key the eviction policy would evict next,
+    /// skipping keys in `protect` and in `chosen`.
+    ///
+    /// `protect` must be sorted (as `execute_reporting`'s touched keys are) so
+    /// membership is a binary search: a linear `contains` over a sample
+    /// widened to cover every protected key made an `MSET` that rewrites n
+    /// existing keys and adds one O(n²) under the capacity gate.
+    ///
+    /// The sample is widened by the number of excluded keys. Positions are
+    /// drawn without replacement, so at most that many sampled keys can be
+    /// excluded: the usual number of real candidates survives, and when the
+    /// keyspace is smaller than the sample every key is drawn. A victim is
+    /// found whenever an eligible one exists.
+    fn choose_victim(
+        &self,
+        now: u64,
+        protect: &[String],
+        chosen: &HashSet<String>,
+    ) -> Option<String> {
         let volatile = matches!(
             self.eviction_policy,
             EvictionPolicy::VolatileLru | EvictionPolicy::VolatileTtl
@@ -2191,10 +2205,12 @@ impl KeyValueStore {
             return None;
         }
         debug_assert!(protect.is_sorted(), "protected keys must be sorted");
-        let candidates = self.indexed_candidates(volatile, want.saturating_add(protect.len()));
-        let chosen = candidates
+        let sample = want
+            .saturating_add(protect.len())
+            .saturating_add(chosen.len());
+        self.indexed_candidates(volatile, sample)
             .into_iter()
-            .filter(|key| protect.binary_search(key).is_err())
+            .filter(|key| protect.binary_search(key).is_err() && !chosen.contains(key))
             .filter_map(|key| {
                 let entry = self.data.get(&key)?;
                 if entry.is_expired(now) {
@@ -2211,12 +2227,46 @@ impl KeyValueStore {
                 Some((key, weight))
             })
             .min_by_key(|(_, weight)| *weight)
-            .map(|(key, _)| key)?;
-        let (removed_key, entry) = self.data.remove(&chosen)?;
+            .map(|(key, _)| key)
+    }
+
+    /// An already-expired key, from a bounded sample of the TTL index, that
+    /// is in neither `protect` nor `chosen`. Expired keys still occupy the map
+    /// until the sweeper reaches them; reclaiming one is not an eviction, so
+    /// this applies under every policy, `noeviction` included.
+    fn choose_expired(
+        &self,
+        now: u64,
+        protect: &[String],
+        chosen: &HashSet<String>,
+    ) -> Option<String> {
+        let sample = self
+            .eviction_sample
+            .saturating_add(protect.len())
+            .saturating_add(chosen.len());
+        self.indexed_candidates(true, sample)
+            .into_iter()
+            .filter(|key| protect.binary_search(key).is_err() && !chosen.contains(key))
+            .find(|key| {
+                self.data
+                    .get(key)
+                    .is_some_and(|entry| entry.is_expired(now))
+            })
+    }
+
+    /// Remove a key chosen by [`Self::choose_victim`] or
+    /// [`Self::choose_expired`] and report it for propagation. `eviction`
+    /// counts it in the evicted-keys metric; a reclaimed expired key is not.
+    fn remove_victim(&self, key: &str, eviction: bool, evicted: &mut Vec<String>) -> Option<usize> {
+        let removed = self.data.remove(key);
+        // Re-read state either way: the sweeper may have removed it first.
+        self.sync_key_metadata(key);
+        let (removed_key, entry) = removed?;
         let freed = entry_size(&removed_key, &entry);
         self.adjust_memory(freed, 0);
-        self.sync_key_metadata(&removed_key);
-        self.evicted.fetch_add(1, Ordering::Relaxed);
+        if eviction {
+            self.evicted.fetch_add(1, Ordering::Relaxed);
+        }
         evicted.push(removed_key);
         Some(freed)
     }
@@ -2498,14 +2548,21 @@ impl KeyValueStore {
     }
 
     /// Make room under the key-count cap for every key `cmd` may create,
-    /// evicting under the configured policy, or refuse the write.
+    /// or refuse the write.
     ///
     /// This used to be checked inline by the string commands alone, so INCR,
     /// APPEND, HSET, RPUSH, SADD, ZADD, RLSET, JSET and the STORE commands all
     /// created keys past the documented cap. Checking here covers every
-    /// creating path at once. Keys the command itself names are never chosen
-    /// as victims: an eviction is propagated after the command, so removing a
-    /// key the command reads would let replicas compute a different result.
+    /// creating path at once.
+    ///
+    /// Room comes first from keys that have already expired (under any
+    /// policy: they are gone, only not yet swept), then from the eviction
+    /// policy. Every victim is chosen before any is removed, so a write that
+    /// cannot fit is refused having destroyed nothing — an `MSET` that needed
+    /// two slots used to evict one key and then fail. Keys the command itself
+    /// names are never chosen: an eviction is propagated after the command,
+    /// so removing a key the command reads would let replicas compute a
+    /// different result.
     fn reserve_key_slots(
         &self,
         cmd: &Command,
@@ -2513,18 +2570,38 @@ impl KeyValueStore {
         touched: &[String],
         evicted: &mut Vec<String>,
     ) -> Result<(), Value> {
+        let refused = || Value::Error("ERR max keys limit reached".to_string());
         let mut new_keys = creating_keys(cmd);
         new_keys.sort_unstable();
         new_keys.dedup();
         new_keys.retain(|key| !self.data.contains_key(*key));
-        if new_keys.is_empty() {
+        let needed = self
+            .data
+            .len()
+            .saturating_add(new_keys.len())
+            .saturating_sub(max);
+        if needed == 0 {
             return Ok(());
         }
+        if new_keys.len() > max {
+            return Err(refused());
+        }
         let now = now_ms();
-        while self.data.len().saturating_add(new_keys.len()) > max {
-            if self.evict_one_except(now, touched, evicted).is_none() {
-                return Err(Value::Error("ERR max keys limit reached".to_string()));
-            }
+        let mut chosen: HashSet<String> = HashSet::with_capacity(needed);
+        let mut victims: Vec<(String, bool)> = Vec::with_capacity(needed);
+        while victims.len() < needed {
+            let victim = match self.choose_expired(now, touched, &chosen) {
+                Some(key) => (key, false),
+                None => match self.choose_victim(now, touched, &chosen) {
+                    Some(key) => (key, true),
+                    None => return Err(refused()),
+                },
+            };
+            chosen.insert(victim.0.clone());
+            victims.push(victim);
+        }
+        for (key, eviction) in victims {
+            self.remove_victim(&key, eviction, evicted);
         }
         Ok(())
     }
@@ -11053,6 +11130,63 @@ mod write_outcome_tests {
         ]);
         assert_eq!(s.execute(parse(&["EXISTS", "empty"])), Value::Integer(0));
         assert_eq!(s.key_count(), 1);
+    }
+
+    #[test]
+    fn an_expired_key_makes_room_under_the_cap_even_without_eviction() {
+        let s = KeyValueStore::with_max_keys(1); // noeviction
+        s.execute(parse(&["SET", "old", "v", "PXAT", "1"]));
+        let (reply, removed) = s.execute_reporting(parse(&["SET", "new", "v"]));
+        assert_eq!(reply, Value::SimpleString("OK".into()));
+        // Reported so replicas and watchers drop it too, but not an eviction.
+        assert_eq!(removed, vec!["old".to_string()]);
+        assert_eq!(s.evicted_count(), 0);
+        assert_eq!(s.key_count(), 1);
+        // A live key still blocks a new one.
+        assert!(matches!(
+            s.execute(parse(&["SET", "other", "v"])),
+            Value::Error(_)
+        ));
+    }
+
+    #[test]
+    fn a_write_that_cannot_fit_evicts_nothing() {
+        // Needs two slots under a cap of one: hopeless from the start.
+        let s = KeyValueStore::with_config(Some(1), None, EvictionPolicy::AllKeysRandom);
+        s.execute(parse(&["SET", "old", "v"]));
+        let (reply, evicted) = s.execute_reporting(parse(&["MSET", "a", "1", "b", "2"]));
+        assert!(matches!(reply, Value::Error(_)));
+        assert!(evicted.is_empty(), "evicted {evicted:?}");
+        assert_eq!(s.execute(parse(&["GET", "old"])), bulk("v"));
+
+        // Needs two victims where only one key is not named by the write.
+        let s = KeyValueStore::with_config(Some(3), None, EvictionPolicy::AllKeysRandom);
+        s.execute(parse(&["MSET", "x", "1", "y", "1", "z", "1"]));
+        let (reply, evicted) =
+            s.execute_reporting(parse(&["MSET", "y", "2", "z", "2", "a", "2", "b", "2"]));
+        assert!(matches!(reply, Value::Error(_)));
+        assert!(evicted.is_empty(), "evicted {evicted:?}");
+        assert_eq!(s.key_count(), 3);
+        assert_eq!(s.evicted_count(), 0);
+    }
+
+    #[test]
+    fn an_admission_needing_many_victims_takes_distinct_ones() {
+        let s = KeyValueStore::with_config(Some(10), None, EvictionPolicy::AllKeysLru);
+        let seed: Vec<(String, Vec<u8>)> = (0..10)
+            .map(|i| (format!("old{i}"), b"v".to_vec()))
+            .collect();
+        s.execute(Command::MSet(seed));
+        let fresh: Vec<(String, Vec<u8>)> =
+            (0..6).map(|i| (format!("new{i}"), b"v".to_vec())).collect();
+        let (reply, mut evicted) = s.execute_reporting(Command::MSet(fresh));
+        assert_eq!(reply, Value::SimpleString("OK".into()));
+        evicted.sort();
+        evicted.dedup();
+        assert_eq!(evicted.len(), 6);
+        assert!(evicted.iter().all(|key| key.starts_with("old")));
+        assert_eq!(s.key_count(), 10);
+        assert_eq!(s.evicted_count(), 6);
     }
 
     #[test]
