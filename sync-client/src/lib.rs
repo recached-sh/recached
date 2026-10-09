@@ -42,10 +42,15 @@ fn seed_from(client_id: &str) -> u64 {
 /// What an incoming frame turned out to be, and what the adapter must do.
 #[derive(Debug, PartialEq)]
 pub enum Incoming {
-    /// A mutation (server push, `keychange`, or `qstate`) was applied to the
-    /// local store — notify UI subscribers.
-    Applied,
-    /// A pub/sub message — deliver to channel subscribers.
+    /// A mutation (server push, `keychange`, or `keydelta`) was applied to the
+    /// local store — notify the subscribers of `keys`.
+    ///
+    /// `keys` names every key the frame may have changed, deleted ones
+    /// included. It can name a key whose value came out the same — a re-sent
+    /// value is applied regardless — so a subscriber that cares compares before
+    /// re-rendering. It never leaves out a key that did change. Adapters with
+    /// one coarse "something changed" signal can ignore it.
+    Applied { keys: Vec<String> },
     /// A pub/sub message. The payload is bytes because a publisher may send
     /// binary; the adapter decides how to surface it.
     PubSub { channel: String, message: Vec<u8> },
@@ -53,8 +58,13 @@ pub enum Incoming {
     /// acknowledged — delete it from durable storage.
     Reply { retired: Option<u64> },
     /// A `qstate` frame: the reply to a QSUB (retire the row, if any) *and*
-    /// state applied to the local store (notify UI subscribers).
-    AppliedReply { retired: Option<u64> },
+    /// state applied to the local store — notify the subscribers of `keys`,
+    /// which covers every key in the snapshot and every local key the
+    /// snapshot reconciled away.
+    AppliedReply {
+        retired: Option<u64>,
+        keys: Vec<String>,
+    },
     /// A frame we understand but that asks for nothing — a push we do not
     /// model. It consumes no reply slot, which is correct: the server did not
     /// treat it as one either.
@@ -469,8 +479,9 @@ impl SyncClient {
                 if let Ok(cmd) = Command::from_value(Value::Array(Some(arr)))
                     && is_replayable_mutation(&cmd)
                 {
+                    let keys = mutation_keys(&cmd, &self.store);
                     self.store.execute(cmd);
-                    return Incoming::Applied;
+                    return Incoming::Applied { keys };
                 }
                 Incoming::Ignored
             }
@@ -480,18 +491,18 @@ impl SyncClient {
                     _ => &[],
                 };
                 if tag == b"keychange" {
-                    self.apply_keychange(&items);
-                    Incoming::Applied
+                    Incoming::Applied {
+                        keys: self.apply_keychange(&items),
+                    }
                 } else if tag == b"keydelta" {
-                    if self.apply_keydelta(&items) {
-                        Incoming::Applied
-                    } else {
-                        Incoming::Ignored
+                    match self.apply_keydelta(&items) {
+                        Some(key) => Incoming::Applied { keys: vec![key] },
+                        None => Incoming::Ignored,
                     }
                 } else if tag == b"qstate" {
                     let retired = self.ack_reply();
-                    self.apply_qstate(&items);
-                    Incoming::AppliedReply { retired }
+                    let keys = self.apply_qstate(&items);
+                    Incoming::AppliedReply { retired, keys }
                 } else {
                     Incoming::Reply {
                         retired: self.ack_reply(),
@@ -531,20 +542,21 @@ impl SyncClient {
     /// is the whole reason deltas are safe to replay: there is no diff to
     /// misinterpret.
     ///
-    /// Returns false for a frame this client cannot rebuild, which it then
-    /// reports as ignored rather than applied. That should be unreachable —
-    /// a server only sends deltas after `CLIENT DELTA ON`, and only for ops
-    /// defined here — but silently dropping one would leave the local copy
-    /// wrong with no signal, so it is surfaced rather than swallowed.
-    fn apply_keydelta(&self, items: &[Value]) -> bool {
+    /// Returns the changed key, or `None` for a frame this client cannot
+    /// rebuild, which it then reports as ignored rather than applied. That
+    /// should be unreachable — a server only sends deltas after
+    /// `CLIENT DELTA ON`, and only for ops defined here — but silently dropping
+    /// one would leave the local copy wrong with no signal, so it is surfaced
+    /// rather than swallowed.
+    fn apply_keydelta(&self, items: &[Value]) -> Option<String> {
         if items.len() < 4 {
-            return false;
+            return None;
         }
         let Value::BulkString(Some(key)) = &items[1] else {
-            return false;
+            return None;
         };
         let Value::BulkString(Some(op)) = &items[2] else {
-            return false;
+            return None;
         };
         // Rebuild the original command text and let the ordinary parser
         // produce it, so the delta path cannot drift from the command path.
@@ -556,31 +568,35 @@ impl SyncClient {
                 Value::BulkString(Some(bytes)) => {
                     parts.push(Value::BulkString(Some(bytes.clone())))
                 }
-                _ => return false,
+                _ => return None,
             }
         }
         let Ok(cmd) = Command::from_value(Value::Array(Some(parts))) else {
-            return false;
+            return None;
         };
         if !is_replayable_mutation(&cmd) {
-            return false;
+            return None;
         }
         self.store.execute(cmd);
-        true
+        Some(String::from_utf8_lossy(key).into_owned())
     }
 
-    fn apply_keychange(&self, items: &[Value]) {
+    /// Apply a `["keychange", key, value]` frame. Returns the keys it changed:
+    /// the key itself, or for the FLUSHDB sentinel every local key the
+    /// pattern matched.
+    fn apply_keychange(&self, items: &[Value]) -> Vec<String> {
         if items.len() != 3 {
-            return;
+            return Vec::new();
         }
         let Value::BulkString(Some(key)) = &items[1] else {
-            return;
+            return Vec::new();
         };
         let key = String::from_utf8_lossy(key).into_owned();
         match &items[2] {
             Value::BulkString(Some(v)) => {
                 self.store
-                    .execute(Command::Set(key, v.clone(), Default::default()));
+                    .execute(Command::Set(key.clone(), v.clone(), Default::default()));
+                vec![key]
             }
             Value::BulkString(None) => {
                 // A nil value whose "key" is one of our registered live-query
@@ -596,17 +612,22 @@ impl SyncClient {
                         .map(|(k, _)| k)
                         .collect();
                     if !matched.is_empty() {
-                        self.store.execute(Command::Del(matched));
+                        self.store.execute(Command::Del(matched.clone()));
                     }
+                    matched
                 } else {
-                    self.store.execute(Command::Del(vec![key]));
+                    self.store.execute(Command::Del(vec![key.clone()]));
+                    vec![key]
                 }
             }
             // Type-tagged collection: ["hash"|"list"|"set"|"zset"|"json", ...].
-            Value::Array(Some(items)) => self.apply_tagged(key, items),
+            Value::Array(Some(items)) => {
+                self.apply_tagged(key.clone(), items);
+                vec![key]
+            }
             // Anything else (e.g. the "ratelimit" marker) carries no client-
             // usable value.
-            _ => {}
+            _ => Vec::new(),
         }
     }
 
@@ -708,19 +729,25 @@ impl SyncClient {
     /// The server refuses snapshots above `RECACHED_MAX_QSUB_INITIAL_KEYS`
     /// rather than sending a partial one, so every qstate reaching this method
     /// is complete and absence is safe to interpret as deletion.
-    fn apply_qstate(&self, items: &[Value]) {
+    ///
+    /// Returns every key the snapshot carried followed by every stale key it
+    /// removed.
+    fn apply_qstate(&self, items: &[Value]) -> Vec<String> {
         let pattern = match items.get(1) {
             Some(Value::BulkString(Some(p))) => String::from_utf8_lossy(p).into_owned(),
             _ => String::new(),
         };
 
         let mut present: HashSet<String> = HashSet::new();
+        let mut changed: Vec<String> = Vec::new();
         for pair in items.get(2..).unwrap_or(&[]).as_chunks::<2>().0 {
             let Value::BulkString(Some(k)) = &pair[0] else {
                 continue;
             };
             let key = String::from_utf8_lossy(k).into_owned();
-            present.insert(key.clone());
+            if present.insert(key.clone()) {
+                changed.push(key.clone());
+            }
             match &pair[1] {
                 Value::BulkString(Some(v)) => {
                     self.store
@@ -734,7 +761,7 @@ impl SyncClient {
         }
 
         if pattern.is_empty() {
-            return;
+            return changed;
         }
         let stale: Vec<String> = self
             .store
@@ -743,8 +770,10 @@ impl SyncClient {
             .filter(|k| !present.contains(k))
             .collect();
         if !stale.is_empty() {
-            self.store.execute(Command::Del(stale));
+            self.store.execute(Command::Del(stale.clone()));
+            changed.extend(stale);
         }
+        changed
     }
 }
 
@@ -811,6 +840,58 @@ pub fn is_replayable_mutation(cmd: &Command) -> bool {
             | Command::JSet(_, _, _)
             | Command::JMerge(_, _)
     )
+}
+
+/// The keys a replayable mutation may change, for change notification.
+///
+/// Call it *before* executing the command: `FLUSHDB` names every key the store
+/// holds at that moment, which afterwards is no longer knowable. A command that
+/// is not a replayable mutation changes nothing a client tracks and yields no
+/// keys. Adapters use this for their own local writes too, so a write the
+/// application makes notifies the same subscribers a pushed one would.
+pub fn mutation_keys(cmd: &Command, store: &KeyValueStore) -> Vec<String> {
+    match cmd {
+        Command::Set(k, _, _)
+        | Command::ESet(k, _)
+        | Command::EAdd(k, _)
+        | Command::Append(k, _)
+        | Command::Incr(k)
+        | Command::Decr(k)
+        | Command::IncrBy(k, _)
+        | Command::DecrBy(k, _)
+        | Command::Expire(k, _)
+        | Command::PExpire(k, _)
+        | Command::ExpireAt(k, _)
+        | Command::PExpireAt(k, _)
+        | Command::Persist(k)
+        | Command::HSet(k, _)
+        | Command::HDel(k, _)
+        | Command::HSetNx(k, _, _)
+        | Command::LPush(k, _)
+        | Command::RPush(k, _)
+        | Command::LPop(k, _)
+        | Command::RPop(k, _)
+        | Command::LSet(k, _, _)
+        | Command::LRem(k, _, _)
+        | Command::LTrim(k, _, _)
+        | Command::SAdd(k, _)
+        | Command::SRem(k, _)
+        | Command::SInterStore(k, _)
+        | Command::SUnionStore(k, _)
+        | Command::SDiffStore(k, _)
+        | Command::ZAdd(k, _, _)
+        | Command::ZRem(k, _)
+        | Command::ZIncrBy(k, _, _)
+        | Command::JSet(k, _, _)
+        | Command::JMerge(k, _) => vec![k.clone()],
+        Command::Del(keys) | Command::Unlink(keys) => keys.clone(),
+        Command::MSet(pairs) => pairs.iter().map(|(k, _)| k.clone()).collect(),
+        Command::Rename(from, to) | Command::SMove(from, to, _) => {
+            vec![from.clone(), to.clone()]
+        }
+        Command::FlushDb => store.matching_keys("*"),
+        _ => Vec::new(),
+    }
 }
 
 /// RESP array encoding, shared by adapters.

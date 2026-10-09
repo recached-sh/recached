@@ -381,7 +381,7 @@ fn outbox_put(sh: &WsShared, id: u64, frame: &[u8]) {
 /// Execute the effects the core requested for an incoming frame.
 fn dispatch_incoming(sh: &WsShared, incoming: Incoming) {
     match incoming {
-        Incoming::Applied => notify_mutation(&sh.on_mutation),
+        Incoming::Applied { .. } => notify_mutation(&sh.on_mutation),
         Incoming::PubSub { channel, message } => {
             if let Some(f) = sh.on_message.borrow().as_ref() {
                 let payload = match std::str::from_utf8(&message) {
@@ -398,7 +398,7 @@ fn dispatch_incoming(sh: &WsShared, incoming: Incoming) {
                 outbox_delete(sh, id);
             }
         }
-        Incoming::AppliedReply { retired } => {
+        Incoming::AppliedReply { retired, .. } => {
             if let Some(id) = retired {
                 outbox_delete(sh, id);
             }
