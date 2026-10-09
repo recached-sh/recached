@@ -106,6 +106,12 @@ pub struct SyncClient {
     /// data writes, `None` for session commands. Replies arrive in send
     /// order; each acknowledges the front entry.
     inflight: VecDeque<Option<u64>>,
+    /// Ids overflow evicted after they were sent on the current socket. Their
+    /// replies still arrive, in their slots, and must retire nothing; knowing
+    /// them here answers that in O(1) instead of searching the surviving
+    /// queue for a row that is not in it — which made draining a connection
+    /// that had overflowed O(n²). Reset with `inflight`.
+    sent_then_dropped: HashSet<u64>,
     client_id: String,
     /// Upper 32 bits of every dedup wire id; bump per session (persisted by
     /// the adapter) so a new session's ids clear the server's high-water mark.
@@ -134,6 +140,7 @@ impl SyncClient {
             outbox: VecDeque::new(),
             outbox_seq: 0,
             inflight: VecDeque::new(),
+            sent_then_dropped: HashSet::new(),
             client_id,
             epoch: 0,
             password: None,
@@ -268,6 +275,7 @@ impl SyncClient {
     pub fn on_open(&mut self) -> Vec<Vec<u8>> {
         self.attempts = 0;
         self.inflight.clear();
+        self.sent_then_dropped.clear();
         let mut frames = Vec::new();
         if let Some(pwd) = &self.password {
             frames.push(to_resp(&["AUTH", pwd]));
@@ -353,6 +361,12 @@ impl SyncClient {
         } else {
             None
         };
+        // While connected every queued row has been sent — `on_open` replays
+        // the outbox and connected writes go out at once — so the dropped row
+        // still has a reply on its way.
+        if connected && let Some(old) = dropped {
+            self.sent_then_dropped.insert(old);
+        }
         self.outbox.push_back((id, frame.clone()));
         if connected {
             self.inflight.push_back(Some(id));
@@ -421,6 +435,7 @@ impl SyncClient {
     pub fn clear_outbox(&mut self) {
         self.outbox.clear();
         self.inflight.clear();
+        self.sent_then_dropped.clear();
     }
 
     pub fn outbox_len(&self) -> usize {
@@ -496,12 +511,13 @@ impl SyncClient {
         let id = self.inflight.pop_front()??;
         // Replies arrive in send order and the outbox is sent in queue order,
         // so the acknowledged row is almost always the front one. Scanning the
-        // whole queue on every reply made draining n writes O(n²). The search
-        // remains for the rows that are not at the front — reordered by a
-        // restore, or already evicted by overflow, in which case nothing is
-        // removed.
+        // whole queue on every reply made draining n writes O(n²). A row that
+        // overflow already evicted is known by id and retires nothing. The
+        // search remains only for a row a restore placed out of send order.
         if self.outbox.front().is_some_and(|(front, _)| *front == id) {
             self.outbox.pop_front();
+        } else if self.sent_then_dropped.remove(&id) {
+            // Evicted after it was sent: nothing left to remove.
         } else if let Some(position) = self.outbox.iter().position(|(i, _)| *i == id) {
             self.outbox.remove(position);
         }

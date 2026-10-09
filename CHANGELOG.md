@@ -17,14 +17,14 @@ All notable changes to Recached are documented here.
 - Fixed `SET … NX GET` and `SET … XX GET` changing replicas when the condition failed and the primary kept its value
 - Fixed `ZADD` with `GT` or `LT` propagating without the condition, so replicas took scores the primary had rejected
 - Fixed `RECACHED_MAX_KEYS` being enforced only by the plain string-setting commands; `INCR`, `APPEND`, `HSET`, `RPUSH`, `SADD`, `ZADD`, `RLSET`, `JSET`, `SMOVE` and the `*STORE` commands created keys past the cap. Eviction made to admit a write never removes a key that write names
-- Fixed `ZADD … INCR` ignoring `NX`, `XX`, `GT` and `LT`, and storing `NaN` for `inf` plus `-inf`. `NaN` is now refused as a score, increment or range bound
+- Fixed `ZADD … INCR` ignoring `NX`, `XX`, `GT` and `LT`, and storing `NaN` for `inf` plus `-inf`. `NaN` is now refused as a score, increment or range bound, before a missing key is created
 - Fixed `-0` and `0` scores ordering differently from each other and a `-0` member being missing from `ZRANGEBYSCORE z 0 0`, and score updates to an adjacent value being ignored by `ZADD` and its `CH` count
 - Fixed `HINCRBY` and `HINCRBYFLOAT` overwriting a field that does not hold a number instead of returning an error
 - Fixed a panic on `RLCHECK` after `RLSET` with a window near `i64::MAX` seconds; such windows are now refused
 - Fixed the memory estimate drifting when embedded callers write the same key from several threads
 - Watch and live-query queues now charge a notification for the array and map storage it holds, not just its leaf strings, so the 8 MiB per-connection budget holds for large collections. A changed value is read once and shared across subscribers, and not read at all when every subscriber takes deltas
-- Removed full-value copies from three write and read paths: overwriting a string no longer copies the old value unless `GET` asks for it, writes under a `noeviction` memory cap copy entries for rollback only when they could cross the cap, and `ZRANGEBYSCORE`/`ZREVRANGEBYSCORE` with `LIMIT` collect only the requested page. Measured: replacing an 8 MiB string allocated 8 MiB, now 27 bytes; a one-byte `APPEND` to it under a cap allocated 16 MiB, now 25 bytes; `LIMIT 0 1` over 100k members allocated 6 MB, now 151 bytes
-- Made acknowledging browser outbox writes constant-time per reply; draining 12,000 queued writes took 207 ms and now takes under 1 ms
+- Removed full-value copies from three write and read paths: overwriting a string no longer copies the old value unless `GET` asks for it, writes under a `noeviction` memory cap copy entries for rollback only when they could cross the cap, and `ZRANGEBYSCORE`/`ZREVRANGEBYSCORE` with `LIMIT` collect only the requested page. In the browser, a `LIMIT` offset past 4,294,967,295 now returns an empty page instead of members from the start. Measured: replacing an 8 MiB string allocated 8 MiB, now 27 bytes; a one-byte `APPEND` to it under a cap allocated 16 MiB, now 25 bytes; `LIMIT 0 1` over 100k members allocated 6 MB, now 151 bytes
+- Made acknowledging browser outbox writes constant-time per reply, including replies for writes the outbox already dropped on overflow; draining 12,000 queued writes took 207 ms and now takes under 1 ms
 
 ## [0.3.4] (2026-09-13)
 

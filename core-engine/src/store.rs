@@ -1344,13 +1344,27 @@ fn limited_page<'a>(
     match limit {
         None => items.collect(),
         Some((offset, count)) => {
-            let rest = items.skip(usize::try_from(offset).unwrap_or(0));
+            let Some(skip) = page_offset::<usize>(offset) else {
+                return Vec::new();
+            };
+            let rest = items.skip(skip);
+            // A count too large for `usize` asks for more than any set holds,
+            // which is the same as "to the end".
             match usize::try_from(count) {
                 Ok(count) => rest.take(count).collect(),
                 Err(_) => rest.collect(),
             }
         }
     }
+}
+
+/// A `LIMIT` offset as an index, or `None` when it is past every possible
+/// member. Negative offsets count as 0; a positive one that does not fit
+/// `usize` — anything past `u32::MAX` on wasm32 — cannot be reached, so the
+/// page is empty. Mapping that overflow to 0 restarted pagination at the
+/// first member in the browser. Generic so the 32-bit case is testable natively.
+fn page_offset<U: TryFrom<i64>>(offset: i64) -> Option<U> {
+    U::try_from(offset.max(0)).ok()
 }
 
 fn encode_zrange(items: &[(&str, f64)], withscores: bool) -> Value {
@@ -2104,7 +2118,10 @@ impl KeyValueStore {
     }
 
     /// [`evict_one_reporting`](Self::evict_one_reporting), never choosing a
-    /// key in `protect`.
+    /// key in `protect`, which must be sorted (as `execute_reporting`'s
+    /// touched keys are) so membership is a binary search. A linear `contains`
+    /// over a sample widened to cover every protected key made an `MSET` that
+    /// rewrites n existing keys and adds one O(n²) under the capacity gate.
     ///
     /// The sample is widened by `protect.len()`. Positions are drawn without
     /// replacement, so at most that many sampled keys can be protected: the
@@ -2129,10 +2146,11 @@ impl KeyValueStore {
         if self.eviction_policy == EvictionPolicy::NoEviction {
             return None;
         }
+        debug_assert!(protect.is_sorted(), "protected keys must be sorted");
         let candidates = self.indexed_candidates(volatile, want.saturating_add(protect.len()));
         let chosen = candidates
             .into_iter()
-            .filter(|key| !protect.contains(key))
+            .filter(|key| protect.binary_search(key).is_err())
             .filter_map(|key| {
                 let entry = self.data.get(&key)?;
                 if entry.is_expired(now) {
@@ -3859,6 +3877,12 @@ impl KeyValueStore {
 
             // ── Sorted Set ────────────────────────────────────────────────────
             Command::ZAdd(key, opts, pairs) => {
+                // Refuse before `typed_entry!` creates or resets the key, so a
+                // rejected write leaves the keyspace as it found it. Parsed
+                // commands never get here with a NaN; direct callers can.
+                if pairs.iter().any(|(score, _)| score.is_nan()) {
+                    return Value::Error("ERR value is not a valid float".to_string());
+                }
                 let now = now_ms();
                 typed_entry!(
                     entry,
@@ -4008,6 +4032,12 @@ impl KeyValueStore {
             }
 
             Command::ZIncrBy(key, delta, member) => {
+                // A non-finite delta always yields a refused result (infinite,
+                // or NaN against an infinite score), so refuse it before the
+                // key is created rather than after.
+                if !delta.is_finite() {
+                    return Value::Error("ERR increment would produce NaN or Infinity".to_string());
+                }
                 let now = now_ms();
                 typed_entry!(
                     entry,
@@ -5106,11 +5136,10 @@ fn zadd_incr(zset: &mut ZSetInner, opts: &ZAddOptions, delta: f64, member: Strin
 fn zadd_exec(zset: &mut ZSetInner, opts: ZAddOptions, pairs: Vec<(f64, String)>) -> Value {
     use crate::cmd::ZAddCondition;
 
-    // Scores reach here from parsed commands, which refuse `NaN`, but the
-    // engine is also driven directly; refuse it before anything is written.
-    if pairs.iter().any(|(score, _)| score.is_nan()) {
-        return Value::Error("ERR value is not a valid float".to_string());
-    }
+    debug_assert!(
+        !pairs.iter().any(|(score, _)| score.is_nan()),
+        "the ZADD arm refuses NaN before the entry exists"
+    );
 
     if opts.incr {
         let Some((delta, member)) = pairs.into_iter().next() else {
@@ -10713,6 +10742,87 @@ mod write_outcome_tests {
         ));
         assert_eq!(s.execute(parse(&["EXISTS", "b"])), Value::Integer(0));
         assert_eq!(s.key_count(), 2);
+    }
+
+    #[test]
+    fn a_rejected_direct_score_leaves_an_absent_key_absent() {
+        let s = KeyValueStore::new();
+        let nan = Command::ZAdd(
+            "z".into(),
+            ZAddOptions::default(),
+            vec![(1.0, "ok".into()), (f64::NAN, "m".into())],
+        );
+        assert!(matches!(s.execute(nan), Value::Error(_)));
+        for delta in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let incr = Command::ZIncrBy("z".into(), delta, "m".into());
+            assert!(matches!(s.execute(incr), Value::Error(_)), "{delta}");
+        }
+        assert_eq!(s.execute(parse(&["EXISTS", "z"])), Value::Integer(0));
+        assert_eq!(s.key_count(), 0);
+        // Nor does it reset an existing set.
+        s.execute(parse(&["ZADD", "z", "1", "a"]));
+        let nan = Command::ZAdd(
+            "z".into(),
+            ZAddOptions::default(),
+            vec![(f64::NAN, "m".into())],
+        );
+        assert!(matches!(s.execute(nan), Value::Error(_)));
+        assert_eq!(s.execute(parse(&["ZSCORE", "z", "a"])), bulk("1"));
+    }
+
+    #[test]
+    fn a_large_capped_write_evicts_only_unnamed_keys() {
+        // Every existing key but one is rewritten by the MSET that adds a new
+        // key; the only legal victim is the one it does not name.
+        const N: usize = 2_000;
+        let s = KeyValueStore::with_config(Some(N + 1), None, EvictionPolicy::AllKeysRandom);
+        let mut seed: Vec<(String, Vec<u8>)> = (0..N)
+            .map(|i| (format!("key:{i:05}"), b"v".to_vec()))
+            .collect();
+        seed.push(("victim".into(), b"v".to_vec()));
+        s.execute(Command::MSet(seed));
+        let mut write: Vec<(String, Vec<u8>)> = (0..N)
+            .map(|i| (format!("key:{i:05}"), b"x".to_vec()))
+            .collect();
+        write.push(("new".into(), b"x".to_vec()));
+        let (reply, evicted) = s.execute_reporting(Command::MSet(write));
+        assert_eq!(reply, Value::SimpleString("OK".into()));
+        assert_eq!(evicted, vec!["victim".to_string()]);
+        assert_eq!(s.key_count(), N + 1);
+    }
+
+    #[test]
+    fn a_limit_offset_past_usize_is_an_empty_page() {
+        // `u32` stands in for wasm32's `usize`: an offset it cannot hold is
+        // past every member, not a reason to start from the first one.
+        assert_eq!(page_offset::<u32>(-5), Some(0));
+        assert_eq!(page_offset::<u32>(u32::MAX as i64), Some(u32::MAX));
+        assert_eq!(page_offset::<u32>(u32::MAX as i64 + 1), None);
+        assert_eq!(page_offset::<u32>(u32::MAX as i64 + 2), None);
+        assert_eq!(page_offset::<u32>(i64::MAX), None);
+
+        let s = KeyValueStore::new();
+        s.execute(parse(&["ZADD", "z", "1", "m"]));
+        for offset in ["4294967296", "4294967297", "9223372036854775807"] {
+            for cmd in [
+                ["ZRANGEBYSCORE", "z", "-inf", "+inf", "LIMIT", offset, "1"],
+                [
+                    "ZREVRANGEBYSCORE",
+                    "z",
+                    "+inf",
+                    "-inf",
+                    "LIMIT",
+                    offset,
+                    "1",
+                ],
+            ] {
+                assert_eq!(
+                    s.execute(parse(&cmd)),
+                    Value::Array(Some(vec![])),
+                    "{cmd:?}"
+                );
+            }
+        }
     }
 
     #[test]
