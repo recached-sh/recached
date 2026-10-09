@@ -2,7 +2,7 @@
 
 All notable changes to Recached are documented here.
 
-## [0.3.5] (Unreleased)
+## [0.3.5] (2026-10-09)
 
 - Added read-only sync scopes and scope-denial metrics
 - **Breaking (beta):** `SYNC` replies now use `r=`/`rw=` grant notation
