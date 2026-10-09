@@ -4,45 +4,23 @@ All notable changes to Recached are documented here.
 
 ## [0.3.5] (Unreleased)
 
-- Added read-only sync scopes: a scope entry can now be written `r=catalog:*` (read-only) or `rw=cart:42:*` (read-write), so a browser can follow shared data without being able to overwrite it. Bare patterns stay read-write, leaving existing tokens unchanged
-- **Breaking (beta):** `SYNC` and `SYNC TOKEN` now echo grants in `r=`/`rw=` notation where the reply was a bare pattern
-- Refused sync tokens that grant an empty pattern
-- Added `EADD`, ephemeral set membership: members are bound to the connections that added them and are removed when the last one closes, with the set itself deleted once it empties. Read it with `SMEMBERS`/`SCARD` and follow it with `QSUB` — presence that cleans itself up, with departures fanned out like any other mutation
-- Fixed `ESET` taking a user offline when they closed the **most recent** of several tabs. Ownership transferred to whichever connection wrote the key last, so that connection closing deleted the key while every earlier tab was still open. A key is now held by every connection that wrote it and removed when the last one goes
-- Added compact delta pushes: a client that sends `CLIENT DELTA ON` receives the mutation (`["keydelta", key, op, arg…]`) instead of the key's whole value, so appending a token to a 50 KB transcript no longer re-sends 50 KB to every subscriber, and one `SADD` into a 10,000-member set no longer re-sends all 10,000. Covers `APPEND`, `SADD`, `SREM`, `LPUSH`, `RPUSH`, `HSET`, `HDEL`, `ZADD` and `ZREM`; everything else still sends whole values. Opt-in, because a client that ignored an unknown frame would silently go stale. `recached-edge` enables it automatically
-- Fixed a mutation being delivered twice to a client that live-queries or watches the key it touches — once as the propagation push and once as the keychange. Applying both replayed non-idempotent mutations such as `LPUSH` twice; it was masked only because the keychange carries the whole value and usually landed second, which the two independent channels never guaranteed
-- Fixed browser and embedded clients ignoring `APPEND` on the propagation path, leaving a stale local value with no signal when the key was not covered by a live query
-- Added `recached_scope_denials_total`, counting commands refused on scope-limited WebSocket connections by reason, so a misconfigured scope is visible instead of just a page that stopped working
-- Fixed refused writes reaching the AOF, replicas and browsers. A command that failed — `HSET`, `RPUSH` or `ZADD` against a key of another type, or a write refused by the memory cap — was still propagated, and because replicas and AOF replay treat a failing command as corruption, one such command stopped the server from restarting with AOF enabled
-- Fixed `SET … NX GET` and `SET … XX GET` changing replicas when the condition failed and the primary kept its value
-- Fixed `ZADD` with `GT` or `LT` propagating without the condition, so replicas took scores the primary had rejected
-- Fixed `RECACHED_MAX_KEYS` being enforced only by the plain string-setting commands; `INCR`, `APPEND`, `HSET`, `RPUSH`, `SADD`, `ZADD`, `RLSET`, `JSET`, `SMOVE` and the `*STORE` commands created keys past the cap. Eviction made to admit a write never removes a key that write names, a write that cannot fit is refused without evicting anything (an `MSET` needing two slots used to evict one key and then fail), and already-expired keys make room before a write is refused, `noeviction` included
-- Fixed `ZADD … INCR` ignoring `NX`, `XX`, `GT` and `LT`, and storing `NaN` for `inf` plus `-inf`. `NaN` is now refused as a score, increment or range bound, before a missing key is created
-- Fixed `-0` and `0` scores ordering differently from each other and a `-0` member being missing from `ZRANGEBYSCORE z 0 0`, and score updates to an adjacent value being ignored by `ZADD` and its `CH` count
-- Fixed hashes, lists, sets and sorted sets surviving with no members. Removing the last member (`HDEL`, the last pop, `SREM`, `ZREM`, `SMOVE`, an `LTRIM` past the end), a `*STORE` with an empty result, and a command that created a key and then wrote nothing (`ZADD XX` on a missing key, a refused `HINCRBYFLOAT`) each left an empty key that `EXISTS`, `KEYS`, `TYPE`, the key cap and replicas counted. An empty collection now does not exist, as in Redis. `JSET` with a path that cannot be applied no longer leaves the parts it created behind
-- Fixed `HINCRBY` and `HINCRBYFLOAT` overwriting a field that does not hold a number instead of returning an error
-- Fixed a panic on `RLCHECK` after `RLSET` with a window near `i64::MAX` seconds; such windows are now refused
-- Fixed the memory estimate drifting when embedded callers write the same key from several threads
-- Watch and live-query queues now charge a notification for the array and map storage it holds, not just its leaf strings, so the 8 MiB per-connection budget holds for large collections. A changed value is read once and shared across subscribers, and not read at all when every subscriber takes deltas
-- Removed full-value copies from three write and read paths: overwriting a string no longer copies the old value unless `GET` asks for it, writes under a `noeviction` memory cap copy entries for rollback only when they could cross the cap, and `ZRANGEBYSCORE`/`ZREVRANGEBYSCORE` with `LIMIT` collect only the requested page. In the browser, a `LIMIT` offset past 4,294,967,295 now returns an empty page instead of members from the start. Measured: replacing an 8 MiB string allocated 8 MiB, now 27 bytes; a one-byte `APPEND` to it under a cap allocated 16 MiB, now 25 bytes; `LIMIT 0 1` over 100k members allocated 6 MB, now 151 bytes
-- Made acknowledging browser outbox writes constant-time per reply, including replies for writes the outbox already dropped on overflow; draining 12,000 queued writes took 207 ms and now takes under 1 ms
+- Added read-only sync scopes and scope-denial metrics
+- **Breaking (beta):** `SYNC` replies now use `r=`/`rw=` grant notation
+- Added ephemeral set memberships and improved multi-tab presence
+- Added compact sync deltas and fixed mutation delivery
+- Fixed command validation, collection cleanup, and replication correctness
+- Improved capacity limits, eviction, and concurrent memory accounting
+- Reduced CPU and memory overhead across commands, notifications, and outbox acknowledgments
 
 ## [0.3.4] (2026-09-13)
 
-- Fixed concurrent writes, transactions, `WATCH`, and expiry and eviction propagation
-- Removed three costs from the command path: the mutation fan-out ran even with no WebSocket clients attached, the key index rebuilt itself on writes that changed nothing, and every RESP length header was parsed by validating UTF-8 and running the generic `str::parse`. `SET` improves from 316,857 to 546,746 ops/s on one worker thread and from 769,823 to about 1,520,000 on four
-- Fixed quadratic write cost on collections: hashes, lists, sets and sorted sets now track their own size instead of being walked before and after every write. `HSET` into a 100k-field hash goes from 2,838 to 380,228 ops/s and no longer degrades as the collection grows
-- Made snapshots, AOF, and dedup persistence atomic, fail-closed, and observable
-- Bounded pub/sub, live-query, and replication queues and added partial replica resync
-- Bounded keyspace maintenance and reduced small-value and collection memory use, including halving `EntryValue` from 96 to 48 bytes for every key in the store
-- Improved live-query snapshots and collection hydration
-- Closed a WebSocket sync client that falls behind the mutation fan-out instead of silently resubscribing, so a browser can no longer hold a permanently stale local replica while reporting itself in sync
-- Capped WebSocket message and frame reassembly at 8 MiB, configurable, replacing the 64 MiB library default that an unauthenticated client could hold per connection
-- Expanded metrics, fault coverage, benchmarks, and operational documentation, including `recached_sync_lag_disconnects_total`, WebSocket close code `4001`, and a current Linux thread-scaling measurement
-- Closed replica transaction and strict live-query scope authorization bypasses
-- Enforced `noeviction` memory caps and rejected ambiguous persistence and capacity configuration
-- Fixed RESP framing, integer overflow, duplicate pub/sub registration, and crash-safe browser outbox restoration
-- Fixed React cache ownership and subscription lifecycle handling
+- Fixed concurrency, transactions, and expiry and eviction propagation
+- Improved command throughput and reduced collection memory usage
+- Hardened persistence, memory limits, and configuration validation
+- Added partial replica resync and improved browser sync recovery
+- Bounded queues, WebSocket messages, and keyspace maintenance
+- Fixed authorization, protocol handling, and React subscription lifecycle issues
+- Expanded metrics, tests, benchmarks, and operational documentation
 
 ## [0.3.3] (2026-09-05)
 
