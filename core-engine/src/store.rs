@@ -983,6 +983,20 @@ enum EntryValue {
 }
 
 impl EntryValue {
+    /// A hash, list, set or sorted set with no members. Such a value is not
+    /// kept: the write path removes it, so a collection exists exactly while
+    /// it has members — as in Redis. Strings, including the empty string, are
+    /// values in their own right and are never removed this way.
+    fn is_empty_collection(&self) -> bool {
+        match self {
+            EntryValue::Hash(h) => h.len() == 0,
+            EntryValue::List(l) => l.len() == 0,
+            EntryValue::Set(s) => s.is_empty(),
+            EntryValue::ZSet(z) => z.len() == 0,
+            EntryValue::Str(_) | EntryValue::RateLimiter(_) | EntryValue::Json(_) => false,
+        }
+    }
+
     fn type_name(&self) -> &'static str {
         match self {
             EntryValue::Str(_) => "string",
@@ -2285,6 +2299,11 @@ impl KeyValueStore {
                     EntryValue::Json(serde_json::from_str(&s).unwrap_or(serde_json::Value::Null))
                 }
             };
+            // Snapshots written before empty collections were removed on
+            // write can still carry them; they do not exist, so skip them.
+            if value.is_empty_collection() {
+                continue;
+            }
             self.data.insert(
                 e.key,
                 Entry {
@@ -2396,6 +2415,7 @@ impl KeyValueStore {
                 let mut after = 0usize;
                 let mut ttl_states: SmallVec<[Option<bool>; 4]> =
                     SmallVec::with_capacity(keys.len());
+                let mut emptied: SmallVec<[&String; 2]> = SmallVec::new();
                 for key in &keys {
                     // Expired-but-unswept entries stay in the TTL index on
                     // purpose: dropping them here would make them unreachable
@@ -2403,12 +2423,29 @@ impl KeyValueStore {
                     // notification. So this asks whether the entry is present,
                     // not whether it is live — matching `sync_key_metadata`.
                     ttl_states.push(match self.data.get(key) {
+                        // A collection the write left with no members is
+                        // removed below, in this one place, rather than by
+                        // each command: HDEL of the last field, the last pop,
+                        // a `ZADD XX` on a missing key, a STORE with an empty
+                        // result, and a command refused after its entry was
+                        // created would otherwise each leave an empty key that
+                        // EXISTS, KEYS, the key cap and replicas all count.
+                        Some(entry) if entry.value().value.is_empty_collection() => {
+                            emptied.push(key);
+                            None
+                        }
                         Some(entry) => {
                             after = after.saturating_add(entry_size(key, entry.value()));
                             Some(entry.value().expires_at_ms.is_some())
                         }
                         None => None,
                     });
+                }
+                // The write-order stripes held for `keys` keep anyone from
+                // refilling these between the check above and the removal.
+                for key in emptied {
+                    self.data
+                        .remove_if(key, |_, entry| entry.value.is_empty_collection());
                 }
                 {
                     let mut index = self
@@ -10946,6 +10983,76 @@ mod write_outcome_tests {
                 assert_eq!(checked, applied, "{doc} at {path}");
             }
         }
+    }
+
+    #[test]
+    fn a_collection_with_no_members_does_not_exist() {
+        let cases: &[(&[&str], &[&str])] = &[
+            (&["HSET", "k", "f", "v"], &["HDEL", "k", "f"]),
+            (&["RPUSH", "k", "a"], &["LPOP", "k"]),
+            (&["RPUSH", "k", "a"], &["RPOP", "k"]),
+            (&["RPUSH", "k", "a", "b"], &["LTRIM", "k", "5", "9"]),
+            (&["RPUSH", "k", "a"], &["LREM", "k", "0", "a"]),
+            (&["SADD", "k", "m"], &["SREM", "k", "m"]),
+            (&["SADD", "k", "m"], &["SPOP", "k"]),
+            (&["SADD", "k", "m"], &["SMOVE", "k", "other", "m"]),
+            (&["ZADD", "k", "1", "m"], &["ZREM", "k", "m"]),
+            // Created and refused, or created and left empty, by one command.
+            (&[], &["ZADD", "k", "XX", "1", "m"]),
+            (&[], &["ZADD", "k", "XX", "INCR", "1", "m"]),
+            (&[], &["HINCRBYFLOAT", "k", "f", "inf"]),
+            (&["SADD", "a", "x"], &["SINTERSTORE", "k", "a", "missing"]),
+        ];
+        for (setup, emptying) in cases {
+            let s = KeyValueStore::new();
+            if !setup.is_empty() {
+                s.execute(parse(setup));
+            }
+            s.execute(parse(emptying));
+            assert_eq!(
+                s.execute(parse(&["EXISTS", "k"])),
+                Value::Integer(0),
+                "{emptying:?}"
+            );
+            assert_eq!(
+                s.execute(parse(&["TYPE", "k"])),
+                Value::SimpleString("none".into())
+            );
+            let survivors: usize = ["a", "other"]
+                .iter()
+                .map(|key| match s.execute(parse(&["EXISTS", key])) {
+                    Value::Integer(n) => n as usize,
+                    _ => 0,
+                })
+                .sum();
+            assert_eq!(s.key_count(), survivors, "{emptying:?} left index entries");
+            if survivors == 0 {
+                assert_eq!(s.approximate_memory_bytes(), 0, "{emptying:?} left bytes");
+            }
+        }
+        // An empty string is a value, not an empty collection.
+        let s = KeyValueStore::new();
+        s.execute(parse(&["SET", "k", ""]));
+        assert_eq!(s.execute(parse(&["EXISTS", "k"])), Value::Integer(1));
+    }
+
+    #[test]
+    fn restore_skips_empty_collections_from_older_snapshots() {
+        let s = KeyValueStore::new();
+        s.restore(vec![
+            SnapshotEntry {
+                key: "empty".into(),
+                value: SnapshotValue::Set(Vec::new()),
+                expires_at_ms: None,
+            },
+            SnapshotEntry {
+                key: "full".into(),
+                value: SnapshotValue::Set(vec!["m".into()]),
+                expires_at_ms: None,
+            },
+        ]);
+        assert_eq!(s.execute(parse(&["EXISTS", "empty"])), Value::Integer(0));
+        assert_eq!(s.key_count(), 1);
     }
 
     #[test]
