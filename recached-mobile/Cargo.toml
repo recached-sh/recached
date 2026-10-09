@@ -1,0 +1,43 @@
+[package]
+name        = "recached-mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Recached client core for Kotlin and Swift, exported through UniFFI: local reads, durable queued writes and sync, with the app owning the WebSocket."
+# Ships as an Android .so / Apple XCFramework plus generated bindings, never to
+# crates.io: it depends on `core-engine` and `sync-client` by path.
+publish = false
+
+[lib]
+# `lib` for the tests, `cdylib` for Android and binding generation,
+# `staticlib` for the XCFramework.
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+# The binding generator, built from the same `uniffi` version as the library
+# so generated code and scaffolding cannot disagree. Only with `--features cli`.
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["uniffi/cli"]
+
+[dependencies]
+core-engine.workspace = true
+sync-client.workspace = true
+rand.workspace        = true
+rmp-serde.workspace   = true
+# Bundled: one SQLite version on every platform, rather than whichever the OS
+# ships (Android's varies by release and vendor).
+rusqlite = { version = "0.40", features = ["bundled"] }
+uniffi   = "=0.32.2"
+
+[dev-dependencies]
+tokio             = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util      = { workspace = true }
+
+[lints]
+workspace = true

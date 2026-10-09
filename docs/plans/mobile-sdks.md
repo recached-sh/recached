@@ -1,6 +1,7 @@
 # Plan: Kotlin and Swift SDKs over UniFFI
 
-Status: **M0 in progress** on `feat/mobile-sdk-prep` (started 2026-10-09).
+Status: **M0 done** on `feat/mobile-sdk-prep`; **M1 done** on
+`feat/recached-mobile` (stacked on it). Started 2026-10-09.
 
 ## Goal
 
@@ -39,9 +40,21 @@ root and clones the whole repository, and Gradle/Xcode jobs would slow every
 server PR. This is the split taladb uses, so its `engine-bump` workflow,
 `check-package.sh` and `check-publication.sh` carry over almost unchanged.
 
-The wrappers generate bindings with `uniffi-bindgen --library` from the
-released binary, so the generated code and the library always come from the
-same build. The `uniffi` version is pinned in one place.
+Each release attaches the generated bindings next to the binaries, so the
+wrappers never run a generator themselves, and the code and the library always
+come from the same build. `uniffi` is pinned exactly in
+`recached-mobile/Cargo.toml`, and the crate carries its own `uniffi-bindgen`
+binary.
+
+| Release asset | Contents |
+|---|---|
+| `recached-mobile-android-<v>.zip` | `jniLibs/{arm64-v8a,armeabi-v7a,x86_64}/librecached_mobile.so` (16 KB-aligned, API 24) and `kotlin/dev/recached/ffi/recached_mobile.kt` |
+| `RecachedFFI-<v>.xcframework.zip` | Static `librecached_mobile.a` for iOS, the iOS simulator (arm64 + x86_64) and macOS (arm64 + x86_64), with the `RecachedFFI` C module. Its `.sha256` is the SwiftPM checksum. |
+| `recached-mobile-swift-<v>.zip` | `RecachedCore.swift`, the generated Swift module |
+
+Module names: Kotlin `dev.recached.ffi`, wrapped by `dev.recached`. On Swift,
+the C module `RecachedFFI` is the binary target, the generated module is
+`RecachedCore`, and the wrapper's public module is `Recached`.
 
 ## Who owns what
 
@@ -56,29 +69,42 @@ The Rust side runs no async runtime and opens no sockets. Persistence stays in
 Rust, so both platforms share one implementation, and it can be tested on
 Linux.
 
-### FFI surface (sketch)
+### FFI surface (as built in M1)
 
 ```text
-RecachedClient.open(path, config)          // restores data + outbox from SQLite
-  get / getBytes / jget / getMatching      // local, synchronous
-  set / setEx / del / incrBy / jset / ...  // local apply + durable outbox row, returns changed keys
-  watch(pattern) / unwatch(pattern)        // live queries
+RecachedClient.open(path, config)            // restores data + outbox from SQLite
+  get / getString / getJson / exists / ttl / getMatching    // local memory, no lock
+  set / setEx / del / incrBy / jset / jmerge // apply + commit with outbox row, then send
+  watch(pattern) / unwatch(pattern) / setSyncToken(token)
   pendingWrites()
 
   // transport entry points, called by the platform socket
-  connectionOpened()      -> [frame]
-  frameReceived(bytes)    -> { changedKeys, reconnect }
-  connectionClosed()      -> delayMs
+  connectionOpened(sink: FrameSink)          // sends session + queued writes via sink
+  frameReceived(bytes) -> { changedKeys, reconnect }
+  connectionClosed()   -> delayMs
+
+FrameSink.send(frame)                        // implemented by the platform
 ```
 
 Rules:
 
-- `RecachedClient` holds `SyncClient` behind a `Mutex`.
-- Effects come back as **return values**, not callbacks. Rust never calls into
-  Kotlin or Swift while holding the lock. The browser adapter's
-  `RefCell`-across-`await` panic is this same class of bug.
-- Socket callbacks arrive on OkHttp's or URLSession's threads, and the mutex
-  serialises them. Reads go straight to the store without taking the lock.
+- `RecachedClient` holds `SyncClient` behind a `Mutex`. Reads go straight to
+  the store without taking it.
+- Change notifications come back as **return values**. Writes don't return
+  keys: each changes exactly the key it names, so the wrapper notifies that
+  key. Frames return `changedKeys`.
+- **Frames go out through a `FrameSink` the platform implements, called while
+  the lock is held.** This changes the M0 sketch, where frames were return
+  values. Reply matching is FIFO, so frames must reach the socket in the order
+  the client recorded them. Returning frames would leave two threads that
+  write at once free to send in either order. A crash after a misattributed
+  reply would then lose a write. So the one callback made under the lock is
+  `send`, and its contract is: queue and return, never block, never call back
+  into the client. OkHttp's `WebSocket.send` and
+  `URLSessionWebSocketTask.send(_:completionHandler:)` both qualify.
+- A write is committed **before** it is sent, so its reply can never retire a
+  row that is not on disk yet. If the commit fails, the frame is still sent
+  (it is already recorded as in flight) and the call returns `Storage`.
 
 ### Persistence
 
@@ -119,19 +145,31 @@ which is why it cannot do goal 1. Mobile has to.
   when their own key or pattern changes, and fall back to `onMutation` on an
   older `recached-edge`.
 
-### M1 — `recached-mobile` crate
+### M1 — `recached-mobile` crate · done
 
-- [ ] Crate skeleton: `cdylib` + `staticlib`, UniFFI proc-macros, `uniffi`
-  pinned.
-- [ ] SQLite schema, open/restore, write and frame transactions as above.
-- [ ] Linux tests against an in-process `recached-server`:
-  - kill the process with writes queued, reopen, and confirm each write lands
-    exactly once (`DEDUP` across epochs);
-  - delete a key while offline, then reconnect;
-  - restore a cold start with no network.
-- [ ] Release workflow: Android ABIs (arm64-v8a, armeabi-v7a, x86_64) and an
-  XCFramework (ios-arm64, ios-arm64-simulator, macos) attached with
-  checksums, plus a dispatch to the wrapper repos.
+- [x] Crate: `lib` + `cdylib` + `staticlib`, UniFFI 0.32.2 proc-macros (pinned
+  exactly), its own `uniffi-bindgen` behind `--features cli`.
+- [x] SQLite schema (`user_version` 1), open/restore, and write and frame
+  transactions as above. WAL with `synchronous = NORMAL`: commits survive an
+  app kill or crash; only OS crash or power loss can drop the last few.
+- [x] Unit tests (12) against hand-written frames.
+- [x] Live tests (4) against a real `recached-server`. They run in CI next to
+  the `recached-embed` suite:
+  - a write replayed after a kill applies exactly once; with `DEDUP` disabled
+    the same test fails with 10 instead of 5;
+  - a key deleted while offline is gone after reconnect, and from disk;
+  - a cold start with no network reads the last server-pushed state;
+  - another client's write arrives, and its key is reported.
+- [x] Packaging: `scripts/build-android.sh` (verified here, NDK 27, all ABIs
+  16 KB-aligned) and `scripts/build-apple.sh` + `scripts/check-apple.sh`. The
+  check builds a SwiftPM consumer, runs it on macOS, and builds it for the iOS
+  simulator. The Apple scripts run only on CI (no Mac here).
+- [x] CI jobs `mobile-android` and `mobile-apple`; release job `mobile`
+  attaches the archives.
+- [x] Generated Swift checked on Linux with Swift 6.4: it compiles in Swift 6
+  mode, and a smoke program covers open/write/sink/frames/errors/reopen.
+- [ ] Dispatch to the wrapper repos on release. This waits for those repos
+  (M2/M3), as taladb's `NATIVE_PACKAGES_DISPATCH_TOKEN` setup did.
 
 ### M2 — Kotlin
 
