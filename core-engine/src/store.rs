@@ -1077,6 +1077,36 @@ fn json_set_at(
     }
 }
 
+/// Whether [`json_set_at`] would succeed on `cur` (`None` for a document that
+/// does not exist yet), decided without changing anything.
+///
+/// `json_set_at` creates missing objects as it descends, so a path that fails
+/// further down — `$.a[0]` on `{}` — used to leave `{"a":null}` behind while
+/// reporting an error. Checking first keeps a refused JSET from writing.
+fn json_check_set(cur: Option<&serde_json::Value>, segs: &[JsonPathSeg]) -> Result<(), String> {
+    let mut cur = cur;
+    for seg in segs {
+        cur = match (seg, cur) {
+            // A null or absent slot becomes an object on the way down.
+            (JsonPathSeg::Field(_), None | Some(serde_json::Value::Null)) => None,
+            (JsonPathSeg::Field(f), Some(serde_json::Value::Object(obj))) => obj.get(f),
+            (JsonPathSeg::Field(f), Some(_)) => {
+                return Err(format!("ERR path segment '.{}' is not an object", f));
+            }
+            (JsonPathSeg::Index(i), Some(serde_json::Value::Array(arr))) => match arr.get(*i) {
+                Some(slot) => Some(slot),
+                None => {
+                    return Err(format!("ERR index {} out of bounds (len {})", i, arr.len()));
+                }
+            },
+            (JsonPathSeg::Index(i), _) => {
+                return Err(format!("ERR path segment '[{}]' is not an array", i));
+            }
+        };
+    }
+    Ok(())
+}
+
 fn json_get_at<'a>(
     cur: &'a serde_json::Value,
     segs: &[JsonPathSeg],
@@ -4103,11 +4133,16 @@ impl KeyValueStore {
                     "ERR path segment '[..]' is not an array (key does not exist)";
                 // Freshness, type and write all resolve under one guard. Reading
                 // `contains_key` separately (as this used to) let a concurrent
-                // writer create the key between the test and the insert.
+                // writer create the key between the test and the insert. The
+                // path is checked against the document before anything is
+                // created or reset, so a refused write changes nothing.
                 let mut entry = match self.data.entry(key) {
                     DashEntry::Vacant(v) => {
                         if leading_index {
                             return Value::Error(NOT_AN_ARRAY.to_string());
+                        }
+                        if let Err(e) = json_check_set(None, &segs) {
+                            return Value::Error(e);
                         }
                         v.insert(Entry {
                             value: EntryValue::Json(serde_json::Value::Null),
@@ -4117,10 +4152,21 @@ impl KeyValueStore {
                     }
                     DashEntry::Occupied(mut o) => {
                         let e = o.get_mut();
-                        if e.is_expired(now) {
+                        let current = if e.is_expired(now) {
                             if leading_index {
                                 return Value::Error(NOT_AN_ARRAY.to_string());
                             }
+                            None
+                        } else {
+                            match &e.value {
+                                EntryValue::Json(doc) => Some(doc),
+                                _ => return Value::Error(WRONGTYPE.to_string()),
+                            }
+                        };
+                        if let Err(err) = json_check_set(current, &segs) {
+                            return Value::Error(err);
+                        }
+                        if e.is_expired(now) {
                             e.value = EntryValue::Json(serde_json::Value::Null);
                             e.expires_at_ms = None;
                         }
@@ -4132,7 +4178,10 @@ impl KeyValueStore {
                 };
                 match json_set_at(doc, &segs, val) {
                     Ok(()) => Value::SimpleString("OK".to_string()),
-                    Err(e) => Value::Error(e),
+                    Err(e) => {
+                        debug_assert!(false, "json_check_set accepted a failing path: {e}");
+                        Value::Error(e)
+                    }
                 }
             }
 
@@ -10821,6 +10870,80 @@ mod write_outcome_tests {
                     Value::Array(Some(vec![])),
                     "{cmd:?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn a_refused_jset_changes_nothing() {
+        let s = KeyValueStore::new();
+        s.execute(parse(&["JSET", "j", "$", r#"{"o":{},"n":1,"arr":[0]}"#]));
+        let before = s.execute(parse(&["JGET", "j", "$"]));
+        for path in [
+            "$.a[0]",
+            "$.a.b[2]",
+            "$.n.x",
+            "$.arr[5]",
+            "$.arr[0].x",
+            "$.o.k[0]",
+        ] {
+            assert!(
+                matches!(s.execute(parse(&["JSET", "j", path, "1"])), Value::Error(_)),
+                "{path}"
+            );
+            assert_eq!(
+                s.execute(parse(&["JGET", "j", "$"])),
+                before,
+                "{path} wrote"
+            );
+        }
+        // A refused write to a missing key does not create it.
+        assert!(matches!(
+            s.execute(parse(&["JSET", "fresh", "$.a[0]", "1"])),
+            Value::Error(_)
+        ));
+        assert_eq!(s.execute(parse(&["EXISTS", "fresh"])), Value::Integer(0));
+        // Paths that create objects still do.
+        assert_eq!(
+            s.execute(parse(&["JSET", "j", "$.o.k.deep", "2"])),
+            Value::SimpleString("OK".into())
+        );
+        assert_eq!(s.execute(parse(&["JGET", "j", "$.o.k.deep"])), bulk("2"));
+    }
+
+    #[test]
+    fn json_check_set_agrees_with_json_set_at() {
+        let docs = [
+            "null",
+            "{}",
+            r#"{"a":null}"#,
+            r#"{"a":{"b":[1,{"c":null}]}}"#,
+            "[1,[2,3]]",
+            "7",
+        ];
+        let paths = [
+            "$",
+            "$.a",
+            "$.a.b",
+            "$.a.b[0]",
+            "$.a.b[1].c",
+            "$.a.b[1].c.d",
+            "$.a.b[2]",
+            "$.a[0]",
+            "$[0]",
+            "$[1][1]",
+            "$[1][2]",
+            "$.x.y.z",
+            "$[0].x",
+        ];
+        for doc in docs {
+            let parsed: serde_json::Value = serde_json::from_str(doc).unwrap();
+            for path in paths {
+                let segs = parse_json_path(path).unwrap();
+                let checked = json_check_set(Some(&parsed), &segs);
+                let mut copy = parsed.clone();
+                let applied = json_set_at(&mut copy, &segs, serde_json::json!(1));
+                assert_eq!(checked, applied, "{doc} at {path}");
             }
         }
     }
