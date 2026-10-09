@@ -1681,6 +1681,49 @@ mod browser_tests {
         }
     }
 
+    #[wasm_bindgen_test]
+    fn a_limit_offset_past_usize_returns_an_empty_page() {
+        // `usize` is 32 bits here. An offset beyond it once converted to 0 and
+        // restarted pagination at the first member; native 64-bit tests could
+        // never see that.
+        use core_engine::cmd::{Command, ZAddOptions};
+        use core_engine::resp::Value;
+        use core_engine::store::KeyValueStore;
+
+        let store = KeyValueStore::new();
+        store.execute(Command::ZAdd(
+            "z".into(),
+            ZAddOptions::default(),
+            vec![(1.0, "m".into())],
+        ));
+        for offset in [1_i64 << 32, (1 << 32) + 1, i64::MAX] {
+            let forward = Command::ZRangeByScore(
+                "z".into(),
+                "-inf".into(),
+                "+inf".into(),
+                false,
+                Some((offset, 1)),
+            );
+            let reverse = Command::ZRevRangeByScore(
+                "z".into(),
+                "+inf".into(),
+                "-inf".into(),
+                false,
+                Some((offset, 1)),
+            );
+            assert_eq!(
+                store.execute(forward),
+                Value::Array(Some(vec![])),
+                "{offset}"
+            );
+            assert_eq!(
+                store.execute(reverse),
+                Value::Array(Some(vec![])),
+                "{offset}"
+            );
+        }
+    }
+
     // ── Schema ────────────────────────────────────────────────────────────────
 
     #[wasm_bindgen_test]

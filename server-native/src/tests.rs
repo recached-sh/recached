@@ -6466,7 +6466,7 @@ mod sweep_notification {
         let notification = rx.try_recv().expect("live query was never told");
         assert_eq!(notification.key, "fare:MNL-CEB");
         assert!(
-            matches!(&notification.payload, NotifPayload::Full(v) if *v == Value::BulkString(None)),
+            matches!(&notification.payload, NotifPayload::Full(v) if **v == Value::BulkString(None)),
             "nil is already the delete encoding, so existing clients apply it unchanged"
         );
     }
@@ -6493,7 +6493,7 @@ mod sweep_notification {
         let notification = rx.try_recv().expect("WATCH-er was never told");
         assert_eq!(notification.key, "session:abc");
         assert!(
-            matches!(&notification.payload, NotifPayload::Full(v) if *v == Value::BulkString(None))
+            matches!(&notification.payload, NotifPayload::Full(v) if **v == Value::BulkString(None))
         );
     }
 
