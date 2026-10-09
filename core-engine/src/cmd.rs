@@ -1406,6 +1406,13 @@ fn parse_rl_config(limit: &Value, window: &Value, cmd: &str) -> Result<(u64, u64
     if window <= 0 {
         return Err(format!("ERR window must be >= 1 in '{}' command", cmd));
     }
+    if window as u64 > crate::store::MAX_RL_WINDOW_SECS {
+        return Err(format!(
+            "ERR window must be <= {} seconds in '{}' command",
+            crate::store::MAX_RL_WINDOW_SECS,
+            cmd
+        ));
+    }
     Ok((limit as u64, window as u64))
 }
 
@@ -1537,7 +1544,18 @@ fn extract_count(val: &Value) -> Result<u64, String> {
     u64::try_from(n).map_err(|_| "ERR value is out of range, must be positive".to_string())
 }
 
+/// A float argument. `NaN` is refused like any other non-number: it would
+/// make every comparison against a score false, and a `NaN` score has no
+/// place in a sorted set's order.
 fn extract_float(val: &Value) -> Result<f64, String> {
+    let value = extract_float_raw(val)?;
+    if value.is_nan() {
+        return Err("ERR value is not a valid float".to_string());
+    }
+    Ok(value)
+}
+
+fn extract_float_raw(val: &Value) -> Result<f64, String> {
     match val {
         Value::BulkString(Some(data)) => {
             let s = String::from_utf8_lossy(data);

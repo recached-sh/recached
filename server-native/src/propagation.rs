@@ -193,8 +193,7 @@ fn reconcile_ephemeral_state(
         }
         Command::FlushDb => state.forget_all_ephemeral(),
         Command::Set(key, _, opts) => {
-            let happened = opts.get || !matches!(response, Value::BulkString(None));
-            if happened {
+            if set_applied(opts, response) {
                 state.forget_ephemeral_keys(std::iter::once(key.as_str()));
             }
         }
@@ -599,19 +598,22 @@ pub(crate) async fn notify_watchers(
     // here rather than per subscriber, and only ever for the key it names —
     // a command touching several keys (MSET, RENAME) has no delta.
     let delta = delta_for(cmd);
-    // Fetch current values from DashMap *before* acquiring the registry lock
-    // to avoid holding two locks simultaneously.
-    let key_values: Vec<(String, Value, Option<KeyDelta>)> = keys
-        .iter()
+    // The full value is read lazily, inside the fan-out, and only when some
+    // recipient takes it rather than the delta. That read happens under the
+    // registry lock; it cannot deadlock, because no DashMap guard is ever held
+    // across an await, and it cannot see a later write to this key, because
+    // the caller holds the key's ordering guard until this returns.
+    let changes: Vec<KeyChange<'_>> = keys
+        .into_iter()
         .map(|k| {
             let delta = delta
                 .as_ref()
-                .filter(|(delta_key, _)| delta_key == k)
+                .filter(|(delta_key, _)| *delta_key == k)
                 .map(|(_, delta)| delta.clone());
-            (k.clone(), store.get_current(k), delta)
+            KeyChange::current(k, delta, store)
         })
         .collect();
-    fan_out(registry, &key_values).await;
+    fan_out(registry, &changes).await;
 }
 
 /// Announce keys the store removed on its own initiative rather than on a
@@ -626,26 +628,24 @@ pub(crate) async fn notify_removed(registry: &WatchRegistry, keys: &[String]) {
     if registry.is_empty() || keys.is_empty() {
         return;
     }
-    let key_values: Vec<(String, Value, Option<KeyDelta>)> = keys
-        .iter()
-        .map(|k| (k.clone(), Value::BulkString(None), None))
-        .collect();
-    fan_out(registry, &key_values).await;
+    let changes: Vec<KeyChange<'_>> = keys.iter().map(|k| KeyChange::removed(k.clone())).collect();
+    fan_out(registry, &changes).await;
 }
 
-/// Deliver one batch of `(key, current value)` pairs to exact-key watchers and
-/// to every live query whose pattern matches.
-async fn fan_out(registry: &WatchRegistry, key_values: &[(String, Value, Option<KeyDelta>)]) {
+/// Deliver one batch of changed keys to exact-key watchers and to every live
+/// query whose pattern matches.
+async fn fan_out(registry: &WatchRegistry, changes: &[KeyChange<'_>]) {
     // A connection may WATCH a key and QSUB one or more overlapping patterns.
     // Deliver each changed key once per connection: deltas such as APPEND and
     // INCR are not idempotent when clients apply them to a local replica.
     let mut delivered: HashMap<String, HashSet<u64>> = HashMap::new();
     if registry.watched_keys.load(Ordering::Relaxed) > 0 {
         let mut reg = registry.map.lock().await;
-        for (key, value, delta) in key_values {
+        for change in changes {
+            let key = &change.key;
             if let Some(subs) = reg.get_mut(key) {
                 subs.retain(|sub| {
-                    let alive = sub.notify(key, value, delta.as_ref());
+                    let alive = sub.notify(change);
                     if alive {
                         delivered
                             .entry(key.clone())
@@ -667,7 +667,8 @@ async fn fan_out(registry: &WatchRegistry, key_values: &[(String, Value, Option<
         let mut pats = registry.patterns.lock().await;
         let mut emptied = false;
         for (pattern, subs) in pats.iter_mut() {
-            for (key, value, delta) in key_values {
+            for change in changes {
+                let key = &change.key;
                 if core_engine::store::glob_match(pattern, key) {
                     subs.retain(|sub| {
                         if delivered
@@ -676,7 +677,7 @@ async fn fan_out(registry: &WatchRegistry, key_values: &[(String, Value, Option<
                         {
                             return true;
                         }
-                        let alive = sub.notify(key, value, delta.as_ref());
+                        let alive = sub.notify(change);
                         if alive {
                             delivered
                                 .entry(key.clone())
@@ -710,9 +711,10 @@ async fn fan_out(registry: &WatchRegistry, key_values: &[(String, Value, Option<
 pub(crate) async fn notify_flushdb(registry: &WatchRegistry, watched_before: Vec<String>) {
     if registry.watched_keys.load(Ordering::Relaxed) > 0 && !watched_before.is_empty() {
         let mut reg = registry.map.lock().await;
-        for key in &watched_before {
-            if let Some(subs) = reg.get_mut(key) {
-                subs.retain(|sub| sub.notify(key, &Value::BulkString(None), None));
+        for key in watched_before {
+            if let Some(subs) = reg.get_mut(&key) {
+                let change = KeyChange::removed(key);
+                subs.retain(|sub| sub.notify(&change));
             }
         }
         registry.sync_len(&reg);
@@ -721,8 +723,8 @@ pub(crate) async fn notify_flushdb(registry: &WatchRegistry, watched_before: Vec
         let mut pats = registry.patterns.lock().await;
         let mut emptied = false;
         for (pattern, subs) in pats.iter_mut() {
-            let sentinel = pattern.clone();
-            subs.retain(|sub| sub.notify(&sentinel, &Value::BulkString(None), None));
+            let sentinel = KeyChange::removed(pattern.clone());
+            subs.retain(|sub| sub.notify(&sentinel));
             emptied |= subs.is_empty();
         }
         if emptied {
@@ -799,6 +801,24 @@ pub(crate) fn resp_push(parts: &[&[u8]]) -> Vec<u8> {
     out
 }
 
+/// Whether a `SET` that did not error actually wrote, read from its reply.
+///
+/// With `GET` the reply is the previous value, but together with the
+/// condition it still settles the outcome: `NX` writes only when the key was
+/// absent, so exactly when the old value is nil; `XX` writes only when it was
+/// present, so exactly when it is not. Treating any `GET` as a write sent
+/// `SET k new` to replicas after `SET k new NX GET` had left the primary's
+/// value alone.
+fn set_applied(opts: &SetOptions, response: &Value) -> bool {
+    let nil = matches!(response, Value::BulkString(None));
+    match (opts.get, &opts.condition) {
+        (false, _) => !nil,
+        (true, None) => true,
+        (true, Some(SetCondition::Nx)) => nil,
+        (true, Some(SetCondition::Xx)) => !nil,
+    }
+}
+
 /// Returns the RESP-encoded mutation to broadcast to WebSocket peers, or `None`
 /// if the command mutated nothing (read-only or conditional-and-failed).
 ///
@@ -831,6 +851,14 @@ pub(crate) fn resp_push(parts: &[&[u8]]) -> Vec<u8> {
 /// another thread overwriting the key. This is also what Redis does — it
 /// rewrites relative expiries to absolute ones at propagation time.
 pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Option<Vec<u8>> {
+    // An error reply means the store refused the write (WRONGTYPE, OOM, a
+    // key-cap refusal, an overflow) and left the keyspace as it was. Emitting
+    // it anyway would make every replica and AOF replay run a command that
+    // fails there too — and both treat a failed command as corruption, so a
+    // single mistyped `HSET` would stop the server from restarting.
+    if matches!(response, Value::Error(_)) {
+        return None;
+    }
     match cmd {
         // Keep the ephemeral verb in the durable stream so AOF replay can
         // discard any connection-scoped state whose owner vanished in a crash.
@@ -847,10 +875,7 @@ pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Opt
             _ => None,
         },
         Command::Set(k, v, opts) => {
-            // Without GET: nil response means NX/XX condition failed — don't broadcast.
-            // With GET: nil means key didn't exist before, but SET still happened.
-            let set_happened = opts.get || !matches!(response, Value::BulkString(None));
-            if !set_happened {
+            if !set_applied(opts, response) {
                 return None;
             }
             match &opts.expiry {
@@ -1221,12 +1246,29 @@ pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Opt
 
         // ── Sorted Set ────────────────────────────────────────────────────────
         Command::ZAdd(k, opts, pairs) => {
+            // A nil reply is an `INCR` whose condition aborted it: nothing
+            // was written.
+            if opts.incr && matches!(response, Value::BulkString(None)) {
+                return None;
+            }
+            // Every condition travels with the command. The reply cannot say
+            // which members a conditional ZADD actually updated — a score
+            // update returns 0 just as a skipped member does — but replaying
+            // the same conditions against the same prior state reproduces
+            // exactly the primary's outcome. Dropping GT/LT made `ZADD z GT 1
+            // m` lower the score on every replica while the primary kept it.
             let mut parts: Vec<String> = vec!["ZADD".into(), k.clone()];
             if let Some(cond) = &opts.condition {
                 parts.push(match cond {
                     ZAddCondition::Nx => "NX".into(),
                     ZAddCondition::Xx => "XX".into(),
                 });
+            }
+            if opts.gt {
+                parts.push("GT".into());
+            }
+            if opts.lt {
+                parts.push("LT".into());
             }
             if opts.ch {
                 parts.push("CH".into());
@@ -1736,6 +1778,201 @@ mod counter_ttl_propagation_tests {
         }
 
         let _ = tokio::fs::remove_file(&path).await;
+    }
+}
+
+#[cfg(test)]
+mod write_outcome_propagation_tests {
+    use super::*;
+    use core_engine::cmd::{SetOptions, ZAddOptions};
+    use core_engine::store::KeyValueStore;
+
+    /// Run `cmd` on `primary` and, if it propagates, on `replica` exactly as a
+    /// replica or AOF replay would. Returns whether a frame was emitted.
+    fn replicate(primary: &KeyValueStore, replica: &KeyValueStore, cmd: Command) -> bool {
+        let response = primary.execute(cmd.clone());
+        let Some(frame) = broadcast_for(&cmd, &response, 0) else {
+            return false;
+        };
+        let (value, _) = Value::parse(&frame).expect("frame parses");
+        let Value::Push(items) = value else {
+            panic!("expected a push frame, got {value:?}");
+        };
+        let replayed = Command::from_value(Value::Array(Some(items))).expect("frame is a command");
+        let replayed_response = replica.execute(replayed);
+        assert!(
+            !matches!(replayed_response, Value::Error(_)),
+            "replaying {cmd:?} failed: {replayed_response:?}"
+        );
+        true
+    }
+
+    fn pair() -> (KeyValueStore, KeyValueStore) {
+        (KeyValueStore::new(), KeyValueStore::new())
+    }
+
+    /// A refused write left the primary unchanged, and replaying it fails —
+    /// which a replica treats as a broken stream and AOF replay as corruption
+    /// that stops the server from starting.
+    #[test]
+    fn a_refused_write_is_never_propagated() {
+        let store = KeyValueStore::new();
+        store.execute(Command::Set(
+            "k".into(),
+            b"v".to_vec(),
+            SetOptions::default(),
+        ));
+        for cmd in [
+            Command::HSet("k".into(), vec![("f".into(), b"v".to_vec())]),
+            Command::RPush("k".into(), vec![b"v".to_vec()]),
+            Command::LPush("k".into(), vec![b"v".to_vec()]),
+            Command::SAdd("k".into(), vec!["m".into()]),
+            Command::ZAdd("k".into(), ZAddOptions::default(), vec![(1.0, "m".into())]),
+        ] {
+            let response = store.execute(cmd.clone());
+            assert!(
+                matches!(response, Value::Error(_)),
+                "{cmd:?} → {response:?}"
+            );
+            assert!(
+                broadcast_for(&cmd, &response, 0).is_none(),
+                "{cmd:?} was emitted"
+            );
+        }
+
+        let capped = KeyValueStore::with_config(
+            None,
+            Some(70),
+            core_engine::store::EvictionPolicy::NoEviction,
+        );
+        capped.execute(Command::Set(
+            "k".into(),
+            b"old".to_vec(),
+            SetOptions::default(),
+        ));
+        let oversized = Command::Set(
+            "k".into(),
+            b"value-too-large".to_vec(),
+            SetOptions::default(),
+        );
+        let response = capped.execute(oversized.clone());
+        assert!(
+            matches!(response, Value::Error(_)),
+            "expected OOM, got {response:?}"
+        );
+        assert!(broadcast_for(&oversized, &response, 0).is_none());
+    }
+
+    #[test]
+    fn set_get_with_a_condition_propagates_only_when_it_wrote() {
+        let get = |condition| SetOptions {
+            get: true,
+            condition: Some(condition),
+            ..Default::default()
+        };
+        let (primary, replica) = pair();
+        for store in [&primary, &replica] {
+            store.execute(Command::Set(
+                "k".into(),
+                b"old".to_vec(),
+                SetOptions::default(),
+            ));
+        }
+        // NX on a present key: no write, no frame.
+        let nx = Command::Set("k".into(), b"new".to_vec(), get(SetCondition::Nx));
+        assert!(!replicate(&primary, &replica, nx));
+        // XX on a missing key: no write, no frame.
+        let xx = Command::Set("absent".into(), b"new".to_vec(), get(SetCondition::Xx));
+        assert!(!replicate(&primary, &replica, xx));
+        // The writing forms still propagate.
+        let nx = Command::Set("fresh".into(), b"v".to_vec(), get(SetCondition::Nx));
+        assert!(replicate(&primary, &replica, nx));
+        let xx = Command::Set("k".into(), b"newer".to_vec(), get(SetCondition::Xx));
+        assert!(replicate(&primary, &replica, xx));
+        for key in ["k", "absent", "fresh"] {
+            assert_eq!(
+                primary.execute(Command::Get(key.into())),
+                replica.execute(Command::Get(key.into())),
+                "{key} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn conditional_zadd_leaves_replicas_where_the_primary_is() {
+        let (primary, replica) = pair();
+        for store in [&primary, &replica] {
+            store.execute(Command::ZAdd(
+                "z".into(),
+                ZAddOptions::default(),
+                vec![(2.0, "m".into())],
+            ));
+        }
+        let cases = [
+            (
+                ZAddOptions {
+                    gt: true,
+                    ..Default::default()
+                },
+                1.0,
+            ),
+            (
+                ZAddOptions {
+                    lt: true,
+                    ..Default::default()
+                },
+                3.0,
+            ),
+            (
+                ZAddOptions {
+                    gt: true,
+                    ..Default::default()
+                },
+                5.0,
+            ),
+            (
+                ZAddOptions {
+                    lt: true,
+                    incr: true,
+                    ..Default::default()
+                },
+                1.0,
+            ),
+            (
+                ZAddOptions {
+                    gt: true,
+                    incr: true,
+                    ..Default::default()
+                },
+                1.0,
+            ),
+        ];
+        for (options, score) in cases {
+            let cmd = Command::ZAdd("z".into(), options, vec![(score, "m".into())]);
+            replicate(&primary, &replica, cmd.clone());
+            assert_eq!(
+                primary.execute(Command::ZScore("z".into(), "m".into())),
+                replica.execute(Command::ZScore("z".into(), "m".into())),
+                "{cmd:?} diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn an_aborted_zadd_incr_is_not_propagated() {
+        let (primary, replica) = pair();
+        let nx_incr = ZAddOptions {
+            condition: Some(ZAddCondition::Nx),
+            incr: true,
+            ..Default::default()
+        };
+        primary.execute(Command::ZAdd(
+            "z".into(),
+            ZAddOptions::default(),
+            vec![(1.0, "m".into())],
+        ));
+        let cmd = Command::ZAdd("z".into(), nx_incr, vec![(1.0, "m".into())]);
+        assert!(!replicate(&primary, &replica, cmd));
     }
 }
 

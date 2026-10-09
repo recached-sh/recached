@@ -321,6 +321,77 @@ fn pushes_are_not_replies() {
 }
 
 #[test]
+fn a_reply_for_an_evicted_row_retires_nothing_else() {
+    let mut c = client();
+    c.set_max_pending(2);
+    c.on_open();
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply { retired: None }
+    );
+    let w1 = c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, true);
+    let w2 = c.enqueue_write(&to_resp(&["SET", "b", "2"]), true, true);
+    let w3 = c.enqueue_write(&to_resp(&["SET", "c", "3"]), true, true);
+    assert_eq!(w3.dropped, Some(w1.id));
+    // w1's reply still arrives in its slot; its row is already gone.
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply {
+            retired: Some(w1.id)
+        }
+    );
+    assert_eq!(c.outbox_len(), 2);
+    for w in [w2, w3] {
+        assert_eq!(
+            c.handle_frame(b"+OK\r\n"),
+            Incoming::Reply {
+                retired: Some(w.id)
+            }
+        );
+    }
+    assert_eq!(c.outbox_len(), 0);
+}
+
+#[test]
+fn draining_after_overflow_retires_every_reply_without_searching() {
+    // 2n writes through an n-row outbox while connected: the first n are
+    // evicted after being sent, and their replies arrive first.
+    const N: usize = 1_000;
+    let mut c = client();
+    c.set_max_pending(N);
+    c.on_open();
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply { retired: None }
+    );
+    let ids: Vec<u64> = (0..2 * N)
+        .map(|i| {
+            c.enqueue_write(&to_resp(&["SET", &format!("k{i}"), "v"]), true, true)
+                .id
+        })
+        .collect();
+    assert_eq!(c.sent_then_dropped.len(), N);
+    for id in ids {
+        assert_eq!(
+            c.handle_frame(b"+OK\r\n"),
+            Incoming::Reply { retired: Some(id) }
+        );
+    }
+    assert_eq!(c.outbox_len(), 0);
+    assert!(c.sent_then_dropped.is_empty());
+}
+
+#[test]
+fn rows_dropped_while_offline_are_not_awaited() {
+    // Nothing was sent, so no reply will come for the evicted row.
+    let mut c = client();
+    c.set_max_pending(1);
+    c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, false);
+    c.enqueue_write(&to_resp(&["SET", "b", "2"]), true, false);
+    assert!(c.sent_then_dropped.is_empty());
+}
+
+#[test]
 fn outbox_overflow_drops_oldest() {
     let mut c = client();
     let first = c.enqueue_write(&to_resp(&["SET", "k0", "v"]), true, false);

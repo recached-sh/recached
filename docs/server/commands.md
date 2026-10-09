@@ -250,8 +250,8 @@ A hash is a map of field-value pairs stored under a single key. Use hashes to st
 | `HLEN key` | Returns the number of fields in the hash. |
 | `HEXISTS key field` | Returns 1 if the field exists in the hash, 0 otherwise. |
 | `HSETNX key field value` | Sets a field only if it does not already exist. Returns 1 if set, 0 if the field already existed. |
-| `HINCRBY key field increment` | Increments the integer value of a hash field by the given integer. Creates the field with value 0 before incrementing if it does not exist. |
-| `HINCRBYFLOAT key field increment` | Increments the float value of a hash field by the given float. |
+| `HINCRBY key field increment` | Increments the integer value of a hash field by the given integer. Creates the field with value 0 before incrementing if it does not exist. Returns an error, leaving the field unchanged, if it holds something other than an integer. |
+| `HINCRBYFLOAT key field increment` | Increments the float value of a hash field by the given float. Treats a missing field as 0; returns an error, leaving the field unchanged, if it holds something other than a number. |
 | `HSCAN key cursor [MATCH pattern] [COUNT count] [NOVALUES]` | Iterates a hash incrementally: returns the next cursor plus at most `COUNT` field-value pairs (default 10). Start at cursor `0` and continue until the returned cursor is `0`. `MATCH` filters on field names; `NOVALUES` returns field names only. The bounded counterpart of `HGETALL` — prefer it for hashes whose size you do not control. |
 
 ### Example
@@ -318,7 +318,7 @@ An ordered collection where each member has a numeric score. Members are unique;
 
 | Command | Description |
 |---|---|
-| `ZADD key [NX\|XX] [CH] [INCR] score member [score member ...]` | Adds members with scores. `NX`: only add, never update. `XX`: only update, never add. `CH`: count changed elements (updated + added) instead of just added. `INCR`: add the score to the existing score instead of replacing it. |
+| `ZADD key [NX\|XX] [GT\|LT] [CH] [INCR] score member [score member ...]` | Adds members with scores. `NX`: only add, never update. `XX`: only update, never add. `GT`/`LT`: only update an existing member when the new score is greater/less. `CH`: count changed elements (updated + added) instead of just added. `INCR`: add the score to the existing score instead of replacing it; the conditions apply to the result, and a write they abort returns nil. `NaN` is refused as a score. |
 | `ZREM key member [member ...]` | Removes members from the sorted set. Returns the number of members removed. |
 | `ZINCRBY key increment member` | Adds `increment` to the score of `member`. Creates the member with score `increment` if it does not exist. |
 | `ZRANGE key start stop [WITHSCORES]` | Returns members between rank `start` and `stop` (0-based, ascending). Add `WITHSCORES` to include scores. |
@@ -380,7 +380,7 @@ A built-in sliding-window rate limiter — no INCR+EXPIRE races, no Lua scripts.
 
 | Command | Description |
 |---|---|
-| `RLSET key limit window` | Configure a limiter: at most `limit` attempts per `window` seconds. Reconfiguring in place keeps already-recorded attempts. Limiters created with `RLSET` persist until `DEL`/`EXPIRE`. |
+| `RLSET key limit window` | Configure a limiter: at most `limit` attempts per `window` seconds (at most 9,223,372,036,854,775, so the window in milliseconds fits a RESP integer). Reconfiguring in place keeps already-recorded attempts. Limiters created with `RLSET` persist until `DEL`/`EXPIRE`. |
 | `RLCHECK key [limit window]` | Record an attempt. Returns a 3-element array: `[allowed (1\|0), remaining, retry_after_ms]`. With the optional `limit window` pair, the limiter is created on first use — ideal for per-IP or per-user keys where a separate `RLSET` round-trip per key is impractical. Auto-created limiters self-clean: they expire one window after the last attempt. Bare `RLCHECK` on an unconfigured key returns an error. |
 
 The reply maps directly onto standard HTTP rate-limit headers: `remaining` → `X-RateLimit-Remaining`, `retry_after_ms` → `Retry-After`.
