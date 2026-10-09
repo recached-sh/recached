@@ -65,7 +65,7 @@ use tls::*;
 use watch::*;
 
 use core_engine::catalog;
-use core_engine::cmd::{Command, SetExpiry, ZAddCondition};
+use core_engine::cmd::{Command, SetCondition, SetExpiry, SetOptions, ZAddCondition};
 use core_engine::resp::{MAX_BULK_STRING_BYTES, Value};
 use core_engine::store::{
     EvictionPolicy, KeyValueStore, KeyspaceSample, SnapshotEntry, SnapshotValue, glob_match,
@@ -77,8 +77,8 @@ use std::io::ErrorKind;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};

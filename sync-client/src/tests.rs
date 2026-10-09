@@ -321,6 +321,38 @@ fn pushes_are_not_replies() {
 }
 
 #[test]
+fn a_reply_for_an_evicted_row_retires_nothing_else() {
+    let mut c = client();
+    c.set_max_pending(2);
+    c.on_open();
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply { retired: None }
+    );
+    let w1 = c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, true);
+    let w2 = c.enqueue_write(&to_resp(&["SET", "b", "2"]), true, true);
+    let w3 = c.enqueue_write(&to_resp(&["SET", "c", "3"]), true, true);
+    assert_eq!(w3.dropped, Some(w1.id));
+    // w1's reply still arrives in its slot; its row is already gone.
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply {
+            retired: Some(w1.id)
+        }
+    );
+    assert_eq!(c.outbox_len(), 2);
+    for w in [w2, w3] {
+        assert_eq!(
+            c.handle_frame(b"+OK\r\n"),
+            Incoming::Reply {
+                retired: Some(w.id)
+            }
+        );
+    }
+    assert_eq!(c.outbox_len(), 0);
+}
+
+#[test]
 fn outbox_overflow_drops_oldest() {
     let mut c = client();
     let first = c.enqueue_write(&to_resp(&["SET", "k0", "v"]), true, false);

@@ -494,7 +494,17 @@ impl SyncClient {
     /// retired outbox row id for durable deletion, if it was a data write.
     fn ack_reply(&mut self) -> Option<u64> {
         let id = self.inflight.pop_front()??;
-        self.outbox.retain(|(i, _)| *i != id);
+        // Replies arrive in send order and the outbox is sent in queue order,
+        // so the acknowledged row is almost always the front one. Scanning the
+        // whole queue on every reply made draining n writes O(n²). The search
+        // remains for the rows that are not at the front — reordered by a
+        // restore, or already evicted by overflow, in which case nothing is
+        // removed.
+        if self.outbox.front().is_some_and(|(front, _)| *front == id) {
+            self.outbox.pop_front();
+        } else if let Some(position) = self.outbox.iter().position(|(i, _)| *i == id) {
+            self.outbox.remove(position);
+        }
         Some(id)
     }
 

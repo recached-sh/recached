@@ -16,8 +16,10 @@ const NOTIFICATION_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 /// disconnected for backpressure it is not causing.
 #[derive(Debug)]
 pub(crate) enum NotifPayload {
-    /// The key's whole current value.
-    Full(Value),
+    /// The key's whole current value, shared by every subscriber it is sent
+    /// to rather than cloned per connection. Each subscriber is still charged
+    /// its full size, so per-connection budgets and overflow are unchanged.
+    Full(Arc<Value>),
     /// The mutation, for a connection that sent `CLIENT DELTA ON`.
     Delta(KeyDelta),
 }
@@ -70,20 +72,21 @@ impl WatchSubscriber {
     /// Queue a notification without ever waiting behind a slow socket. A full
     /// queue signals the owning connection and removes this registration.
     ///
-    /// `delta` is the mutation's compact form when it has one; this subscriber
-    /// takes it only if its connection asked for deltas.
-    pub(crate) fn notify(&self, key: &str, value: &Value, delta: Option<&KeyDelta>) -> bool {
-        let payload = match delta {
-            Some(delta) if self.deltas.load(Ordering::Relaxed) => {
-                NotifPayload::Delta(delta.clone())
-            }
-            _ => NotifPayload::Full(value.clone()),
+    /// The change's compact delta is used when it has one and this
+    /// subscriber's connection asked for deltas; otherwise the full value,
+    /// which is materialised on first need. The charge is measured and
+    /// reserved before anything is cloned.
+    pub(crate) fn notify(&self, change: &KeyChange<'_>) -> bool {
+        let delta = change
+            .delta
+            .as_ref()
+            .filter(|_| self.deltas.load(Ordering::Relaxed));
+        let payload_bytes = match delta {
+            Some(delta) => delta.heap_bytes(),
+            None => change.full().1,
         };
-        let payload_bytes = match &payload {
-            NotifPayload::Full(value) => value_heap_bytes(value),
-            NotifPayload::Delta(delta) => delta.heap_bytes(),
-        };
-        let charged_bytes = key
+        let charged_bytes = change
+            .key
             .len()
             .saturating_add(payload_bytes)
             .saturating_add(std::mem::size_of::<WatchNotif>());
@@ -92,8 +95,12 @@ impl WatchSubscriber {
             return false;
         }
 
+        let payload = match delta {
+            Some(delta) => NotifPayload::Delta(delta.clone()),
+            None => NotifPayload::Full(Arc::clone(&change.full().0)),
+        };
         let notification = WatchNotif {
-            key: key.to_string(),
+            key: change.key.clone(),
             payload,
             charged_bytes,
             budget: Arc::clone(&self.budget),
@@ -132,19 +139,84 @@ pub(crate) fn notification_channel(
     )
 }
 
+/// Bytes a queued value keeps allocated: string and bulk payloads by
+/// capacity, plus the backing storage of every array, push and map — each
+/// element slot is a whole `Value` even when the element itself owns nothing.
+/// Counting only leaf payloads charged an array of 300,000 empty strings as
+/// zero bytes while it held 9.6 MB, which let 256 queued items retain
+/// gigabytes against an 8 MiB budget.
 fn value_heap_bytes(value: &Value) -> usize {
+    fn slots(capacity: usize, slot: usize) -> usize {
+        capacity.saturating_mul(slot)
+    }
     match value {
-        Value::SimpleString(value) | Value::Error(value) => value.len(),
-        Value::Integer(_) => std::mem::size_of::<i64>(),
-        Value::BulkString(value) => value.as_ref().map_or(0, Vec::len),
-        Value::Array(value) => value
-            .as_ref()
-            .map_or(0, |items| items.iter().map(value_heap_bytes).sum()),
-        Value::Push(items) => items.iter().map(value_heap_bytes).sum(),
-        Value::Map(entries) => entries
-            .iter()
-            .map(|(key, value)| value_heap_bytes(key).saturating_add(value_heap_bytes(value)))
-            .sum(),
+        Value::SimpleString(value) | Value::Error(value) => value.capacity(),
+        Value::Integer(_) => 0,
+        Value::BulkString(value) => value.as_ref().map_or(0, Vec::capacity),
+        Value::Array(None) => 0,
+        Value::Array(Some(items)) | Value::Push(items) => items.iter().fold(
+            slots(items.capacity(), std::mem::size_of::<Value>()),
+            |total, item| total.saturating_add(value_heap_bytes(item)),
+        ),
+        Value::Map(entries) => entries.iter().fold(
+            slots(entries.capacity(), std::mem::size_of::<(Value, Value)>()),
+            |total, (key, value)| {
+                total
+                    .saturating_add(value_heap_bytes(key))
+                    .saturating_add(value_heap_bytes(value))
+            },
+        ),
+    }
+}
+
+/// One changed key on its way to watchers and live queries.
+///
+/// The full value is read from the store at most once, and only if some
+/// recipient will be sent it: a subscriber that asked for deltas never needs
+/// it, so a one-byte `APPEND` watched only by delta clients no longer copies
+/// and encodes the whole value just to throw it away. Its size is measured
+/// once alongside, rather than walked again per subscriber.
+pub(crate) struct KeyChange<'a> {
+    pub(crate) key: String,
+    pub(crate) delta: Option<KeyDelta>,
+    /// Where the current value comes from; `None` for a removal, whose value
+    /// is nil.
+    source: Option<&'a KeyValueStore>,
+    full: OnceLock<(Arc<Value>, usize)>,
+}
+
+impl<'a> KeyChange<'a> {
+    /// A write: the value is the key's current contents in `store`. The
+    /// caller must hold the key's ordering guard until delivery finishes, so
+    /// a lazy read still observes this write and not a later one.
+    pub(crate) fn current(key: String, delta: Option<KeyDelta>, store: &'a KeyValueStore) -> Self {
+        Self {
+            key,
+            delta,
+            source: Some(store),
+            full: OnceLock::new(),
+        }
+    }
+
+    /// A removal (expiry, eviction, flush), announced as a nil value.
+    pub(crate) fn removed(key: String) -> Self {
+        Self {
+            key,
+            delta: None,
+            source: None,
+            full: OnceLock::new(),
+        }
+    }
+
+    fn full(&self) -> &(Arc<Value>, usize) {
+        self.full.get_or_init(|| {
+            let value = match self.source {
+                Some(store) => store.get_current(&self.key),
+                None => Value::BulkString(None),
+            };
+            let bytes = value_heap_bytes(&value);
+            (Arc::new(value), bytes)
+        })
     }
 }
 
@@ -237,3 +309,58 @@ pub(crate) async fn unregister_all_watches(
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_storage_is_charged_not_just_its_leaves() {
+        let items = vec![Value::BulkString(Some(Vec::new())); 300_000];
+        let slots = items.capacity() * std::mem::size_of::<Value>();
+        let value = Value::Array(Some(items));
+        assert!(value_heap_bytes(&value) >= slots);
+
+        let map = Value::Map(vec![(Value::Integer(1), Value::Integer(2)); 1_000]);
+        assert!(value_heap_bytes(&map) >= 1_000 * std::mem::size_of::<(Value, Value)>());
+    }
+
+    #[test]
+    fn one_oversized_aggregate_overflows_the_queue_budget() {
+        let (overflow, mut overflowed) = mpsc::channel(1);
+        let (subscriber, _rx) = notification_channel(1, overflow, Arc::new(AtomicBool::new(false)));
+        let store = KeyValueStore::new();
+        let members: Vec<String> = (0..300_000).map(|i| i.to_string()).collect();
+        store.execute(Command::SAdd("big".into(), members));
+        let change = KeyChange::current("big".into(), None, &store);
+        assert!(
+            !subscriber.notify(&change),
+            "a value past the byte budget must not queue"
+        );
+        assert!(
+            overflowed.try_recv().is_ok(),
+            "the connection must be told it overflowed"
+        );
+    }
+
+    #[test]
+    fn a_delta_subscriber_never_materialises_the_full_value() {
+        let (overflow, _overflowed) = mpsc::channel(1);
+        let (subscriber, mut rx) =
+            notification_channel(1, overflow, Arc::new(AtomicBool::new(true)));
+        let store = KeyValueStore::new();
+        store.execute(Command::Append("k".into(), b"x".to_vec()));
+        let delta = KeyDelta {
+            op: "append",
+            args: vec![b"x".to_vec()],
+        };
+        let change = KeyChange::current("k".into(), Some(delta), &store);
+        assert!(subscriber.notify(&change));
+        assert!(
+            change.full.get().is_none(),
+            "the full value was read for nobody"
+        );
+        let queued = rx.try_recv().expect("the delta was queued");
+        assert!(matches!(queued.payload, NotifPayload::Delta(_)));
+    }
+}
