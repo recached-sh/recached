@@ -41,6 +41,8 @@ export default defineConfig({
       { text: 'React', link: '/react/getting-started' },
       { text: 'Vue', link: '/vue/getting-started' },
       { text: 'Rust', link: '/rust/getting-started' },
+      { text: 'Android', link: '/android/getting-started' },
+      { text: 'iOS', link: '/ios/getting-started' },
       { text: 'Roadmap', link: '/roadmap' },
     ],
 
@@ -99,6 +101,18 @@ export default defineConfig({
             { text: 'Getting Started', link: '/vue/getting-started' },
             { text: 'Composables Reference', link: '/vue/composables-reference' },
           ],
+        },
+      ],
+      '/android/': [
+        {
+          text: 'Android (Kotlin)',
+          items: [{ text: 'Getting Started', link: '/android/getting-started' }],
+        },
+      ],
+      '/ios/': [
+        {
+          text: 'iOS & macOS (Swift)',
+          items: [{ text: 'Getting Started', link: '/ios/getting-started' }],
         },
       ],
       '/rust/': [

@@ -1,9 +1,8 @@
 # Plan: Kotlin and Swift SDKs over UniFFI
 
-Status (2026-10-10): **M0 and M1 done** and merged (#47, #48, #49). **M2
-done** in `recached-sh/recached-kotlin` and **M3 done** in
-`recached-sh/recached-swift`, both green on CI, and the Android suite passes
-on a physical device. Next: M4. Started 2026-10-09.
+Status (2026-10-10): **M0–M3 done** (#47–#50; SDK repos green on CI, Android
+on a phone too). **M4 demos done**, with an acceptance run on the A16. Left:
+publishing. Started 2026-10-09.
 
 ## Goal
 
@@ -248,14 +247,42 @@ compiled for iOS, which has no `Process`. A test method marked `@MainActor`
 makes SwiftPM's generated Linux test runner warn; the model checks run in
 `@MainActor` helpers instead.
 
-### M4 — Demo apps and release
+### M4 — Demo apps and release · demos done
 
-- [ ] A shared checklist on each platform, against `recached-server` with sync
-  scopes. It shows connection state and a pending-writes badge.
-- [ ] A scripted acceptance run for the four goals, also usable as a release
-  check.
-- [ ] Docs: a getting-started page for each platform. Update the
-  [roadmap](../roadmap.md).
+- [x] Android: a Compose checklist in `recached-kotlin/demo`, with a
+  connection chip and an unsynced-writes badge. Cleartext is allowed only to a
+  development server on this machine. The release build is minified, which
+  checks the bundled R8 rules.
+- [x] `recached-kotlin/scripts/acceptance.py` drives the demo through
+  uiautomator against a real server, reached through `adb reverse` and a relay
+  it cuts to take the app offline while the server stays up. It checks the four
+  goals: a backend write appears live; an item added offline survives a
+  force-stop and reaches the server exactly once; a cold start offline shows
+  everything; a deletion and an addition made while offline arrive after
+  reconnect. It passes on the Samsung A16 (twice in a row), and CI runs it on
+  the emulator.
+- [x] iOS: a SwiftUI checklist in `recached-swift/Demo` (an XcodeGen spec).
+  UI tests on the simulator check that an item added offline survives a
+  relaunch still queued, and sync against a real server on the CI Mac. Green on
+  the first CI run.
+- [x] Docs: [Android](/android/getting-started) and [iOS](/ios/getting-started)
+  getting-started pages, marked preview, and the roadmap updated.
+- [ ] Release: publish `recached-android` to Maven Central; pin a recached
+  release (with the mobile archives) in both SDK repos.
+
+Found while building M4:
+
+- **Reconnect flicker** (fixed in #51). `on_open` re-subscribed live queries
+  before replaying the outbox, so each reconnect snapshot lacked the client's
+  own queued writes. An item created offline vanished, and an offline edit
+  reverted, until the write's own keychange restored it.
+- **Lifecycle 2.11 forced API 37 on apps.** `lifecycle-process` 2.11
+  constrains the whole lifecycle family, and `lifecycle-runtime-compose` 2.11
+  needs compileSdk 37. The Kotlin SDK pins 2.10.
+- **Unscoped servers fan out everything.** Without sync scopes, every
+  WebSocket client gets every mutation, so a mobile client stores, and
+  persists, keys it never watched. Production deployments need
+  `RECACHED_SYNC_SECRET` and scoped tokens (docs/server/sync-scopes).
 
 ## Open questions
 
