@@ -1,9 +1,9 @@
 # Plan: Kotlin and Swift SDKs over UniFFI
 
-Status: **M0 done** on `feat/mobile-sdk-prep`; **M1 done** on
-`feat/recached-mobile` (stacked on it); **M2 done** in the new
-`recached-kotlin` repo (local, not on GitHub yet), except the run on a
-physical device. Started 2026-10-09.
+Status (2026-10-10): **M0 and M1 done** and merged (#47, #48, #49). **M2
+done** in `recached-sh/recached-kotlin` and **M3 done** in
+`recached-sh/recached-swift`, both green on CI; the run on a physical
+Android device is still pending. Next: M4. Started 2026-10-09.
 
 ## Goal
 
@@ -173,7 +173,7 @@ which is why it cannot do goal 1. Mobile has to.
 - [ ] Dispatch to the wrapper repos on release. This waits for those repos
   (M2/M3), as taladb's `NATIVE_PACKAGES_DISPATCH_TOKEN` setup did.
 
-### M2 — Kotlin · done, device run pending
+### M2 — Kotlin · done, physical-device run pending
 
 - [x] OkHttp WebSocket transport. Reconnect loop driven by `connectionClosed()`,
   and a generation counter makes callbacks from a replaced socket inert. Every
@@ -196,9 +196,11 @@ which is why it cannot do goal 1. Mobile has to.
   loopback ports.
 - [x] Lint (warnings as errors), AAR check (ABIs, 16 KB alignment) and a Maven
   Central dry run of both artifacts.
-- [ ] Instrumented tests on the Samsung A16. They are written and the APK
-  builds, but no device was attached. CI runs them on an emulator, with live
-  sync against a server on the runner.
+- [x] Instrumented tests on CI's API 35 emulator, including live sync against
+  a server on the runner (`ws://10.0.2.2`). The test APK targets SDK 36, so
+  it opts into cleartext traffic. Apps need `wss://`, or a network security
+  config for a plain `ws://` development server (README).
+- [ ] The same suite on the Samsung A16.
 
 Core changes M2 needed (on `feat/recached-mobile`): `any_key_matches` exported,
 and the error text field renamed `reason`. A field named `message` collides
@@ -207,15 +209,40 @@ with Kotlin's `Throwable.message` in the generated class.
 OkHttp is pinned at 5.3.2: 5.4 and 5.5 raise every consuming app's
 compileSdk to 36 and 37 through AAR metadata.
 
-### M3 — Swift
+### M3 — Swift · done
 
-- [ ] `URLSessionWebSocketTask` transport, `NWPathMonitor`, scene-phase
-  handling. iOS suspends sockets in the background, so reconnect on
-  foreground.
-- [ ] `AsyncStream` as the core API. An `ObservableObject` model for iOS 15+,
-  and `@Observable` on iOS 17+.
-- [ ] Linux test suite here (Swift 6.4, or the `swift:6.4-noble` container). The
-  iOS build and tests run in CI only, since there is no Mac.
+- [x] `URLSessionWebSocketTask` transport, with the delegate's open, close and
+  complete callbacks. Callbacks from a replaced socket are inert by task
+  identity, and pings every 20 s notice dead sockets. `NWPathMonitor` and the
+  foreground notification reconnect at once (Apple only).
+- [x] `AsyncStream` observers (`observe`, `observeString`, `observeMatching`),
+  conflated with `bufferingNewest(1)`. Each re-read and yield happens under one
+  lock, so the last value yielded is never older than the last change.
+  `connectionStates()` and `pendingWriteCounts()` streams.
+- [x] SwiftUI models: `ObservableKey` (`ObservableObject`, iOS 15+) and
+  `ObservedKey` (`@Observable`, iOS 17+).
+- [x] `open(named:)` uses Application Support, excluded from backups, for the
+  same client-identity reason as Android's no-backup directory.
+- [x] Package layout: `RecachedFFI` (an XCFramework binary target on Apple, a
+  system library on Linux), `RecachedCore` (generated, **committed**, because
+  SwiftPM users compile it), and `Recached` (the API). CI fails if the
+  committed bindings differ from what the pinned core generates.
+- [x] 25 tests pass on Linux (Swift 6.4, warnings as errors), stable over 5
+  runs. They include live tests against a real `recached-server`, among them
+  the server dying (SIGKILL) and coming back while a write is queued. Lint is
+  clean, and the consumer-package check runs.
+- [x] CI is green. macOS runs all 26 tests, including the live tests and
+  `ObservableKey`. The iOS simulator runs everything except the live tests,
+  which skip there because iOS cannot start a server process. Linux skips the
+  live tests too: Ubuntu 24.04's libcurl (8.5), which `URLSessionWebSocketTask`
+  uses on Linux, has no WebSocket support (reproduced in `swift:6.4-noble`).
+  The tests probe for that and skip with the reason.
+
+Lessons: on Linux, Foundation's `Process` hands the child its parent's signal
+mask, so the test fixture stops the server with SIGKILL. The fixture is not
+compiled for iOS, which has no `Process`. A test method marked `@MainActor`
+makes SwiftPM's generated Linux test runner warn; the model checks run in
+`@MainActor` helpers instead.
 
 ### M4 — Demo apps and release
 
