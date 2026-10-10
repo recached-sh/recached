@@ -2,8 +2,8 @@
 
 Status (2026-10-10): **M0 and M1 done** and merged (#47, #48, #49). **M2
 done** in `recached-sh/recached-kotlin` and **M3 done** in
-`recached-sh/recached-swift`, both green on CI; the run on a physical
-Android device is still pending. Next: M4. Started 2026-10-09.
+`recached-sh/recached-swift`, both green on CI, and the Android suite passes
+on a physical device. Next: M4. Started 2026-10-09.
 
 ## Goal
 
@@ -173,7 +173,7 @@ which is why it cannot do goal 1. Mobile has to.
 - [ ] Dispatch to the wrapper repos on release. This waits for those repos
   (M2/M3), as taladb's `NATIVE_PACKAGES_DISPATCH_TOKEN` setup did.
 
-### M2 — Kotlin · done, physical-device run pending
+### M2 — Kotlin · done
 
 - [x] OkHttp WebSocket transport. Reconnect loop driven by `connectionClosed()`,
   and a generation counter makes callbacks from a replaced socket inert. Every
@@ -200,7 +200,11 @@ which is why it cannot do goal 1. Mobile has to.
   a server on the runner (`ws://10.0.2.2`). The test APK targets SDK 36, so
   it opts into cleartext traffic. Apps need `wss://`, or a network security
   config for a plain `ws://` development server (README).
-- [ ] The same suite on the Samsung A16.
+- [x] The same suite on the Samsung A16 (Android 16, arm64): 26 of 26 pass,
+  including live sync to a local server through `adb reverse`. The
+  server-starting live tests are JVM-only (`src/testJvm`): on a device they
+  could only skip, and Android's reports list a skipped assumption as a
+  failure.
 
 Core changes M2 needed (on `feat/recached-mobile`): `any_key_matches` exported,
 and the error text field renamed `reason`. A field named `message` collides
