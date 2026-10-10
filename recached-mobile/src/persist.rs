@@ -131,7 +131,7 @@ impl Db {
                     Some(entry) => {
                         let bytes = rmp_serde::to_vec(&entry).map_err(|e| {
                             crate::RecachedError::Storage {
-                                message: format!("encoding {key:?}: {e}"),
+                                reason: format!("encoding {key:?}: {e}"),
                             }
                         })?;
                         upsert.execute(params![key, bytes])?;

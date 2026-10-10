@@ -272,7 +272,7 @@ impl RecachedClient {
         match self.write(Command::IncrBy(key, delta), frame)? {
             Value::Integer(n) => Ok(n),
             other => Err(RecachedError::Command {
-                message: format!("unexpected INCRBY reply {other:?}"),
+                reason: format!("unexpected INCRBY reply {other:?}"),
             }),
         }
     }
@@ -393,8 +393,8 @@ impl RecachedClient {
         let mut inner = self.lock();
         let keys = mutation_keys(&cmd, &self.store);
         let reply = self.store.execute(cmd);
-        if let Value::Error(message) = reply {
-            return Err(RecachedError::Command { message });
+        if let Value::Error(reason) = reply {
+            return Err(RecachedError::Command { reason });
         }
         let connected = inner.sink.is_some();
         let queued = inner.sync.enqueue_write(&frame, true, connected);
