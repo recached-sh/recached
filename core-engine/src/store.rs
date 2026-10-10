@@ -2281,35 +2281,52 @@ impl KeyValueStore {
         self.data
             .iter()
             .filter(|e| !e.is_expired(now))
-            .map(|e| {
-                let value = match &e.value {
-                    EntryValue::Str(s) => SnapshotValue::Str(s.clone()),
-                    EntryValue::Hash(m) => SnapshotValue::Hash(m.to_map()),
-                    EntryValue::List(l) => SnapshotValue::List(l.iter().cloned().collect()),
-                    EntryValue::Set(s) => SnapshotValue::Set(s.iter().cloned().collect()),
-                    EntryValue::ZSet(z) => {
-                        SnapshotValue::ZSet(z.iter_asc().map(|(m, s)| (m.to_string(), s)).collect())
-                    }
-                    // Attempt counts are deliberately not persisted: they age
-                    // out within a single window, and a restart has already
-                    // interrupted that window. Only the configuration is
-                    // restored. The field remains for snapshot compatibility.
-                    EntryValue::RateLimiter(rl) => SnapshotValue::RateLimiter {
-                        limit: rl.limit,
-                        window_ms: rl.window_ms,
-                        events: Vec::new(),
-                    },
-                    EntryValue::Json(doc) => {
-                        SnapshotValue::Json(serde_json::to_string(doc).unwrap_or_default())
-                    }
-                };
-                SnapshotEntry {
-                    key: e.key().clone(),
-                    value,
-                    expires_at_ms: e.expires_at_ms,
-                }
-            })
+            .map(|e| Self::snapshot_entry(e.key(), &e))
             .collect()
+    }
+
+    /// One key's [`snapshot`](Self::snapshot) entry, or `None` when the key is
+    /// absent or expired.
+    ///
+    /// For a client that persists its local copy key by key — writing back
+    /// only what a sync frame changed — rather than rewriting the whole
+    /// keyspace. [`restore`](Self::restore) accepts the entries either way.
+    pub fn snapshot_key(&self, key: &str) -> Option<SnapshotEntry> {
+        let now = now_ms();
+        let e = self.data.get(key)?;
+        if e.is_expired(now) {
+            return None;
+        }
+        Some(Self::snapshot_entry(key, &e))
+    }
+
+    fn snapshot_entry(key: &str, e: &Entry) -> SnapshotEntry {
+        let value = match &e.value {
+            EntryValue::Str(s) => SnapshotValue::Str(s.clone()),
+            EntryValue::Hash(m) => SnapshotValue::Hash(m.to_map()),
+            EntryValue::List(l) => SnapshotValue::List(l.iter().cloned().collect()),
+            EntryValue::Set(s) => SnapshotValue::Set(s.iter().cloned().collect()),
+            EntryValue::ZSet(z) => {
+                SnapshotValue::ZSet(z.iter_asc().map(|(m, s)| (m.to_string(), s)).collect())
+            }
+            // Attempt counts are deliberately not persisted: they age out
+            // within a single window, and a restart has already interrupted
+            // that window. Only the configuration is restored. The field
+            // remains for snapshot compatibility.
+            EntryValue::RateLimiter(rl) => SnapshotValue::RateLimiter {
+                limit: rl.limit,
+                window_ms: rl.window_ms,
+                events: Vec::new(),
+            },
+            EntryValue::Json(doc) => {
+                SnapshotValue::Json(serde_json::to_string(doc).unwrap_or_default())
+            }
+        };
+        SnapshotEntry {
+            key: key.to_string(),
+            value,
+            expires_at_ms: e.expires_at_ms,
+        }
     }
 
     pub fn restore(&self, entries: Vec<SnapshotEntry>) {
@@ -7093,6 +7110,34 @@ mod tests {
         };
         s.restore(vec![entry]);
         assert_eq!(s.execute(Command::DbSize), int(0));
+    }
+
+    #[test]
+    fn snapshot_key_matches_the_whole_snapshot_entry() {
+        let s = store();
+        s.execute(Command::HSet("hash".into(), vec![("f".into(), "v".into())]));
+        s.execute(Command::SetEx("k".into(), 60, "v".into()));
+        s.execute(Command::PSetEx("dead".into(), 1, "v".into()));
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        assert!(s.snapshot_key("missing").is_none());
+        assert!(s.snapshot_key("dead").is_none(), "an expired key is absent");
+
+        let one = s.snapshot_key("k").expect("live key");
+        assert_eq!(one.key, "k");
+        assert!(
+            one.expires_at_ms.is_some(),
+            "the TTL travels with the entry"
+        );
+
+        // Restoring entries taken one key at a time rebuilds the same store.
+        let s2 = store();
+        s2.restore(vec![one, s.snapshot_key("hash").expect("live key")]);
+        assert_eq!(
+            s2.execute(Command::HGet("hash".into(), "f".into())),
+            bulk("v")
+        );
+        assert_eq!(s2.execute(Command::Get("k".into())), bulk("v"));
     }
 
     #[test]

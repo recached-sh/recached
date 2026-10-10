@@ -7,16 +7,53 @@ import { vi } from 'vitest';
  * the tests about React behaviour — subscription lifecycle, snapshot identity,
  * unmount cleanup — rather than about the engine. `emit()` plays the role the
  * wasm module plays in production: something changed, re-read.
+ *
+ * `legacy` drops `onKeyChange`/`onPatternChange`, standing in for a
+ * recached-edge release from before per-key change routing.
  */
-export function makeFakeCache() {
+export function makeFakeCache({ legacy = false } = {}) {
   const store = new Map<string, string>();
-  const mutationListeners = new Set<() => void>();
+  const mutationListeners = new Set<(keys: readonly string[]) => void>();
+  const keyListeners = new Map<string, Set<() => void>>();
+  const patternListeners = new Map<string, Set<() => void>>();
   const messageListeners = new Map<string, Set<(m: string | Uint8Array) => void>>();
 
+  const listen = (registry: Map<string, Set<() => void>>, name: string, cb: () => void) => {
+    let set = registry.get(name);
+    if (!set) registry.set(name, (set = new Set()));
+    set.add(cb);
+    return () => {
+      set!.delete(cb);
+      if (set!.size === 0) registry.delete(name);
+    };
+  };
+  const globToRegExp = (pattern: string) =>
+    new RegExp(
+      `^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`,
+    );
+
+  const routing = {
+    onKeyChange: vi.fn((key: string, cb: () => void) => listen(keyListeners, key, cb)),
+    onPatternChange: vi.fn((pattern: string, cb: () => void) =>
+      listen(patternListeners, pattern, cb),
+    ),
+  };
+
   return {
-    /** Fire the mutation callback the way a local write or server push would. */
-    emit() {
-      for (const cb of [...mutationListeners]) cb();
+    /**
+     * Fire the mutation callback the way a local write or server push would.
+     * With `keys`, only listeners of those keys and of patterns matching them
+     * hear it, as in production; without, every listener does.
+     */
+    emit(keys?: string[]) {
+      for (const cb of [...mutationListeners]) cb(keys ?? []);
+      const keyHits = keys
+        ? keys.flatMap((k) => [...(keyListeners.get(k) ?? [])])
+        : [...keyListeners.values()].flatMap((set) => [...set]);
+      const patternHits = [...patternListeners]
+        .filter(([pattern]) => !keys || keys.some((k) => globToRegExp(pattern).test(k)))
+        .flatMap(([, set]) => [...set]);
+      for (const cb of [...keyHits, ...patternHits]) cb();
     },
     /** Deliver a pub/sub message to the channel's listeners. */
     deliver(channel: string, msg: string | Uint8Array) {
@@ -27,10 +64,11 @@ export function makeFakeCache() {
       store.set(key, value);
     },
 
-    onMutation: vi.fn((cb: () => void) => {
+    onMutation: vi.fn((cb: (keys: readonly string[]) => void) => {
       mutationListeners.add(cb);
       return () => mutationListeners.delete(cb);
     }),
+    ...(legacy ? {} : routing),
     onMessage: vi.fn((channel: string, cb: (m: string | Uint8Array) => void) => {
       let set = messageListeners.get(channel);
       if (!set) messageListeners.set(channel, (set = new Set()));
@@ -63,9 +101,11 @@ export function makeFakeCache() {
     subscribe: vi.fn(),
     unsubscribe: vi.fn(),
 
-    /** Number of mutation listeners still registered — leak detection. */
+    /** Number of change listeners of any kind still registered — leak detection. */
     get listenerCount() {
-      return mutationListeners.size;
+      const count = (registry: Map<string, Set<() => void>>) =>
+        [...registry.values()].reduce((n, set) => n + set.size, 0);
+      return mutationListeners.size + count(keyListeners) + count(patternListeners);
     },
   };
 }

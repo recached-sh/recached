@@ -180,8 +180,8 @@ const cache = await createCache({
 const userId = 42
 const badge = document.getElementById('cart-badge')!
 
-// React to any store mutation — fire whenever the key changes
-cache.onMutation(() => {
+// Fire whenever this key changes — locally, from the server, or from another tab
+cache.onKeyChange(`cart:${userId}:count`, () => {
   const count = cache.get(`cart:${userId}:count`)
   badge.textContent = count !== null ? count : '0'
 })
@@ -193,7 +193,7 @@ if (initialCount !== null) {
 }
 ```
 
-When your backend calls `SET cart:42:count 3` over RESP, the server pushes the mutation to the browser over WebSocket. The `onMutation` callback fires and the badge updates instantly — no polling, no extra endpoint, no client-side invalidation code.
+When your backend calls `SET cart:42:count 3` over RESP, the server pushes the mutation to the browser over WebSocket. The `onKeyChange` callback fires and the badge updates instantly — no polling, no extra endpoint, no client-side invalidation code.
 
 ---
 

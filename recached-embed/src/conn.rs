@@ -250,7 +250,7 @@ impl Task {
             }
             // A push applied to the local store, or a frame we do not model.
             // Neither consumes a reply slot.
-            Incoming::Applied | Incoming::Ignored => {}
+            Incoming::Applied { .. } | Incoming::Ignored => {}
             // A frame we could not parse may have been a reply the server has
             // already counted, in which case both FIFOs are now one ahead of
             // reality and every later reply resolves the wrong caller and

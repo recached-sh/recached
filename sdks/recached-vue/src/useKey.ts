@@ -1,5 +1,6 @@
 import { ref, onUnmounted, type Ref } from 'vue';
 import { useRecached } from './plugin';
+import { subscribeKey } from './subscribe';
 
 /**
  * Reactively read a string key from the Recached store.
@@ -40,7 +41,7 @@ export function useKey(key: string): Ref<string | null> {
       return null;
     }
   };
-  const unsub = cache.onMutation(() => {
+  const unsub = subscribeKey(cache, key, () => {
     value.value = read();
   });
   value.value = read();
@@ -58,7 +59,7 @@ export function useKey(key: string): Ref<string | null> {
 export function useKeyBytes(key: string): Ref<Uint8Array | null> {
   const cache = useRecached();
   const value = ref<Uint8Array | null>(null);
-  const unsub = cache.onMutation(() => {
+  const unsub = subscribeKey(cache, key, () => {
     value.value = cache.getBytes(key);
   });
   value.value = cache.getBytes(key);
@@ -89,7 +90,7 @@ export function useKeyBytes(key: string): Ref<Uint8Array | null> {
 export function useKeyJSON<T>(key: string): Ref<T | null> {
   const cache = useRecached();
   const value = ref<T | null>(null) as Ref<T | null>;
-  const unsub = cache.onMutation(() => {
+  const unsub = subscribeKey(cache, key, () => {
     value.value = cache.getJSON<T>(key);
   });
   value.value = cache.getJSON<T>(key);

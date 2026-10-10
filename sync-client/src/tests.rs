@@ -13,6 +13,12 @@ fn bulk(s: &str) -> Value {
     Value::BulkString(Some(s.as_bytes().to_vec()))
 }
 
+fn applied(keys: &[&str]) -> Incoming {
+    Incoming::Applied {
+        keys: keys.iter().map(|k| k.to_string()).collect(),
+    }
+}
+
 // ── dedup envelopes ───────────────────────────────────────────────────────────
 
 /// Render a wire frame as text for assertions. Frames are bytes because values
@@ -306,11 +312,11 @@ fn pushes_are_not_replies() {
     // consume the reply slot.
     assert_eq!(
         c.handle_frame(b">3\r\n$3\r\nSET\r\n$1\r\nx\r\n$1\r\ny\r\n"),
-        Incoming::Applied
+        applied(&["x"])
     );
     assert_eq!(
         c.handle_frame(b"*3\r\n$9\r\nkeychange\r\n$1\r\nx\r\n$1\r\nz\r\n"),
-        Incoming::Applied
+        applied(&["x"])
     );
     assert_eq!(
         c.handle_frame(b"+OK\r\n"),
@@ -413,7 +419,10 @@ fn qstate_applies_state_and_counts_as_reply() {
     let qstate = "*4\r\n$6\r\nqstate\r\n$6\r\ncart:*\r\n$6\r\ncart:1\r\n$5\r\napple\r\n";
     assert_eq!(
         c.handle_frame(qstate.as_bytes()),
-        Incoming::AppliedReply { retired: None }
+        Incoming::AppliedReply {
+            retired: None,
+            keys: vec!["cart:1".to_string()]
+        }
     );
     assert_eq!(get(&c, "cart:1"), bulk("apple"));
 }
@@ -1053,7 +1062,7 @@ fn an_append_delta_is_applied_to_the_local_value() {
     ));
     assert_eq!(
         c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$3\r\nout\r\n$6\r\nappend\r\n$6\r\n world\r\n"),
-        Incoming::Applied
+        applied(&["out"])
     );
     assert_eq!(get(&c, "out"), bulk("hello world"));
 }
@@ -1065,7 +1074,7 @@ fn collection_deltas_are_applied_to_the_local_collection() {
         c.handle_frame(
             b"*5\r\n$8\r\nkeydelta\r\n$4\r\ntags\r\n$4\r\nsadd\r\n$1\r\na\r\n$1\r\nb\r\n"
         ),
-        Incoming::Applied
+        applied(&["tags"])
     );
     assert_eq!(
         c.store().execute(Command::SCard("tags".into())),
@@ -1073,7 +1082,7 @@ fn collection_deltas_are_applied_to_the_local_collection() {
     );
     assert_eq!(
         c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$4\r\ntags\r\n$4\r\nsrem\r\n$1\r\na\r\n"),
-        Incoming::Applied
+        applied(&["tags"])
     );
     assert_eq!(
         c.store().execute(Command::SCard("tags".into())),
@@ -1083,11 +1092,11 @@ fn collection_deltas_are_applied_to_the_local_collection() {
     // A push delta lands in order on the local list.
     assert_eq!(
         c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$1\r\nq\r\n$5\r\nrpush\r\n$1\r\nx\r\n"),
-        Incoming::Applied
+        applied(&["q"])
     );
     assert_eq!(
         c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$1\r\nq\r\n$5\r\nrpush\r\n$1\r\ny\r\n"),
-        Incoming::Applied
+        applied(&["q"])
     );
     assert_eq!(
         c.store().execute(Command::LRange("q".into(), 0, -1)),
@@ -1108,7 +1117,7 @@ fn a_delta_never_consumes_a_reply_slot() {
     );
     assert_eq!(
         c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$1\r\nk\r\n$6\r\nappend\r\n$1\r\nz\r\n"),
-        Incoming::Applied
+        applied(&["k"])
     );
     assert_eq!(
         c.handle_frame(b"+OK\r\n"),
@@ -1136,5 +1145,104 @@ fn a_malformed_or_unknown_delta_is_reported_rather_than_swallowed() {
     assert_eq!(
         c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$1\r\nk\r\n$6\r\nnosuch\r\n$1\r\nx\r\n"),
         Incoming::Ignored
+    );
+}
+
+// ── change notification ───────────────────────────────────────────────────────
+// Per-key subscribers (Kotlin `Flow`, Swift streams) re-read only the keys a
+// frame reports, so a key left out of `keys` is an update the UI never shows.
+
+/// Sort a key list so assertions do not depend on store iteration order.
+fn sorted(incoming: Incoming) -> Vec<String> {
+    let mut keys = match incoming {
+        Incoming::Applied { keys } | Incoming::AppliedReply { keys, .. } => keys,
+        other => panic!("expected an applied frame, got {other:?}"),
+    };
+    keys.sort();
+    keys
+}
+
+#[test]
+fn a_resnapshot_reports_the_keys_it_reconciled_away() {
+    // The reconnect path: cart:2 was deleted while the client was offline, so
+    // the only signal it is gone is its absence from the new snapshot. A
+    // subscriber to cart:2 must hear about it or it shows the old value.
+    let mut c = client();
+    c.add_live_query("cart:*", false);
+    c.on_open();
+    c.handle_frame(b"+OK\r\n"); // CLIENT DELTA ON
+    c.handle_frame(
+        b"*6\r\n$6\r\nqstate\r\n$6\r\ncart:*\r\n$6\r\ncart:1\r\n$5\r\napple\r\n$6\r\ncart:2\r\n$4\r\npear\r\n",
+    );
+
+    c.on_close();
+    c.on_open();
+    c.handle_frame(b"+OK\r\n");
+    let incoming =
+        c.handle_frame(b"*4\r\n$6\r\nqstate\r\n$6\r\ncart:*\r\n$6\r\ncart:1\r\n$6\r\nbanana\r\n");
+    assert_eq!(sorted(incoming), ["cart:1", "cart:2"]);
+    assert_eq!(get(&c, "cart:2"), Value::BulkString(None));
+}
+
+#[test]
+fn a_flushdb_sentinel_reports_every_key_it_cleared() {
+    let mut c = client();
+    c.add_live_query("cart:*", false);
+    c.handle_frame(b"*3\r\n$9\r\nkeychange\r\n$11\r\ncart:item:1\r\n$1\r\na\r\n");
+    c.handle_frame(b"*3\r\n$9\r\nkeychange\r\n$11\r\ncart:item:2\r\n$1\r\nb\r\n");
+    c.handle_frame(b"*3\r\n$9\r\nkeychange\r\n$7\r\nother:1\r\n$1\r\nc\r\n");
+
+    let incoming = c.handle_frame(b"*3\r\n$9\r\nkeychange\r\n$6\r\ncart:*\r\n$-1\r\n");
+    assert_eq!(sorted(incoming), ["cart:item:1", "cart:item:2"]);
+}
+
+#[test]
+fn a_single_key_delete_and_a_collection_report_their_key() {
+    let mut c = client();
+    assert_eq!(
+        c.handle_frame(b"*3\r\n$9\r\nkeychange\r\n$5\r\nkey:1\r\n$-1\r\n"),
+        applied(&["key:1"])
+    );
+    assert_eq!(
+        c.handle_frame(
+            b"*3\r\n$9\r\nkeychange\r\n$4\r\ntags\r\n*3\r\n$3\r\nset\r\n$1\r\na\r\n$1\r\nb\r\n"
+        ),
+        applied(&["tags"])
+    );
+}
+
+#[test]
+fn a_pushed_flushdb_reports_the_keys_held_before_it_ran() {
+    let mut c = client();
+    c.handle_frame(b">3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n");
+    c.handle_frame(b">3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n");
+    let incoming = c.handle_frame(b">1\r\n$7\r\nFLUSHDB\r\n");
+    assert_eq!(sorted(incoming), ["a", "b"]);
+    assert_eq!(c.store().execute(Command::DbSize), Value::Integer(0));
+}
+
+#[test]
+fn mutation_keys_names_every_key_a_multi_key_write_touches() {
+    let store = KeyValueStore::new();
+    let keys = |cmd: Command| mutation_keys(&cmd, &store);
+    assert_eq!(
+        keys(Command::Rename("old".into(), "new".into())),
+        ["old", "new"]
+    );
+    assert_eq!(
+        keys(Command::SMove("src".into(), "dst".into(), "m".into())),
+        ["src", "dst"]
+    );
+    assert_eq!(
+        keys(Command::MSet(vec![
+            ("a".into(), b"1".to_vec()),
+            ("b".into(), b"2".to_vec()),
+        ])),
+        ["a", "b"]
+    );
+    assert_eq!(keys(Command::Del(vec!["x".into(), "y".into()])), ["x", "y"]);
+    assert!(
+        keys(Command::Get("a".into())).is_empty(),
+        "a read changes nothing"
     );
 }

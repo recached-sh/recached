@@ -85,8 +85,8 @@ const cache = await createCache({
 
 **What you get without a server:** reads and writes (`get`/`set`/`del`, `getJSON`/`setJSON`),
 TTL that expires on its own, `incr`/`decr`, JSON documents with path writes and merge patches
-(`jset`/`jget`/`jmerge`), glob snapshots over the keyspace (`getMatching`), change notification via
-`onMutation`, refresh-survival through the IndexedDB WAL, and cross-tab fan-out through
+(`jset`/`jget`/`jmerge`), glob snapshots over the keyspace (`getMatching`), per-key change notification via
+`onKeyChange`, refresh-survival through the IndexedDB WAL, and cross-tab fan-out through
 BroadcastChannel.
 
 **What is inert without a server**, because it has nothing to talk to — these do not throw, they

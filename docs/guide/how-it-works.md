@@ -78,7 +78,7 @@ This is intentional: the WASM client sends RESP frames over WebSocket, so the se
 2. `server-native` applies the command to the `core-engine` store.
 3. After a successful write, `server-native` serializes the mutation as a RESP push message and sends it to every connected WebSocket client (except the sender, if the write came from a WebSocket connection).
 4. Each browser's `wasm-edge` receives the frame, parses it as RESP, and applies the same command to its local `core-engine` instance.
-5. Any `onMutation` listeners registered via `cache.onMutation()` are notified synchronously, triggering UI re-renders.
+5. The listeners of the changed keys (`onKeyChange`, `onPatternChange`, and every `onMutation` listener) are notified synchronously, triggering UI re-renders. Listeners of other keys are not.
 
 ### Browser to server
 

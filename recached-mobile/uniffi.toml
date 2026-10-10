@@ -1,0 +1,12 @@
+# Kotlin: generated code in dev.recached.ffi; recached-kotlin's public API in
+# dev.recached builds on it.
+[bindings.kotlin]
+package_name = "dev.recached.ffi"
+cdylib_name  = "recached_mobile"
+
+# Swift: the C header and module map ship inside RecachedFFI.xcframework (a
+# SwiftPM binary target of that name); the generated Swift is the RecachedCore
+# module, which recached-swift's public `Recached` module builds on.
+[bindings.swift]
+module_name     = "RecachedCore"
+ffi_module_name = "RecachedFFI"

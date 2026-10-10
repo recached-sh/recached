@@ -99,8 +99,8 @@ cache.ttl('session:token')  // remaining seconds
 cache.del('theme')
 cache.get('theme')          // null
 
-// React to any mutation (from any source — local, server, or other tabs)
-const unsubscribe = cache.onMutation(() => {
+// React to changes to one key (from any source — local, server, or other tabs)
+const unsubscribe = cache.onKeyChange('cart:count', () => {
   const count = cache.get('cart:count')
   console.log('Cart count is now:', count)
 })
@@ -216,7 +216,7 @@ const cache = await createCache({
 ```
 
 **Works with no server:** `get`/`set`/`del`, `getJSON`/`setJSON`, `getBytes`/`setBytes`, `setEx` and
-TTL expiry, `exists`/`ttl`, `incr`/`decr`, `jset`/`jget`/`jmerge`, `getMatching`, `onMutation`,
+TTL expiry, `exists`/`ttl`, `incr`/`decr`, `jset`/`jget`/`jmerge`, `getMatching`, `onKeyChange`/`onMutation`,
 `persistence`, `broadcastChannel`.
 
 **Silently does nothing with no server** — these do not throw, they have nowhere to send to:
@@ -270,7 +270,7 @@ This pattern replaces the manual `fetchedAt` timestamp approach you might use wi
 
 ## Manual reactivity (non-React frameworks)
 
-`onMutation` fires whenever the local store changes — from a local write, a server push, or a cross-tab BroadcastChannel message. It is the low-level hook used by `useKey` and `useKeyJSON` internally.
+`onKeyChange(key, cb)` fires whenever that key changes — from a local write, a server push, or a cross-tab BroadcastChannel message. It is the low-level hook `useKey` and `useKeyJSON` use internally; `onPatternChange(pattern, cb)` does the same for a glob pattern, and `onMutation(cb)` fires on every change to any key.
 
 ```typescript
 // Svelte
@@ -287,7 +287,7 @@ let unsubscribe: () => void
 
 onMount(() => {
   stock.set(cache.get(key))
-  unsubscribe = cache.onMutation(() => stock.set(cache.get(key)))
+  unsubscribe = cache.onKeyChange(key, () => stock.set(cache.get(key)))
 })
 
 onDestroy(() => unsubscribe?.())

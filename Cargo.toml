@@ -4,6 +4,7 @@ members = [
     "server-native",
     "sync-client",
     "recached-embed",
+    "recached-mobile",
     "wasm-edge",
 ]
 resolver = "2"
