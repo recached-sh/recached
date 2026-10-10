@@ -50,7 +50,9 @@ client.connectionOpened(sink: sink)
 precondition(sink.frames.count == 2, "session frame + the queued write")
 
 let change = Data("*3\r\n$9\r\nkeychange\r\n$1\r\nx\r\n$1\r\n1\r\n".utf8)
-precondition(try client.frameReceived(frame: change).changedKeys == ["x"])
+// Outside the precondition: its condition is a non-throwing autoclosure.
+let changed = try client.frameReceived(frame: change).changedKeys
+precondition(changed == ["x"], "the frame reports the key it changed")
 
 let reopened = try RecachedClient.open(path: path, config: ClientConfig())
 precondition(reopened.get(key: "x") == Data("1".utf8), "server state survives a restart")
