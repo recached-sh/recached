@@ -17,7 +17,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // evaluated lazily on first import.
 vi.mock('./pkg/recached_edge.js', () => ({
   default: vi.fn(async () => undefined),
-  RecachedCache: vi.fn(() => makeRaw()),
+  // A `function`, not an arrow: `createCache` calls it with `new`, which
+  // vitest 4 refuses for an arrow implementation.
+  RecachedCache: vi.fn(function () {
+    return makeRaw();
+  }),
 }));
 
 import { Cache, createCache, init } from './sdk.js';
