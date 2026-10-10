@@ -62,6 +62,8 @@ Kotlin and Swift expose a focused cache API rather than the entire RESP command 
 
 ## Write durability and replay
 
+A Recached server acknowledgment confirms a cache write, not a MySQL or PostgreSQL transaction. For database-backed business data, send edits through your API and publish committed projections through Recached. The SDK outbox does not deliver application commands to SQL. See [database integration](/guide/database-integration).
+
 A successful mobile write applies locally and commits its data and outbox row in one SQLite transaction before returning. Incoming server frames also persist changed keys and retired outbox rows together. SQLite uses WAL mode with `synchronous = NORMAL`: committed transactions survive an app kill, while an OS crash or power loss can lose recent commits.
 
 Browser persistence differs: local API writes append to an IndexedDB WAL asynchronously. Incoming server pushes and BroadcastChannel messages update memory without appending WAL entries. Browser writes do not wait for a storage commit, and a cold start offline is not guaranteed to restore the last server-synced state. See [browser persistence](/browser/persistence).

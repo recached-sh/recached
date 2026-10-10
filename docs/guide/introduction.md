@@ -19,6 +19,8 @@ The Kotlin and Swift SDKs are implemented, unreleased previews. React Native, Fl
 
 ## Shared state across clients
 
+If MySQL or PostgreSQL owns your business records, use Recached to synchronize a derived cache of committed state. Send durable edits through your application API and publish database changes through an outbox worker. Direct client cache writes do not update SQL automatically. See [using Recached with a main database](/guide/database-integration).
+
 A backend write can update browser tabs and native apps through the same sync protocol. Clients register the patterns they need to hydrate and reconcile after reconnecting. Sync scopes control which keys each connection may read, write, and receive; a watch pattern is not an access boundary.
 
 The server executes commands across worker threads over a sharded `DashMap` store. `DashMap` uses locks per shard. Scaling depends on the workload and key distribution, and multi-key writes do not isolate concurrent readers. See [benchmarks](/guide/benchmarks#thread-scaling) and [the concurrency model](/server/commands#concurrency-model).

@@ -84,6 +84,8 @@ Server changes reach connected clients according to their sync scopes and subscr
 
 A **Rust service** can be one of those connected clients too, via [`recached-embed`](https://recached.dev/rust/getting-started) — same engine, same sync protocol, holding its slice of the cache in its own heap instead of a tab's. Useful for config-shaped data read on every request: fare tables, feature flags, tenant settings, entitlement checks.
 
+If MySQL or PostgreSQL is your source of truth, route business edits through your application API and publish committed state to Recached. Client cache writes do not update SQL automatically. See [database integration](https://recached.dev/guide/database-integration) for read-only projections, transactional outboxes, and offline business edits.
+
 ---
 
 ## Quick look

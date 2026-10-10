@@ -178,6 +178,12 @@ Read the [maturity statement](/guide/introduction#maturity) before putting the s
 users. The server half and the sync half are at different levels of hardening, and the docs do not
 pretend otherwise.
 
+## Using Recached with a main database
+
+For team settings, saved tasks, orders, and inventory, keep MySQL or PostgreSQL as the source of truth. Send edits through your application API, commit records and outbox events together, and let a worker publish the committed state to Recached. Clients read local cache projections through read-only sync scopes.
+
+Direct client writes fit transient state such as presence and typing indicators. Offline business edits need an application-owned command queue; Recached's outbox delivers cache commands and does not confirm a SQL commit. The [database integration guide](/guide/database-integration) explains the architecture, retries, ordering, and recovery.
+
 ## Using Recached alongside Redis
 
 These are not mutually exclusive, and for most teams the honest first step is not a migration.

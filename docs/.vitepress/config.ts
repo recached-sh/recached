@@ -54,6 +54,7 @@ export default defineConfig({
             { text: 'Introduction', link: '/guide/introduction' },
             { text: 'Quick Start', link: '/guide/quick-start' },
             { text: 'Use Cases', link: '/guide/use-cases' },
+            { text: 'Database Integration', link: '/guide/database-integration' },
             { text: 'Client Support', link: '/guide/client-support' },
             { text: 'How It Works', link: '/guide/how-it-works' },
             { text: 'Benchmarks', link: '/guide/benchmarks' },
