@@ -7,7 +7,7 @@ Recached competes on **where the data can live** — the same engine on the serv
 
 ## Mobile SDKs — React Native, Flutter, Kotlin, Swift
 
-- **Kotlin + Swift first**, via a single `uniffi`-annotated Rust crate that generates bindings for both. The platform WebSocket (OkHttp / URLSession) feeds frames into `sync-client` — no embedded async runtime. Persistence: a file/SQLite adapter over the same outbox/meta effects the browser maps to IndexedDB. Reactivity: Kotlin `Flow` / Swift `Observation` over keychange pushes.
+- **Kotlin + Swift: in preview.** One `uniffi`-annotated Rust crate (`recached-mobile`) generates bindings for both. The platform WebSocket (OkHttp / URLSession) feeds frames into `sync-client`, with no embedded async runtime. Data and outbox persist to SQLite, and reactivity is Kotlin `Flow` and Swift `AsyncStream` / Observation over keychange pushes. Both SDKs have a demo app and pass their CI; the Android one also passes on a phone. They are not published yet: see [Android](/android/getting-started) and [iOS](/ios/getting-started).
 - **Flutter** via `flutter_rust_bridge`: synchronous local reads into Rust memory, `watchKey()` → `Stream` for rebuilds.
 - **React Native** last (Hermes has no WASM): `uniffi-bindgen-react-native` reuses the same binding layer, and the existing React hooks API carries over — same `useKey` in React DOM and React Native.
 
