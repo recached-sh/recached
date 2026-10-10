@@ -21,6 +21,9 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$(mkdir -p "${1:-$ROOT/target/mobile}" && cd "${1:-$ROOT/target/mobile}" && pwd)"
 VERSION="$(cargo metadata --manifest-path "$ROOT/Cargo.toml" --format-version 1 --no-deps |
     python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="recached-mobile"))')"
+# Where cargo puts builds: honours CARGO_TARGET_DIR and .cargo/config.toml.
+TARGET_DIR="$(cargo metadata --manifest-path "$ROOT/Cargo.toml" --format-version 1 --no-deps |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 STAGE="$OUT/apple"
 LIB=librecached_mobile.a
 TARGETS=(aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-darwin x86_64-apple-darwin)
@@ -35,17 +38,17 @@ for target in "${TARGETS[@]}"; do
     cargo build --locked --release -p recached-mobile --lib --target "$target"
 done
 
-cp "target/aarch64-apple-ios/release/$LIB" "$STAGE/ios/$LIB"
+cp "$TARGET_DIR/aarch64-apple-ios/release/$LIB" "$STAGE/ios/$LIB"
 lipo -create -output "$STAGE/ios-simulator/$LIB" \
-    "target/aarch64-apple-ios-sim/release/$LIB" "target/x86_64-apple-ios/release/$LIB"
+    "$TARGET_DIR/aarch64-apple-ios-sim/release/$LIB" "$TARGET_DIR/x86_64-apple-ios/release/$LIB"
 lipo -create -output "$STAGE/macos/$LIB" \
-    "target/aarch64-apple-darwin/release/$LIB" "target/x86_64-apple-darwin/release/$LIB"
+    "$TARGET_DIR/aarch64-apple-darwin/release/$LIB" "$TARGET_DIR/x86_64-apple-darwin/release/$LIB"
 
 # Bindings from an unstripped host build: the release profile strips the
 # metadata symbols library mode reads, and the interface is target-independent.
 cargo build --locked -p recached-mobile --lib
 cargo run --locked -q -p recached-mobile --features cli --bin uniffi-bindgen -- \
-    generate --library "target/debug/librecached_mobile.dylib" \
+    generate --library "$TARGET_DIR/debug/librecached_mobile.dylib" \
     --language swift --no-format --out-dir "$STAGE/generated"
 cp "$STAGE/generated/RecachedCore.swift" "$STAGE/swift/"
 cp "$STAGE/generated/RecachedFFI.h" "$STAGE/headers/"
