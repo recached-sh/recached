@@ -1,7 +1,9 @@
 # Plan: Kotlin and Swift SDKs over UniFFI
 
 Status: **M0 done** on `feat/mobile-sdk-prep`; **M1 done** on
-`feat/recached-mobile` (stacked on it). Started 2026-10-09.
+`feat/recached-mobile` (stacked on it); **M2 done** in the new
+`recached-kotlin` repo (local, not on GitHub yet), except the run on a
+physical device. Started 2026-10-09.
 
 ## Goal
 
@@ -171,15 +173,39 @@ which is why it cannot do goal 1. Mobile has to.
 - [ ] Dispatch to the wrapper repos on release. This waits for those repos
   (M2/M3), as taladb's `NATIVE_PACKAGES_DISPATCH_TOKEN` setup did.
 
-### M2 — Kotlin
+### M2 — Kotlin · done, device run pending
 
-- [ ] OkHttp WebSocket transport. Reconnect loop driven by `connectionClosed()`.
-- [ ] `ConnectivityManager.NetworkCallback` and `ProcessLifecycleOwner` reset
-  the wait and reconnect immediately.
-- [ ] `observe(key): Flow<T?>` (`StateFlow`, `distinctUntilChanged`) and
-  `observeMatching(pattern)`.
-- [ ] Host JVM tests plus device tests on the Samsung A16 (the emulator does
-  not boot in this environment).
+- [x] OkHttp WebSocket transport. Reconnect loop driven by `connectionClosed()`,
+  and a generation counter makes callbacks from a replaced socket inert. Every
+  core call that depends on the current socket runs under the transport's
+  lock, so the lock order is always transport, then core.
+- [x] `ConnectivityManager` default-network callback and `ProcessLifecycleOwner`
+  `onStart` reconnect at once. The database lives in `noBackupFilesDir`, so
+  Auto Backup never clones a client identity onto a second device.
+- [x] `observe` / `observeString` / `observeMatching`: callback flows,
+  conflated, re-reading on invalidation and deduplicated, so a slow collector
+  re-reads once and never misses the last value. Pattern routing uses the
+  core's `any_key_matches`, so it follows the server's glob rules (no
+  character classes).
+- [x] Two modules: `:ffi` (generated bindings and native libraries,
+  `recached-android-ffi`) and `:recached` (API, `recached-android`, under
+  explicit-API mode and warnings-as-errors). UniFFI cannot emit `internal`.
+- [x] 27 JVM tests pass, stable over 5 reruns: local, change bus, flows,
+  MockWebServer transport (session order, replay after a drop, malformed
+  frame, close), and live tests that start a real `recached-server` on free
+  loopback ports.
+- [x] Lint (warnings as errors), AAR check (ABIs, 16 KB alignment) and a Maven
+  Central dry run of both artifacts.
+- [ ] Instrumented tests on the Samsung A16. They are written and the APK
+  builds, but no device was attached. CI runs them on an emulator, with live
+  sync against a server on the runner.
+
+Core changes M2 needed (on `feat/recached-mobile`): `any_key_matches` exported,
+and the error text field renamed `reason`. A field named `message` collides
+with Kotlin's `Throwable.message` in the generated class.
+
+OkHttp is pinned at 5.3.2: 5.4 and 5.5 raise every consuming app's
+compileSdk to 36 and 37 through AAR metadata.
 
 ### M3 — Swift
 

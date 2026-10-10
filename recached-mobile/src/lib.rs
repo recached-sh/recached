@@ -21,7 +21,7 @@
 
 use core_engine::cmd::{Command, SetExpiry, SetOptions};
 use core_engine::resp::Value;
-use core_engine::store::KeyValueStore;
+use core_engine::store::{KeyValueStore, glob_match};
 use std::sync::{Arc, Mutex, MutexGuard};
 use sync_client::{Incoming, SyncClient, mutation_keys, to_resp, to_resp_bytes};
 
@@ -83,6 +83,18 @@ pub struct Entry {
     /// The bytes of a string value; `None` for a collection, which has no
     /// single-value form.
     pub value: Option<Vec<u8>>,
+}
+
+/// True when any of `keys` matches the glob `pattern`, by the engine's own
+/// rules — the ones `watch` patterns follow on the server — so a wrapper
+/// routing `changed_keys` to pattern observers cannot disagree with it.
+///
+/// Takes the whole change set in one call: a reconnect snapshot can name
+/// thousands of keys, and crossing the FFI once per key would cost more than
+/// the re-read it saves.
+#[uniffi::export]
+pub fn any_key_matches(pattern: String, keys: Vec<String>) -> bool {
+    keys.iter().any(|key| glob_match(&pattern, key))
 }
 
 /// A Recached cache on the device. See the crate documentation.
@@ -260,7 +272,7 @@ impl RecachedClient {
         match self.write(Command::IncrBy(key, delta), frame)? {
             Value::Integer(n) => Ok(n),
             other => Err(RecachedError::Command {
-                message: format!("unexpected INCRBY reply {other:?}"),
+                reason: format!("unexpected INCRBY reply {other:?}"),
             }),
         }
     }
@@ -381,8 +393,8 @@ impl RecachedClient {
         let mut inner = self.lock();
         let keys = mutation_keys(&cmd, &self.store);
         let reply = self.store.execute(cmd);
-        if let Value::Error(message) = reply {
-            return Err(RecachedError::Command { message });
+        if let Value::Error(reason) = reply {
+            return Err(RecachedError::Command { reason });
         }
         let connected = inner.sink.is_some();
         let queued = inner.sync.enqueue_write(&frame, true, connected);

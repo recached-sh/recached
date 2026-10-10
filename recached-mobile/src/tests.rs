@@ -295,3 +295,16 @@ fn get_matching_is_sorted_and_marks_collections() {
         ]
     );
 }
+
+#[test]
+fn any_key_matches_uses_the_engine_glob_rules() {
+    let keys = |ks: &[&str]| ks.iter().map(|k| s(k)).collect::<Vec<_>>();
+    assert!(any_key_matches(s("cart:*"), keys(&["user:1", "cart:9"])));
+    assert!(!any_key_matches(s("cart:*"), keys(&["user:1"])));
+    assert!(any_key_matches(s("user:?"), keys(&["user:7"])));
+    // The engine has no character classes: brackets match literally, on the
+    // server too, so routing must not be cleverer than the server.
+    assert!(!any_key_matches(s("tag:[ab]"), keys(&["tag:b"])));
+    assert!(any_key_matches(s("tag:[ab]"), keys(&["tag:[ab]"])));
+    assert!(!any_key_matches(s("cart:*"), Vec::new()));
+}
