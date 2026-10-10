@@ -1,7 +1,7 @@
 {
   "name": "recached-edge",
   "description": "Browser and edge WebAssembly client for Recached \u2014 local cache with automatic server sync",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "type": "module",
   "main": "sdk.js",
   "module": "sdk.js",

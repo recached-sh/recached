@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "core-engine"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "dashmap",
  "indexmap",
@@ -1133,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "recached"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "base64",
  "core-engine",
@@ -1157,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "recached-embed"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "core-engine",
  "futures-util",
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "recached-mobile"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "core-engine",
  "futures-util",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "sync-client"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "core-engine",
 ]
@@ -2201,7 +2201,7 @@ checksum = "60238e5b4b1b295701d6f9a66d2a126fe19990348f5fb9dae3b623a370119d94"
 
 [[package]]
 name = "wasm-edge"
-version = "0.3.5"
+version = "0.4.0"
 dependencies = [
  "core-engine",
  "getrandom 0.3.4",
