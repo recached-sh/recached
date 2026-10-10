@@ -136,8 +136,10 @@ On every (re)connect, in this order:
 1. `AUTH password` — required first when `RECACHED_PASSWORD` is set
 2. `CLIENT DELTA ON` — connection state, so it is re-sent every time, and sent before `QSUB` so the live query's own traffic is already compact
 3. `SYNC TOKEN token` (strict scoping) or `SYNC pattern…` (open mode) — see [Sync Scopes](/server/sync-scopes)
-4. `QSUB pattern` per live query — the `qstate` replies re-hydrate local state
-5. Replay of the outbox (unacknowledged writes), oldest first
+4. Replay of the outbox (unacknowledged writes), oldest first — after the session, which grants their access
+5. `QSUB pattern` per live query — the `qstate` replies re-hydrate local state
+
+The outbox replays before the live queries so each `qstate` snapshot already contains the client's own queued writes. Taken before the replay, a snapshot lacks them, and reconciling against it would remove a key created offline (or revert an offline edit) until the write's own `keychange` restored it.
 
 ## Deduplicated write replay (`DEDUP`)
 
