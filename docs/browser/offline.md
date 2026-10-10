@@ -15,12 +15,12 @@ Browsers go offline. Recached is built so that when they do, the app keeps worki
 **When the connection returns**, the client re-establishes the session in order:
 
 1. `AUTH` (the password is remembered)
-2. `CLIENT DELTA ON` (connection state, so re-sent every time)
+2. `CLIENT DELTA ON` and `CLIENT EXPIRY ON` (connection state, so re-sent every time)
 3. `SYNC TOKEN` / sync scopes (remembered)
-3. Every active live query is re-subscribed — the fresh `qstate` re-hydrates local keys with whatever happened server-side while you were away
 4. The outbox replays FIFO
+5. Every active live query is re-subscribed — the fresh `qstate` re-hydrates local keys with whatever happened server-side while you were away, and already contains the replayed writes
 
-A queued write is retired from the outbox only when the server replies. A write that was sent but unacknowledged when the connection died is re-sent on reconnect. Every store write carries a `DEDUP` envelope (a per-client id plus a monotonic write id), and a running server skips ids it has already applied, replying `+DUP` so the outbox can retire the entry.
+A queued write is retired from the outbox only when the server accepts it or refuses it for good. A write refused for a reason that can clear — no sync token accepted yet, say — stays queued, and the client reconnects to replay it; one refused for good (a read-only key, a wrong type) is dropped with a console warning, since replaying it would be refused again. See [the protocol reference](/server/protocol#the-ordering-invariant-acknowledgment-correlation). A write that was sent but unacknowledged when the connection died is re-sent on reconnect. Every store write carries a `DEDUP` envelope (a per-client id plus a monotonic write id), and a running server skips ids it has already applied, replying `+DUP` so the outbox can retire the entry.
 
 The client identity and counters are persisted with the outbox in IndexedDB. Server high-water marks are checkpointed beside the data snapshot, so a completed snapshot restores both together. An AOF can replay newer data than that snapshot without the corresponding dedup mark; after such a server crash, retrying a non-idempotent write such as `INCR` can apply it twice. Use application-level idempotency when duplicates are unacceptable.
 

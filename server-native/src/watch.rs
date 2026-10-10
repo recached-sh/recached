@@ -17,9 +17,10 @@ const NOTIFICATION_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Debug)]
 pub(crate) enum NotifPayload {
     /// The key's whole current value, shared by every subscriber it is sent
-    /// to rather than cloned per connection. Each subscriber is still charged
-    /// its full size, so per-connection budgets and overflow are unchanged.
-    Full(Arc<Value>),
+    /// to rather than cloned per connection, and its remaining time to live in
+    /// milliseconds when it has one. Each subscriber is still charged the
+    /// value's full size, so per-connection budgets and overflow are unchanged.
+    Full(Arc<Value>, Option<u64>),
     /// The mutation, for a connection that sent `CLIENT DELTA ON`.
     Delta(KeyDelta),
 }
@@ -83,7 +84,7 @@ impl WatchSubscriber {
             .filter(|_| self.deltas.load(Ordering::Relaxed));
         let payload_bytes = match delta {
             Some(delta) => delta.heap_bytes(),
-            None => change.full().1,
+            None => change.full().bytes,
         };
         let charged_bytes = change
             .key
@@ -97,7 +98,10 @@ impl WatchSubscriber {
 
         let payload = match delta {
             Some(delta) => NotifPayload::Delta(delta.clone()),
-            None => NotifPayload::Full(Arc::clone(&change.full().0)),
+            None => {
+                let full = change.full();
+                NotifPayload::Full(Arc::clone(&full.value), full.ttl_ms)
+            }
         };
         let notification = WatchNotif {
             key: change.key.clone(),
@@ -182,7 +186,15 @@ pub(crate) struct KeyChange<'a> {
     /// Where the current value comes from; `None` for a removal, whose value
     /// is nil.
     source: Option<&'a KeyValueStore>,
-    full: OnceLock<(Arc<Value>, usize)>,
+    full: OnceLock<FullValue>,
+}
+
+/// A change's full form: the value, its expiry, and the value's size, read
+/// together so the expiry always belongs to the value it travels with.
+struct FullValue {
+    value: Arc<Value>,
+    ttl_ms: Option<u64>,
+    bytes: usize,
 }
 
 impl<'a> KeyChange<'a> {
@@ -208,14 +220,18 @@ impl<'a> KeyChange<'a> {
         }
     }
 
-    fn full(&self) -> &(Arc<Value>, usize) {
+    fn full(&self) -> &FullValue {
         self.full.get_or_init(|| {
-            let value = match self.source {
-                Some(store) => store.get_current(&self.key),
-                None => Value::BulkString(None),
+            let (value, ttl_ms) = match self.source {
+                Some(store) => store.get_current_with_ttl(&self.key),
+                None => (Value::BulkString(None), None),
             };
             let bytes = value_heap_bytes(&value);
-            (Arc::new(value), bytes)
+            FullValue {
+                value: Arc::new(value),
+                ttl_ms,
+                bytes,
+            }
         })
     }
 }

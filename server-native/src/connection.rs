@@ -76,8 +76,8 @@ pub(crate) fn initial_qstate(
     store: &KeyValueStore,
     pattern: &str,
     limit: usize,
-) -> Result<Vec<(String, Value)>, usize> {
-    let values = store.matching_key_values(pattern, limit.saturating_add(1));
+) -> Result<Vec<(String, Value, Option<u64>)>, usize> {
+    let values = store.matching_key_values_with_ttl(pattern, limit.saturating_add(1));
     if values.len() > limit {
         Err(limit)
     } else {
@@ -1532,9 +1532,9 @@ pub(crate) async fn handle_ws<S>(
                                 let mut items = Vec::with_capacity(kvs.len() * 2 + 2);
                                 items.push(Value::BulkString(Some(b"qstate".to_vec())));
                                 items.push(Value::BulkString(Some(pattern.clone().into_bytes())));
-                                for (k, v) in kvs {
+                                for (k, v, ttl_ms) in kvs {
                                     items.push(Value::BulkString(Some(k.into_bytes())));
-                                    items.push(v);
+                                    items.push(with_expiry(v, ttl_ms.filter(|_| client_meta.expiry)));
                                 }
                                 ws_send!(&Value::Array(Some(items)).serialize());
                             }
@@ -1778,7 +1778,7 @@ pub(crate) async fn handle_ws<S>(
                     // following EXEC aborts) and still push the keychange to the
                     // client for the observable-keys feature.
                     watch_dirty = true;
-                    let bytes = encode_notification(&notif);
+                    let bytes = encode_notification(&notif, client_meta.expiry);
                     ws_send!(&bytes);
                 }
             }
@@ -1787,7 +1787,7 @@ pub(crate) async fn handle_ws<S>(
             // dirties transactions.
             notif = q_rx.recv(), if !qsub_patterns.is_empty() => {
                 if let Some(notif) = notif {
-                    let bytes = encode_notification(&notif);
+                    let bytes = encode_notification(&notif, client_meta.expiry);
                     ws_send!(&bytes);
                 }
             }

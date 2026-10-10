@@ -237,7 +237,8 @@ impl Task {
         let parsed = Value::parse(&raw).ok().map(|(v, _)| v);
 
         match self.client.handle_frame(&raw) {
-            Incoming::Reply { .. } | Incoming::AppliedReply { .. } => {
+            // A refused write resolves its caller with the server's error.
+            Incoming::Reply { .. } | Incoming::AppliedReply { .. } | Incoming::Refused { .. } => {
                 if let Some(Some(ack)) = self.waiters.pop_front() {
                     let _ = ack.send(reply_result(parsed));
                 }
@@ -257,6 +258,15 @@ impl Task {
             // retires the wrong outbox row. That cannot be repaired in place,
             // so drop the socket: the reconnect rebuilds both from a cleared
             // FIFO, and the outbox replays whatever was still queued.
+            // A write refused for a reason that can clear stays queued for the
+            // reconnect; its caller hears `Disconnected`, as for any write
+            // still unacknowledged when a socket goes.
+            Incoming::Deferred { reason } => {
+                tracing::warn!(
+                    "recached: the server deferred a write ({reason}); reconnecting to replay it"
+                );
+                return false;
+            }
             Incoming::Malformed => {
                 tracing::warn!(
                     "recached: unparseable frame from the server; dropping the socket to \
@@ -281,6 +291,13 @@ impl Task {
                 self.shared
                     .outbox_len
                     .store(self.client.outbox_len(), Ordering::Release);
+                if !queued.send_now {
+                    // This socket is being abandoned; the write replays on the next.
+                    if let Some(ack) = ack {
+                        let _ = ack.send(Err(Error::Disconnected));
+                    }
+                    return true;
+                }
                 self.waiters.push_back(ack);
                 send(write, queued.frame).await
             }

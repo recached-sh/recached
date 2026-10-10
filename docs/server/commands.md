@@ -230,6 +230,8 @@ The other `MEMORY` subcommands â€” `DOCTOR`, `STATS`, `PURGE`, `MALLOC-STATS` â€
 
 `CLIENT DELTA ON|OFF` asks for compact `keydelta` push frames in place of whole-value `keychange` frames, where the mutation has a compact form (`APPEND`, `SADD`, `SREM`, `LPUSH`, `RPUSH`, `HSET`, `HDEL`, `ZADD`, `ZREM`). Off by default, because a client that did not understand the frame would ignore it and silently hold a stale copy. See [the protocol reference](/server/protocol#key-deltas-client-delta-on).
 
+`CLIENT EXPIRY ON|OFF` makes keychange and qstate values carry each expiring key's remaining time to live, as `["px", ms, value]`, so a client's local copy expires when the server's does. Off by default, because an older client would read the wrapper as an unknown collection type and clear its copy. See [the protocol reference](/server/protocol#expiry-client-expiry-on).
+
 `MEMORY USAGE` reads a key, so it is scoped like one: a WebSocket connection granted `cart:*` may measure `cart:42` and not `session:8f21`. See [Sync Scoping](/server/sync-scopes).
 
 ---

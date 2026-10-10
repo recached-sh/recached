@@ -23,6 +23,17 @@ fn applied(keys: &[&str]) -> Incoming {
 
 /// Render a wire frame as text for assertions. Frames are bytes because values
 /// may be binary; every frame in these tests has a text payload.
+/// Answer the two frames every open starts with, `CLIENT DELTA ON` and
+/// `CLIENT EXPIRY ON`. Neither retires an outbox row.
+fn ack_opt_ins(c: &mut SyncClient) {
+    for _ in 0..2 {
+        assert_eq!(
+            c.handle_frame(b"+OK\r\n"),
+            Incoming::Reply { retired: None }
+        );
+    }
+}
+
 fn t(frame: &[u8]) -> String {
     String::from_utf8_lossy(frame).into_owned()
 }
@@ -98,11 +109,12 @@ fn a_binary_write_replays_unchanged_after_reconnect() {
     let e = c.enqueue_write(&to_resp_bytes(&[b"SET", b"k", binary]), true, false);
 
     let frames = c.on_open();
-    // CLIENT DELTA ON, then the queued write.
-    assert_eq!(frames.len(), 2);
+    // CLIENT DELTA ON and CLIENT EXPIRY ON, then the queued write.
+    assert_eq!(frames.len(), 3);
     assert!(t(&frames[0]).contains("DELTA"));
+    assert!(t(&frames[1]).contains("EXPIRY"));
     assert_eq!(
-        frames[1], e.frame,
+        frames[2], e.frame,
         "replayed frame must be byte-identical to the queued one"
     );
 }
@@ -140,28 +152,27 @@ fn on_open_replays_session_then_outbox_in_order() {
     let w2 = c.enqueue_write(&to_resp(&["SET", "b", "2"]), true, false);
 
     let frames = c.on_open();
-    assert_eq!(frames.len(), 6);
+    assert_eq!(frames.len(), 7);
     assert!(t(&frames[0]).contains("AUTH"));
-    // Before QSUB, so the live query's own traffic can already be deltas.
+    // Before QSUB, so the live query's own traffic can already be deltas
+    // and its snapshot already carries expiries.
     assert!(t(&frames[1]).contains("DELTA"));
-    assert!(t(&frames[2]).contains("TOKEN"));
+    assert!(t(&frames[2]).contains("EXPIRY"));
+    assert!(t(&frames[3]).contains("TOKEN"));
     // The outbox before QSUB, so the snapshot already holds the replayed
     // writes and reconciling against it cannot remove or revert them.
-    assert_eq!(frames[3], w1.frame);
-    assert_eq!(frames[4], w2.frame);
-    assert!(t(&frames[5]).contains("QSUB"));
+    assert_eq!(frames[4], w1.frame);
+    assert_eq!(frames[5], w2.frame);
+    assert!(t(&frames[6]).contains("QSUB"));
 }
 
 #[test]
 fn session_commands_sent_while_open_occupy_reply_slots() {
     let mut c = client();
-    // Open with nothing queued: CLIENT DELTA ON is the only session frame,
-    // and it occupies a reply slot like any other.
-    assert_eq!(c.on_open().len(), 1);
-    assert_eq!(
-        c.handle_frame(b"+OK\r\n"),
-        Incoming::Reply { retired: None }
-    );
+    // Open with nothing queued: the two opt-ins are the only session
+    // frames, and each occupies a reply slot like any other.
+    assert_eq!(c.on_open().len(), 2);
+    ack_opt_ins(&mut c);
     // A session command on the live socket...
     let frame = c.set_sync_token("tok", true);
     assert!(frame.is_some());
@@ -261,13 +272,9 @@ fn replies_retire_outbox_rows_in_order() {
     let w1 = c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, false);
     let w2 = c.enqueue_write(&to_resp(&["SET", "b", "2"]), true, false);
     let frames = c.on_open();
-    // CLIENT DELTA ON, then the two writes.
-    assert_eq!(frames.len(), 3);
-    assert_eq!(
-        c.handle_frame(b"+OK\r\n"),
-        Incoming::Reply { retired: None },
-        "the delta opt-in retires no outbox row"
-    );
+    // The two opt-ins, then the two writes.
+    assert_eq!(frames.len(), 4);
+    ack_opt_ins(&mut c);
 
     assert_eq!(
         c.handle_frame(b"+OK\r\n"),
@@ -290,14 +297,14 @@ fn replies_retire_outbox_rows_in_order() {
 fn unacked_rows_survive_reconnect_and_replay() {
     let mut c = client();
     let w = c.enqueue_write(&to_resp(&["INCRBY", "n", "1"]), true, false);
-    assert_eq!(c.on_open().len(), 2);
+    assert_eq!(c.on_open().len(), 3);
     // Connection dies before the reply arrives.
     c.on_close();
     // The row is still queued; the next open replays the identical frame,
-    // behind the session's delta opt-in.
+    // behind the session's opt-ins.
     let frames = c.on_open();
-    assert_eq!(frames.len(), 2);
-    assert_eq!(frames[1], w.frame);
+    assert_eq!(frames.len(), 3);
+    assert_eq!(frames[2], w.frame);
 }
 
 #[test]
@@ -305,11 +312,8 @@ fn pushes_are_not_replies() {
     let mut c = client();
     let w = c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, false);
     c.on_open();
-    // Retire the session's CLIENT DELTA ON reply first.
-    assert_eq!(
-        c.handle_frame(b"+OK\r\n"),
-        Incoming::Reply { retired: None }
-    );
+    // Retire the session's opt-in replies first.
+    ack_opt_ins(&mut c);
     // A mutation push and a keychange arrive before our reply — neither may
     // consume the reply slot.
     assert_eq!(
@@ -333,10 +337,7 @@ fn a_reply_for_an_evicted_row_retires_nothing_else() {
     let mut c = client();
     c.set_max_pending(2);
     c.on_open();
-    assert_eq!(
-        c.handle_frame(b"+OK\r\n"),
-        Incoming::Reply { retired: None }
-    );
+    ack_opt_ins(&mut c);
     let w1 = c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, true);
     let w2 = c.enqueue_write(&to_resp(&["SET", "b", "2"]), true, true);
     let w3 = c.enqueue_write(&to_resp(&["SET", "c", "3"]), true, true);
@@ -368,10 +369,7 @@ fn draining_after_overflow_retires_every_reply_without_searching() {
     let mut c = client();
     c.set_max_pending(N);
     c.on_open();
-    assert_eq!(
-        c.handle_frame(b"+OK\r\n"),
-        Incoming::Reply { retired: None }
-    );
+    ack_opt_ins(&mut c);
     let ids: Vec<u64> = (0..2 * N)
         .map(|i| {
             c.enqueue_write(&to_resp(&["SET", &format!("k{i}"), "v"]), true, true)
@@ -533,11 +531,12 @@ fn restore_renumbers_without_collisions_and_preserves_order() {
     );
     // Replay order: restored rows first (oldest first), then this session's.
     let frames = c.on_open();
-    assert_eq!(frames.len(), 4);
+    assert_eq!(frames.len(), 5);
     assert!(t(&frames[0]).contains("DELTA"));
-    assert_eq!(t(&frames[1]), old_frame_a);
-    assert_eq!(t(&frames[2]), old_frame_b);
-    assert_eq!(frames[3], session_write.frame);
+    assert!(t(&frames[1]).contains("EXPIRY"));
+    assert_eq!(t(&frames[2]), old_frame_a);
+    assert_eq!(t(&frames[3]), old_frame_b);
+    assert_eq!(frames[4], session_write.frame);
 
     let next = c.enqueue_write(&to_resp(&["SET", "later", "1"]), true, false);
     assert_eq!(next.id, 3);
@@ -553,9 +552,9 @@ fn restore_cannot_collide_with_a_same_numbered_session_write() {
     let rewrites = c.restore_outbox(vec![(0, old.clone())]);
     assert_eq!(rewrites[0].1, 1);
     let frames = c.on_open();
-    assert_eq!(frames.len(), 3);
+    assert_eq!(frames.len(), 4);
     assert!(t(&frames[0]).contains("DELTA"));
-    assert_eq!(frames[1..], [old, session.frame]);
+    assert_eq!(frames[2..], [old, session.frame]);
 }
 
 // ── Sync scopes ───────────────────────────────────────────────────────────────
@@ -722,9 +721,9 @@ fn a_reconnect_snapshot_cannot_undo_a_replayed_write() {
         "the outbox must replay before QSUB: {frames:?}"
     );
 
-    // Replies arrive in send order: DELTA, the write, then the snapshot,
-    // which the server took after applying the write.
-    c.handle_frame(b"+OK\r\n");
+    // Replies arrive in send order: the opt-ins, the write, then the
+    // snapshot, which the server took after applying the write.
+    ack_opt_ins(&mut c);
     assert_eq!(
         c.handle_frame(b"+OK\r\n"),
         Incoming::Reply {
@@ -1146,11 +1145,7 @@ fn a_delta_never_consumes_a_reply_slot() {
     let mut c = client();
     let w = c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, false);
     c.on_open();
-    assert_eq!(
-        c.handle_frame(b"+OK\r\n"),
-        Incoming::Reply { retired: None },
-        "the delta opt-in's own reply"
-    );
+    ack_opt_ins(&mut c);
     assert_eq!(
         c.handle_frame(b"*4\r\n$8\r\nkeydelta\r\n$1\r\nk\r\n$6\r\nappend\r\n$1\r\nz\r\n"),
         applied(&["k"])
@@ -1281,4 +1276,245 @@ fn mutation_keys_names_every_key_a_multi_key_write_touches() {
         keys(Command::Get("a".into())).is_empty(),
         "a read changes nothing"
     );
+}
+
+// ── refused writes ────────────────────────────────────────────────────────────
+
+/// Open the socket, answer its opt-ins, and send `frame` as a write.
+fn sent(c: &mut SyncClient, frame: &[u8]) -> Enqueued {
+    c.on_open();
+    ack_opt_ins(c);
+    c.enqueue_write(frame, true, true)
+}
+
+#[test]
+fn a_refusal_for_good_retires_the_row_and_names_its_keys() {
+    let mut c = client();
+    let w = sent(&mut c, &to_resp(&["SET", "catalog:1", "x"]));
+    match c.handle_frame(b"-NOSCOPE key 'catalog:1' is read-only on this connection\r\n") {
+        Incoming::Refused {
+            retired,
+            keys,
+            reason,
+        } => {
+            assert_eq!(retired, w.id);
+            assert_eq!(keys, vec![s("catalog:1")]);
+            assert!(reason.starts_with("NOSCOPE"), "{reason}");
+            assert!(
+                c.resubscribe_covering(&keys, true).is_empty(),
+                "no live query covers the key"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(c.outbox_len(), 0, "replaying it would be refused again");
+}
+
+#[test]
+fn a_refusal_for_good_resubscribes_the_live_queries_covering_its_keys() {
+    let mut c = client();
+    c.add_live_query("catalog:*", false);
+    c.add_live_query("cart:*", false);
+    let frames = c.on_open();
+    ack_opt_ins(&mut c);
+    for _ in frames.iter().filter(|f| t(f).contains("QSUB")) {
+        c.handle_frame(b"*2\r\n$6\r\nqstate\r\n$0\r\n\r\n");
+    }
+    c.enqueue_write(&to_resp(&["SET", "catalog:1", "x"]), true, true);
+
+    let Incoming::Refused { keys, .. } =
+        c.handle_frame(b"-NOSCOPE key 'catalog:1' is read-only on this connection\r\n")
+    else {
+        panic!("expected a refusal");
+    };
+    let resync = c.resubscribe_covering(&keys, true);
+    assert_eq!(resync.len(), 1);
+    assert!(t(&resync[0]).contains("catalog:*"), "{}", t(&resync[0]));
+
+    // The resubscription occupies a reply slot, and its snapshot puts back the
+    // server's value.
+    assert_eq!(
+        c.handle_frame(
+            b"*4\r\n$6\r\nqstate\r\n$9\r\ncatalog:*\r\n$9\r\ncatalog:1\r\n$6\r\nserver\r\n"
+        ),
+        Incoming::AppliedReply {
+            retired: None,
+            keys: vec![s("catalog:1")]
+        }
+    );
+    assert_eq!(get(&c, "catalog:1"), bulk("server"));
+}
+
+#[test]
+fn a_refusal_that_can_clear_keeps_the_row_for_the_reconnect() {
+    let mut c = client();
+    let w = sent(&mut c, &to_resp(&["SET", "a", "offline"]));
+    assert_eq!(
+        c.handle_frame(b"-NOSCOPE send SYNC TOKEN <token> before issuing commands\r\n"),
+        Incoming::Deferred {
+            reason: s("NOSCOPE send SYNC TOKEN <token> before issuing commands")
+        }
+    );
+    assert_eq!(c.outbox_len(), 1);
+
+    // Nothing more goes out on the abandoned socket.
+    let later = c.enqueue_write(&to_resp(&["SET", "b", "2"]), true, true);
+    assert!(!later.send_now);
+    assert!(c.add_live_query("x:*", true).is_none());
+
+    c.on_close();
+    let frames = c.on_open();
+    let replayed: Vec<&Vec<u8>> = frames.iter().filter(|f| t(f).contains("DEDUP")).collect();
+    assert_eq!(
+        replayed,
+        [&w.frame, &later.frame],
+        "replayed in order, unchanged"
+    );
+}
+
+#[test]
+fn backoff_keeps_growing_while_writes_are_deferred() {
+    let mut c = client();
+    sent(&mut c, &to_resp(&["SET", "a", "1"]));
+    c.handle_frame(b"-NOSCOPE send SYNC TOKEN <token> before issuing commands\r\n");
+    let mut nominal = BACKOFF_BASE_MS;
+    for _ in 0..4 {
+        let d = c.on_close();
+        assert!(
+            d >= nominal / 2 && d <= nominal,
+            "{d} outside [{}, {nominal}]",
+            nominal / 2
+        );
+        nominal *= 2;
+        // The open does not reset it: the write is refused again.
+        c.on_open();
+        ack_opt_ins(&mut c);
+        c.handle_frame(b"-NOSCOPE send SYNC TOKEN <token> before issuing commands\r\n");
+    }
+
+    // Accepted at last: the next drop starts over.
+    c.on_close();
+    c.on_open();
+    ack_opt_ins(&mut c);
+    assert!(matches!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply { retired: Some(_) }
+    ));
+    assert_eq!(c.outbox_len(), 0);
+    let d = c.on_close();
+    assert!((250..=500).contains(&d), "expected a reset floor, got {d}");
+}
+
+#[test]
+fn an_error_for_a_session_command_retires_nothing() {
+    // An older server refusing `CLIENT EXPIRY ON`, say.
+    let mut c = client();
+    let w = c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, false);
+    c.on_open();
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply { retired: None }
+    );
+    assert_eq!(
+        c.handle_frame(b"-ERR unknown subcommand 'EXPIRY'\r\n"),
+        Incoming::Reply { retired: None }
+    );
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply {
+            retired: Some(w.id)
+        }
+    );
+}
+
+#[test]
+fn transient_refusals_are_told_apart_from_permanent_ones() {
+    for reason in [
+        "NOAUTH Authentication required.",
+        "NOSCOPE send SYNC TOKEN <token> before issuing commands",
+        "READONLY You can't write against a read only replica.",
+        "MISCONF persistence is unhealthy; writes are disabled until SAVE succeeds",
+        "OOM command not allowed when used memory > 'maxmemory'.",
+        "LOADING Redis is loading the dataset in memory",
+    ] {
+        assert!(is_transient_refusal(reason), "{reason}");
+    }
+    for reason in [
+        "NOSCOPE key 'k' is read-only on this connection",
+        "NOSCOPE key 'k' is outside this connection's sync scopes",
+        "WRONGTYPE Operation against a key holding the wrong kind of value",
+        "ERR invalid expire time in 'set' command",
+        "",
+    ] {
+        assert!(!is_transient_refusal(reason), "{reason}");
+    }
+}
+
+// ── expiry ────────────────────────────────────────────────────────────────────
+
+fn px(ms: i64, value: Value) -> Value {
+    Value::Array(Some(vec![bulk("px"), Value::Integer(ms), value]))
+}
+
+fn pttl(c: &SyncClient, key: &str) -> i64 {
+    match c.store().execute(Command::PTtl(key.to_string())) {
+        Value::Integer(n) => n,
+        other => panic!("PTTL replied {other:?}"),
+    }
+}
+
+#[test]
+fn a_keychange_carries_the_key_expiry() {
+    let c = &mut client();
+    let frame = push(vec![bulk("keychange"), bulk("k"), px(600_000, bulk("v"))]);
+    assert_eq!(c.handle_frame(frame.as_bytes()), applied(&["k"]));
+    assert_eq!(get(c, "k"), bulk("v"));
+    let ms = pttl(c, "k");
+    assert!((599_000..=600_000).contains(&ms), "{ms}");
+
+    // A bare value is a key without one: the copy becomes permanent too.
+    let frame = push(vec![bulk("keychange"), bulk("k"), bulk("w")]);
+    c.handle_frame(frame.as_bytes());
+    assert_eq!(pttl(c, "k"), -1);
+}
+
+#[test]
+fn a_collection_keychange_carries_the_key_expiry() {
+    let c = &mut client();
+    let hash = Value::Array(Some(vec![bulk("hash"), bulk("f"), bulk("1")]));
+    let frame = push(vec![bulk("keychange"), bulk("h"), px(5_000, hash)]);
+    assert_eq!(c.handle_frame(frame.as_bytes()), applied(&["h"]));
+    assert_eq!(c.store().execute(Command::HGet(s("h"), s("f"))), bulk("1"));
+    assert!(pttl(c, "h") > 0);
+}
+
+#[test]
+fn a_qstate_snapshot_carries_each_key_expiry() {
+    let mut c = client();
+    c.add_live_query("q:*", false);
+    c.on_open();
+    ack_opt_ins(&mut c);
+    let frame = push(vec![
+        bulk("qstate"),
+        bulk("q:*"),
+        bulk("q:short"),
+        px(1_000, bulk("a")),
+        bulk("q:forever"),
+        bulk("b"),
+    ]);
+    c.handle_frame(frame.as_bytes());
+    assert!((1..=1_000).contains(&pttl(&c, "q:short")));
+    assert_eq!(pttl(&c, "q:forever"), -1);
+}
+
+#[test]
+fn an_already_elapsed_expiry_removes_the_key() {
+    let c = &mut client();
+    let frame = push(vec![bulk("keychange"), bulk("k"), px(0, bulk("v"))]);
+    c.handle_frame(frame.as_bytes());
+    assert_eq!(get(c, "k"), Value::BulkString(None));
+}
+
+fn s(text: &str) -> String {
+    text.to_string()
 }

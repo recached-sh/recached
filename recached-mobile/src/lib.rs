@@ -70,10 +70,30 @@ pub struct FrameOutcome {
     /// Keys the frame may have changed, deletions included. Notify their
     /// observers. A key can appear whose value came out the same.
     pub changed_keys: Vec<String>,
-    /// The frame could not be parsed, so reply matching can no longer be
-    /// trusted. Close the socket; the reconnect rebuilds it, and nothing queued
-    /// is lost.
+    /// Close the socket and reconnect after the delay
+    /// [`connection_closed`](RecachedClient::connection_closed) returns.
+    /// Nothing queued is lost. Either reply matching can no longer be trusted
+    /// (the frame could not be parsed), or the server deferred a queued write
+    /// for a reason that can clear, such as a sync token it has not accepted
+    /// yet, and the reconnect replays it.
     pub reconnect: bool,
+    /// A queued write the server refused for good, now removed from the
+    /// outbox. Tell the application: it never reached the server.
+    pub refused: Option<RefusedWrite>,
+}
+
+/// A write the server will never apply, from [`FrameOutcome::refused`].
+///
+/// Its local effect stays, since the client cannot undo it. Keys a watched
+/// pattern covers get the server's values back from a fresh snapshot shortly
+/// after; any other key keeps the refused value until the app changes it.
+#[derive(Debug, PartialEq, uniffi::Record)]
+pub struct RefusedWrite {
+    /// The keys the write would have changed.
+    pub keys: Vec<String>,
+    /// The server's error, such as `NOSCOPE key 'k' is read-only on this
+    /// connection`.
+    pub reason: String,
 }
 
 /// One key and its value, from [`RecachedClient::get_matching`].
@@ -244,8 +264,15 @@ impl RecachedClient {
         Ok(())
     }
 
-    /// Set a value that expires after `seconds`.
+    /// Set a value that expires after `seconds`, which must be at least 1.
     pub fn set_ex(&self, key: String, value: Vec<u8>, seconds: u64) -> Result<(), RecachedError> {
+        if seconds == 0 {
+            // The server refuses `EX 0`, so the write could never sync; the
+            // local store would take it and expire the key at once.
+            return Err(RecachedError::Command {
+                reason: "ERR invalid expire time in 'set' command".to_string(),
+            });
+        }
         let secs = seconds.to_string();
         let frame = to_resp_bytes(&[b"SET", key.as_bytes(), &value, b"EX", secs.as_bytes()]);
         let options = SetOptions {
@@ -342,17 +369,31 @@ impl RecachedClient {
     }
 
     /// Handle one incoming frame: apply it, persist what it changed, and
-    /// retire the queued write its reply acknowledges.
+    /// retire the queued write its reply acknowledges or refuses for good.
     ///
     /// An `Err` means the frame was applied in memory but could not be saved;
     /// the next snapshot from the server repairs the saved copy.
     pub fn frame_received(&self, frame: Vec<u8>) -> Result<FrameOutcome, RecachedError> {
         let mut inner = self.lock();
+        let mut refused = None;
         let (changed_keys, retired, reconnect) = match inner.sync.handle_frame(&frame) {
             Incoming::Applied { keys } => (keys, None, false),
             Incoming::AppliedReply { retired, keys } => (keys, retired, false),
             Incoming::Reply { retired } => (Vec::new(), retired, false),
-            Incoming::Malformed => (Vec::new(), None, true),
+            Incoming::Refused {
+                retired,
+                keys,
+                reason,
+            } => {
+                let connected = inner.sink.is_some();
+                for frame in inner.sync.resubscribe_covering(&keys, connected) {
+                    inner.send(Some(frame));
+                }
+                refused = Some(RefusedWrite { keys, reason });
+                (Vec::new(), Some(retired), false)
+            }
+            // The write stays queued, on disk too; the reconnect replays it.
+            Incoming::Deferred { .. } | Incoming::Malformed => (Vec::new(), None, true),
             Incoming::PubSub { .. } | Incoming::Ignored => (Vec::new(), None, false),
         };
         if !changed_keys.is_empty() || retired.is_some() {
@@ -363,6 +404,7 @@ impl RecachedClient {
         Ok(FrameOutcome {
             changed_keys,
             reconnect,
+            refused,
         })
     }
 

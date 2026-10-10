@@ -77,6 +77,13 @@ fn keychange(key: &str, value: &str) -> Vec<u8> {
     to_resp(&["keychange", key, value])
 }
 
+/// Answer `CLIENT DELTA ON` and `CLIENT EXPIRY ON`, which every open starts with.
+fn ack_opt_ins(client: &RecachedClient) {
+    for _ in 0..2 {
+        client.frame_received(OK.to_vec()).unwrap();
+    }
+}
+
 /// The `DEDUP <client> <wire-id>` envelope of a sent write.
 fn dedup_header(frame: &str) -> (String, u64) {
     let parts: Vec<&str> = frame.split("\r\n").collect();
@@ -147,10 +154,11 @@ fn queued_writes_follow_the_session_on_connect() {
 
     let sent = connect(&c).take();
     assert!(sent[0].contains("DELTA"), "{sent:?}");
+    assert!(sent[1].contains("EXPIRY"), "{sent:?}");
     // Writes before live queries, so the snapshot already contains them.
-    assert!(sent[1].contains("SET"), "{sent:?}");
-    assert!(sent[2].contains("QSUB"), "{sent:?}");
-    assert_eq!(sent.len(), 3);
+    assert!(sent[2].contains("SET"), "{sent:?}");
+    assert!(sent[3].contains("QSUB"), "{sent:?}");
+    assert_eq!(sent.len(), 4);
 }
 
 #[test]
@@ -176,7 +184,7 @@ fn an_acknowledged_write_leaves_the_durable_outbox() {
         let c = db.open();
         let _sink = connect(&c);
         c.set(s("a"), b"1".to_vec()).unwrap();
-        c.frame_received(OK.to_vec()).unwrap(); // CLIENT DELTA ON
+        ack_opt_ins(&c);
         assert_eq!(c.pending_writes(), 1);
         c.frame_received(OK.to_vec()).unwrap(); // SET
         assert_eq!(c.pending_writes(), 0);
@@ -308,4 +316,131 @@ fn any_key_matches_uses_the_engine_glob_rules() {
     assert!(!any_key_matches(s("tag:[ab]"), keys(&["tag:b"])));
     assert!(any_key_matches(s("tag:[ab]"), keys(&["tag:[ab]"])));
     assert!(!any_key_matches(s("cart:*"), Vec::new()));
+}
+
+// ── refused writes ────────────────────────────────────────────────────────────
+
+const READ_ONLY: &[u8] = b"-NOSCOPE key 'a' is read-only on this connection\r\n";
+const NO_TOKEN: &[u8] = b"-NOSCOPE send SYNC TOKEN <token> before issuing commands\r\n";
+
+#[test]
+fn a_write_refused_for_good_is_reported_and_leaves_the_durable_outbox() {
+    let db = TempDb::new();
+    {
+        let c = db.open();
+        let _sink = connect(&c);
+        ack_opt_ins(&c);
+        c.set(s("a"), b"1".to_vec()).unwrap();
+        let outcome = c.frame_received(READ_ONLY.to_vec()).unwrap();
+        assert_eq!(
+            outcome.refused,
+            Some(RefusedWrite {
+                keys: vec![s("a")],
+                reason: s("NOSCOPE key 'a' is read-only on this connection"),
+            })
+        );
+        assert!(!outcome.reconnect);
+        assert_eq!(c.pending_writes(), 0);
+    }
+    assert_eq!(
+        db.open().pending_writes(),
+        0,
+        "replaying it would be refused again"
+    );
+}
+
+#[test]
+fn a_refused_write_to_a_watched_key_asks_for_a_fresh_snapshot() {
+    let db = TempDb::new();
+    let c = db.open();
+    c.watch(s("a*"));
+    let sink = connect(&c);
+    ack_opt_ins(&c);
+    c.frame_received(to_resp(&["qstate", "a*", "a", "server"]))
+        .unwrap();
+    c.set(s("a"), b"local".to_vec()).unwrap();
+    sink.take();
+
+    c.frame_received(READ_ONLY.to_vec()).unwrap();
+    let sent = sink.take();
+    assert_eq!(sent.len(), 1);
+    assert!(
+        sent[0].contains("QSUB") && sent[0].contains("a*"),
+        "{sent:?}"
+    );
+
+    let outcome = c
+        .frame_received(to_resp(&["qstate", "a*", "a", "server"]))
+        .unwrap();
+    assert_eq!(outcome.changed_keys, vec![s("a")]);
+    assert_eq!(c.get(s("a")), Some(b"server".to_vec()));
+}
+
+#[test]
+fn a_write_deferred_by_the_server_stays_queued_across_a_restart() {
+    let db = TempDb::new();
+    {
+        let c = db.open();
+        c.set(s("a"), b"offline".to_vec()).unwrap();
+        let sink = connect(&c);
+        ack_opt_ins(&c);
+        sink.take();
+        let outcome = c.frame_received(NO_TOKEN.to_vec()).unwrap();
+        assert!(outcome.reconnect, "the reconnect replays it");
+        assert_eq!(outcome.refused, None);
+        assert_eq!(c.pending_writes(), 1);
+
+        // Nothing more goes out on the socket being abandoned.
+        c.set(s("b"), b"2".to_vec()).unwrap();
+        assert!(sink.take().is_empty());
+        c.connection_closed();
+    }
+    let c = db.open();
+    assert_eq!(c.pending_writes(), 2);
+    let sent = connect(&c).take();
+    let writes: Vec<&String> = sent.iter().filter(|f| f.contains("DEDUP")).collect();
+    assert_eq!(writes.len(), 2, "{sent:?}");
+    assert!(writes[0].contains("offline"), "replayed in order: {sent:?}");
+}
+
+#[test]
+fn set_ex_refuses_a_zero_ttl_the_server_would_refuse() {
+    let db = TempDb::new();
+    let c = db.open();
+    let err = c.set_ex(s("k"), b"v".to_vec(), 0).unwrap_err();
+    assert!(matches!(err, RecachedError::Command { .. }), "{err:?}");
+    assert_eq!(c.pending_writes(), 0);
+    assert!(!c.exists(s("k")));
+}
+
+// ── expiry ────────────────────────────────────────────────────────────────────
+
+fn expiring_keychange(key: &str, value: &str, ms: i64) -> Vec<u8> {
+    Value::Array(Some(vec![
+        Value::BulkString(Some(b"keychange".to_vec())),
+        Value::BulkString(Some(key.as_bytes().to_vec())),
+        Value::Array(Some(vec![
+            Value::BulkString(Some(b"px".to_vec())),
+            Value::Integer(ms),
+            Value::BulkString(Some(value.as_bytes().to_vec())),
+        ])),
+    ]))
+    .serialize()
+}
+
+#[test]
+fn the_echo_of_an_expiring_write_keeps_its_ttl_on_disk_too() {
+    let db = TempDb::new();
+    {
+        let c = db.open();
+        let _sink = connect(&c);
+        c.watch(s("k*"));
+        c.set_ex(s("k1"), b"v".to_vec(), 600).unwrap();
+        c.frame_received(expiring_keychange("k1", "v", 599_990))
+            .unwrap();
+        let ttl = c.ttl(s("k1"));
+        assert!((590..=600).contains(&ttl), "{ttl}");
+    }
+    let ttl = db.open().ttl(s("k1"));
+    assert!((590..=600).contains(&ttl), "after reopening: {ttl}");
 }

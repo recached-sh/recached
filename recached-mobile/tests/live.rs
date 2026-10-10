@@ -152,7 +152,10 @@ impl Connection {
                             .push((key.clone(), client.get(key.clone())));
                     }
                     changed.lock().unwrap().extend(outcome.changed_keys);
-                    assert!(!outcome.reconnect, "the server sent an unparseable frame");
+                    assert!(
+                        !outcome.reconnect,
+                        "the server sent an unparseable frame or deferred a write"
+                    );
                 }
             })
         };
@@ -355,4 +358,29 @@ async fn an_offline_write_to_a_watched_key_survives_the_reconnect_snapshot() {
             value.as_deref().map(String::from_utf8_lossy)
         );
     }
+}
+
+#[tokio::test]
+async fn an_expiring_write_stays_expiring_after_its_echo_and_a_resnapshot() {
+    let url = server_url!();
+    let key = ns("ttl");
+    let db = TempDb::new("ttl");
+
+    let a = Connection::open(&url, db.open(), true).await;
+    a.client.watch(format!("{key}*"));
+    settle().await;
+    a.client.set_ex(key.clone(), b"v".to_vec(), 600).unwrap();
+    settle().await;
+    assert!(a.take_changed().contains(&key), "the echo arrived");
+    let ttl = a.client.ttl(key.clone());
+    assert!((590..=600).contains(&ttl), "after the echo: {ttl}");
+    a.close();
+
+    // A reconnect re-applies the key from the server's snapshot.
+    let a = Connection::open(&url, db.open(), true).await;
+    a.client.watch(format!("{key}*"));
+    settle().await;
+    assert!(a.take_changed().contains(&key), "the snapshot carried it");
+    let ttl = a.client.ttl(key.clone());
+    assert!((590..=600).contains(&ttl), "after the snapshot: {ttl}");
 }

@@ -74,6 +74,9 @@ pub(crate) struct ClientMeta {
     /// Set by `CLIENT DELTA ON`: this connection accepts `keydelta` frames in
     /// place of a full `keychange` where the mutation has a compact form.
     pub(crate) deltas: bool,
+    /// Set by `CLIENT EXPIRY ON`: keychange and qstate values carry the key's
+    /// remaining time to live (see `propagation::with_expiry`).
+    pub(crate) expiry: bool,
 }
 
 impl ClientMeta {
@@ -88,6 +91,7 @@ impl ClientMeta {
             since: SystemTime::now(),
             resp: 2,
             deltas: false,
+            expiry: false,
             sub: 0,
             psub: 0,
         }

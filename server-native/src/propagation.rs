@@ -564,10 +564,33 @@ pub(crate) fn encode_keydelta(key: &str, delta: &KeyDelta) -> Vec<u8> {
 }
 
 /// Encode a queued notification in whichever form it was queued as.
-pub(crate) fn encode_notification(notif: &WatchNotif) -> Vec<u8> {
+/// `expiry` is the connection's `CLIENT EXPIRY` setting.
+pub(crate) fn encode_notification(notif: &WatchNotif, expiry: bool) -> Vec<u8> {
     match &notif.payload {
-        NotifPayload::Full(value) => encode_keychange(&notif.key, value),
+        NotifPayload::Full(value, ttl_ms) => match ttl_ms.filter(|_| expiry) {
+            Some(ms) => encode_keychange(&notif.key, &with_expiry((**value).clone(), Some(ms))),
+            None => encode_keychange(&notif.key, value),
+        },
         NotifPayload::Delta(delta) => encode_keydelta(&notif.key, delta),
+    }
+}
+
+/// A key's value as a connection that sent `CLIENT EXPIRY ON` receives it in a
+/// keychange or qstate: wrapped as `["px", <ms>, value]` while the key has a
+/// time to live, so the client's copy expires when the server's does. Without
+/// it, applying the value would make an expiring key permanent on the client.
+///
+/// Opt-in because an older client reads the wrapper as an unknown collection
+/// type, which clears its copy of the key. Deltas need no wrapper: the commands
+/// they carry keep the key's expiry, on the server and when replayed.
+pub(crate) fn with_expiry(value: Value, ttl_ms: Option<u64>) -> Value {
+    match ttl_ms {
+        Some(ms) => Value::Array(Some(vec![
+            Value::BulkString(Some(b"px".to_vec())),
+            Value::Integer(i64::try_from(ms).unwrap_or(i64::MAX)),
+            value,
+        ])),
+        None => value,
     }
 }
 

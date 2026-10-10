@@ -1972,6 +1972,21 @@ impl KeyValueStore {
         }
     }
 
+    /// [`get_current`](Self::get_current) together with the key's remaining
+    /// time to live in milliseconds, `None` when it has no expiry. Read in one
+    /// lookup, so the two always describe the same entry.
+    pub fn get_current_with_ttl(&self, key: &str) -> (Value, Option<u64>) {
+        let now = now_ms();
+        match self.data.get(key) {
+            None => (Value::BulkString(None), None),
+            Some(e) if e.is_expired(now) => (Value::BulkString(None), None),
+            Some(e) => (
+                Self::encode_current_value(&e.value),
+                e.expires_at_ms.map(|exp| exp - now),
+            ),
+        }
+    }
+
     /// Every live key matching `pattern`, without materialising its value.
     ///
     /// `matching_key_values` clones each value, which is wasted work for a
@@ -1996,6 +2011,28 @@ impl KeyValueStore {
             .filter(|e| !e.is_expired(now) && glob_match(pattern, e.key()))
             .take(limit)
             .map(|e| (e.key().clone(), Self::encode_current_value(&e.value)))
+            .collect()
+    }
+
+    /// [`matching_key_values`](Self::matching_key_values) with each key's
+    /// remaining time to live in milliseconds, `None` when it has no expiry.
+    pub fn matching_key_values_with_ttl(
+        &self,
+        pattern: &str,
+        limit: usize,
+    ) -> Vec<(String, Value, Option<u64>)> {
+        let now = now_ms();
+        self.data
+            .iter()
+            .filter(|e| !e.is_expired(now) && glob_match(pattern, e.key()))
+            .take(limit)
+            .map(|e| {
+                (
+                    e.key().clone(),
+                    Self::encode_current_value(&e.value),
+                    e.expires_at_ms.map(|exp| exp - now),
+                )
+            })
             .collect()
     }
 
