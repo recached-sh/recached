@@ -2,6 +2,20 @@
 
 All notable changes to Recached are documented here.
 
+## [0.4.0] (unreleased)
+
+- Added `recached-mobile`, the shared UniFFI core for the preview Kotlin/Android and Swift/iOS/macOS SDKs
+- Added SQLite persistence for native client data, queued writes, and client identity, including offline cold-start reads and replay after an app restart
+- Added Android native-library and Apple XCFramework packaging, generated Kotlin/Swift bindings, checksums, and mobile CI checks
+- Added changed-key reporting and per-key snapshots for native persistence and reactive observers
+- Reduced unrelated browser, React, and Vue updates with key- and pattern-specific change notifications
+- Fixed reconnect snapshots temporarily removing or reverting offline edits by replaying queued writes before re-subscribing
+- Kept retryable server-refused writes queued and reported permanent refusals to native clients
+- Preserved server expiry in watched client values, including offline reads and native persisted state
+- Fixed Kotlin binding error-field compatibility, custom build-output paths in mobile packaging, and Apple smoke checks
+- Expanded mobile unit and live-server tests for persistence, replay, reconnect recovery, and expiry
+- Added native SDK guides and a client support matrix
+
 ## [0.3.5] (2026-10-09)
 
 - Added read-only sync scopes and scope-denial metrics
