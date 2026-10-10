@@ -47,7 +47,7 @@ precondition(client.get(key: "k") == Data("v".utf8), "read back what was written
 
 let sink = Sink()
 client.connectionOpened(sink: sink)
-precondition(sink.frames.count == 2, "session frame + the queued write")
+precondition(sink.frames.count == 3, "the delta and expiry opt-ins + the queued write")
 
 let change = Data("*3\r\n$9\r\nkeychange\r\n$1\r\nx\r\n$1\r\n1\r\n".utf8)
 // Outside the precondition: its condition is a non-throwing autoclosure.
