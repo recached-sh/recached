@@ -1,6 +1,6 @@
 # Wire Protocol
 
-This page is **normative**: client SDKs (browser `recached-edge`, the planned mobile bindings) and the server implement exactly what is written here. If code and this page disagree, one of them has a bug. The reference client implementation is the platform-neutral [`sync-client`](https://github.com/recached-sh/recached/tree/main/sync-client) crate.
+This page is **normative**: client adapters (`recached-edge`, `recached-embed`, and the Kotlin/Swift previews through `recached-mobile`) and the server implement exactly what is written here. If code and this page disagree, one of them has a bug. The reference client implementation is the platform-neutral [`sync-client`](https://github.com/recached-sh/recached/tree/main/sync-client) crate.
 
 ## Transports
 
@@ -92,7 +92,7 @@ everything already as small as its result — `SET`, `DEL`, expiry.
 hold a stale local copy, which is worse than an error, so the server keeps
 sending whole values until a connection sends `CLIENT DELTA ON`. The toggle is
 connection state: it is re-sent on every reconnect, and `CLIENT DELTA OFF`
-reverts to whole values. `recached-edge` enables it automatically, before its
+reverts to whole values. The shared clients enable it automatically, before their
 `QSUB`s, so live-query traffic is compact from the first frame.
 
 Deltas are safe to apply blind because the stream has no silent gaps: a
@@ -185,7 +185,7 @@ DEDUP <client-id> <wire-id> <command> <args…>
 
 - `client-id`: 1–64 chars, stable per client, **unguessable** (a guessable id lets another authenticated client poison your high-water mark); browsers use `crypto.randomUUID()`
 - `wire-id`: `(session-epoch << 32) | write-counter` — strictly increasing across a client's lifetime, including across page reloads (the epoch is persisted and bumped per session)
-- Server behavior: per `client-id`, ids at or below the high-water mark reply `+DUP` and do **not** execute. A higher id is committed only after its wrapped write succeeds. Marks are persisted in the snapshot's `.dedup` sidecar and swept after 24 h idle.
+- Server behavior: per `client-id`, ids at or below the high-water mark reply `+DUP` and do **not** execute. A higher id is committed only after its wrapped write succeeds. Marks are persisted in the snapshot's `.dedup` sidecar. When the map exceeds 10,000 clients, duplicate checks sweep marks idle for at least 24 hours.
 - `+DUP` is a normal reply — it acknowledges and retires the write.
 - Scope checks, replica write-rejection, and metrics apply to the *wrapped* command.
 - Connection-scoped commands (`SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`) are **never** wrapped — a replayed subscribe must re-execute, not be skipped.

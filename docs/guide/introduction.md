@@ -1,64 +1,46 @@
 # Introduction
 
-## What Recached is
+Recached is a Rust cache and sync engine for backends, browsers, native Android and Apple apps, and embedded Rust services. Client adapters keep local cache data in memory, exchange writes and updates over WebSocket, and expose APIs for reacting to changes.
 
-Recached is an in-memory cache server written in Rust. It speaks RESP (the Redis Serialization Protocol) on port 6379, so common clients such as `ioredis`, `node-redis`, `redis-py`, and `Jedis` can use its documented command subset.
+## Where the engine runs
 
-Values are binary-safe, as they are in Redis: a value is stored and returned as the exact bytes you
-sent. *Keys* and other identifiers must be text — see [Binary values](#binary-values).
+Your backend uses the server's RESP (Redis Serialization Protocol) command subset on port 6379. Browser clients run `core-engine` as WebAssembly. Kotlin and Swift clients run it natively through UniFFI, while `recached-embed` holds data inside a Rust service process.
 
-That is where the similarity with Redis ends — in two directions.
+Client reads use local memory without a server round trip. A server connection alone does not hydrate the cache: register browser `liveQuery(pattern)` or native `watch(pattern)` for an initial snapshot and updates. Saved or locally written values remain readable offline, but they can be stale until synchronization finishes.
 
-**Recached is multi-threaded by default, command path included.** Rust's ownership model makes
-cross-thread state sharing a build-time property, so Recached threads execution itself over a
-sharded keyspace with no configuration. You can
-[verify the scaling directly](/guide/benchmarks#thread-scaling) by varying the worker count and
-nothing else.
+| Client | Transport | Local storage | Reactive API |
+|---|---|---|---|
+| Browser `recached-edge` | Browser WebSocket | Memory; optional IndexedDB WAL and outbox | Key and pattern listeners; React/Vue adapters |
+| Android `recached-android` | OkHttp WebSocket | Memory and SQLite data/outbox | Kotlin `Flow` |
+| Swift `Recached` | `URLSessionWebSocketTask` | Memory and SQLite data/outbox | `AsyncStream` and SwiftUI models |
+| Rust `recached-embed` | Tokio WebSocket | Memory and in-memory outbox | Pub/sub receiver |
 
-Three qualifications matter. This is an architectural property, **not** a throughput claim, and
-certainly not a claim about any other cache — the project publishes no cross-project comparison, so
-measure the exact releases and configuration you plan to run. Scaling also depends on your writes
-being spread across keys: a single hot key lives on a single shard and does not get faster with more
-workers. And it does not provide fully isolated cross-key reads. See
-[Concurrency model](/server/commands#concurrency-model).
+The Kotlin and Swift SDKs are implemented, unreleased previews. React Native, Flutter, and WASI deployment remain planned. See [client support and limits](/guide/client-support) for installation status and adapter differences.
 
-**The distinguishing feature is elsewhere: the same engine runs where there is no server at all.**
-That is the `core-engine` crate: a pure Rust state machine with no network dependencies, no file I/O, and no OS-specific code. It compiles to native x86-64/ARM64 for the server **and** to `wasm32-unknown-unknown` for the browser. Both targets run the same cache logic from the same source. The WebSocket sync layer (port 6380) keeps the two sides consistent in real time.
+## Shared state across clients
 
-The result: your backend caches data over RESP as it always has, and every connected browser instance holds a local copy of the cache in WASM memory. Frontend reads never leave the process — no network hop, no serialization, sub-microsecond in practice. Frontend writes propagate to the server and fan out to all other connected clients.
+A backend write can update browser tabs and native apps through the same sync protocol. Clients register the patterns they need to hydrate and reconcile after reconnecting. Sync scopes control which keys each connection may read, write, and receive; a watch pattern is not an access boundary.
 
-## The core insight
-
-Every caching solution today forces a choice:
-
-- **Server-side cache (Redis, Memcached):** Every frontend read is a network round-trip. The browser is just a display layer; all state lives on the server.
-- **Client-side state (Zustand, Redux, SWR):** State lives in the browser, but you write manual staleness checks, manual invalidation, manual sync code. Two caches emerge: one on the server and one in every client.
-
-Recached removes the choice. The `core-engine` is the cache. It runs in both places. The network layer is not a read path — it is only a sync path. Reads always come from local memory.
+The server executes commands across worker threads over a sharded `DashMap` store. `DashMap` uses locks per shard. Scaling depends on the workload and key distribution, and multi-key writes do not isolate concurrent readers. See [benchmarks](/guide/benchmarks#thread-scaling) and [the concurrency model](/server/commands#concurrency-model).
 
 ## Architecture
 
 <figure>
-  <img class="light-only" src="/architecture-light.svg" alt="Your backend writes to the Recached server over RESP on port 6379. The server syncs over a WebSocket on port 6380 to the browser or edge runtime, where reads are served from local WebAssembly memory. Writes flow back the same way.">
-  <img class="dark-only" src="/architecture-dark.svg" alt="Your backend writes to the Recached server over RESP on port 6379. The server syncs over a WebSocket on port 6380 to the browser or edge runtime, where reads are served from local WebAssembly memory. Writes flow back the same way.">
+  <img class="light-only" src="/architecture-light.svg" alt="Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory.">
+  <img class="dark-only" src="/architecture-dark.svg" alt="Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory.">
 </figure>
 
-Three crates with hard dependency boundaries:
-
-| Crate | Role |
-|---|---|
-| `core-engine` | Pure state machine — no networking, no I/O. RESP parser, typed command dispatch, sharded lock-free store (`DashMap`), TTL engine, optional key cap. Compiles to both native and `wasm32`. |
-| `server-native` | Tokio TCP server (port 6379) + WebSocket server (port 6380). Persistent read buffers handle fragmented RESP. Per-connection pub/sub via `mpsc` channels. Connection semaphore, auth rate-limiting, sender-ID broadcast filter. |
-| `wasm-edge` | `wasm-bindgen` JS bindings. Local reads without a network hop, RESP-over-WebSocket sync. Closure lifecycle managed to avoid memory leaks on reconnect. |
+The workspace separates `core-engine`, `sync-client`, the server, and three client adapters: `wasm-edge`, `recached-embed`, and `recached-mobile`. Platform wrappers live in the Kotlin and Swift repositories. [How it works](/guide/how-it-works) explains their transport, storage, and reconnect contracts.
 
 ## When to use Recached
 
 Recached is a good fit when:
 
-- **Your frontend reads the same data your backend writes.** User sessions, feature flags, live counters, cart state, active user lists — anything your backend mutates that the UI needs to display instantly.
+- **Your browser or native app reads shared backend state.** Feature flags, live counters, cart state, and presence can update through the sync connection.
 - **You want live UI without polling.** The WebSocket sync replaces a polling loop without requiring you to build a separate SSE or WebSocket server.
 - **You want a frontend-only cache with TTL.** The WASM module works entirely without a server. Call `createCache()` without `connect` and you get a local cache with TTLs, counters, JSON documents, glob queries, optional IndexedDB persistence and cross-tab sync — no Recached server, no Redis, no backend changes required. Pub/sub, live queries and cross-device sync are what you give up; see [no server at all](/guide/use-cases#no-server-at-all) for the full boundary.
-- **You need cross-tab sync.** BroadcastChannel support means all open tabs in the same browser share mutations automatically.
+- **You need native offline reads and queued writes.** Kotlin and Swift restore SQLite data before connecting and persist successful local writes with their outbox rows. See [Android](/android/getting-started) and [Apple](/ios/getting-started).
+- **You need cross-tab sync.** BroadcastChannel shares local writes between tabs on the same origin and channel.
 - **You want to reuse a Redis client** for Recached's documented command subset (strings, expiry, counters, collections, transactions, and pub/sub).
 
 ## When Recached is not the right fit
@@ -108,7 +90,9 @@ were destroyed on the way in.
 Honest status, per layer:
 
 - **The cache server is a release candidate for cache workloads.** It includes atomic snapshots, an append-only file, ordered replication, TLS, constant-time authentication, hardened parsers, Prometheus metrics, and load/chaos tests. It still needs broad production validation and an independent security audit. Treat it as a cache, not a system of record.
-- **The sync layer (browser sync, live queries, offline outbox, scoped auth) is beta.** The invariants are [specified](/server/protocol), tested, and verified end-to-end — but the code is young and hasn't accumulated real-world miles or third-party security review yet. Concretely: don't expose the WebSocket port to the public internet for multi-tenant data until you've read [Sync Scopes](/server/sync-scopes) and understood the model, and expect occasional sharp edges.
+- **The shared sync layer (browser, mobile, and Rust clients) is beta.** The invariants are [specified](/server/protocol), tested, and verified end-to-end — but the code is young and hasn't accumulated real-world miles or third-party security review yet. Concretely: don't expose the WebSocket port to the public internet for multi-tenant data until you've read [Sync Scopes](/server/sync-scopes) and understood the model, and expect occasional sharp edges.
+
+- **The Kotlin and Swift SDKs are unreleased 0.1.0 previews.** Their APIs, transports, SQLite persistence, and observers are implemented; package configs do not yet pin a released mobile core. Build from source and review [client limits](/guide/client-support).
 
 The road to 1.0 is hardening, not features: fuzzing the parser surfaces, automated browser testing, a security pass on the token path, and a protocol freeze once real-world usage has confirmed the design. Bug reports from production-like use are the most valuable contribution the project can receive right now.
 
@@ -117,13 +101,13 @@ The road to 1.0 is hardening, not features: fuzzing the parser surfaces, automat
 | | Recached | Redis |
 |---|---|---|
 | Protocol | RESP (compatible) | RESP |
-| Browser-side cache | Yes — WASM | No |
+| Local client cache | Browser WASM, native Kotlin/Swift previews, embedded Rust | No built-in client replica |
 | WebSocket sync | Built-in | Not built-in |
 | Persistence | Snapshot + AOF | RDB + AOF |
 | Replication | Primary/replica + manually fenced promotion | Yes (+ Sentinel/Cluster) |
 | Lua scripting | No (WASM scripting on roadmap) | Yes |
 | Cluster mode | No | Yes |
-| Command coverage | 123 commands | 250+ |
+| Command coverage | 124 catalog entries | 250+ |
 | License | Apache 2.0 | AGPLv3 / RSALv2 + SSPLv1 (BSD-3 up to 7.2; Valkey stayed BSD-3) |
 
 ## Recached vs SWR / React Query
@@ -148,7 +132,7 @@ Recached replaces the manual caching layer developers build on top of Zustand or
 |---|---|---|
 | What it is | Cache + **sync fabric** between backend and clients | Embedded **database** inside the app |
 | Data model | Keys — strings, collections, JSON | Documents with MongoDB-like queries, indexes, ACID transactions |
-| Server | The server is the product (Redis-compatible) | None — runs entirely on-device |
+| Server | Optional for local caches; required for cross-device sync | None — runs entirely on-device |
 | Superpower | Multi-client sync: scoped auth, live fan-out, offline outbox, deduplicated replay | On-device vector + hybrid search, rich queries |
 | Truth model | **Shared truth** across users and devices | **Device-local truth** |
 

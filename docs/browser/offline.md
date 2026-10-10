@@ -9,8 +9,8 @@ Browsers go offline. Recached is built so that when they do, the app keeps worki
 **When the connection drops:**
 
 - Reads keep working — they never left local memory to begin with.
-- Writes keep working: they apply locally and queue as *operations* in a durable outbox (up to 10 000; beyond that the oldest queued write is dropped with a console warning). With persistence enabled, the outbox lives in IndexedDB — offline writes survive a full page reload and still reach the server.
-- The client reconnects with exponential backoff: 500 ms, doubling to a 30 s cap.
+- Writes keep working: they apply locally and queue as *operations* in an outbox (up to 10 000; beyond that the oldest queued write is dropped with a console warning). With persistence enabled, asynchronous IndexedDB writes save the outbox for replay after a reload. A synchronous write returning does not confirm the storage commit; see [persistence limits](/browser/persistence).
+- The client reconnects with exponential backoff: a 500 ms base, doubling to a 30 s cap, with jitter between half and all of each delay.
 
 **When the connection returns**, the client re-establishes the session in order:
 
@@ -32,7 +32,7 @@ Recached queues *operations*, not final values. That choice decides how offline 
 
 | Write type | Offline behavior | Merge result |
 |---|---|---|
-| `incr` / `decr` | queues the **delta** (`INCRBY`) | **Additive** — your +2 and their +3 make +5, nobody's counts are lost (PN-counter semantics) |
+| `incr` / `decr` | queues the **delta** (`INCRBY`) | **Additive** — your +2 and their +3 make +5, nobody's counts are lost (operation replay; not a general CRDT) |
 | `sadd` / `srem`-style collection ops | queues the operation | Operations replay — an offline `SADD` survives a concurrent server-side change to the same set |
 | `jmerge` | queues the **patch** | Deep-merges into the current document — fields others changed while you were offline are preserved unless your patch touches them |
 | `set` / `del` / `jset` | queues the command | **Last-writer-wins by arrival at the server** — your offline write overwrites the value when it replays |
@@ -49,6 +49,7 @@ cache.incr('cart:count')
 
 ## Limits to know about
 
+- **Persistence does not await every write.** WAL and outbox updates are asynchronous and separate; closing the tab immediately can interrupt them. Server-pushed data is not appended to the WAL.
 - **Durability requires persistence.** Without `persistence: true`, the outbox is in-memory: offline writes replay within the tab session but are lost on reload. With it, unacknowledged writes are restored from IndexedDB on startup and re-sent on the next connect.
 - **Duplicate suppression is not a transaction log.** It covers reconnects to the running server and marks included in a completed snapshot. AOF replay after the latest snapshot can reopen a duplicate window.
 - **LWW means arrival order, not wall-clock order.** A `set` replayed from a client that was offline for an hour overwrites the server's newer value for that key. Prefer operation forms for anything multiple parties write.

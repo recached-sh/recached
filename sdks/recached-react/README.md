@@ -2,6 +2,8 @@
 
 Official React hooks for [Recached](https://github.com/recached-sh/recached) — a local reactive cache with automatic server sync and cross-tab sharing.
 
+This package targets React in the browser. For native mobile apps, use the [Kotlin](https://recached.dev/android/getting-started) or [Swift](https://recached.dev/ios/getting-started) preview. React Native is planned.
+
 ## Features
 
 - **Local reads** — reads are served from local WASM memory without a network round trip
@@ -9,10 +11,12 @@ Official React hooks for [Recached](https://github.com/recached-sh/recached) —
 - **React 18 concurrent-safe** — built on `useSyncExternalStore`, no tearing
 - **TypeScript-first** — full type inference including `useKeyJSON<T>`
 
+Browser persistence does not save every server update; see [persistence limits](https://recached.dev/browser/persistence) and [client support](https://recached.dev/guide/client-support).
+
 ## Requirements
 
 - React 18 or later
-- `recached-edge` 0.1.4 or later (peer dependency)
+- `recached-edge` 0.3.1 or later (peer dependency)
 
 ## Installation
 

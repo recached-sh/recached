@@ -1,0 +1,5 @@
+# Banner edit prompt
+
+Generated with the built-in imagegen tool using `recached.jpg` as the edit target. Final JPEG copies live at `recached.jpg` and `docs/public/recached.jpg`.
+
+Use case: text-localization. Asset type: existing Recached README and documentation website banner. Input image: edit target. Replace ONLY the outdated two-line subtitle. Preserve the orange geometric R logo, mint accent, RECACHED wordmark, dark navy background, subtle circuit and hexagon pattern, overall layout, wide aspect ratio, and original visual style. Render the replacement subtitle in the same light gray bold sans-serif style, left aligned beneath RECACHED, clean and fully legible. Exact replacement text on two lines: "A Rust Cache and Sync Engine for" then "Servers, Browsers, and Native Mobile Apps." Do not retain any of the old subtitle. Fit both lines within the existing subtitle area with generous right margin. Keep the brand wordmark spelled RECACHED. No added objects, badges, labels, watermarks, or additional copy.

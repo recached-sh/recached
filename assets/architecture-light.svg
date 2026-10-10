@@ -1,35 +1,40 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 236" width="880" height="236" role="img" aria-label="Your backend writes to the Recached server over RESP on port 6379. The server syncs over a WebSocket on port 6380 to the browser or edge runtime, where reads are served from local WebAssembly memory. Writes flow back the same way.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 380" width="1040" height="380" role="img" aria-label="Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory.">
+<title>Recached server and local client caches</title>
+<desc>Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory. Mobile SDKs are implemented previews.</desc>
 <style>
-  .wire { fill:none; stroke:#d6dae0; stroke-width:2; stroke-dasharray:5 6; }
-  .node rect { fill:#f6f8fa; stroke:#d6dae0; stroke-width:1.5; }
-  .server > rect { stroke:#E8542A; }
-  .pill { fill:#ffffff; stroke:#d6dae0; stroke-width:1; }
-  .pill-accent { fill:#fdeee9; stroke:#f3b9a5; stroke-width:1; }
-  .title { fill:#1f2328; font:700 15px system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; text-anchor:middle; }
-  .sub { fill:#656d76; font:11.5px system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; text-anchor:middle; }
-  .pill-text { fill:#1f2328; font:600 11px ui-monospace,SFMono-Regular,'SF Mono',Menlo,monospace; text-anchor:middle; }
-  .edge { fill:#8c959f; font:600 11px ui-monospace,SFMono-Regular,'SF Mono',Menlo,monospace; text-anchor:middle; }
-  .w-in { fill:#5B8DEF; }
-  .w-out { fill:#8DD4CC; }
-  .w-back { fill:#E8542A; }
-  .flash { fill:#8DD4CC; opacity:0; animation:arrive 4.4s linear infinite; }
-  @keyframes arrive { 0%,52% {opacity:0;} 57% {opacity:.20;} 66%,100% {opacity:0;} }
-  /* Honour a reduced-motion preference: keep the diagram, drop the movement. */
-  @media (prefers-reduced-motion: reduce) {
-    .packet { display:none; }
-    .flash { animation:none; }
-  }
+  .wire { fill:none; stroke:#d6dae0; stroke-width:2; }
+  .node { fill:#f6f8fa; stroke:#d6dae0; stroke-width:1.5; }
+  .server { stroke:#E8542A; }
+  .pill { fill:#ffffff; stroke:#d6dae0; }
+  text { font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; text-anchor:middle; }
+  .title { fill:#1f2328; font-size:16px; font-weight:700; }
+  .sub { fill:#656d76; font-size:12px; }
+  .code { fill:#1f2328; font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .label { fill:#656d76; font-size:12px; font-weight:600; }
 </style>
-<path class="wire" d="M196,134 L344,134"/>
-<path class="wire" d="M540,112 L688,112"/>
-<path class="wire" d="M688,156 L540,156"/>
-<g class="node"><rect x="24" y="96" width="172" height="76" rx="14"/><text x="110" y="128" class="title">Your backend</text><text x="110" y="149" class="sub">RESP clients</text></g>
-<g class="node server"><rect x="344" y="72" width="196" height="124" rx="16"/><text x="442" y="102" class="title">Recached Server</text><rect x="362" y="116" width="160" height="26" rx="7" class="pill-accent"/><text x="442" y="134" class="pill-text">server-native</text><rect x="362" y="150" width="160" height="26" rx="7" class="pill"/><text x="442" y="168" class="pill-text">core-engine</text></g>
-<g class="node"><rect x="688" y="84" width="168" height="100" rx="14"/><rect class="flash" x="688" y="84" width="168" height="100" rx="14"/><text x="772" y="114" class="title">Browser / Edge</text><rect x="704" y="126" width="136" height="26" rx="7" class="pill"/><text x="772" y="144" class="pill-text">wasm-edge</text><text x="772" y="170" class="sub">local reads · 0 ms</text></g>
-<text x="270" y="124" class="edge">RESP · :6379</text>
-<text x="614" y="100" class="edge">WebSocket · :6380</text>
-<text x="614" y="176" class="edge">writes sync back</text>
-<circle class="packet w-in" r="5"><animateMotion dur="4.4s" repeatCount="indefinite" keyTimes="0;0.30;1" keyPoints="0;1;1" calcMode="linear" path="M196,134 L344,134"/><animate attributeName="opacity" dur="4.4s" repeatCount="indefinite" keyTimes="0;0.02;0.28;0.31;1" values="0;1;1;0;0"/></circle>
-<circle class="packet w-out" r="5"><animateMotion dur="4.4s" repeatCount="indefinite" keyTimes="0;0.34;0.58;1" keyPoints="0;0;1;1" calcMode="linear" path="M540,112 L688,112"/><animate attributeName="opacity" dur="4.4s" repeatCount="indefinite" keyTimes="0;0.34;0.36;0.56;0.59;1" values="0;0;1;1;0;0"/></circle>
-<circle class="packet w-back" r="5"><animateMotion dur="4.4s" repeatCount="indefinite" keyTimes="0;0.68;0.94;1" keyPoints="0;0;1;1" calcMode="linear" path="M688,156 L540,156"/><animate attributeName="opacity" dur="4.4s" repeatCount="indefinite" keyTimes="0;0.68;0.70;0.92;0.95;1" values="0;0;1;1;0;0"/></circle>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#d6dae0" stroke-width="1.5"/></marker></defs>
+<path class="wire" d="M190 190 H320" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<path class="wire" d="M530 190 H625 M625 80 V300 M625 80 H710 M625 190 H710 M625 300 H710"/>
+<path class="wire" d="M635 80 H704" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<path class="wire" d="M635 190 H704" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<path class="wire" d="M635 300 H704" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+<rect class="node" x="20" y="149" width="170" height="82" rx="14"/>
+<text x="105" y="182" class="title">Your backend</text><text x="105" y="207" class="sub">RESP clients</text>
+<text x="255" y="174" class="label">RESP :6379</text>
+<rect class="node server" x="320" y="123" width="210" height="134" rx="16"/>
+<text x="425" y="153" class="title">Recached server</text>
+<rect class="pill" x="338" y="168" width="174" height="28" rx="7"/><text x="425" y="187" class="code">server-native</text>
+<rect class="pill" x="338" y="207" width="174" height="28" rx="7"/><text x="425" y="226" class="code">core-engine</text>
+<text x="620" y="24" class="label">WebSocket :6380</text>
+<text x="620" y="43" class="sub">writes + updates</text>
+<rect class="node" x="710" y="32" width="306" height="96" rx="14"/>
+<text x="863" y="58" class="title">Browser</text><text x="863" y="80" class="code">wasm-edge + sync-client</text>
+<text x="863" y="103" class="sub">Local WASM reads · optional IndexedDB</text>
+<rect class="node" x="710" y="142" width="306" height="96" rx="14"/>
+<text x="863" y="168" class="title">Android / iOS / macOS</text><text x="863" y="190" class="code">recached-mobile + sync-client</text>
+<text x="863" y="213" class="sub">Native reads · SQLite · Kotlin / Swift previews</text>
+<rect class="node" x="710" y="252" width="306" height="96" rx="14"/>
+<text x="863" y="278" class="title">Rust service</text><text x="863" y="300" class="code">recached-embed + sync-client</text>
+<text x="863" y="323" class="sub">Local native reads · in-memory outbox</text>
+<text x="520" y="371" class="sub">Every runtime shares core-engine; client reads stay in local memory.</text>
 </svg>

@@ -45,7 +45,7 @@ Because `install` is async (it awaits `createCache`), the cache is ready by the 
 
 | Option | Description |
 |--------|-------------|
-| `persistence` | Load the IndexedDB WAL on startup and write every mutation through. The cache survives page refreshes with no server round-trip. |
+| `persistence` | Restore the local-write WAL and outbox, then save later local writes asynchronously. See [persistence limits](/browser/persistence); server pushes are not appended to the WAL. |
 | `broadcastChannel` | Name for cross-tab sync. Tabs with the same name share mutations automatically via the BroadcastChannel API — no server needed. |
 | `connect.url` | WebSocket URL of the Recached server (`ws://` or `wss://`). Mutations are pushed to the server and server-side mutations are pushed down. |
 | `connect.password` | Server password when `RECACHED_PASSWORD` is configured. |

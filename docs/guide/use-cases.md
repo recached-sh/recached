@@ -7,7 +7,7 @@ something else" list, that is the honest answer.
 
 ## The one-sentence test
 
-> **Does a browser, mobile app, or edge worker need to read the same data your backend writes?**
+> **Does a browser, native mobile app, or Rust service need to read the same data your backend writes?**
 
 If **no** — you are caching database rows for your own API, computing fragment caches, storing
 sessions read only by the server — Redis or Memcached is the right tool and Recached offers you
@@ -48,21 +48,20 @@ Multiple clients read and write the same keys and each needs to see the others' 
 this is Redis plus a pub/sub channel plus a WebSocket server plus reconnection and replay logic —
 several hundred lines that are easy to get subtly wrong under packet loss.
 
-Recached ships that path: writes replay from a durable outbox after reconnect, `incr`/`decr` merge
+Recached ships that path: clients replay queued writes after reconnect, `incr`/`decr` merge
 additively rather than clobbering, `jmerge` deep-merges documents, and a `DEDUP` envelope suppresses
 ordinary reconnect replays. See [Offline & Reconnection](/browser/offline) for the server-crash boundary.
 
 ### Feature flags and config that must flip instantly
 
 Flags read on every render are the pathological case for a network cache: either you round-trip
-constantly or you cache locally and accept staleness. Recached holds the flag in WASM memory (read
+constantly or you cache locally and accept staleness. Recached holds the flag in browser WASM or native client memory (read
 cost: a local map lookup) while a server-side flip propagates in milliseconds. You get local-read
 speed *and* immediate invalidation, which is normally a tradeoff.
 
 ### Offline-capable and flaky-network UIs
 
-Reads are served from local memory whether or not the network is up. Writes queue in an
-IndexedDB-backed outbox and replay on reconnect. Redis and Memcached have nothing to say here — they
+Reads use local memory whether or not the network is up. Browser writes can persist asynchronously to IndexedDB; native Kotlin and Swift writes commit SQLite data and outbox rows before returning successfully. Both replay pending operations on reconnect. Redis and Memcached have nothing to say here — they
 are unreachable when the network is down, by definition.
 
 ### Cross-tab consistency
@@ -73,8 +72,7 @@ With Redis this is either polling per tab or a `storage` event protocol you writ
 ### No server at all
 
 The client cache on its own. Omit `connect` and `recached-edge` never opens a socket. Nothing else changes: the same
-`core-engine` state machine that runs on the server runs in WASM in the tab, so you get the full
-local command surface with no backend of any kind.
+`core-engine` state machine that runs on the server runs in WASM in the tab, so you get the browser SDK's focused local API with no backend of any kind.
 
 ```typescript
 const cache = await createCache({
@@ -97,7 +95,6 @@ simply do nothing:
 | `publish` / `subscribe` / `unsubscribe` / `onMessage` | Pub/sub is brokered by the server; there is no local loopback, and messages do **not** travel over BroadcastChannel |
 | `liveQuery` | The initial state snapshot and the change stream are both server-sent |
 | `syncToken` / `syncScopes` | Scope grants are a server-side authorization decision |
-| `pendingWrites` / `onOutboxFull` | They describe a replay queue for a server that will never connect |
 
 Cross-*device* sync is the other obvious absence: two browsers with no server between them share
 nothing.
@@ -115,11 +112,19 @@ binary; that cost buys Redis semantics, and if you are not using them it buys no
 framing: pick local-only Recached when you want the *data model* — TTLs, counters, JSON paths, glob
 queries — not merely somewhere to park fetched JSON.
 
+`pendingWrites` and `onOutboxFull` still track the queue in persistent local-only mode; they are not inert.
+
 **One wart to know about.** With `persistence: true` and no `connect`, every write still records an
 outbox row in IndexedDB for a replay that cannot happen, and after 10,000 of them you will see
 `offline write queue full` warnings in the console. It is wasted I/O and a misleading message, not
 data loss — the local store and its WAL are unaffected. Pass `persistence: false`, or ignore the
 warning, until this is fixed.
+
+### Native apps that need saved shared state offline
+
+The Kotlin and Swift previews save server-pushed data and pending writes in SQLite, so an app can reopen offline with its saved cache. Register `watch(pattern)` after every open to reconcile missed edits and deletions when the network returns. Kotlin `Flow`, Swift `AsyncStream`, and SwiftUI models react to changes in local memory.
+
+The SDKs are implemented previews requiring source builds. Watches do not authorize access, local writes can be refused by the server, and replay has capacity and dedup retention limits. Start with [Android](/android/getting-started), [Apple](/ios/getting-started), and [client limits](/guide/client-support).
 
 ## Where you should reach for something else
 
@@ -142,7 +147,7 @@ It is not durable storage. See the persistence caveats in
 **Working set larger than RAM → a database, or Redis with eviction tuned.** There is no disk-backed
 tier.
 
-**You need Lua scripting, cluster mode, or `INFO`/`SLOWLOG` introspection → Redis.** These are
+**You need Lua scripting, cluster mode, or `SLOWLOG` / `INFO latencystats` introspection → Redis.** These are
 explicitly out of scope; see [Commands](/server/commands). RESP3 exists only for protocol
 negotiation and pub/sub framing (`HELLO 3`), not the full type surface.
 
@@ -154,8 +159,8 @@ See [Concurrency model](/server/commands#concurrency-model).
 | | Recached | Redis | Memcached |
 |---|---|---|---|
 | Server-side cache | Yes | Yes | Yes |
-| Client reads without a network hop | **Yes** — WASM, in-process | No | No |
-| Push to browsers on change | **Built in** | Pub/Sub + your own WS server | No |
+| Client reads without a network hop | Browser WASM, native mobile previews, embedded Rust | No | No |
+| Push to browser and native clients | **Built in** | Pub/Sub + your own WS server | No |
 | Offline writes + replay | **Built in** | No | No |
 | Cross-tab sync | **Built in** | No | No |
 | Data structures | Strings, hashes, lists, sets, sorted sets, JSON | All of those + streams, bitmaps, HLL, geo | Strings only |
@@ -165,7 +170,7 @@ See [Concurrency model](/server/commands#concurrency-model).
 | Cluster / sharding | No | Yes | Client-side sharding |
 | Threading | Multi-threaded — commands execute on every core | Threaded I/O (`io-threads`, off by default); command execution on one thread | Multi-threaded |
 | Cross-key atomicity | Single-key only ([why](/server/commands#concurrency-model)) | Everything, including `MULTI`/`EXEC` | Single-key only |
-| Command coverage | 123 | 250+ | ~15 |
+| Command coverage | 124 catalog entries | 250+ | ~15 |
 | Maturity | Server release candidate; sync layer beta | 15+ years | 20+ years |
 | License | Apache 2.0 | AGPLv3 / RSALv2 + SSPLv1 (BSD-3 up to 7.2) | BSD-3 |
 

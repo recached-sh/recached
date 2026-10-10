@@ -1,8 +1,8 @@
 <div align="center">
   <img src="recached.jpg" alt="Recached" width="800" />
   <h1>Recached</h1>
-  <p><b>A multi-threaded Rust cache that runs on your backend <em>and</em> inside the browser.</b></p>
-  <p>Every core on the server, every tab in the browser — one engine.</p>
+  <p><b>A Rust cache and sync engine for servers, browsers, and native mobile apps.</b></p>
+  <p>Local client reads. Shared state over WebSocket. One Rust engine.</p>
 
   <a href="https://recached.dev"><img src="https://img.shields.io/badge/Docs-recached.dev-blue.svg" alt="Docs"></a>
   <a href="https://www.npmjs.com/package/recached-edge"><img src="https://img.shields.io/npm/v/recached-edge?label=npm" alt="npm"></a>
@@ -13,18 +13,25 @@
 
 ---
 
-Every caching solution forces a choice: server-side caches like Redis mean every frontend read is a network round-trip; client-side state like Zustand or SWR means two caches — one on the server and one in every client, with manual staleness code gluing them together. **Recached removes the choice.**
+Recached keeps a local copy of shared cache data where your application reads it: in a browser tab, a native Android or Apple app, or an embedded Rust service. Clients read local memory and exchange writes and server updates over WebSocket. Your backend uses the server's RESP command subset on port 6379.
 
-The same Rust cache engine runs natively on your server (RESP on port 6379) and as WebAssembly inside the browser. Common Redis clients work with Recached's documented command subset. Browser reads come from local WASM memory; the WebSocket is a sync path, not a read path.
+The same `core-engine` runs on every target. Browser clients use WebAssembly and optional IndexedDB persistence. Native Kotlin and Swift clients use `recached-mobile` through UniFFI, with SQLite persistence for local data and queued writes. The native SDKs are implemented previews; their package configs do not yet pin a released mobile core.
 
-**Multi-threaded is the default, not a flag.** Recached executes commands on every core, over a sharded keyspace, with no configuration. Rust's ownership model makes cross-thread state sharing checkable at build time, so threading the command path is a design decision rather than a risk to be opted into. You can [verify the scaling directly](#benchmarks) by varying the worker count and nothing else — though note that scaling depends on your keys being spread, not concentrated on a few hot ones.
+The server executes commands across worker threads over a sharded keyspace. Scaling depends on your keys being spread across shards; see [benchmarks](#benchmarks) and the [concurrency model](https://recached.dev/server/commands#concurrency-model).
 
-**And the round-trip is the part no server-side cache can remove.** However well a cache server is tuned, sharded and scaled, every frontend read still costs a network hop, because the hop *is* the architecture. That is the half of Recached with no equivalent.
+| Application | Client | Local persistence | Getting started |
+|---|---|---|---|
+| Browser | `recached-edge` (WebAssembly), React and Vue adapters | Optional IndexedDB WAL and outbox | [Browser](https://recached.dev/browser/getting-started) |
+| Android | Kotlin `recached-android`, `Flow` observers | SQLite data and outbox | [Android preview](https://recached.dev/android/getting-started) |
+| iOS / macOS | Swift `Recached`, `AsyncStream` and SwiftUI models | SQLite data and outbox | [Apple preview](https://recached.dev/ios/getting-started) |
+| Rust service | `recached-embed` | In-memory store and outbox | [Rust](https://recached.dev/rust/getting-started) |
+
+See [client support and limits](https://recached.dev/guide/client-support) for differences between adapters. React Native and Flutter are planned.
 
 > [!NOTE]
-> Recached is not a full Redis replacement. It covers the subset most applications actually need: strings, expiry, counters, all collection types, transactions, pub/sub, and observable keys. Best fit: reactive UIs, session caches, browser-side API response caching, and rate limiting.
+> Recached implements a Redis command subset: strings, expiry, counters, hashes, lists, sets, sorted sets, transactions, pub/sub, and observable keys, plus JSON and rate limiting. Client SDKs expose smaller APIs than the server. Best fit: shared UI state, offline-capable apps, config caches, and rate limiting.
 >
-> Notably absent: **Lua scripting (`EVAL`)**, **blocking operations** (`BLPOP`, `BRPOP`, `LMOVE`) and **streams** (`XADD`). Your Redis *client* will connect unchanged, but libraries built on those primitives — BullMQ, node-redlock, rate-limiter-flexible — ship Lua and will not run. `RLCHECK`/`RLSET` cover rate limiting natively instead. Run `COMMAND COUNT` against a live server for the exact surface (123 commands today).
+> Notably absent: **Lua scripting (`EVAL`)**, **blocking operations** (`BLPOP`, `BRPOP`, `LMOVE`) and **streams** (`XADD`). Your Redis *client* will connect unchanged, but libraries built on those primitives — BullMQ, node-redlock, rate-limiter-flexible — ship Lua and will not run. `RLCHECK`/`RLSET` cover rate limiting natively instead. Run `COMMAND COUNT` against a live server for the exact surface (124 entries in this checkout).
 
 **→ Full documentation, use cases, API reference, and guides at [recached.dev](https://recached.dev)**
 
@@ -55,6 +62,8 @@ npm install recached-edge
 cargo add --git https://github.com/recached-sh/recached.git recached-embed
 ```
 
+For native apps, follow the [Kotlin source-build instructions](https://recached.dev/android/getting-started#build-the-preview) or [Swift source-build instructions](https://recached.dev/ios/getting-started#build-the-preview). Android needs API 24+; Swift supports iOS 15+ and macOS 12+. A versioned Maven or SwiftPM dependency is not yet the install path for this preview.
+
 > [!IMPORTANT]
 > **Install `recached-edge@^0.3.4`.** Every published version from 0.1.3 to 0.3.0 shipped without
 > wasm-pack's `snippets/` directory and failed to import at all; 0.3.1 is the first release that
@@ -67,11 +76,11 @@ cargo add --git https://github.com/recached-sh/recached.git recached-embed
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
-    <img src="assets/architecture-light.svg" width="880" alt="Your backend writes to the Recached server over RESP on port 6379. The server syncs over a WebSocket on port 6380 to the browser or edge runtime, where reads are served from local WebAssembly memory. Writes flow back the same way.">
+    <img src="assets/architecture-light.svg" width="880" alt="Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory.">
   </picture>
 </p>
 
-Any mutation on the server is pushed to all connected browser instances automatically. Any write from the browser is pushed to the server and fanned out to other clients. Reads always come from local WASM memory — no network hop.
+Server changes reach connected clients according to their sync scopes and subscriptions. Client writes apply locally and queue for the server; accepted changes fan out to other clients. Browser and native app reads use local memory. Use `liveQuery(pattern)` in the browser or `watch(pattern)` on mobile to hydrate server data and reconcile missed changes after reconnecting.
 
 A **Rust service** can be one of those connected clients too, via [`recached-embed`](https://recached.dev/rust/getting-started) — same engine, same sync protocol, holding its slice of the cache in its own heap instead of a tab's. Useful for config-shaped data read on every request: fare tables, feature flags, tenant settings, entitlement checks.
 
@@ -97,10 +106,41 @@ const cache = await createCache({
   connect: { url: 'ws://127.0.0.1:6380' }, // syncs with the server
 });
 
-cache.get('inventory:item:99'); // "42" — from local WASM memory, 0 ms
+cache.liveQuery('inventory:*'); // initial snapshot, then live updates
+cache.get('inventory:item:99'); // may miss before hydration; reads stay local
 ```
 
-Both examples are plaintext, which is the default. Set `RECACHED_TLS_CERT` and `RECACHED_TLS_KEY`
+**Android (Kotlin preview)** uses the native Rust core and persists to SQLite:
+
+```kotlin
+import dev.recached.Recached
+import dev.recached.RecachedConfig
+import dev.recached.open
+
+val cache = Recached.open(context, RecachedConfig(url = "ws://127.0.0.1:6380"))
+cache.watch("inventory:*")
+cache.observeString("inventory:item:99").collect { stock -> render(stock) }
+```
+
+**iOS / macOS (Swift preview)** uses the same native core:
+
+```swift
+import Foundation
+import Recached
+
+let cache = try Recached.open(
+    named: "app",
+    config: RecachedConfig(url: URL(string: "ws://127.0.0.1:6380")!)
+)
+cache.watch("inventory:*")
+for await stock in cache.observeString("inventory:item:99") {
+    render(stock)
+}
+```
+
+These snippets assume an app context and a `render` function; collect Kotlin flows in a coroutine and iterate Swift streams in an async context. Use the Android emulator's host address or `adb reverse` to reach a development server. Mobile restores saved data before connecting; watch patterns must be registered again on each open. Observers emit the current local value and subsequent changes, coalescing updates for slow consumers.
+
+These examples use plaintext development endpoints. Set `RECACHED_TLS_CERT` and `RECACHED_TLS_KEY`
 and the same ports serve TLS — connect with `rediss://` and `wss://` instead. Before exposing either
 port beyond localhost, work through
 [recached.dev/server/security](https://recached.dev/server/security): a default server has no
@@ -143,14 +183,15 @@ One thread is the baseline the ratio is measured against, not a recommended depl
 
 On the same host, a server-side write reaches a subscribed browser over WebSocket in **151 µs at p50** (p99 698 µs) — measured with the project's own harness, since no RESP benchmark can see that path. Browser *reads* are a local WebAssembly memory lookup and never leave the tab.
 
-Recached's product distinction remains the browser engine: browser reads use local WebAssembly memory and avoid a server round trip.
+Browser, mobile, and embedded Rust clients all read locally. The measurements above cover the server and browser sync path; they are not native mobile latency measurements.
 
 ## Maturity
 
 Being honest about where things stand:
 
 - **The cache server is a release candidate for cache workloads.** It includes persistence, ordered primary/replica replication, TLS, hardened parsers, metrics, and load/chaos tests. It has not completed broad production validation or an independent security audit. Treat it as a cache, not a system of record.
-- **The sync layer (browser sync, live queries, offline outbox, scoped auth) is beta** — the invariants are [specified](https://recached.dev/server/protocol) and tested end-to-end, but the code is young and hasn't had real-world miles or third-party security review yet. Don't put the WebSocket port on the public internet for multi-tenant data without reading [Sync Scopes](https://recached.dev/server/sync-scopes) first.
+- **The shared sync layer (browser, mobile, and Rust clients) is beta.** Its invariants are [specified](https://recached.dev/server/protocol) and tested end-to-end. Read [Sync Scopes](https://recached.dev/server/sync-scopes) before exposing multi-tenant data.
+- **The Kotlin and Swift SDKs are unreleased 0.1.0 previews.** They implement local reads, SQLite persistence, queued writes, reconnect recovery, and reactive observers. Build from source until their package configs pin released core artifacts. Deduplicated replay is bounded by server checkpoint and dedup retention; see [client limits](https://recached.dev/guide/client-support#write-durability-and-replay).
 
 - **The embedded Rust client (`recached-embed`) is brand new and unpublished** — it works end-to-end against a live server and is covered by a live test suite, but it has no production miles and is not on crates.io.
 
@@ -163,14 +204,14 @@ The road to 1.0 is hardening, not features. Bug reports from production-like use
 Bug reports, PRs, and feedback are all welcome.
 
 1. Fork the repo and create a branch: `git checkout -b feat/my-feature`
-2. Make your changes — server logic lives in `server-native/`, WASM bindings in `wasm-edge/`
+2. Make your changes: server logic lives in `server-native/`, browser bindings in `wasm-edge/`, shared sync in `sync-client/`, and the native client core in `recached-mobile/`. Platform wrappers live in [recached-kotlin](https://github.com/recached-sh/recached-kotlin) and [recached-swift](https://github.com/recached-sh/recached-swift).
 3. Run `cargo test --workspace` before opening a PR
 4. Open a pull request with a clear description
 
 Open an issue before large features or architectural changes. Areas where contributions are especially welcome:
 
 - **Benchmarks** — run [`scripts/benchmark.sh`](scripts/benchmark.sh) on multi-core server hardware and share the results
-- **Client examples** — React, Vue, or SvelteKit demos using `recached-edge`
+- **Client examples** — browser, Kotlin/Compose, and Swift/SwiftUI demos
 - **Bug reports** — edge cases in the RESP parser, TTL eviction, pub/sub delivery, or WebSocket sync
 
 See [recached.dev/roadmap](https://recached.dev/roadmap) for what's planned.

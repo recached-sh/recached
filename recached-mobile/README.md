@@ -18,7 +18,7 @@ One `RecachedClient` does four things:
   file, so **a cold start with no network shows the last-synced data**;
 - commits every write to disk **in the same transaction as its outbox row**,
   before the call returns, so queued writes survive the app being killed and
-  replay exactly once (`DEDUP`, with the original wire ids);
+  replay with their original `DEDUP` wire ids; duplicate suppression is bounded by server checkpoint and retention (see below);
 - reports the keys each server frame changed, so observers re-read only what
   changed.
 
@@ -78,5 +78,15 @@ RECACHED_MOBILE_TEST_URL=ws://127.0.0.1:6380 cargo test -p recached-mobile --tes
 ```
 
 The live suite covers each milestone guarantee against a real server:
-exactly-once replay after a kill, deletions made while offline, cold start
+deduplicated replay after an app kill, deletions made while offline, cold start
 from disk, and changed-key reporting.
+
+## Delivery limits
+
+A successful write commits its changed-key snapshots and outbox row together. SQLite uses WAL with `synchronous = NORMAL`, so an app kill preserves committed state; an OS crash or power loss can lose recent commits. A storage error can leave the in-memory effect applied and the write sent without a durable row.
+
+The default outbox cap is 10,000 writes. `ClientConfig.max_pending_writes` changes it; overflow drops the oldest row and keeps the local value. Watch patterns are not persisted, so wrappers must register them again after every open. Observers do not create watches.
+
+`DEDUP` suppresses retries while the server retains the client's high-water mark. AOF recovery after the latest checkpoint can restore writes without their marks, and idle marks can be swept under the server's retention policy. See [client limits](https://recached.dev/guide/client-support#write-durability-and-replay) and [the wire protocol](https://recached.dev/server/protocol#deduplicated-write-replay-dedup).
+
+Permanent refusals leave the outbox and appear in `FrameOutcome.refused`. Watched snapshots can restore server state, but an unwatched key keeps its local value. Transient refusals keep writes queued and request reconnect. These outcomes are separate from successful local write results.

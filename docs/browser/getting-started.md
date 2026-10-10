@@ -77,7 +77,7 @@ const cache = await createCache({
 })
 ```
 
-Once connected, any mutation from the server (`SET`, `DEL`, etc.) is automatically pushed to the local WASM store. Any local write is forwarded to the server and fanned out to other connected clients.
+Once connected, permitted server mutations update the local WASM store. Register `cache.liveQuery(pattern)` for an initial snapshot and reconnect reconciliation; connecting alone does not fetch existing keys. Local writes queue for server delivery, and accepted changes fan out according to sync scopes. See [client support and limits](/guide/client-support).
 
 ---
 

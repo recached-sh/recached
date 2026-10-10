@@ -1,12 +1,12 @@
 ---
 layout: home
-title: "Recached — Rust Cache for Backend and Browser"
-description: "A Rust cache server that runs natively on your backend and as WebAssembly in the browser. A Redis-compatible command subset on the server and local reads in the browser."
+title: "Recached: Rust cache for servers, browsers, and native apps"
+description: "A Rust cache and sync engine for servers, browser WebAssembly, native Kotlin and Swift apps, and embedded Rust services."
 
 hero:
   name: "Recached ⚡"
-  text: "Cache that runs everywhere."
-  tagline: "A Redis-compatible server. WebAssembly in the browser. Local reads without a network hop."
+  text: "Shared cache. Local reads."
+  tagline: "Rust on the server, WebAssembly in the browser, and native Kotlin and Swift previews. Shared state over WebSocket."
   image:
     src: /recached.jpg
     alt: Recached
@@ -27,58 +27,48 @@ hero:
 features:
   - icon: ⚡
     title: Local reads without a network hop
-    details: The browser WASM module holds a live copy of the cache in local memory. Reads never leave the browser — no network hop, no round-trip.
+    details: Browser, native mobile, and embedded Rust clients read their local cache in memory without a server round trip.
   - icon: 🔄
     title: Automatic WebSocket sync
-    details: Any mutation on the server is pushed to all connected browser instances instantly. Any write from the browser is pushed to the server and fanned out to other tabs.
+    details: Live queries hydrate client data and receive changes. Scoped tokens control access, and reconnects replay queued writes before refreshing watched state.
   - icon: 🦀
     title: Redis-compatible command subset
     details: Speaks RESP on port 6379 and works with common clients such as ioredis, node-redis, and redis-py. Check COMMAND for the supported subset before migrating.
   - icon: 🌐
-    title: Offline-first browser cache
-    details: IndexedDB persistence means the cache survives page refreshes. Users see their data immediately, before any network request completes.
+    title: Native mobile previews
+    details: Kotlin Flow and Swift AsyncStream with SQLite data and outbox persistence. Saved server state is readable offline after an app restart. Build from source while packages await release.
   - icon: 📡
     title: Cross-tab sync
-    details: BroadcastChannel support means all tabs in the same browser share mutations automatically, with no server connection required.
+    details: BroadcastChannel support means tabs on the same origin and channel share local writes, with no server connection required.
   - icon: 🔒
     title: Hardened cache server
     details: TLS, Prometheus metrics, password authentication, IP allowlists, connection limits, bounded eviction, and ordered replication. Release-candidate maturity.
 ---
 
-## What is Recached?
+## Cache shared state in your application
 
-Every caching solution forces a choice: server-side caches like Redis mean every frontend read is a network round-trip; client-side state like Zustand or SWR means two caches — one on the server and one in every client, with manual staleness code gluing them together. **Recached removes the choice.**
+Recached runs one Rust engine on the server, in browser WebAssembly, and inside native apps and Rust services. Your backend writes through the RESP command subset. Clients read local memory and synchronize shared state over WebSocket.
 
-The same Rust cache engine runs natively on your server (RESP on port 6379) and as WebAssembly inside the browser. Common Redis clients work with the commands Recached implements. Browser reads come from local WASM memory; the WebSocket is a sync path, not a read path.
+Choose [the browser SDK](/browser/getting-started), [Android with Kotlin](/android/getting-started), [iOS or macOS with Swift](/ios/getting-started), or [embedded Rust](/rust/getting-started). Kotlin and Swift are implemented previews that currently require source builds. [Client support and limits](/guide/client-support) explains their API and persistence differences.
+
+## Hydrate, then read locally
+
+Register a live query to receive initial server state and later changes:
 
 ```typescript
 import { createCache } from 'recached-edge'
 
 const cache = await createCache({
-  persistence: true,                          // survives page refresh via IndexedDB
-  connect: { url: 'ws://localhost:6380' },    // syncs with the server
+  connect: { url: 'ws://localhost:6380' },
 })
-
-cache.get('inventory:item:99') // "42" — local WASM memory, no network request
-
-// React to any store mutation — local writes, server push, or cross-tab sync
-cache.onMutation(() => {
-  document.body.dataset.theme = cache.get('user:theme') ?? 'light'
+cache.liveQuery('inventory:*')
+cache.onKeyChange('inventory:item:99', () => {
+  console.log(cache.get('inventory:item:99'))
 })
 ```
 
-No polling. No extra state management library. No round-trips for reads. The server is your backend's cache; the WASM module is your frontend's cache; the WebSocket is the invisible sync layer between them.
+Reads can return a miss before the initial snapshot arrives. On mobile, call `watch(pattern)` to subscribe, then use Kotlin `Flow` or Swift `AsyncStream` to observe local values. [How it works](/guide/how-it-works) covers hydration and reconnect recovery.
 
-### Or just the browser half
+## Use a local cache without a server
 
-The sync layer is optional. Omit `connect` and no socket is opened: `recached-edge` becomes a
-standalone client cache — TTLs, counters, JSON documents, glob queries, IndexedDB persistence and
-cross-tab sync — with no Recached server anywhere and no changes to your backend.
-
-```typescript
-const cache = await createCache({ persistence: true, broadcastChannel: 'my-app' })
-cache.setJSON('user:42', user, 60) // expires on its own, survives a refresh
-```
-
-Pub/sub, live queries and cross-device sync are the parts that need a server. See
-[no server at all](/guide/use-cases#no-server-at-all).
+Omit `connect` in the browser, or omit the URL in a mobile `RecachedConfig`, to keep data on the client. Browser persistence uses IndexedDB; native SDKs save to SQLite. Cross-device sync needs a server. See [local-only use cases](/guide/use-cases#no-server-at-all) and the [outbox limits](/guide/client-support#write-durability-and-replay).

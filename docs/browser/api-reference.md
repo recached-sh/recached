@@ -22,7 +22,7 @@ const cache = await createCache() // resolves immediately — already loaded
 
 ## `createCache(options?)`
 
-Factory function that initializes the WASM module (idempotent), creates a `Cache` instance, and applies the provided options. Returns a fully-ready cache.
+Factory function that initializes the WASM module (idempotent), creates a `Cache` instance, and applies the provided options. Returns a cache ready for local use; it does not await WebSocket authentication or live-query hydration.
 
 ```typescript
 import { createCache } from 'recached-edge'
@@ -34,7 +34,7 @@ async function createCache(options?: CacheOptions): Promise<Cache>
 
 ```typescript
 interface CacheOptions {
-  /** Load the IndexedDB WAL and write-through every mutation. Default: false. */
+  /** Restore the local-write WAL and save later local writes asynchronously. */
   persistence?: boolean
 
   /**
@@ -55,6 +55,12 @@ interface ConnectOptions {
   url: string
   /** Server password. Required when the server has `RECACHED_PASSWORD` set. */
   password?: string
+  /** Backend-minted token for strict sync scopes. */
+  syncToken?: string
+  /** Open-mode filtering; does not authorize access. */
+  syncScopes?: string[]
+  /** Automatic reconnect; defaults to true. */
+  reconnect?: boolean
 }
 ```
 
@@ -362,10 +368,10 @@ Using React or Vue? [`useKeys(pattern)`](/react/hooks-reference#usekeys-pattern)
 
 #### `getMatching(pattern)`
 
-Snapshot of local keys matching a glob pattern, as `[key, value]` pairs sorted by key. Values are strings; keys holding collection types come back as `null`. Served entirely from local WASM memory.
+Snapshot of local keys matching a glob pattern, as `[key, value]` pairs sorted by key. Text values are strings, binary values are `Uint8Array`, and collection values are `null`. Served entirely from local WASM memory.
 
 ```typescript
-getMatching(pattern: string): Array<[string, string | null]>
+getMatching(pattern: string): Array<[string, string | Uint8Array | null]>
 ```
 
 #### `syncToken(token)` / `syncScopes(patterns)`
@@ -442,11 +448,22 @@ publishBytes(channel: string, message: Uint8Array): void
 
 ---
 
+### Pending writes and overflow
+
+`pendingWrites()` reports writes not yet acknowledged by the server. `onOutboxFull` reports when the 10,000-write queue drops its oldest entry and returns a function that removes the listener.
+
+```typescript
+pendingWrites(): number
+onOutboxFull(cb: (droppedId: number, pending: number) => void): () => void
+```
+
+These are queue signals, not a durable acknowledgment log. See [offline replay limits](/browser/offline).
+
 ### Persistence
 
 #### `clearPersistence()`
 
-Deletes the IndexedDB WAL database. Use on sign-out so the next session starts clean.
+Clears persisted WAL and outbox rows and the in-memory pending queue. Current in-memory values, client identity metadata, and the WebSocket connection remain. Stop sync and reload into a new cache instance on sign-out; see [persistence](/browser/persistence#clear-persisted-state).
 
 ```typescript
 clearPersistence(): Promise<void>
@@ -454,6 +471,7 @@ clearPersistence(): Promise<void>
 
 ```typescript
 async function signOut() {
+  cache.disconnect()
   await cache.clearPersistence()
   window.location.href = '/login'
 }
@@ -475,4 +493,4 @@ get raw(): RawCache
 
 Available methods on `raw`: `set()`, `setBytes()`, `set_ex()`, `get()`, `getBytes()`, `del()`, `ttl()`, `exists()`, `subscribe()`, `unsubscribe()`, `publish()`, `publishBytes()`, `connect()`, `auth()`, `broadcast()`, `enable_persistence()`, `clear_persistence()`, `set_mutation_callback()`, `free()`.
 
-> Writes through `cache.raw` bypass change notification: no `onKeyChange`, `onPatternChange` or `onMutation` listener hears them. Use the typed `Cache` methods when possible.
+> Raw write methods use the mutation callback registered by `Cache`, so they also notify listeners. Replacing that callback directly bypasses the SDK's listener routing. Raw signatures differ from the TypeScript wrapper; use the typed methods when possible.

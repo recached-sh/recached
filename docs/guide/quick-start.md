@@ -1,6 +1,6 @@
-# Quick Start
+# Start a server and connect a client
 
-This guide walks you from zero to a working Recached setup: server running, backend connected, browser WASM client syncing live.
+Run a Recached server, write data from your backend, and read it through a local client cache. The examples below use the browser SDK; native apps can follow the [Android preview](/android/getting-started) or [Apple preview](/ios/getting-started) after starting the same server. See [client support](/guide/client-support) to choose an adapter.
 
 ## 1. Run the server
 
@@ -12,7 +12,7 @@ Pick the method that fits your environment.
 docker run -p 6379:6379 -p 6380:6380 ghcr.io/recached-sh/recached:latest
 ```
 
-Port 6379 is the RESP TCP port (Redis-compatible). Port 6380 is the WebSocket sync port for browser clients.
+Port 6379 is the RESP TCP port (Redis-compatible). Port 6380 is the WebSocket sync port for browser, mobile, and embedded Rust clients.
 
 ### Homebrew (macOS)
 
@@ -31,8 +31,10 @@ recached-server
 
 ### Cargo
 
+Install from Git; the server package has `publish = false` and is not a crates.io dependency.
+
 ```bash
-cargo install recached
+cargo install --git https://github.com/recached-sh/recached.git recached
 recached-server
 ```
 
@@ -129,7 +131,7 @@ const cache = await createCache({
   connect: { url: 'ws://127.0.0.1:6380' },
 })
 
-// Reads are local — 0 ms, no network
+// Client reads use local memory
 cache.set('theme', 'dark')
 console.log(cache.get('theme')) // 'dark'
 
@@ -178,6 +180,7 @@ const cache = await createCache({
 })
 
 const userId = 42
+cache.liveQuery(`cart:${userId}:*`)
 const badge = document.getElementById('cart-badge')!
 
 // Fire whenever this key changes — locally, from the server, or from another tab
@@ -186,7 +189,7 @@ cache.onKeyChange(`cart:${userId}:count`, () => {
   badge.textContent = count !== null ? count : '0'
 })
 
-// Initial read (from local WASM memory — 0 ms if already synced)
+// Initial read from local memory; may miss before the snapshot arrives
 const initialCount = cache.get(`cart:${userId}:count`)
 if (initialCount !== null) {
   badge.textContent = initialCount
@@ -197,7 +200,11 @@ When your backend calls `SET cart:42:count 3` over RESP, the server pushes the m
 
 ---
 
-## 5. Local-only (no server)
+## 5. Connect native mobile apps
+
+Kotlin and Swift use the same WebSocket endpoint and sync scopes as the browser. Both previews restore saved data from SQLite before connecting; call `watch(pattern)` at startup to hydrate and reconcile server state. Follow the [Android build and usage guide](/android/getting-started) or [iOS and macOS guide](/ios/getting-started). Their release artifacts are not pinned yet, so start with a source build.
+
+## 6. Local-only (no server)
 
 The WASM module works entirely without a server. Omit `connect` and the cache is a pure in-memory store with built-in TTL.
 
@@ -243,6 +250,7 @@ No Zustand slice. No `fetchedAt` timestamp check. TTL is declared once at write 
 
 ## Next steps
 
+- [Client Support](/guide/client-support) — native API, persistence, and delivery limits
 - [How It Works](/guide/how-it-works) — understand the sync protocol, IndexedDB persistence, and cross-tab sync
 - [Server Configuration](/server/configuration) — TLS, auth, metrics, eviction policies
 - [Browser API Reference](/browser/api-reference) — full TypeScript API for `RecachedCache`

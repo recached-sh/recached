@@ -432,7 +432,7 @@ On the TCP port, `SYNC` returns an error — backend connections are trusted and
 
 | Command | Description |
 |---|---|
-| `DEDUP client-id id command args...` | Wraps a write with a per-client monotonic id. If `id` is at or below the highest id already applied for `client-id`, the write is skipped and the reply is `+DUP`. Client ids are 1–64 characters and should be unguessable (the SDK uses `crypto.randomUUID()`). Scope checks, replica rejection, persistence health, and metrics apply to the wrapped command. High-water marks are persisted beside the snapshot and swept after 24 h idle. |
+| `DEDUP client-id id command args...` | Wraps a write with a per-client monotonic id. If `id` is at or below the highest id already applied for `client-id`, the write is skipped and the reply is `+DUP`. Client ids are 1–64 characters and should be unguessable (the SDK uses `crypto.randomUUID()`). Scope checks, replica rejection, persistence health, and metrics apply to the wrapped command. High-water marks are persisted beside the snapshot. Duplicate checks sweep marks idle for at least 24 h when the map exceeds 10,000 clients. |
 
 ---
 
@@ -442,7 +442,7 @@ A live query delivers the current state of every key matching a glob pattern, th
 
 | Command | Description |
 |---|---|
-| `QSUB pattern` | Subscribe. The reply is `["qstate", pattern, key, value, ...]` — the current state of every live key matching the pattern as flat pairs. Afterwards, every mutation to a matching key — including keys created later — arrives as a `["keychange", key, value]` push; deletions arrive with a nil value. Initial state is capped at 10 000 keys. Up to 64 live queries per connection. |
+| `QSUB pattern` | Subscribe. The reply is `["qstate", pattern, key, value, ...]` — the current state of every live key matching the pattern as flat pairs. Afterwards, matching key changes arrive as `["keychange", key, value]` or negotiated `keydelta` pushes; deletions arrive with a nil value. Initial state is capped at 10 000 keys. Up to 64 live queries per connection. |
 | `QUNSUB [pattern]` | Drop one live query, or all of them without an argument. |
 
 ```bash

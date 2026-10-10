@@ -13,7 +13,7 @@ Vue plugin that creates the cache and provides it to the entire app via `inject`
 | Option | Type | Description |
 |--------|------|-------------|
 | `connect` | `{ url: string; password?: string }` | WebSocket URL of the Recached server and optional auth password. |
-| `persistence` | `boolean` | Load the IndexedDB WAL on startup; write every mutation through for cross-refresh persistence. |
+| `persistence` | `boolean` | Restore the local-write WAL and outbox; save later local writes asynchronously. Server pushes are not appended to the WAL. |
 | `broadcastChannel` | `string` | BroadcastChannel name for cross-tab mutation sharing without a server. |
 
 ### Examples
