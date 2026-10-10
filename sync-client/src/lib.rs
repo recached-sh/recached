@@ -17,7 +17,7 @@
 
 use core_engine::cmd::Command;
 use core_engine::resp::Value;
-use core_engine::store::KeyValueStore;
+use core_engine::store::{KeyValueStore, glob_match};
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -57,6 +57,31 @@ pub enum Incoming {
     /// A command reply. When `retired` is set, that outbox row is now
     /// acknowledged — delete it from durable storage.
     Reply { retired: Option<u64> },
+    /// The server refused a queued write for good: the key is out of this
+    /// connection's scope or read-only, the value has the wrong type, the
+    /// command is invalid. Replaying it would be refused again, so the row is
+    /// retired — delete it from durable storage — and the application should
+    /// hear about it.
+    ///
+    /// The write still shows in the local store; the client has no way to undo
+    /// it. For keys a live query covers,
+    /// [`resubscribe_covering`](SyncClient::resubscribe_covering) puts back the
+    /// server's values.
+    Refused {
+        retired: u64,
+        keys: Vec<String>,
+        reason: String,
+    },
+    /// The server refused a queued write for a reason that can clear without
+    /// the write changing: no sync token or password accepted yet, a read-only
+    /// replica, persistence or memory trouble. The row stays queued. Drop the
+    /// socket; the reconnect replays it, in order, after a backoff that keeps
+    /// growing until a write is accepted.
+    ///
+    /// Until then nothing more is sent on this socket: a later write accepted
+    /// here would raise the server's duplicate-suppression mark past this one,
+    /// and its replay would be skipped as already applied.
+    Deferred { reason: String },
     /// A `qstate` frame: the reply to a QSUB (retire the row, if any) *and*
     /// state applied to the local store — notify the subscribers of `keys`,
     /// which covers every key in the snapshot and every local key the
@@ -69,7 +94,8 @@ pub enum Incoming {
     /// model. It consumes no reply slot, which is correct: the server did not
     /// treat it as one either.
     Ignored,
-    /// The frame could not be parsed at all.
+    /// The frame could not be parsed at all. Nothing more is sent on this
+    /// socket; the adapter must drop it.
     ///
     /// This is *not* [`Ignored`](Self::Ignored), and the difference matters.
     /// If the frame was a command reply, the server has consumed a command
@@ -140,6 +166,13 @@ pub struct SyncClient {
     /// the sequence is reproducible in tests. Different clients get different
     /// sequences, which is the only property that matters here.
     jitter: u64,
+    /// This socket is being abandoned ([`Incoming::Deferred`] or
+    /// [`Incoming::Malformed`]): treat it as closed until the next open.
+    paused: bool,
+    /// The last session ended with a write deferred. The next open then keeps
+    /// the backoff growing instead of resetting it, so a client whose token
+    /// stays missing does not reconnect twice a second forever.
+    deferring: bool,
 }
 
 impl SyncClient {
@@ -160,6 +193,8 @@ impl SyncClient {
             attempts: 0,
             max_pending: MAX_PENDING_WRITES,
             jitter,
+            paused: false,
+            deferring: false,
         }
     }
 
@@ -268,7 +303,7 @@ impl SyncClient {
     }
 
     fn session_frame(&mut self, frame: Vec<u8>, connected: bool) -> Option<Vec<u8>> {
-        if connected {
+        if connected && !self.paused {
             self.inflight.push_back(None);
             Some(frame)
         } else {
@@ -279,7 +314,7 @@ impl SyncClient {
     // ── connection lifecycle ──────────────────────────────────────────────
 
     /// The socket opened: returns every frame to send, in order — the session
-    /// (AUTH → CLIENT DELTA → SYNC), then the full outbox replay, then the
+    /// (AUTH → CLIENT DELTA → CLIENT EXPIRY → SYNC), then the full outbox replay, then the
     /// live queries. Live-query re-subscription re-hydrates local state;
     /// outbox entries stay queued until their replies acknowledge them.
     ///
@@ -292,7 +327,10 @@ impl SyncClient {
     /// written to durable storage too. Replayed first, the snapshot already
     /// contains them. The session still leads: writes need its auth and scope.
     pub fn on_open(&mut self) -> Vec<Vec<u8>> {
-        self.attempts = 0;
+        if !self.deferring {
+            self.attempts = 0;
+        }
+        self.paused = false;
         self.inflight.clear();
         self.sent_then_dropped.clear();
         let mut frames = Vec::new();
@@ -307,6 +345,11 @@ impl SyncClient {
         // like any other reply and which changes nothing: it simply keeps
         // sending whole values.
         frames.push(to_resp(&["CLIENT", "DELTA", "ON"]));
+        self.inflight.push_back(None);
+        // Likewise for expiry: keychange and qstate values then carry the
+        // key's time to live, so an expiring key stays expiring here. An older
+        // server refuses it and sends bare values, as before.
+        frames.push(to_resp(&["CLIENT", "EXPIRY", "ON"]));
         self.inflight.push_back(None);
         if let Some(tok) = &self.sync_token {
             frames.push(to_resp(&["SYNC", "TOKEN", tok]));
@@ -338,6 +381,7 @@ impl SyncClient {
     /// recovering server down. Halving the floor keeps the growth shape intact
     /// while spreading arrivals across the window.
     pub fn on_close(&mut self) -> u32 {
+        self.paused = false;
         let delay = BACKOFF_BASE_MS
             .saturating_mul(1u32 << self.attempts.min(6))
             .min(BACKOFF_CAP_MS);
@@ -368,6 +412,7 @@ impl SyncClient {
     /// (pub/sub) must not be wrapped, or a legitimately replayed SUBSCRIBE
     /// would be skipped as a duplicate.
     pub fn enqueue_write(&mut self, encoded: &[u8], dedup: bool, connected: bool) -> Enqueued {
+        let connected = connected && !self.paused;
         let id = self.outbox_seq;
         self.outbox_seq += 1;
         let frame = if dedup {
@@ -452,6 +497,7 @@ impl SyncClient {
 
     /// Discard all queued writes and reply bookkeeping (sign-out semantics).
     pub fn clear_outbox(&mut self) {
+        self.deferring = false;
         self.outbox.clear();
         self.inflight.clear();
         self.sent_then_dropped.clear();
@@ -518,11 +564,72 @@ impl SyncClient {
                     }
                 }
             }
-            Ok(_) => Incoming::Reply {
-                retired: self.ack_reply(),
-            },
-            Err(_) => Incoming::Malformed,
+            Ok((Value::Error(reason), _)) => self.error_reply(reason),
+            Ok(_) => {
+                let retired = self.ack_reply();
+                if retired.is_some() && self.deferring {
+                    // A write got through: whatever deferred the last one has
+                    // cleared, so the next drop starts the backoff over.
+                    self.deferring = false;
+                    self.attempts = 0;
+                }
+                Incoming::Reply { retired }
+            }
+            Err(_) => {
+                self.paused = true;
+                Incoming::Malformed
+            }
         }
+    }
+
+    /// An error reply. A session command's error changes nothing — an older
+    /// server refusing `CLIENT DELTA ON`, say. A queued write's error means the
+    /// server did not apply it, which is not an acknowledgment: the row is kept
+    /// when the refusal can clear and retired, and reported, when it cannot.
+    fn error_reply(&mut self, reason: String) -> Incoming {
+        let Some(Some(id)) = self.inflight.pop_front() else {
+            return Incoming::Reply { retired: None };
+        };
+        if self.sent_then_dropped.remove(&id) {
+            // Overflow already evicted it; there is nothing left to keep.
+            return Incoming::Reply { retired: Some(id) };
+        }
+        if is_transient_refusal(&reason) {
+            self.paused = true;
+            self.deferring = true;
+            return Incoming::Deferred { reason };
+        }
+        let keys = match self.outbox.iter().position(|(i, _)| *i == id) {
+            Some(position) => self
+                .outbox
+                .remove(position)
+                .map(|(_, frame)| frame_keys(&frame, &self.store))
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        Incoming::Refused {
+            retired: id,
+            keys,
+            reason,
+        }
+    }
+
+    /// Re-subscribe every live query covering one of `keys`, so its fresh
+    /// snapshot replaces the local copies — after an [`Incoming::Refused`]
+    /// write, whose local effect the server never applied. Returns the frames
+    /// to send now, each holding a reply slot. Nothing while disconnected: the
+    /// next open re-subscribes every live query anyway.
+    pub fn resubscribe_covering(&mut self, keys: &[String], connected: bool) -> Vec<Vec<u8>> {
+        let patterns: Vec<String> = self
+            .live_queries
+            .iter()
+            .filter(|p| keys.iter().any(|k| glob_match(p, k)))
+            .cloned()
+            .collect();
+        patterns
+            .iter()
+            .filter_map(|p| self.session_frame(to_resp(&["QSUB", p]), connected))
+            .collect()
     }
 
     /// A reply arrived: acknowledge the oldest inflight command. Returns the
@@ -601,10 +708,12 @@ impl SyncClient {
             return Vec::new();
         };
         let key = String::from_utf8_lossy(key).into_owned();
-        match &items[2] {
+        let (value, ttl_ms) = split_expiry(&items[2]);
+        match value {
             Value::BulkString(Some(v)) => {
                 self.store
                     .execute(Command::Set(key.clone(), v.clone(), Default::default()));
+                self.expire_in(&key, ttl_ms);
                 vec![key]
             }
             Value::BulkString(None) => {
@@ -632,11 +741,21 @@ impl SyncClient {
             // Type-tagged collection: ["hash"|"list"|"set"|"zset"|"json", ...].
             Value::Array(Some(items)) => {
                 self.apply_tagged(key.clone(), items);
+                self.expire_in(&key, ttl_ms);
                 vec![key]
             }
             // Anything else (e.g. the "ratelimit" marker) carries no client-
             // usable value.
             _ => Vec::new(),
+        }
+    }
+
+    /// Give a key just written from the server the time to live that came with
+    /// it. Writing the value cleared any earlier one, so a key without one
+    /// stays permanent, as it is on the server.
+    fn expire_in(&self, key: &str, ttl_ms: Option<u64>) {
+        if let Some(ms) = ttl_ms {
+            self.store.execute(Command::PExpire(key.to_string(), ms));
         }
     }
 
@@ -757,14 +876,19 @@ impl SyncClient {
             if present.insert(key.clone()) {
                 changed.push(key.clone());
             }
-            match &pair[1] {
+            let (value, ttl_ms) = split_expiry(&pair[1]);
+            match value {
                 Value::BulkString(Some(v)) => {
                     self.store
-                        .execute(Command::Set(key, v.clone(), Default::default()));
+                        .execute(Command::Set(key.clone(), v.clone(), Default::default()));
+                    self.expire_in(&key, ttl_ms);
                 }
                 // Collections arrive type-tagged, so the initial state of a
                 // live query is complete — no follow-up typed read needed.
-                Value::Array(Some(inner)) => self.apply_tagged(key, inner),
+                Value::Array(Some(inner)) => {
+                    self.apply_tagged(key.clone(), inner);
+                    self.expire_in(&key, ttl_ms);
+                }
                 _ => {}
             }
         }
@@ -783,6 +907,45 @@ impl SyncClient {
             changed.extend(stale);
         }
         changed
+    }
+}
+
+/// Split a synced value from the `["px", <ms>, value]` wrapper a server sends
+/// after `CLIENT EXPIRY ON` while the key has a time to live.
+fn split_expiry(value: &Value) -> (&Value, Option<u64>) {
+    if let Value::Array(Some(items)) = value
+        && let [Value::BulkString(Some(tag)), Value::Integer(ms), inner] = items.as_slice()
+        && tag == b"px"
+    {
+        return (inner, Some((*ms).max(0) as u64));
+    }
+    (value, None)
+}
+
+/// Whether a refused write may be accepted later unchanged. These refusals are
+/// about the session or the server's state, not the write: a missing password
+/// or sync token, a read-only replica, persistence or memory trouble, and the
+/// Redis busy and loading states. Anything else — a key out of scope or
+/// read-only, a wrong type, a bad argument — would be refused again.
+pub fn is_transient_refusal(reason: &str) -> bool {
+    let code = reason.split_whitespace().next().unwrap_or("");
+    match code {
+        "NOAUTH" | "READONLY" | "MISCONF" | "OOM" | "LOADING" | "BUSY" | "TRYAGAIN"
+        | "MASTERDOWN" => true,
+        "NOSCOPE" => reason.contains("send SYNC TOKEN"),
+        _ => false,
+    }
+}
+
+/// The keys a queued write frame changes, looking through its `DEDUP` envelope.
+fn frame_keys(frame: &[u8], store: &KeyValueStore) -> Vec<String> {
+    let Ok((value, _)) = Value::parse(frame) else {
+        return Vec::new();
+    };
+    match Command::from_value(value) {
+        Ok(Command::Dedup(_, _, inner)) => mutation_keys(&inner, store),
+        Ok(cmd) => mutation_keys(&cmd, store),
+        Err(_) => Vec::new(),
     }
 }
 

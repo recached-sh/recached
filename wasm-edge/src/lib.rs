@@ -406,6 +406,36 @@ fn dispatch_incoming(sh: &WsShared, incoming: Incoming) {
             }
             notify_mutation(&sh.on_mutation, &keys);
         }
+        // Replaying a write the server refused for good would be refused
+        // again. Its local effect stays; re-subscribing the live queries that
+        // cover its keys puts back the server's values.
+        Incoming::Refused {
+            retired,
+            keys,
+            reason,
+        } => {
+            outbox_delete(sh, retired);
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "recached: the server refused a queued write to {keys:?}: {reason}"
+            )));
+            if let Some(ws) = sh.ws.borrow().as_ref()
+                && ws.ready_state() == WebSocket::OPEN
+            {
+                for frame in sh.core.borrow_mut().resubscribe_covering(&keys, true) {
+                    ws_send_frame(ws, &frame);
+                }
+            }
+        }
+        // Refused for a reason that can clear, such as a sync token not yet
+        // accepted: the write stays queued, and the reconnect replays it.
+        Incoming::Deferred { reason } => {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "recached: the server deferred a queued write ({reason}); reconnecting to replay it"
+            )));
+            if let Some(ws) = sh.ws.borrow().as_ref() {
+                let _ = ws.close();
+            }
+        }
         Incoming::Ignored => {}
         // A frame we could not parse may have been a reply the server already
         // counted, which would leave the inflight FIFO permanently one ahead —
