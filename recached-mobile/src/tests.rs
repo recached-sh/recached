@@ -147,8 +147,9 @@ fn queued_writes_follow_the_session_on_connect() {
 
     let sent = connect(&c).take();
     assert!(sent[0].contains("DELTA"), "{sent:?}");
-    assert!(sent[1].contains("QSUB"), "{sent:?}");
-    assert!(sent[2].contains("SET"), "{sent:?}");
+    // Writes before live queries, so the snapshot already contains them.
+    assert!(sent[1].contains("SET"), "{sent:?}");
+    assert!(sent[2].contains("QSUB"), "{sent:?}");
     assert_eq!(sent.len(), 3);
 }
 

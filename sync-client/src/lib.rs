@@ -278,10 +278,19 @@ impl SyncClient {
 
     // ── connection lifecycle ──────────────────────────────────────────────
 
-    /// The socket opened: returns every frame to send, in order — session
-    /// state first (AUTH → SYNC → live queries), then the full outbox replay.
-    /// Live-query re-subscription re-hydrates local state; outbox entries
-    /// stay queued until their replies acknowledge them.
+    /// The socket opened: returns every frame to send, in order — the session
+    /// (AUTH → CLIENT DELTA → SYNC), then the full outbox replay, then the
+    /// live queries. Live-query re-subscription re-hydrates local state;
+    /// outbox entries stay queued until their replies acknowledge them.
+    ///
+    /// The outbox goes **before** the live queries. A `qstate` snapshot is
+    /// complete, so reconciling against it removes local keys it lacks and
+    /// overwrites the rest. Taken before the replay, it lacks this client's
+    /// own queued writes: an item created offline vanished and an offline
+    /// edit reverted to the server's old value, until each write's own
+    /// keychange restored it a moment later — a flicker on every reconnect,
+    /// written to durable storage too. Replayed first, the snapshot already
+    /// contains them. The session still leads: writes need its auth and scope.
     pub fn on_open(&mut self) -> Vec<Vec<u8>> {
         self.attempts = 0;
         self.inflight.clear();
@@ -308,13 +317,13 @@ impl SyncClient {
             frames.push(frame);
             self.inflight.push_back(None);
         }
-        for pat in &self.live_queries {
-            frames.push(to_resp(&["QSUB", pat]));
-            self.inflight.push_back(None);
-        }
         for (id, frame) in &self.outbox {
             frames.push(frame.clone());
             self.inflight.push_back(Some(*id));
+        }
+        for pat in &self.live_queries {
+            frames.push(to_resp(&["QSUB", pat]));
+            self.inflight.push_back(None);
         }
         frames
     }

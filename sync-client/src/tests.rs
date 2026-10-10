@@ -145,9 +145,11 @@ fn on_open_replays_session_then_outbox_in_order() {
     // Before QSUB, so the live query's own traffic can already be deltas.
     assert!(t(&frames[1]).contains("DELTA"));
     assert!(t(&frames[2]).contains("TOKEN"));
-    assert!(t(&frames[3]).contains("QSUB"));
-    assert_eq!(frames[4], w1.frame);
-    assert_eq!(frames[5], w2.frame);
+    // The outbox before QSUB, so the snapshot already holds the replayed
+    // writes and reconciling against it cannot remove or revert them.
+    assert_eq!(frames[3], w1.frame);
+    assert_eq!(frames[4], w2.frame);
+    assert!(t(&frames[5]).contains("QSUB"));
 }
 
 #[test]
@@ -697,6 +699,40 @@ fn on_open_sends_auth_before_scopes_before_queries() {
     );
     assert!(auth < sync, "AUTH must precede SYNC: {frames:?}");
     assert!(sync < qsub, "SYNC must precede QSUB: {frames:?}");
+}
+
+#[test]
+fn a_reconnect_snapshot_cannot_undo_a_replayed_write() {
+    // Replay order is what makes this hold: the write reaches the server
+    // before the QSUB, so the snapshot answering the QSUB already has it.
+    let mut c = client();
+    c.add_live_query("cart:*", false);
+    c.store().execute(Command::Set(
+        "cart:1".into(),
+        b"offline".to_vec(),
+        Default::default(),
+    ));
+    let w = c.enqueue_write(&to_resp(&["SET", "cart:1", "offline"]), true, false);
+
+    let frames = c.on_open();
+    let write = frames.iter().position(|f| *f == w.frame).unwrap();
+    let qsub = frames.iter().position(|f| t(f).contains("QSUB")).unwrap();
+    assert!(
+        write < qsub,
+        "the outbox must replay before QSUB: {frames:?}"
+    );
+
+    // Replies arrive in send order: DELTA, the write, then the snapshot,
+    // which the server took after applying the write.
+    c.handle_frame(b"+OK\r\n");
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply {
+            retired: Some(w.id)
+        }
+    );
+    c.handle_frame(b"*4\r\n$6\r\nqstate\r\n$6\r\ncart:*\r\n$6\r\ncart:1\r\n$7\r\noffline\r\n");
+    assert_eq!(get(&c, "cart:1"), bulk("offline"));
 }
 
 #[test]

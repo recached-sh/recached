@@ -19,6 +19,9 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$(mkdir -p "${1:-$ROOT/target/mobile}" && cd "${1:-$ROOT/target/mobile}" && pwd)"
 VERSION="$(cargo metadata --manifest-path "$ROOT/Cargo.toml" --format-version 1 --no-deps |
     python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="recached-mobile"))')"
+# Where cargo puts builds: honours CARGO_TARGET_DIR and .cargo/config.toml.
+TARGET_DIR="$(cargo metadata --manifest-path "$ROOT/Cargo.toml" --format-version 1 --no-deps |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 STAGE="$OUT/android"
 API_LEVEL=24
 
@@ -36,7 +39,7 @@ RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-z,max-page-size=16384" \
 
 cargo build --locked -p recached-mobile --lib
 cargo run --locked -q -p recached-mobile --features cli --bin uniffi-bindgen -- \
-    generate --library "target/debug/librecached_mobile.so" \
+    generate --library "$TARGET_DIR/debug/librecached_mobile.so" \
     --language kotlin --no-format --out-dir "$STAGE/kotlin"
 
 ZIP="$OUT/recached-mobile-android-$VERSION.zip"

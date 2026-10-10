@@ -83,11 +83,16 @@ impl FrameSink for ChannelSink {
     }
 }
 
+/// Per frame that reported an observed key: the key, and the local value an
+/// observer would have read right after that frame.
+type Observations = Arc<Mutex<Vec<(String, Option<Vec<u8>>)>>>;
+
 /// What the platform layer does: own the socket, hand frames to the client,
 /// and report the keys each frame changed.
 struct Connection {
     client: Arc<RecachedClient>,
     changed: Arc<Mutex<Vec<String>>>,
+    seen: Observations,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -95,6 +100,15 @@ impl Connection {
     /// `deliver_frames: false` reads nothing from the server, as if the app
     /// were killed before any reply arrived.
     async fn open(url: &str, client: Arc<RecachedClient>, deliver_frames: bool) -> Self {
+        Self::open_observing(url, client, deliver_frames, Vec::new()).await
+    }
+
+    async fn open_observing(
+        url: &str,
+        client: Arc<RecachedClient>,
+        deliver_frames: bool,
+        observe: Vec<String>,
+    ) -> Self {
         let (ws, _) = tokio_tungstenite::connect_async(url)
             .await
             .expect("connect");
@@ -115,9 +129,11 @@ impl Connection {
         });
 
         let changed = Arc::new(Mutex::new(Vec::new()));
+        let seen: Observations = Arc::new(Mutex::new(Vec::new()));
         let reader = {
             let client = Arc::clone(&client);
             let changed = Arc::clone(&changed);
+            let seen = Arc::clone(&seen);
             tokio::spawn(async move {
                 while let Some(Ok(msg)) = read.next().await {
                     if !deliver_frames {
@@ -130,6 +146,11 @@ impl Connection {
                         _ => continue,
                     };
                     let outcome = client.frame_received(bytes).expect("persist frame");
+                    for key in observe.iter().filter(|k| outcome.changed_keys.contains(k)) {
+                        seen.lock()
+                            .unwrap()
+                            .push((key.clone(), client.get(key.clone())));
+                    }
                     changed.lock().unwrap().extend(outcome.changed_keys);
                     assert!(!outcome.reconnect, "the server sent an unparseable frame");
                 }
@@ -139,6 +160,7 @@ impl Connection {
         Self {
             client,
             changed,
+            seen,
             tasks: vec![writer, reader],
         }
     }
@@ -277,4 +299,60 @@ async fn a_cold_start_with_no_network_reads_the_last_synced_server_state() {
         offline.get_json(key, None).as_deref(),
         Some(r#"{"title":"from the server"}"#)
     );
+}
+
+#[tokio::test]
+async fn an_offline_write_to_a_watched_key_survives_the_reconnect_snapshot() {
+    // On reconnect the client re-subscribes its live queries and replays its
+    // queued writes. If the snapshot is taken before the replay, it does not
+    // contain the queued write, and reconciling against it removes (or
+    // reverts) the key locally until the write's own change notification
+    // comes back. Observers see the item vanish and reappear.
+    let url = server_url!();
+    let prefix = ns("ownwrite");
+    let (new_key, edited_key) = (format!("{prefix}:new"), format!("{prefix}:edited"));
+    let db = TempDb::new("ownwrite");
+    let client = db.open();
+    client.watch(format!("{prefix}:*"));
+
+    let conn = Connection::open(&url, Arc::clone(&client), true).await;
+    client.set(edited_key.clone(), b"old".to_vec()).unwrap();
+    settle().await;
+    conn.close();
+
+    client
+        .set(new_key.clone(), b"made offline".to_vec())
+        .unwrap();
+    client
+        .set(edited_key.clone(), b"edited offline".to_vec())
+        .unwrap();
+
+    let observed = vec![new_key.clone(), edited_key.clone()];
+    let conn = Connection::open_observing(&url, Arc::clone(&client), true, observed).await;
+    settle().await;
+    assert_eq!(client.get(new_key.clone()), Some(b"made offline".to_vec()));
+    assert_eq!(
+        client.get(edited_key.clone()),
+        Some(b"edited offline".to_vec())
+    );
+    assert_eq!(client.pending_writes(), 0);
+
+    // What an observer saw after each frame of the reconnect. The queued
+    // writes must hold throughout: never absent, never the server's older
+    // value. Seeing either, then the right value, is the flicker.
+    let seen = conn.seen.lock().unwrap().clone();
+    assert!(!seen.is_empty(), "the reconnect reported neither key");
+    for (key, value) in &seen {
+        let expected: &[u8] = if *key == new_key {
+            b"made offline"
+        } else {
+            b"edited offline"
+        };
+        assert_eq!(
+            value.as_deref(),
+            Some(expected),
+            "{key} read {:?} mid-reconnect; all observations: {seen:?}",
+            value.as_deref().map(String::from_utf8_lossy)
+        );
+    }
 }
