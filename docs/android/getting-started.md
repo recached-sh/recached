@@ -74,7 +74,13 @@ overwriting them), `jsonSet` / `jsonMerge`, `set(key, value, ttl)`.
 ```kotlin
 cache.connectionState   // StateFlow: OFFLINE, CONNECTING, CONNECTED, WAITING
 cache.pendingWrites     // StateFlow<Long>: writes the server has not acknowledged yet
+cache.refusedWrites     // SharedFlow<RefusedWrite>: writes the server refused for good
 ```
+
+A write the server refuses for good, such as one to a key the sync token makes
+read-only, leaves the queue without reaching the server, and `refusedWrites`
+says so. One refused for a reason that can clear, such as a sync token not yet
+accepted, stays queued and is retried on every reconnect.
 
 ## Try the demo
 
