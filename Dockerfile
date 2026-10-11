@@ -16,23 +16,29 @@ COPY core-engine/Cargo.toml    core-engine/Cargo.toml
 COPY server-native/Cargo.toml  server-native/Cargo.toml
 COPY sync-client/Cargo.toml    sync-client/Cargo.toml
 COPY recached-embed/Cargo.toml recached-embed/Cargo.toml
+COPY recached-mobile/Cargo.toml recached-mobile/Cargo.toml
 COPY wasm-edge/Cargo.toml      wasm-edge/Cargo.toml
 
 # Dummy source files so the dep-only build can resolve the workspace.
-# sync-client/src, recached-embed/src and wasm-edge/src are kept as stubs —
+# sync-client/src, recached-embed/src, recached-mobile/src and wasm-edge/src are
+# kept as stubs —
 # Cargo parses every workspace member even when only building server-native,
 # so each one's Cargo.toml and lib.rs must exist.
 #
 # Every new workspace member must be added to BOTH the manifest COPY block
 # above and the stub list below. Omitting one fails the build here with
 # "failed to load manifest for workspace member", which is how recached-embed
-# broke this image after it was added to Cargo.toml.
+# and then recached-mobile (v0.4.0) broke this image after joining Cargo.toml.
+# recached-mobile also declares a [[bin]] with an explicit path, so that file is
+# stubbed too.
 RUN mkdir -p core-engine/src server-native/src sync-client/src \
-             recached-embed/src wasm-edge/src && \
+             recached-embed/src recached-mobile/src/bin wasm-edge/src && \
     echo "fn main() {}" > server-native/src/main.rs && \
     echo "" > core-engine/src/lib.rs && \
     echo "" > sync-client/src/lib.rs && \
     echo "" > recached-embed/src/lib.rs && \
+    echo "" > recached-mobile/src/lib.rs && \
+    echo "fn main() {}" > recached-mobile/src/bin/uniffi-bindgen.rs && \
     echo "" > wasm-edge/src/lib.rs && \
     cargo build --release --package recached && \
     rm -rf core-engine/src server-native/src
