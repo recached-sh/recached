@@ -15,7 +15,7 @@
 
 Recached keeps a local copy of shared cache data where your application reads it: in a browser tab, a native Android or Apple app, or an embedded Rust service. Clients read local memory and exchange writes and server updates over WebSocket. Your backend uses the server's RESP command subset on port 6379.
 
-The same `core-engine` runs on every target. Browser clients use WebAssembly and optional IndexedDB persistence. Native Kotlin and Swift clients use `recached-mobile` through UniFFI, with SQLite persistence for local data and queued writes. The native SDKs are implemented previews; their package configs do not yet pin a released mobile core.
+The same `core-engine` runs on every target. Browser clients use WebAssembly and optional IndexedDB persistence. Native Kotlin and Swift clients use `recached-mobile` through UniFFI, with SQLite persistence for local data and queued writes. The native SDKs are 0.1.0 previews, on Maven Central and SwiftPM.
 
 The server executes commands across worker threads over a sharded keyspace. Scaling depends on your keys being spread across shards; see [benchmarks](#benchmarks) and the [concurrency model](https://recached.dev/server/commands#concurrency-model).
 
@@ -62,12 +62,23 @@ npm install recached-edge
 cargo add --git https://github.com/recached-sh/recached.git recached-embed
 ```
 
-For native apps, follow the [Kotlin source-build instructions](https://recached.dev/android/getting-started#build-the-preview) or [Swift source-build instructions](https://recached.dev/ios/getting-started#build-the-preview). Android needs API 24+; Swift supports iOS 15+ and macOS 12+. A versioned Maven or SwiftPM dependency is not yet the install path for this preview.
+```kotlin
+// Android (Maven Central)
+implementation("dev.recached:recached-android:0.1.0")
+```
+
+```swift
+// iOS / macOS (SwiftPM)
+.package(url: "https://github.com/recached-sh/recached-swift", from: "0.1.0")
+```
+
+Android needs API 24+; Swift supports iOS 15+ and macOS 12+. See the [Android](https://recached.dev/android/getting-started#install) and [iOS and macOS](https://recached.dev/ios/getting-started#install) guides.
 
 > [!IMPORTANT]
-> **Install `recached-edge@^0.3.4`.** Every published version from 0.1.3 to 0.3.0 shipped without
+> **Install `recached-edge@^0.4.0`.** Every published version from 0.1.3 to 0.3.0 shipped without
 > wasm-pack's `snippets/` directory and failed to import at all; 0.3.1 is the first release that
-> installs from npm. See the [changelog](CHANGELOG.md) for details.
+> installs from npm. `@recached/react` and `@recached/vue` 0.4.0 also use the per-key change
+> notifications added in `recached-edge` 0.4.0. See the [changelog](CHANGELOG.md) for details.
 
 ---
 
@@ -193,8 +204,7 @@ Being honest about where things stand:
 
 - **The cache server is a release candidate for cache workloads.** It includes persistence, ordered primary/replica replication, TLS, hardened parsers, metrics, and load/chaos tests. It has not completed broad production validation or an independent security audit. Treat it as a cache, not a system of record.
 - **The shared sync layer (browser, mobile, and Rust clients) is beta.** Its invariants are [specified](https://recached.dev/server/protocol) and tested end-to-end. Read [Sync Scopes](https://recached.dev/server/sync-scopes) before exposing multi-tenant data.
-- **The Kotlin and Swift SDKs are unreleased 0.1.0 previews.** They implement local reads, SQLite persistence, queued writes, reconnect recovery, and reactive observers. Build from source until their package configs pin released core artifacts. Deduplicated replay is bounded by server checkpoint and dedup retention; see [client limits](https://recached.dev/guide/client-support#write-durability-and-replay).
-
+- **The Kotlin and Swift SDKs are 0.1.0 previews**, published to Maven Central and SwiftPM on the native core of v0.4.0. They implement local reads, SQLite persistence, queued writes, reconnect recovery, and reactive observers; their APIs may change before 1.0. Deduplicated replay is bounded by server checkpoint and dedup retention; see [client limits](https://recached.dev/guide/client-support#write-durability-and-replay).
 - **The embedded Rust client (`recached-embed`) is brand new and unpublished** — it works end-to-end against a live server and is covered by a live test suite, but it has no production miles and is not on crates.io.
 
 The road to 1.0 is hardening, not features. Bug reports from production-like use are the most valuable contribution right now.
@@ -213,7 +223,7 @@ Bug reports, PRs, and feedback are all welcome.
 Open an issue before large features or architectural changes. Areas where contributions are especially welcome:
 
 - **Benchmarks** — run [`scripts/benchmark.sh`](scripts/benchmark.sh) on multi-core server hardware and share the results
-- **Client examples** — browser, Kotlin/Compose, and Swift/SwiftUI demos
+- **Client examples** — browser demos, and apps beyond the checklist demos in [recached-kotlin](https://github.com/recached-sh/recached-kotlin/tree/main/demo) and [recached-swift](https://github.com/recached-sh/recached-swift/tree/main/Demo)
 - **Bug reports** — edge cases in the RESP parser, TTL eviction, pub/sub delivery, or WebSocket sync
 
 See [recached.dev/roadmap](https://recached.dev/roadmap) for what's planned.

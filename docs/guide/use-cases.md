@@ -124,7 +124,7 @@ warning, until this is fixed.
 
 The Kotlin and Swift previews save server-pushed data and pending writes in SQLite, so an app can reopen offline with its saved cache. Register `watch(pattern)` after every open to reconcile missed edits and deletions when the network returns. Kotlin `Flow`, Swift `AsyncStream`, and SwiftUI models react to changes in local memory.
 
-The SDKs are implemented previews requiring source builds. Watches do not authorize access, local writes can be refused by the server, and replay has capacity and dedup retention limits. Start with [Android](/android/getting-started), [Apple](/ios/getting-started), and [client limits](/guide/client-support).
+The SDKs are 0.1.0 previews. Watches do not authorize access, local writes can be refused by the server, and replay has capacity and dedup retention limits. Start with [Android](/android/getting-started), [Apple](/ios/getting-started), and [client limits](/guide/client-support).
 
 ## Where you should reach for something else
 
