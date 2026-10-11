@@ -1,9 +1,9 @@
 # Use Recached in Android
 
-::: warning Preview: not on Maven Central yet
+::: info 0.1.0 preview
 The Kotlin SDK lives in [recached-sh/recached-kotlin](https://github.com/recached-sh/recached-kotlin)
-and is not published yet. Build it from source with its `scripts/build-engine.sh`,
-or try the demo app there first.
+and is on Maven Central, built on the native core of recached v0.4.0. Its API
+may still change before 1.0.
 :::
 
 `recached-android` keeps a local copy of the keys you watch on the device, saved
@@ -21,19 +21,9 @@ sharing the sync protocol with browser and Swift clients. Persistence differs by
 - **Reactive updates:** `observe(key)` is a `Flow` that re-emits when that key
   changes, here, on another device, or on the server.
 
-## Build the preview
+## Install
 
-Use JDK 17, the Android SDK and NDK, Rust, and `cargo-ndk`. Build the native libraries and publish both SDK modules to your local Maven repository:
-
-```bash
-git clone --branch dev https://github.com/recached-sh/recached.git
-git clone https://github.com/recached-sh/recached-kotlin.git
-cd recached-kotlin
-scripts/build-engine.sh ../recached
-./gradlew publishToMavenLocal
-```
-
-In your app's dependency repositories, include `mavenLocal()` alongside `google()` and `mavenCentral()`. Then add the locally built artifact:
+The SDK is on Maven Central, so the `mavenCentral()` repository most Android projects already declare is enough:
 
 ```kotlin
 dependencies {
@@ -41,7 +31,7 @@ dependencies {
 }
 ```
 
-The current `engine.properties` has no released archive URL, version, or checksum. This dependency resolves from your local build; this preview does not provide a Maven Central installation path.
+`dev.recached:recached-android-ffi`, the native core, comes with it. No Rust toolchain is needed. To build the SDK from source instead, see the Development section of its [README](https://github.com/recached-sh/recached-kotlin#development).
 
 Use minSdk 24 or higher. The native core is built for `arm64-v8a`, `armeabi-v7a`, and `x86_64`. Restrict your app to these ABIs:
 
