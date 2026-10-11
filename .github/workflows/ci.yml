@@ -74,15 +74,17 @@ jobs:
       - name: Run tests
         run: cargo test --locked --workspace --all-features
 
-      # `recached-embed`'s live suite skips itself unless this is set, so
-      # without a server it silently tests nothing — which is exactly what it
-      # did when the crate first landed. Boot one and point it at the socket.
-      - name: Build the server for the embedded-client suite
+      # The `recached-embed` and `recached-mobile` live suites skip themselves
+      # unless these are set, so without a server they silently test nothing —
+      # which is exactly what the embed suite did when the crate first landed.
+      # Boot one and point both at the socket.
+      - name: Build the server for the live client suites
         run: cargo build --locked -p recached --bin recached-server
 
-      - name: Run the embedded-client suite against a live server
+      - name: Run the embedded and mobile client suites against a live server
         env:
           RECACHED_EMBED_TEST_URL: ws://127.0.0.1:6380
+          RECACHED_MOBILE_TEST_URL: ws://127.0.0.1:6380
           RECACHED_SAVE_INTERVAL: "0"
         run: |
           ./target/debug/recached-server &
@@ -94,6 +96,7 @@ jobs:
           done
           nc -z 127.0.0.1 6380 || { echo "server never opened 6380"; exit 1; }
           cargo test --locked -p recached-embed --test live
+          cargo test --locked -p recached-mobile --test live
 
       # core-engine is the shared state machine: the same code evaluates commands
       # on the server and inside the browser via WASM, so a bug here reaches every
@@ -300,3 +303,64 @@ jobs:
 
       - name: Test @recached/vue
         run: cd sdks/recached-vue && npm test
+
+  # ── Mobile ──────────────────────────────────────────────────────────────────
+  # The same packaging scripts the release runs, so a change that breaks the
+  # Android or Apple build fails here rather than on a release tag. Built
+  # without LTO and with parallel codegen: these jobs prove the build, not
+  # ship it, and the release profile would triple their time.
+
+  mobile-android:
+    name: Mobile — Android libraries and Kotlin bindings
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain and Android targets
+        run: |
+          rustup show
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: "recached-mobile-android"
+
+      - name: Install cargo-ndk
+        uses: taiki-e/install-action@742a3317eac7bd62f91cd888b4eead5e784ba833 # v2
+        with:
+          tool: cargo-ndk
+
+      # The runner image ships an NDK; ANDROID_NDK_LATEST_HOME points at it.
+      - name: Build and package
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" recached-mobile/scripts/build-android.sh
+
+  mobile-apple:
+    name: Mobile — XCFramework and Swift bindings
+    runs-on: macos-latest
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: "recached-mobile-apple"
+
+      - name: Build and package
+        run: recached-mobile/scripts/build-apple.sh
+
+      - name: Consume the XCFramework on macOS and the iOS simulator
+        run: recached-mobile/scripts/check-apple.sh

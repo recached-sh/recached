@@ -17,7 +17,7 @@
 
 use core_engine::cmd::Command;
 use core_engine::resp::Value;
-use core_engine::store::KeyValueStore;
+use core_engine::store::{KeyValueStore, glob_match};
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -42,24 +42,60 @@ fn seed_from(client_id: &str) -> u64 {
 /// What an incoming frame turned out to be, and what the adapter must do.
 #[derive(Debug, PartialEq)]
 pub enum Incoming {
-    /// A mutation (server push, `keychange`, or `qstate`) was applied to the
-    /// local store — notify UI subscribers.
-    Applied,
-    /// A pub/sub message — deliver to channel subscribers.
+    /// A mutation (server push, `keychange`, or `keydelta`) was applied to the
+    /// local store — notify the subscribers of `keys`.
+    ///
+    /// `keys` names every key the frame may have changed, deleted ones
+    /// included. It can name a key whose value came out the same — a re-sent
+    /// value is applied regardless — so a subscriber that cares compares before
+    /// re-rendering. It never leaves out a key that did change. Adapters with
+    /// one coarse "something changed" signal can ignore it.
+    Applied { keys: Vec<String> },
     /// A pub/sub message. The payload is bytes because a publisher may send
     /// binary; the adapter decides how to surface it.
     PubSub { channel: String, message: Vec<u8> },
     /// A command reply. When `retired` is set, that outbox row is now
     /// acknowledged — delete it from durable storage.
     Reply { retired: Option<u64> },
+    /// The server refused a queued write for good: the key is out of this
+    /// connection's scope or read-only, the value has the wrong type, the
+    /// command is invalid. Replaying it would be refused again, so the row is
+    /// retired — delete it from durable storage — and the application should
+    /// hear about it.
+    ///
+    /// The write still shows in the local store; the client has no way to undo
+    /// it. For keys a live query covers,
+    /// [`resubscribe_covering`](SyncClient::resubscribe_covering) puts back the
+    /// server's values.
+    Refused {
+        retired: u64,
+        keys: Vec<String>,
+        reason: String,
+    },
+    /// The server refused a queued write for a reason that can clear without
+    /// the write changing: no sync token or password accepted yet, a read-only
+    /// replica, persistence or memory trouble. The row stays queued. Drop the
+    /// socket; the reconnect replays it, in order, after a backoff that keeps
+    /// growing until a write is accepted.
+    ///
+    /// Until then nothing more is sent on this socket: a later write accepted
+    /// here would raise the server's duplicate-suppression mark past this one,
+    /// and its replay would be skipped as already applied.
+    Deferred { reason: String },
     /// A `qstate` frame: the reply to a QSUB (retire the row, if any) *and*
-    /// state applied to the local store (notify UI subscribers).
-    AppliedReply { retired: Option<u64> },
+    /// state applied to the local store — notify the subscribers of `keys`,
+    /// which covers every key in the snapshot and every local key the
+    /// snapshot reconciled away.
+    AppliedReply {
+        retired: Option<u64>,
+        keys: Vec<String>,
+    },
     /// A frame we understand but that asks for nothing — a push we do not
     /// model. It consumes no reply slot, which is correct: the server did not
     /// treat it as one either.
     Ignored,
-    /// The frame could not be parsed at all.
+    /// The frame could not be parsed at all. Nothing more is sent on this
+    /// socket; the adapter must drop it.
     ///
     /// This is *not* [`Ignored`](Self::Ignored), and the difference matters.
     /// If the frame was a command reply, the server has consumed a command
@@ -130,6 +166,13 @@ pub struct SyncClient {
     /// the sequence is reproducible in tests. Different clients get different
     /// sequences, which is the only property that matters here.
     jitter: u64,
+    /// This socket is being abandoned ([`Incoming::Deferred`] or
+    /// [`Incoming::Malformed`]): treat it as closed until the next open.
+    paused: bool,
+    /// The last session ended with a write deferred. The next open then keeps
+    /// the backoff growing instead of resetting it, so a client whose token
+    /// stays missing does not reconnect twice a second forever.
+    deferring: bool,
 }
 
 impl SyncClient {
@@ -150,6 +193,8 @@ impl SyncClient {
             attempts: 0,
             max_pending: MAX_PENDING_WRITES,
             jitter,
+            paused: false,
+            deferring: false,
         }
     }
 
@@ -258,7 +303,7 @@ impl SyncClient {
     }
 
     fn session_frame(&mut self, frame: Vec<u8>, connected: bool) -> Option<Vec<u8>> {
-        if connected {
+        if connected && !self.paused {
             self.inflight.push_back(None);
             Some(frame)
         } else {
@@ -268,12 +313,24 @@ impl SyncClient {
 
     // ── connection lifecycle ──────────────────────────────────────────────
 
-    /// The socket opened: returns every frame to send, in order — session
-    /// state first (AUTH → SYNC → live queries), then the full outbox replay.
-    /// Live-query re-subscription re-hydrates local state; outbox entries
-    /// stay queued until their replies acknowledge them.
+    /// The socket opened: returns every frame to send, in order — the session
+    /// (AUTH → CLIENT DELTA → CLIENT EXPIRY → SYNC), then the full outbox replay, then the
+    /// live queries. Live-query re-subscription re-hydrates local state;
+    /// outbox entries stay queued until their replies acknowledge them.
+    ///
+    /// The outbox goes **before** the live queries. A `qstate` snapshot is
+    /// complete, so reconciling against it removes local keys it lacks and
+    /// overwrites the rest. Taken before the replay, it lacks this client's
+    /// own queued writes: an item created offline vanished and an offline
+    /// edit reverted to the server's old value, until each write's own
+    /// keychange restored it a moment later — a flicker on every reconnect,
+    /// written to durable storage too. Replayed first, the snapshot already
+    /// contains them. The session still leads: writes need its auth and scope.
     pub fn on_open(&mut self) -> Vec<Vec<u8>> {
-        self.attempts = 0;
+        if !self.deferring {
+            self.attempts = 0;
+        }
+        self.paused = false;
         self.inflight.clear();
         self.sent_then_dropped.clear();
         let mut frames = Vec::new();
@@ -289,6 +346,11 @@ impl SyncClient {
         // sending whole values.
         frames.push(to_resp(&["CLIENT", "DELTA", "ON"]));
         self.inflight.push_back(None);
+        // Likewise for expiry: keychange and qstate values then carry the
+        // key's time to live, so an expiring key stays expiring here. An older
+        // server refuses it and sends bare values, as before.
+        frames.push(to_resp(&["CLIENT", "EXPIRY", "ON"]));
+        self.inflight.push_back(None);
         if let Some(tok) = &self.sync_token {
             frames.push(to_resp(&["SYNC", "TOKEN", tok]));
             self.inflight.push_back(None);
@@ -298,13 +360,13 @@ impl SyncClient {
             frames.push(frame);
             self.inflight.push_back(None);
         }
-        for pat in &self.live_queries {
-            frames.push(to_resp(&["QSUB", pat]));
-            self.inflight.push_back(None);
-        }
         for (id, frame) in &self.outbox {
             frames.push(frame.clone());
             self.inflight.push_back(Some(*id));
+        }
+        for pat in &self.live_queries {
+            frames.push(to_resp(&["QSUB", pat]));
+            self.inflight.push_back(None);
         }
         frames
     }
@@ -319,6 +381,7 @@ impl SyncClient {
     /// recovering server down. Halving the floor keeps the growth shape intact
     /// while spreading arrivals across the window.
     pub fn on_close(&mut self) -> u32 {
+        self.paused = false;
         let delay = BACKOFF_BASE_MS
             .saturating_mul(1u32 << self.attempts.min(6))
             .min(BACKOFF_CAP_MS);
@@ -349,6 +412,7 @@ impl SyncClient {
     /// (pub/sub) must not be wrapped, or a legitimately replayed SUBSCRIBE
     /// would be skipped as a duplicate.
     pub fn enqueue_write(&mut self, encoded: &[u8], dedup: bool, connected: bool) -> Enqueued {
+        let connected = connected && !self.paused;
         let id = self.outbox_seq;
         self.outbox_seq += 1;
         let frame = if dedup {
@@ -433,6 +497,7 @@ impl SyncClient {
 
     /// Discard all queued writes and reply bookkeeping (sign-out semantics).
     pub fn clear_outbox(&mut self) {
+        self.deferring = false;
         self.outbox.clear();
         self.inflight.clear();
         self.sent_then_dropped.clear();
@@ -469,8 +534,9 @@ impl SyncClient {
                 if let Ok(cmd) = Command::from_value(Value::Array(Some(arr)))
                     && is_replayable_mutation(&cmd)
                 {
+                    let keys = mutation_keys(&cmd, &self.store);
                     self.store.execute(cmd);
-                    return Incoming::Applied;
+                    return Incoming::Applied { keys };
                 }
                 Incoming::Ignored
             }
@@ -480,29 +546,90 @@ impl SyncClient {
                     _ => &[],
                 };
                 if tag == b"keychange" {
-                    self.apply_keychange(&items);
-                    Incoming::Applied
+                    Incoming::Applied {
+                        keys: self.apply_keychange(&items),
+                    }
                 } else if tag == b"keydelta" {
-                    if self.apply_keydelta(&items) {
-                        Incoming::Applied
-                    } else {
-                        Incoming::Ignored
+                    match self.apply_keydelta(&items) {
+                        Some(key) => Incoming::Applied { keys: vec![key] },
+                        None => Incoming::Ignored,
                     }
                 } else if tag == b"qstate" {
                     let retired = self.ack_reply();
-                    self.apply_qstate(&items);
-                    Incoming::AppliedReply { retired }
+                    let keys = self.apply_qstate(&items);
+                    Incoming::AppliedReply { retired, keys }
                 } else {
                     Incoming::Reply {
                         retired: self.ack_reply(),
                     }
                 }
             }
-            Ok(_) => Incoming::Reply {
-                retired: self.ack_reply(),
-            },
-            Err(_) => Incoming::Malformed,
+            Ok((Value::Error(reason), _)) => self.error_reply(reason),
+            Ok(_) => {
+                let retired = self.ack_reply();
+                if retired.is_some() && self.deferring {
+                    // A write got through: whatever deferred the last one has
+                    // cleared, so the next drop starts the backoff over.
+                    self.deferring = false;
+                    self.attempts = 0;
+                }
+                Incoming::Reply { retired }
+            }
+            Err(_) => {
+                self.paused = true;
+                Incoming::Malformed
+            }
         }
+    }
+
+    /// An error reply. A session command's error changes nothing — an older
+    /// server refusing `CLIENT DELTA ON`, say. A queued write's error means the
+    /// server did not apply it, which is not an acknowledgment: the row is kept
+    /// when the refusal can clear and retired, and reported, when it cannot.
+    fn error_reply(&mut self, reason: String) -> Incoming {
+        let Some(Some(id)) = self.inflight.pop_front() else {
+            return Incoming::Reply { retired: None };
+        };
+        if self.sent_then_dropped.remove(&id) {
+            // Overflow already evicted it; there is nothing left to keep.
+            return Incoming::Reply { retired: Some(id) };
+        }
+        if is_transient_refusal(&reason) {
+            self.paused = true;
+            self.deferring = true;
+            return Incoming::Deferred { reason };
+        }
+        let keys = match self.outbox.iter().position(|(i, _)| *i == id) {
+            Some(position) => self
+                .outbox
+                .remove(position)
+                .map(|(_, frame)| frame_keys(&frame, &self.store))
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        Incoming::Refused {
+            retired: id,
+            keys,
+            reason,
+        }
+    }
+
+    /// Re-subscribe every live query covering one of `keys`, so its fresh
+    /// snapshot replaces the local copies — after an [`Incoming::Refused`]
+    /// write, whose local effect the server never applied. Returns the frames
+    /// to send now, each holding a reply slot. Nothing while disconnected: the
+    /// next open re-subscribes every live query anyway.
+    pub fn resubscribe_covering(&mut self, keys: &[String], connected: bool) -> Vec<Vec<u8>> {
+        let patterns: Vec<String> = self
+            .live_queries
+            .iter()
+            .filter(|p| keys.iter().any(|k| glob_match(p, k)))
+            .cloned()
+            .collect();
+        patterns
+            .iter()
+            .filter_map(|p| self.session_frame(to_resp(&["QSUB", p]), connected))
+            .collect()
     }
 
     /// A reply arrived: acknowledge the oldest inflight command. Returns the
@@ -531,20 +658,21 @@ impl SyncClient {
     /// is the whole reason deltas are safe to replay: there is no diff to
     /// misinterpret.
     ///
-    /// Returns false for a frame this client cannot rebuild, which it then
-    /// reports as ignored rather than applied. That should be unreachable —
-    /// a server only sends deltas after `CLIENT DELTA ON`, and only for ops
-    /// defined here — but silently dropping one would leave the local copy
-    /// wrong with no signal, so it is surfaced rather than swallowed.
-    fn apply_keydelta(&self, items: &[Value]) -> bool {
+    /// Returns the changed key, or `None` for a frame this client cannot
+    /// rebuild, which it then reports as ignored rather than applied. That
+    /// should be unreachable — a server only sends deltas after
+    /// `CLIENT DELTA ON`, and only for ops defined here — but silently dropping
+    /// one would leave the local copy wrong with no signal, so it is surfaced
+    /// rather than swallowed.
+    fn apply_keydelta(&self, items: &[Value]) -> Option<String> {
         if items.len() < 4 {
-            return false;
+            return None;
         }
         let Value::BulkString(Some(key)) = &items[1] else {
-            return false;
+            return None;
         };
         let Value::BulkString(Some(op)) = &items[2] else {
-            return false;
+            return None;
         };
         // Rebuild the original command text and let the ordinary parser
         // produce it, so the delta path cannot drift from the command path.
@@ -556,31 +684,37 @@ impl SyncClient {
                 Value::BulkString(Some(bytes)) => {
                     parts.push(Value::BulkString(Some(bytes.clone())))
                 }
-                _ => return false,
+                _ => return None,
             }
         }
         let Ok(cmd) = Command::from_value(Value::Array(Some(parts))) else {
-            return false;
+            return None;
         };
         if !is_replayable_mutation(&cmd) {
-            return false;
+            return None;
         }
         self.store.execute(cmd);
-        true
+        Some(String::from_utf8_lossy(key).into_owned())
     }
 
-    fn apply_keychange(&self, items: &[Value]) {
+    /// Apply a `["keychange", key, value]` frame. Returns the keys it changed:
+    /// the key itself, or for the FLUSHDB sentinel every local key the
+    /// pattern matched.
+    fn apply_keychange(&self, items: &[Value]) -> Vec<String> {
         if items.len() != 3 {
-            return;
+            return Vec::new();
         }
         let Value::BulkString(Some(key)) = &items[1] else {
-            return;
+            return Vec::new();
         };
         let key = String::from_utf8_lossy(key).into_owned();
-        match &items[2] {
+        let (value, ttl_ms) = split_expiry(&items[2]);
+        match value {
             Value::BulkString(Some(v)) => {
                 self.store
-                    .execute(Command::Set(key, v.clone(), Default::default()));
+                    .execute(Command::Set(key.clone(), v.clone(), Default::default()));
+                self.expire_in(&key, ttl_ms);
+                vec![key]
             }
             Value::BulkString(None) => {
                 // A nil value whose "key" is one of our registered live-query
@@ -596,17 +730,32 @@ impl SyncClient {
                         .map(|(k, _)| k)
                         .collect();
                     if !matched.is_empty() {
-                        self.store.execute(Command::Del(matched));
+                        self.store.execute(Command::Del(matched.clone()));
                     }
+                    matched
                 } else {
-                    self.store.execute(Command::Del(vec![key]));
+                    self.store.execute(Command::Del(vec![key.clone()]));
+                    vec![key]
                 }
             }
             // Type-tagged collection: ["hash"|"list"|"set"|"zset"|"json", ...].
-            Value::Array(Some(items)) => self.apply_tagged(key, items),
+            Value::Array(Some(items)) => {
+                self.apply_tagged(key.clone(), items);
+                self.expire_in(&key, ttl_ms);
+                vec![key]
+            }
             // Anything else (e.g. the "ratelimit" marker) carries no client-
             // usable value.
-            _ => {}
+            _ => Vec::new(),
+        }
+    }
+
+    /// Give a key just written from the server the time to live that came with
+    /// it. Writing the value cleared any earlier one, so a key without one
+    /// stays permanent, as it is on the server.
+    fn expire_in(&self, key: &str, ttl_ms: Option<u64>) {
+        if let Some(ms) = ttl_ms {
+            self.store.execute(Command::PExpire(key.to_string(), ms));
         }
     }
 
@@ -708,33 +857,44 @@ impl SyncClient {
     /// The server refuses snapshots above `RECACHED_MAX_QSUB_INITIAL_KEYS`
     /// rather than sending a partial one, so every qstate reaching this method
     /// is complete and absence is safe to interpret as deletion.
-    fn apply_qstate(&self, items: &[Value]) {
+    ///
+    /// Returns every key the snapshot carried followed by every stale key it
+    /// removed.
+    fn apply_qstate(&self, items: &[Value]) -> Vec<String> {
         let pattern = match items.get(1) {
             Some(Value::BulkString(Some(p))) => String::from_utf8_lossy(p).into_owned(),
             _ => String::new(),
         };
 
         let mut present: HashSet<String> = HashSet::new();
+        let mut changed: Vec<String> = Vec::new();
         for pair in items.get(2..).unwrap_or(&[]).as_chunks::<2>().0 {
             let Value::BulkString(Some(k)) = &pair[0] else {
                 continue;
             };
             let key = String::from_utf8_lossy(k).into_owned();
-            present.insert(key.clone());
-            match &pair[1] {
+            if present.insert(key.clone()) {
+                changed.push(key.clone());
+            }
+            let (value, ttl_ms) = split_expiry(&pair[1]);
+            match value {
                 Value::BulkString(Some(v)) => {
                     self.store
-                        .execute(Command::Set(key, v.clone(), Default::default()));
+                        .execute(Command::Set(key.clone(), v.clone(), Default::default()));
+                    self.expire_in(&key, ttl_ms);
                 }
                 // Collections arrive type-tagged, so the initial state of a
                 // live query is complete — no follow-up typed read needed.
-                Value::Array(Some(inner)) => self.apply_tagged(key, inner),
+                Value::Array(Some(inner)) => {
+                    self.apply_tagged(key.clone(), inner);
+                    self.expire_in(&key, ttl_ms);
+                }
                 _ => {}
             }
         }
 
         if pattern.is_empty() {
-            return;
+            return changed;
         }
         let stale: Vec<String> = self
             .store
@@ -743,8 +903,49 @@ impl SyncClient {
             .filter(|k| !present.contains(k))
             .collect();
         if !stale.is_empty() {
-            self.store.execute(Command::Del(stale));
+            self.store.execute(Command::Del(stale.clone()));
+            changed.extend(stale);
         }
+        changed
+    }
+}
+
+/// Split a synced value from the `["px", <ms>, value]` wrapper a server sends
+/// after `CLIENT EXPIRY ON` while the key has a time to live.
+fn split_expiry(value: &Value) -> (&Value, Option<u64>) {
+    if let Value::Array(Some(items)) = value
+        && let [Value::BulkString(Some(tag)), Value::Integer(ms), inner] = items.as_slice()
+        && tag == b"px"
+    {
+        return (inner, Some((*ms).max(0) as u64));
+    }
+    (value, None)
+}
+
+/// Whether a refused write may be accepted later unchanged. These refusals are
+/// about the session or the server's state, not the write: a missing password
+/// or sync token, a read-only replica, persistence or memory trouble, and the
+/// Redis busy and loading states. Anything else — a key out of scope or
+/// read-only, a wrong type, a bad argument — would be refused again.
+pub fn is_transient_refusal(reason: &str) -> bool {
+    let code = reason.split_whitespace().next().unwrap_or("");
+    match code {
+        "NOAUTH" | "READONLY" | "MISCONF" | "OOM" | "LOADING" | "BUSY" | "TRYAGAIN"
+        | "MASTERDOWN" => true,
+        "NOSCOPE" => reason.contains("send SYNC TOKEN"),
+        _ => false,
+    }
+}
+
+/// The keys a queued write frame changes, looking through its `DEDUP` envelope.
+fn frame_keys(frame: &[u8], store: &KeyValueStore) -> Vec<String> {
+    let Ok((value, _)) = Value::parse(frame) else {
+        return Vec::new();
+    };
+    match Command::from_value(value) {
+        Ok(Command::Dedup(_, _, inner)) => mutation_keys(&inner, store),
+        Ok(cmd) => mutation_keys(&cmd, store),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -811,6 +1012,58 @@ pub fn is_replayable_mutation(cmd: &Command) -> bool {
             | Command::JSet(_, _, _)
             | Command::JMerge(_, _)
     )
+}
+
+/// The keys a replayable mutation may change, for change notification.
+///
+/// Call it *before* executing the command: `FLUSHDB` names every key the store
+/// holds at that moment, which afterwards is no longer knowable. A command that
+/// is not a replayable mutation changes nothing a client tracks and yields no
+/// keys. Adapters use this for their own local writes too, so a write the
+/// application makes notifies the same subscribers a pushed one would.
+pub fn mutation_keys(cmd: &Command, store: &KeyValueStore) -> Vec<String> {
+    match cmd {
+        Command::Set(k, _, _)
+        | Command::ESet(k, _)
+        | Command::EAdd(k, _)
+        | Command::Append(k, _)
+        | Command::Incr(k)
+        | Command::Decr(k)
+        | Command::IncrBy(k, _)
+        | Command::DecrBy(k, _)
+        | Command::Expire(k, _)
+        | Command::PExpire(k, _)
+        | Command::ExpireAt(k, _)
+        | Command::PExpireAt(k, _)
+        | Command::Persist(k)
+        | Command::HSet(k, _)
+        | Command::HDel(k, _)
+        | Command::HSetNx(k, _, _)
+        | Command::LPush(k, _)
+        | Command::RPush(k, _)
+        | Command::LPop(k, _)
+        | Command::RPop(k, _)
+        | Command::LSet(k, _, _)
+        | Command::LRem(k, _, _)
+        | Command::LTrim(k, _, _)
+        | Command::SAdd(k, _)
+        | Command::SRem(k, _)
+        | Command::SInterStore(k, _)
+        | Command::SUnionStore(k, _)
+        | Command::SDiffStore(k, _)
+        | Command::ZAdd(k, _, _)
+        | Command::ZRem(k, _)
+        | Command::ZIncrBy(k, _, _)
+        | Command::JSet(k, _, _)
+        | Command::JMerge(k, _) => vec![k.clone()],
+        Command::Del(keys) | Command::Unlink(keys) => keys.clone(),
+        Command::MSet(pairs) => pairs.iter().map(|(k, _)| k.clone()).collect(),
+        Command::Rename(from, to) | Command::SMove(from, to, _) => {
+            vec![from.clone(), to.clone()]
+        }
+        Command::FlushDb => store.matching_keys("*"),
+        _ => Vec::new(),
+    }
 }
 
 /// RESP array encoding, shared by adapters.

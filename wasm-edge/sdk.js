@@ -14,6 +14,21 @@ async function ensureModule() {
     }
     return _initPromise;
 }
+/** Add `cb` under `name`, returning a remover that drops the entry once empty. */
+function addListener(registry, name, cb) {
+    let listeners = registry.get(name);
+    if (!listeners)
+        registry.set(name, (listeners = new Set()));
+    listeners.add(cb);
+    return () => {
+        const current = registry.get(name);
+        if (!current)
+            return;
+        current.delete(cb);
+        if (current.size === 0)
+            registry.delete(name);
+    };
+}
 // ── Cache ─────────────────────────────────────────────────────────────────────
 /**
  * A typed wrapper around the Recached WASM cache.
@@ -30,12 +45,32 @@ export class Cache {
     /** @internal */
     constructor(raw) {
         this._mutationListeners = new Set();
+        this._keyListeners = new Map();
+        this._patternListeners = new Map();
         this._messageListeners = new Map();
         this._outboxFullListeners = new Set();
-        /** @internal Arrow function so `this` is always bound when passed as a callback. */
-        this._notifyMutation = () => {
+        /**
+         * @internal Arrow function so `this` is always bound when passed as a
+         * callback. `keys` names every key the mutation may have changed.
+         */
+        this._notifyMutation = (keys) => {
             for (const cb of this._mutationListeners)
-                cb();
+                cb(keys);
+            if (keys.length === 0)
+                return;
+            for (const key of keys) {
+                const listeners = this._keyListeners.get(key);
+                if (listeners)
+                    for (const cb of listeners)
+                        cb();
+            }
+            // One wasm call per pattern, not per key: a reconnect snapshot can name
+            // thousands of keys.
+            for (const [pattern, listeners] of this._patternListeners) {
+                if (this.raw.anyKeyMatches(pattern, keys))
+                    for (const cb of listeners)
+                        cb();
+            }
         };
         /** @internal */
         this._notifyOutboxFull = (droppedId, pending) => {
@@ -60,10 +95,13 @@ export class Cache {
     }
     /**
      * Subscribe to store mutations from any source — local writes, server
-     * WebSocket push, and BroadcastChannel cross-tab sync.
+     * WebSocket push, and BroadcastChannel cross-tab sync. The callback receives
+     * the keys the mutation may have changed.
      *
      * Returns an unsubscribe function. Pass directly to React's
-     * `useSyncExternalStore` `subscribe` parameter.
+     * `useSyncExternalStore` `subscribe` parameter. To watch one key or one
+     * pattern, prefer {@link onKeyChange} or {@link onPatternChange}, which skip
+     * mutations to every other key.
      *
      * ```ts
      * useSyncExternalStore(
@@ -76,6 +114,39 @@ export class Cache {
     onMutation(cb) {
         this._mutationListeners.add(cb);
         return () => this._mutationListeners.delete(cb);
+    }
+    /**
+     * Subscribe to changes to one key, from any source. The callback runs only
+     * when that key is written, deleted, or replaced by a server snapshot — not
+     * on writes to other keys.
+     *
+     * Returns an unsubscribe function.
+     *
+     * ```ts
+     * const stop = cache.onKeyChange('theme', () => render(cache.get('theme')));
+     * ```
+     */
+    onKeyChange(key, cb) {
+        return addListener(this._keyListeners, key, cb);
+    }
+    /**
+     * Subscribe to changes to any key matching a glob pattern, using the same
+     * matching rules as {@link liveQuery}. The callback runs once per mutation
+     * that touches at least one matching key.
+     *
+     * This only listens; call {@link liveQuery} as well to have the server keep
+     * the matching keys in sync.
+     *
+     * Returns an unsubscribe function.
+     *
+     * ```ts
+     * const stop = cache.onPatternChange('cart:42:*', () => {
+     *   render(cache.getMatching('cart:42:*'));
+     * });
+     * ```
+     */
+    onPatternChange(pattern, cb) {
+        return addListener(this._patternListeners, pattern, cb);
     }
     /**
      * Called when the offline write queue overflows and the **oldest** queued
@@ -400,7 +471,7 @@ export class Cache {
      *
      * ```ts
      * const stop = cache.liveQuery('cart:42:*');
-     * cache.onMutation(() => {
+     * cache.onPatternChange('cart:42:*', () => {
      *   render(cache.getMatching('cart:42:*'));
      * });
      * // later:

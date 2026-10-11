@@ -1,6 +1,6 @@
 {
   "name": "@recached/react",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "description": "Official React hooks for Recached \u2014 local reactive cache",
   "type": "module",
   "main": "./dist/index.js",
@@ -37,11 +37,11 @@
     "@types/node": "^26.1.2",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
-    "jsdom": "^30.0.1",
+    "jsdom": "^30.1.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.11"
   },
   "keywords": [
     "recached",

@@ -1,6 +1,6 @@
 # Wire Protocol
 
-This page is **normative**: client SDKs (browser `recached-edge`, the planned mobile bindings) and the server implement exactly what is written here. If code and this page disagree, one of them has a bug. The reference client implementation is the platform-neutral [`sync-client`](https://github.com/recached-sh/recached/tree/main/sync-client) crate.
+This page is **normative**: client adapters (`recached-edge`, `recached-embed`, and the Kotlin/Swift previews through `recached-mobile`) and the server implement exactly what is written here. If code and this page disagree, one of them has a bug. The reference client implementation is the platform-neutral [`sync-client`](https://github.com/recached-sh/recached/tree/main/sync-client) crate.
 
 ## Transports
 
@@ -59,10 +59,10 @@ Every frame a client receives is exactly one of:
 
 | Kind | Shape | Meaning |
 |---|---|---|
-| **Reply** | any RESP value not matching the rows below | Response to one command this connection sent |
+| **Reply** | any RESP value not matching the rows below | Response to one command this connection sent. An error reply to a write means the server did not apply it |
 | **Mutation push** | RESP3 Push `>N` whose elements form a replayable command (`SET`, `HSET`, `JSET`, `JMERGE`, …) | Another client/backend mutated a key in scope — apply to the local store. **Not sent** when every key it touches is covered by one of this connection's live queries or `WATCH`es, because the keychange below already delivers those authoritatively; sending both would apply a non-idempotent mutation twice |
 | **Pub/sub push** | RESP3 Push `>3` = `["message", channel, payload]` | Pub/sub delivery. The WebSocket transport is always RESP3 — `HELLO 2` on it is refused, because the frame taxonomy below depends on the push type existing |
-| **Keychange push** | Array `["keychange", key, value]` | A watched or live-queried key changed, or the server removed it on its own initiative. `value` is a full string, nil for deletion, or a type-tagged collection containing its complete current value. |
+| **Keychange push** | Array `["keychange", key, value]` | A watched or live-queried key changed, or the server removed it on its own initiative. `value` is a full string, nil for deletion, or a type-tagged collection containing its complete current value. After `CLIENT EXPIRY ON`, an expiring key's value comes wrapped as `["px", ms, value]` |
 | **Key delta push** | Array `["keydelta", key, op, arg…]` | The same event as a keychange, carrying the *mutation* instead of the resulting value. Only sent to connections that asked with `CLIENT DELTA ON` |
 | **Query state** | Array `["qstate", pattern, k1, v1, …]` | **Both** the reply to a `QSUB` **and** initial state to apply (same value encoding as keychange) |
 
@@ -92,12 +92,39 @@ everything already as small as its result — `SET`, `DEL`, expiry.
 hold a stale local copy, which is worse than an error, so the server keeps
 sending whole values until a connection sends `CLIENT DELTA ON`. The toggle is
 connection state: it is re-sent on every reconnect, and `CLIENT DELTA OFF`
-reverts to whole values. `recached-edge` enables it automatically, before its
+reverts to whole values. The shared clients enable it automatically, before their
 `QSUB`s, so live-query traffic is compact from the first frame.
 
 Deltas are safe to apply blind because the stream has no silent gaps: a
 connection that falls behind the fan-out is closed with code `4001` rather than
 skipped, and reconnects onto an authoritative `qstate`.
+
+### Expiry (`CLIENT EXPIRY ON`)
+
+A keychange or qstate value says nothing about the key's time to live, so a
+client that applies it as a plain `SET` makes an expiring key permanent in its
+local copy. Online, the server's own removal (below) deletes it in time.
+Offline, the copy stays readable long after the key expired.
+
+After `CLIENT EXPIRY ON`, every keychange and qstate value of a key with a time
+to live arrives wrapped, with the milliseconds left when the change was sent:
+
+```
+["keychange", "session:9", ["px", 599990, "token"]]
+["qstate", "cart:*", "cart:1", ["px", 3600000, ["hash", "item", "mug"]], "cart:2", "plain"]
+```
+
+The client applies the inner value, then gives the key that time to live. A bare
+value means the key has none, so applying it also clears an earlier one, which
+is how `PERSIST` reaches a client. Deltas need no wrapper: the commands they
+carry leave a key's expiry as it was, on the server and when replayed.
+
+**Expiry is opt-in** for the same reason as deltas: an older client would read
+`px` as an unknown collection type and clear its copy of the key. It is
+connection state, re-sent on every reconnect before the `QSUB`s, and
+`CLIENT EXPIRY OFF` reverts to bare values. `recached-edge`, `recached-embed`
+and the mobile SDKs enable it automatically. A server that predates it answers
+with an error, which changes nothing: the client keeps receiving bare values.
 
 ### Server-initiated removal
 
@@ -121,7 +148,7 @@ its pattern — which is what makes reconciliation correct. Server-side, the clo
 `recached_sync_lag_disconnects_total`; a non-zero rate means clients are being fed faster than they
 can drain, not that anything is corrupt.
 
-Expiry deletion is eventual. A local copy does not expire on its own clock, and the bounded sweep may take multiple ticks to reach a key in a large volatile keyspace. Carry and compare a deadline in the value when exact expiry matters.
+Expiry deletion is eventual. Without `CLIENT EXPIRY ON` a local copy does not expire on its own clock, and the bounded sweep may take multiple ticks to reach a key in a large volatile keyspace. With it, the local copy expires on the client's clock from the time to live it received, which can be off from the server's by the frame's transit time.
 
 ## The ordering invariant (acknowledgment correlation)
 
@@ -129,15 +156,24 @@ Expiry deletion is eventual. A local copy does not expire on its own clock, and 
 
 This is the invariant that makes reply correlation cheap: a client keeps a FIFO of sent commands; each incoming *reply* acknowledges the oldest entry. `qstate` counts as the reply to its `QSUB`; `keychange` and all `>` pushes are never replies. Acknowledgment means the server accepted and applied the write. Crash durability still follows the configured snapshot and AOF fsync policy.
 
+An error reply consumes its slot too, but it is not an acknowledgment: the server did not apply the write. What the client does with the queued write depends on the error:
+
+- **It can clear without the write changing** — `NOAUTH`, `NOSCOPE send SYNC TOKEN…` (no token accepted yet), `READONLY`, `MISCONF`, `OOM`, and Redis's `LOADING`, `BUSY` and `TRYAGAIN`. The write stays queued. The client sends nothing more on that socket, reconnects, and replays it in order. The backoff keeps growing across such reconnects until a write is accepted, so a missing token does not turn into a reconnect loop.
+- **It cannot** — a key out of scope or read-only, a wrong type, a bad argument. Replaying it would be refused again, so the write leaves the queue and the application is told. The client cannot undo its local effect; it re-subscribes the live queries covering the write's keys, whose snapshots put back the server's values.
+
+A refused write does not advance the client's `DEDUP` high-water mark, so its replay is applied normally. One case escapes: when a later write already in flight on the same socket is accepted, it raises the mark past the refused one, and the replay is answered `+DUP` and dropped. The client stops sending as soon as the first refusal arrives, which leaves only the writes already on the wire exposed.
+
 ## Session establishment
 
 On every (re)connect, in this order:
 
 1. `AUTH password` — required first when `RECACHED_PASSWORD` is set
-2. `CLIENT DELTA ON` — connection state, so it is re-sent every time, and sent before `QSUB` so the live query's own traffic is already compact
+2. `CLIENT DELTA ON` and `CLIENT EXPIRY ON` — connection state, so they are re-sent every time, and sent before `QSUB` so the live query's own traffic is already compact and its snapshot already carries expiries
 3. `SYNC TOKEN token` (strict scoping) or `SYNC pattern…` (open mode) — see [Sync Scopes](/server/sync-scopes)
-4. `QSUB pattern` per live query — the `qstate` replies re-hydrate local state
-5. Replay of the outbox (unacknowledged writes), oldest first
+4. Replay of the outbox (unacknowledged writes), oldest first — after the session, which grants their access
+5. `QSUB pattern` per live query — the `qstate` replies re-hydrate local state
+
+The outbox replays before the live queries so each `qstate` snapshot already contains the client's own queued writes. Taken before the replay, a snapshot lacks them, and reconciling against it would remove a key created offline (or revert an offline edit) until the write's own `keychange` restored it.
 
 ## Deduplicated write replay (`DEDUP`)
 
@@ -149,7 +185,7 @@ DEDUP <client-id> <wire-id> <command> <args…>
 
 - `client-id`: 1–64 chars, stable per client, **unguessable** (a guessable id lets another authenticated client poison your high-water mark); browsers use `crypto.randomUUID()`
 - `wire-id`: `(session-epoch << 32) | write-counter` — strictly increasing across a client's lifetime, including across page reloads (the epoch is persisted and bumped per session)
-- Server behavior: per `client-id`, ids at or below the high-water mark reply `+DUP` and do **not** execute. A higher id is committed only after its wrapped write succeeds. Marks are persisted in the snapshot's `.dedup` sidecar and swept after 24 h idle.
+- Server behavior: per `client-id`, ids at or below the high-water mark reply `+DUP` and do **not** execute. A higher id is committed only after its wrapped write succeeds. Marks are persisted in the snapshot's `.dedup` sidecar. When the map exceeds 10,000 clients, duplicate checks sweep marks idle for at least 24 hours.
 - `+DUP` is a normal reply — it acknowledges and retires the write.
 - Scope checks, replica write-rejection, and metrics apply to the *wrapped* command.
 - Connection-scoped commands (`SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`) are **never** wrapped — a replayed subscribe must re-execute, not be skipped.

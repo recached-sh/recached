@@ -2,6 +2,8 @@
 
 Official Vue 3 composables for [Recached](https://github.com/recached-sh/recached) — a local reactive cache with automatic server sync and cross-tab sharing.
 
+This package targets Vue in the browser. Native mobile apps use the [Kotlin](https://recached.dev/android/getting-started) or [Swift](https://recached.dev/ios/getting-started) preview.
+
 ## Features
 
 - **Local reads** — reads are served from local WASM memory without a network round trip
@@ -9,10 +11,12 @@ Official Vue 3 composables for [Recached](https://github.com/recached-sh/recache
 - **Vue 3 Composition API** — composables that integrate naturally with `<script setup>`
 - **TypeScript-first** — full type inference including `useKeyJSON<T>`
 
+Browser persistence does not save every server update; see [persistence limits](https://recached.dev/browser/persistence) and [client support](https://recached.dev/guide/client-support).
+
 ## Requirements
 
 - Vue 3 or later
-- `recached-edge` 0.1.4 or later (peer dependency)
+- `recached-edge` 0.3.1 or later (peer dependency)
 
 ## Installation
 
@@ -69,8 +73,8 @@ app.use(RecachedPlugin, options?: CacheOptions)
 | Option | Type | Description |
 |--------|------|-------------|
 | `connect` | `{ url: string; password?: string }` | Connect to a Recached server on the given WebSocket URL. |
-| `persistence` | `boolean` | Load the IndexedDB WAL on startup and persist future writes. Survives page refresh. |
-| `broadcastChannel` | `string` | Share mutations across all open tabs with this channel name. No server required. |
+| `persistence` | `boolean` | Restore the local-write WAL and outbox; save later local writes asynchronously. Server pushes are not appended to the WAL. |
+| `broadcastChannel` | `string` | Share local writes across tabs on the same origin and channel. No server required. |
 
 ```ts
 // With server connection

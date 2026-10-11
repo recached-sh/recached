@@ -74,10 +74,10 @@ brew services stop recached
 
 ## Cargo
 
-Install from crates.io:
+Install from Git. The server package is marked `publish = false`:
 
 ```bash
-cargo install recached
+cargo install --git https://github.com/recached-sh/recached.git recached
 recached-server
 ```
 
@@ -93,7 +93,7 @@ RECACHED_PASSWORD="secret" RECACHED_MAX_KEYS="100000" recached-server
 
 ## Building from source
 
-Requirements: Rust 1.78+ with the `wasm32-unknown-unknown` target.
+Use the Rust toolchain pinned in `rust-toolchain.toml`. The workspace uses Rust edition 2024; building browser bindings also needs the `wasm32-unknown-unknown` target.
 
 ```bash
 git clone https://github.com/recached-sh/recached.git

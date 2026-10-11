@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 336" width="1040" height="336" role="img" aria-label="Clients send edits to an application API, which commits business rows and an outbox event in one SQL transaction. A worker publishes committed state to Recached, and WebSocket updates reach local client caches.">
+<title>Database-backed state with Recached</title>
+<desc>Clients send edits to an application API, which commits business rows and an outbox event in one SQL transaction. A worker publishes committed state to Recached, and WebSocket updates reach local client caches.</desc>
+<style>
+  .wire { fill:none; stroke:#46546a; stroke-width:2; }
+  .node { fill:#131b2a; stroke:#46546a; stroke-width:1.5; }
+  .accent { stroke:#E8542A; }
+  text { font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; text-anchor:middle; }
+  .title { fill:#e6edf3; font-size:16px; font-weight:700; }
+  .sub { fill:#93a1b5; font-size:12px; }
+  .label { fill:#93a1b5; font-size:12px; font-weight:600; }
+</style>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#46546a" stroke-width="1.5"/></marker></defs>
+<path class="wire" d="M240 78 H354" marker-end="url(#arrow)"/>
+<path class="wire" d="M560 78 H774" marker-end="url(#arrow)"/>
+<path class="wire" d="M900 126 V194" marker-end="url(#arrow)"/>
+<path class="wire" d="M780 248 H566" marker-end="url(#arrow)"/>
+<path class="wire" d="M360 248 H130 V132" marker-end="url(#arrow)"/>
+<text x="300" y="62" class="label">Edit request</text>
+<text x="668" y="62" class="label">Commit transaction</text>
+<text x="815" y="168" class="label">Committed events</text>
+<text x="670" y="232" class="label">SET / DEL over RESP</text>
+<text x="240" y="233" class="label">WebSocket updates</text>
+<rect class="node" x="20" y="30" width="220" height="96" rx="14"/>
+<text x="130.0" y="59" class="title">Browser / native app</text>
+<text x="130.0" y="83" class="sub">Reads local cache memory</text>
+<text x="130.0" y="103" class="sub">Queues business edits in the app</text>
+<rect class="node" x="360" y="30" width="200" height="96" rx="14"/>
+<text x="460.0" y="59" class="title">Application API</text>
+<text x="460.0" y="83" class="sub">Validation + permissions</text>
+<text x="460.0" y="103" class="sub">Reports database commit</text>
+<rect class="node" x="780" y="30" width="240" height="96" rx="14"/>
+<text x="900.0" y="59" class="title">MySQL / PostgreSQL</text>
+<text x="900.0" y="83" class="sub">Business rows + outbox</text>
+<text x="900.0" y="103" class="sub">One SQL transaction</text>
+<rect class="node" x="780" y="200" width="240" height="96" rx="14"/>
+<text x="900.0" y="229" class="title">Sync worker</text>
+<text x="900.0" y="253" class="sub">Retries committed events</text>
+<text x="900.0" y="273" class="sub">Enforces per-record ordering</text>
+<rect class="node accent" x="360" y="200" width="200" height="96" rx="14"/>
+<text x="460.0" y="229" class="title">Recached server</text>
+<text x="460.0" y="253" class="sub">Derived cache state</text>
+<text x="460.0" y="273" class="sub">Scope-filtered updates</text>
+<text x="520" y="327" class="sub">The API and sync worker are application integrations; Recached has no built-in SQL connector.</text>
+</svg>

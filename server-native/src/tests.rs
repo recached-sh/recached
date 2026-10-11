@@ -5125,6 +5125,85 @@ async fn integration_ws_delta_frames_replace_whole_values() {
     assert!(push.contains("keychange"), "unexpected frame: {push}");
 }
 
+/// The `["px", <ms>, value]` wrapper an expiry-aware client receives, with
+/// the milliseconds checked against a range rather than an exact count.
+fn expect_px(value: &Value, inner: &Value, max_ms: i64) {
+    let Value::Array(Some(items)) = value else {
+        panic!("expected an expiry wrapper, got {value:?}");
+    };
+    assert_eq!(items[0], bulk("px"), "{value:?}");
+    let Value::Integer(ms) = items[1] else {
+        panic!("expected milliseconds, got {value:?}");
+    };
+    assert!(
+        ms > max_ms - 5_000 && ms <= max_ms,
+        "{ms} ms for a {max_ms} ms TTL"
+    );
+    assert_eq!(&items[2], inner);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn integration_ws_expiry_travels_with_synced_values_on_request() {
+    let srv = spawn_ws_server().await;
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    let mut aware = WsClient::connect(srv.tcp_addr).await;
+    let mut plain = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(writer.cmd(&["SET", "e:seed", "s", "EX", "600"]).await, ok());
+    assert_eq!(writer.cmd(&["SET", "e:forever", "f"]).await, ok());
+
+    // The snapshot carries each expiring key's time to live, and leaves a key
+    // without one bare.
+    assert_eq!(aware.cmd(&["CLIENT", "EXPIRY", "ON"]).await, ok());
+    let Value::Array(Some(snapshot)) = aware.cmd(&["QSUB", "e:*"]).await else {
+        panic!("expected a qstate");
+    };
+    let value_of = |key: &str| {
+        snapshot[2..]
+            .chunks(2)
+            .find(|p| p[0] == bulk(key))
+            .map(|p| p[1].clone())
+            .unwrap_or_else(|| panic!("{key} missing from {snapshot:?}"))
+    };
+    expect_px(&value_of("e:seed"), &bulk("s"), 600_000);
+    assert_eq!(value_of("e:forever"), bulk("f"));
+
+    // A client that did not ask gets the values it always got.
+    let Value::Array(Some(snapshot)) = plain.cmd(&["QSUB", "e:*"]).await else {
+        panic!("expected a qstate");
+    };
+    assert!(
+        snapshot[2..]
+            .iter()
+            .all(|v| matches!(v, Value::BulkString(_))),
+        "{snapshot:?}"
+    );
+
+    // So does a keychange.
+    assert_eq!(
+        writer.cmd(&["SET", "e:new", "n", "PX", "30000"]).await,
+        ok()
+    );
+    let push = aware.recv_any(1000).await.expect("expected a keychange");
+    let (Value::Array(Some(items)), _) = Value::parse(push.as_bytes()).unwrap() else {
+        panic!("unexpected frame: {push}");
+    };
+    assert_eq!(items[0], bulk("keychange"));
+    expect_px(&items[2], &bulk("n"), 30_000);
+    let push = plain.recv_any(1000).await.expect("expected a keychange");
+    assert_eq!(
+        Value::parse(push.as_bytes()).unwrap().0,
+        arr(&["keychange", "e:new", "n"])
+    );
+
+    // PERSIST lifts it, and the bare value says so.
+    assert_eq!(writer.cmd(&["PERSIST", "e:new"]).await, int(1));
+    let push = aware.recv_any(1000).await.expect("expected a keychange");
+    assert_eq!(
+        Value::parse(push.as_bytes()).unwrap().0,
+        arr(&["keychange", "e:new", "n"])
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn integration_ws_a_watched_key_is_delivered_once() {
     // A live-queried key used to arrive twice: once as the propagation frame
@@ -6466,7 +6545,7 @@ mod sweep_notification {
         let notification = rx.try_recv().expect("live query was never told");
         assert_eq!(notification.key, "fare:MNL-CEB");
         assert!(
-            matches!(&notification.payload, NotifPayload::Full(v) if **v == Value::BulkString(None)),
+            matches!(&notification.payload, NotifPayload::Full(v, _) if **v == Value::BulkString(None)),
             "nil is already the delete encoding, so existing clients apply it unchanged"
         );
     }
@@ -6493,7 +6572,7 @@ mod sweep_notification {
         let notification = rx.try_recv().expect("WATCH-er was never told");
         assert_eq!(notification.key, "session:abc");
         assert!(
-            matches!(&notification.payload, NotifPayload::Full(v) if **v == Value::BulkString(None))
+            matches!(&notification.payload, NotifPayload::Full(v, _) if **v == Value::BulkString(None))
         );
     }
 

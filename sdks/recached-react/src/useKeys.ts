@@ -1,5 +1,6 @@
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import { useRecached } from './context';
+import { subscribePattern } from './subscribe';
 
 /** A key/value pair from the local store. Collection-typed keys have `null`
  * values — read those with typed accessors. A value that is not valid UTF-8
@@ -42,17 +43,41 @@ export function useKeys(pattern: string): KeyValuePair[] {
   // liveQuery returns its stop function — exactly the shape useEffect wants.
   useEffect(() => cache.liveQuery(pattern), [cache, pattern]);
 
+  // Counts changes to matching keys. React calls getSnapshot on every render,
+  // not only after a change, and reading the matches means a wasm call plus a
+  // serialisation of the whole result — so skip both until something matching
+  // has actually changed.
+  const version = useRef(0);
+  const subscribe = useCallback(
+    (onStoreChange: () => void) =>
+      subscribePattern(cache, pattern, () => {
+        version.current += 1;
+        onStoreChange();
+      }),
+    [cache, pattern],
+  );
+
   // useSyncExternalStore compares snapshots with Object.is, so getSnapshot
   // must return the *same* array until the contents actually change.
-  const memo = useRef<{ pattern: string; json: string; value: KeyValuePair[] }>(undefined);
+  const memo = useRef<{
+    pattern: string;
+    version: number;
+    json: string;
+    value: KeyValuePair[];
+  }>(undefined);
   return useSyncExternalStore(
-    (cb) => cache.onMutation(cb),
+    subscribe,
     () => {
+      const prev = memo.current;
+      if (prev && prev.pattern === pattern && prev.version === version.current) return prev.value;
+
       const next = cache.getMatching(pattern);
       const json = JSON.stringify(next);
-      const prev = memo.current;
-      if (prev && prev.pattern === pattern && prev.json === json) return prev.value;
-      memo.current = { pattern, json, value: next };
+      if (prev && prev.pattern === pattern && prev.json === json) {
+        memo.current = { ...prev, version: version.current };
+        return prev.value;
+      }
+      memo.current = { pattern, version: version.current, json, value: next };
       return next;
     },
     () => EMPTY,

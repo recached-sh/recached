@@ -13,7 +13,7 @@ Vue plugin that creates the cache and provides it to the entire app via `inject`
 | Option | Type | Description |
 |--------|------|-------------|
 | `connect` | `{ url: string; password?: string }` | WebSocket URL of the Recached server and optional auth password. |
-| `persistence` | `boolean` | Load the IndexedDB WAL on startup; write every mutation through for cross-refresh persistence. |
+| `persistence` | `boolean` | Restore the local-write WAL and outbox; save later local writes asynchronously. Server pushes are not appended to the WAL. |
 | `broadcastChannel` | `string` | BroadcastChannel name for cross-tab mutation sharing without a server. |
 
 ### Examples
@@ -104,7 +104,7 @@ The ref updates automatically whenever `key` is mutated — from any source:
 - A write received from the server (WebSocket fan-out)
 - A write from another tab (BroadcastChannel sync)
 
-The `onMutation` listener is cleaned up automatically via `onUnmounted`.
+Writes to other keys do not touch the ref. The change listener is cleaned up automatically via `onUnmounted`.
 
 ### Example
 
@@ -135,11 +135,12 @@ const props = defineProps<{ userId: string }>()
 const cache = useRecached()
 const status = ref<string | null>(null)
 
-watchEffect(() => {
-  status.value = cache.get(`user:${props.userId}:status`)
-  return cache.onMutation(() => {
-    status.value = cache.get(`user:${props.userId}:status`)
-  })
+watchEffect((onCleanup) => {
+  const key = `user:${props.userId}:status`
+  status.value = cache.get(key)
+  onCleanup(cache.onKeyChange(key, () => {
+    status.value = cache.get(key)
+  }))
 })
 </script>
 ```
@@ -293,7 +294,7 @@ cache.set('key', value)           ← local write
         └─ WASM store updated → notify → Ref.value updated → Vue re-renders
 ```
 
-The `onMutation` listener registered inside each composable is removed by `onUnmounted`, so components that unmount leave no dangling listeners.
+The change listener registered inside each composable is removed by `onUnmounted`, so components that unmount leave no dangling listeners.
 
 ---
 

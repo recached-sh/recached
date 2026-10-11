@@ -1,8 +1,9 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react';
 import { useRecached } from './context';
+import { subscribeKey } from './subscribe';
 
 /**
- * Subscribe to store mutations, counting them.
+ * Subscribe to changes to one key, counting them.
  *
  * `useSyncExternalStore` compares snapshots with `Object.is` and re-reads on
  * every render, so a `getSnapshot` that allocates — `getJSON` parses a fresh
@@ -13,15 +14,15 @@ import { useRecached } from './context';
  *
  * Returns the subscribe function plus the counter ref.
  */
-function useMutationVersion(cache: ReturnType<typeof useRecached>) {
+function useKeyVersion(cache: ReturnType<typeof useRecached>, key: string) {
   const version = useRef(0);
   const subscribe = useCallback(
     (onStoreChange: () => void) =>
-      cache.onMutation(() => {
+      subscribeKey(cache, key, () => {
         version.current += 1;
         onStoreChange();
       }),
-    [cache],
+    [cache, key],
   );
   return { subscribe, version };
 }
@@ -61,8 +62,12 @@ function sameBytes(a: Uint8Array | null, b: Uint8Array | null): boolean {
  */
 export function useKey(key: string): string | null {
   const cache = useRecached();
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => subscribeKey(cache, key, onStoreChange),
+    [cache, key],
+  );
   return useSyncExternalStore(
-    (cb) => cache.onMutation(cb),
+    subscribe,
     // `get` throws on a binary value. This runs as a `getSnapshot`, so letting
     // it propagate would take down the render tree over a value the component
     // simply cannot display — report it as absent and let `useKeyBytes` read it.
@@ -97,7 +102,7 @@ export function useKey(key: string): string | null {
  */
 export function useKeyBytes(key: string): Uint8Array | null {
   const cache = useRecached();
-  const { subscribe, version } = useMutationVersion(cache);
+  const { subscribe, version } = useKeyVersion(cache, key);
   const memo = useRef<{ key: string; version: number; value: Uint8Array | null }>(undefined);
 
   return useSyncExternalStore(
@@ -136,7 +141,7 @@ export function useKeyBytes(key: string): Uint8Array | null {
  */
 export function useKeyJSON<T>(key: string): T | null {
   const cache = useRecached();
-  const { subscribe, version } = useMutationVersion(cache);
+  const { subscribe, version } = useKeyVersion(cache, key);
   const memo = useRef<{ key: string; version: number; raw: string | null; value: T | null }>(
     undefined,
   );

@@ -213,6 +213,23 @@ pub(crate) fn handle_client_command(args: &[String], meta: &mut ClientMeta) -> V
             }
             other => Value::Error(format!("ERR CLIENT DELTA expects ON or OFF, got '{other}'")),
         },
+        // Opt-in for the same reason: an older client would read the expiry
+        // wrapper as an unknown collection type and clear its copy of the key.
+        ("EXPIRY", 2) => match args[1].to_uppercase().as_str() {
+            "ON" => {
+                meta.expiry = true;
+                publish_client(meta.clone());
+                Value::SimpleString("OK".to_string())
+            }
+            "OFF" => {
+                meta.expiry = false;
+                publish_client(meta.clone());
+                Value::SimpleString("OK".to_string())
+            }
+            other => Value::Error(format!(
+                "ERR CLIENT EXPIRY expects ON or OFF, got '{other}'"
+            )),
+        },
         ("SETINFO", 3) => match args[1].to_uppercase().as_str() {
             "LIB-NAME" => {
                 meta.lib_name = args[2].clone();
@@ -236,6 +253,7 @@ pub(crate) fn handle_client_command(args: &[String], meta: &mut ClientMeta) -> V
                 "SETNAME <name> -- Set this connection's name.",
                 "SETINFO <LIB-NAME|LIB-VER> <value> -- Identify the client library.",
                 "DELTA <ON|OFF> -- Receive compact keydelta frames for mutations that have one.",
+                "EXPIRY <ON|OFF> -- Receive each synced key's time to live with its value.",
             ]
             .iter()
             .map(|l| Value::SimpleString(l.to_string()))

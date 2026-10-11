@@ -133,6 +133,23 @@ async function checkBehaviour(glue, sdk, pkgDir) {
     }
   };
 
+  // Change routing through the real wasm callback: the keys the engine reports
+  // must reach the listeners of those keys and patterns, and no others.
+  const seen = { all: [], key: 0, pattern: 0, other: 0 };
+  const stops = [
+    cache.onMutation((keys) => seen.all.push(...keys)),
+    cache.onKeyChange('route:a', () => seen.key++),
+    cache.onPatternChange('route:*', () => seen.pattern++),
+    cache.onKeyChange('elsewhere', () => seen.other++),
+  ];
+  cache.set('route:a', '1');
+  cache.incr('route:n');
+  check('mutation keys', () => seen.all, ['route:a', 'route:n']);
+  check('key listener', () => seen.key, 1);
+  check('pattern listener', () => seen.pattern, 2);
+  check('unrelated key listener', () => seen.other, 0);
+  for (const stop of stops) stop();
+
   cache.set('k', 'v');
   check('get after set', () => cache.get('k'), 'v');
   check('exists', () => cache.exists('k'), true);

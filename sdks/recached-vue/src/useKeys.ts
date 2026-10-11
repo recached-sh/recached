@@ -1,5 +1,6 @@
 import { ref, onUnmounted, type Ref } from 'vue';
 import { useRecached } from './plugin';
+import { subscribePattern } from './subscribe';
 
 /** A key/value pair from the local store. Collection-typed keys have `null`
  * values — read those with typed accessors. A value that is not valid UTF-8
@@ -41,7 +42,7 @@ export function useKeys(pattern: string): Ref<KeyValuePair[]> {
   const cache = useRecached();
   const value = ref<KeyValuePair[]>(cache.getMatching(pattern));
   const stopQuery = cache.liveQuery(pattern);
-  const unsub = cache.onMutation(() => {
+  const unsub = subscribePattern(cache, pattern, () => {
     value.value = cache.getMatching(pattern);
   });
   onUnmounted(() => {
