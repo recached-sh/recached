@@ -2,7 +2,7 @@
 
 All notable changes to Recached are documented here.
 
-## [0.4.0] (unreleased)
+## [0.4.0] (2026-10-11)
 
 - Added `recached-mobile`, the shared UniFFI core for the preview Kotlin/Android and Swift/iOS/macOS SDKs
 - Added SQLite persistence for native client data, queued writes, and client identity, including offline cold-start reads and replay after an app restart
