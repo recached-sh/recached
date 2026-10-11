@@ -18,11 +18,11 @@ class Recached < Formula
   on_macos do
     on_intel do
       url "https://github.com/recached-sh/recached/releases/download/v0.4.0/recached-macos-amd64"
-      sha256 "REPLACE_WITH_AMD64_SHA256"
+      sha256 "04abb0d30ed87747ce877a05ea5c55c8e3168815d207b5c40e42e226f809e48b"
     end
     on_arm do
       url "https://github.com/recached-sh/recached/releases/download/v0.4.0/recached-macos-arm64"
-      sha256 "REPLACE_WITH_ARM64_SHA256"
+      sha256 "dc4a21e6070ecf854249a41e0f1469cc08e1ca7bd1f11f1f93a91604b243d38e"
     end
   end
 
