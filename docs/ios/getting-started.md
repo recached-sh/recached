@@ -1,9 +1,9 @@
 # Use Recached in iOS and macOS
 
-::: warning Preview: not released yet
+::: info 0.1.0 preview
 The Swift package lives in [recached-sh/recached-swift](https://github.com/recached-sh/recached-swift)
-and does not pin a released core yet. Until it does, Apple platforms need the
-XCFramework built locally with its `scripts/build-engine.sh` on a Mac.
+and links the prebuilt native core of recached v0.4.0. Its API may still change
+before 1.0.
 :::
 
 `Recached` keeps a local copy of the keys you watch on the device, saved to
@@ -21,25 +21,16 @@ and `sync-client` as the browser and Android SDKs, through
 - **Reactive updates:** `observe(key)` is an `AsyncStream` that yields when
   that key changes, here, on another device, or on the server.
 
-## Build the preview
+## Install
 
-Use a Mac with Xcode and Rust installed. Build the core from a checkout that contains `recached-mobile`, then add the Swift package locally:
-
-```bash
-git clone --branch dev https://github.com/recached-sh/recached.git
-git clone https://github.com/recached-sh/recached-swift.git
-cd recached-swift
-scripts/build-engine.sh ../recached
-```
-
-For a SwiftPM app beside the checkout, add the local dependency and product:
+In Xcode, choose **File → Add Package Dependencies…** and enter `https://github.com/recached-sh/recached-swift`. In a `Package.swift`:
 
 ```swift
-.package(path: "../recached-swift")
+.package(url: "https://github.com/recached-sh/recached-swift", from: "0.1.0")
 // target dependency: .product(name: "Recached", package: "recached-swift")
 ```
 
-In Xcode, add the `recached-swift` directory as a local package. The current `Package.swift` uses `engine/RecachedFFI.xcframework`; its release URL and checksum are empty. A `from: "0.1.0"` remote dependency is not the preview install path.
+The native core comes as a prebuilt XCFramework attached to the recached v0.4.0 release, so no Rust toolchain is needed. To build it from source instead, see the Development section of the package's [README](https://github.com/recached-sh/recached-swift#development).
 
 iOS 15+ and macOS 12+ are supported. `ObservedKey` requires iOS 17+ or macOS 14+; `ObservableKey` works on the minimum supported versions.
 

@@ -11,8 +11,8 @@ The server exposes a broader command surface than the client SDKs:
 | Backend over RESP | Server package `recached`, binary `recached-server` | Reads run on the server | Snapshot and optional AOF | RESP pub/sub and key notifications | Cache server release candidate |
 | Browser | `recached-edge` | WebAssembly memory | Optional IndexedDB WAL and outbox | `onKeyChange`, `onPatternChange`, `onMutation` | Sync layer beta |
 | React / Vue in a browser | `@recached/react` / `@recached/vue` | Through `recached-edge` | Same as browser client | Hooks / composables | Browser adapters |
-| Android | `dev.recached:recached-android` | Native Rust memory through UniFFI | SQLite local data and outbox | Kotlin `Flow` and `StateFlow` | Unreleased 0.1.0 preview; build from source |
-| iOS / macOS | Swift package `Recached` | Native Rust memory through UniFFI | SQLite local data and outbox | `AsyncStream`, `ObservableKey`, `ObservedKey` | Unreleased 0.1.0 preview; build from source |
+| Android | `dev.recached:recached-android` | Native Rust memory through UniFFI | SQLite local data and outbox | Kotlin `Flow` and `StateFlow` | 0.1.0 preview on Maven Central |
+| iOS / macOS | Swift package `Recached` | Native Rust memory through UniFFI | SQLite local data and outbox | `AsyncStream`, `ObservableKey`, `ObservedKey` | 0.1.0 preview via SwiftPM |
 | Rust service | `recached-embed` | Native process memory | In-memory store and outbox | `subscribe` pub/sub receiver | Git dependency; unpublished crate |
 
 The native SDKs run Rust directly, without WebAssembly or a WebView. Android supports API 24+ on `arm64-v8a`, `armeabi-v7a`, and `x86_64`. Swift supports iOS 15+ and macOS 12+; `ObservedKey` needs iOS 17+ or macOS 14+.

@@ -202,7 +202,7 @@ When your backend calls `SET cart:42:count 3` over RESP, the server pushes the m
 
 ## 5. Connect native mobile apps
 
-Kotlin and Swift use the same WebSocket endpoint and sync scopes as the browser. Both previews restore saved data from SQLite before connecting; call `watch(pattern)` at startup to hydrate and reconcile server state. Follow the [Android build and usage guide](/android/getting-started) or [iOS and macOS guide](/ios/getting-started). Their release artifacts are not pinned yet, so start with a source build.
+Kotlin and Swift use the same WebSocket endpoint and sync scopes as the browser. Both previews restore saved data from SQLite before connecting; call `watch(pattern)` at startup to hydrate and reconcile server state. Follow the [Android build and usage guide](/android/getting-started) or [iOS and macOS guide](/ios/getting-started).
 
 ## 6. Local-only (no server)
 

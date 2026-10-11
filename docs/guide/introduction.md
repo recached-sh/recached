@@ -15,7 +15,7 @@ Client reads use local memory without a server round trip. A server connection a
 | Swift `Recached` | `URLSessionWebSocketTask` | Memory and SQLite data/outbox | `AsyncStream` and SwiftUI models |
 | Rust `recached-embed` | Tokio WebSocket | Memory and in-memory outbox | Pub/sub receiver |
 
-The Kotlin and Swift SDKs are implemented, unreleased previews. React Native, Flutter, and WASI deployment remain planned. See [client support and limits](/guide/client-support) for installation status and adapter differences.
+The Kotlin and Swift SDKs are 0.1.0 previews, on Maven Central and SwiftPM. React Native, Flutter, and WASI deployment remain planned. See [client support and limits](/guide/client-support) for installation status and adapter differences.
 
 ## Shared state across clients
 
@@ -94,7 +94,7 @@ Honest status, per layer:
 - **The cache server is a release candidate for cache workloads.** It includes atomic snapshots, an append-only file, ordered replication, TLS, constant-time authentication, hardened parsers, Prometheus metrics, and load/chaos tests. It still needs broad production validation and an independent security audit. Treat it as a cache, not a system of record.
 - **The shared sync layer (browser, mobile, and Rust clients) is beta.** The invariants are [specified](/server/protocol), tested, and verified end-to-end — but the code is young and hasn't accumulated real-world miles or third-party security review yet. Concretely: don't expose the WebSocket port to the public internet for multi-tenant data until you've read [Sync Scopes](/server/sync-scopes) and understood the model, and expect occasional sharp edges.
 
-- **The Kotlin and Swift SDKs are unreleased 0.1.0 previews.** Their APIs, transports, SQLite persistence, and observers are implemented; package configs do not yet pin a released mobile core. Build from source and review [client limits](/guide/client-support).
+- **The Kotlin and Swift SDKs are 0.1.0 previews**, published to Maven Central and SwiftPM. Their transports, SQLite persistence, and observers are implemented; their APIs may change before 1.0. Review [client limits](/guide/client-support).
 
 The road to 1.0 is hardening, not features: fuzzing the parser surfaces, automated browser testing, a security pass on the token path, and a protocol freeze once real-world usage has confirmed the design. Bug reports from production-like use are the most valuable contribution the project can receive right now.
 
