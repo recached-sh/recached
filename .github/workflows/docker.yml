@@ -1,0 +1,101 @@
+name: Docker image
+
+# Builds and pushes the multi-arch image for a release tag.
+#
+# Called by release.yml on every tag push. It can also be run by hand
+# (Actions → Docker image → Run workflow) to rebuild the image for a tag that
+# already exists. That is the recovery path when only the image failed: npm
+# versions cannot be republished, so a retag is not an option once the
+# packages are out. v0.4.0 hit this when recached-mobile joined the workspace
+# but not the Dockerfile.
+#
+# The source is always the tag's. The Dockerfile comes from the ref this
+# workflow runs on (the tag itself when called from release.yml, the chosen
+# branch when dispatched), so a broken Dockerfile can be fixed on main and the
+# image rebuilt without touching the tag.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build, e.g. v0.4.0"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to rebuild, e.g. v0.4.0"
+        required: true
+        type: string
+      latest:
+        description: "Also move the `latest` tag to this image (untick when rebuilding an older release)"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  docker:
+    name: Build and push multi-arch image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Use the Dockerfile from the workflow ref
+        id: src
+        env:
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git fetch --depth=1 origin "$WORKFLOW_SHA"
+          git checkout FETCH_HEAD -- Dockerfile
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags are spelled out rather than derived from the git ref, which is a
+      # branch when dispatched. They match what a tag push produced before:
+      # the tag name verbatim plus `latest`.
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ inputs.tag }}
+            type=raw,value=latest,enable=${{ github.event_name != 'workflow_dispatch' || inputs.latest }}
+          labels: |
+            org.opencontainers.image.version=${{ inputs.tag }}
+            org.opencontainers.image.revision=${{ steps.src.outputs.revision }}
+
+      # Required for multi-platform builds (linux/amd64 + linux/arm64)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
