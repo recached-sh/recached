@@ -1,6 +1,6 @@
 # ── Stage 1: Build ───────────────────────────────────────────────────────────
-# Use a recent stable image — edition 2024 and let-chains require Rust ≥ 1.88.
-FROM rust:1-slim-bookworm AS builder
+# Same compiler as rust-toolchain.toml; bump the two together.
+FROM rust:1.98.0-slim-bookworm AS builder
 
 # tikv-jemalloc-sys compiles jemalloc from C source, which needs a C toolchain
 # (gcc + make). The slim image doesn't ship one.
