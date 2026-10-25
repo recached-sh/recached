@@ -230,6 +230,40 @@ pub(crate) fn handle_client_command(args: &[String], meta: &mut ClientMeta) -> V
                 "ERR CLIENT EXPIRY expects ON or OFF, got '{other}'"
             )),
         },
+        // Opt-in: an older client only recognises a keychange as a plain
+        // array, and would ignore a push it does not expect.
+        ("PUSHFRAMES", 2) => match args[1].to_uppercase().as_str() {
+            "ON" => {
+                meta.push_frames = true;
+                publish_client(meta.clone());
+                Value::SimpleString("OK".to_string())
+            }
+            "OFF" => {
+                meta.push_frames = false;
+                publish_client(meta.clone());
+                Value::SimpleString("OK".to_string())
+            }
+            other => Value::Error(format!(
+                "ERR CLIENT PUSHFRAMES expects ON or OFF, got '{other}'"
+            )),
+        },
+        // Opt-in: a client from before 0.4 counts an error reply as an
+        // acknowledgment, so deferring its later writes would drop them.
+        ("DEDUPBARRIER", 2) => match args[1].to_uppercase().as_str() {
+            "ON" => {
+                meta.dedup_barrier = true;
+                publish_client(meta.clone());
+                Value::SimpleString("OK".to_string())
+            }
+            "OFF" => {
+                meta.dedup_barrier = false;
+                publish_client(meta.clone());
+                Value::SimpleString("OK".to_string())
+            }
+            other => Value::Error(format!(
+                "ERR CLIENT DEDUPBARRIER expects ON or OFF, got '{other}'"
+            )),
+        },
         ("SETINFO", 3) => match args[1].to_uppercase().as_str() {
             "LIB-NAME" => {
                 meta.lib_name = args[2].clone();
@@ -254,6 +288,8 @@ pub(crate) fn handle_client_command(args: &[String], meta: &mut ClientMeta) -> V
                 "SETINFO <LIB-NAME|LIB-VER> <value> -- Identify the client library.",
                 "DELTA <ON|OFF> -- Receive compact keydelta frames for mutations that have one.",
                 "EXPIRY <ON|OFF> -- Receive each synced key's time to live with its value.",
+                "PUSHFRAMES <ON|OFF> -- Receive keychange and keydelta as RESP3 push frames.",
+                "DEDUPBARRIER <ON|OFF> -- Defer every later DEDUP write after a deferred one.",
             ]
             .iter()
             .map(|l| Value::SimpleString(l.to_string()))

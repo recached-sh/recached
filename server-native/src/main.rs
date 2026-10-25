@@ -72,7 +72,7 @@ use core_engine::store::{
 };
 use futures_util::{SinkExt, StreamExt};
 use metrics::{counter, gauge, histogram};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -450,17 +450,22 @@ async fn run(
         }
     };
 
+    // Duplicate-suppression marks and refusals the AOF carries, merged into
+    // the server state once it exists.
+    let mut recovered_dedup = RecoveredDedup::default();
     let aof: Option<Arc<AofWriter>> = if let Some(path) = aof_path {
         match AofWriter::open(path.clone(), aof_sync).await {
             Ok(w) => {
-                replay_aof_from_checkpoint(&store, &path, loaded_snapshot.aof_checkpoint)
-                    .await
-                    .map_err(|e| {
-                        std::io::Error::new(
-                            e.kind(),
-                            format!("failed to replay AOF {}: {e}", path.display()),
-                        )
-                    })?;
+                let (_, recovered) =
+                    replay_aof_recovering(&store, &path, loaded_snapshot.aof_checkpoint)
+                        .await
+                        .map_err(|e| {
+                            std::io::Error::new(
+                                e.kind(),
+                                format!("failed to replay AOF {}: {e}", path.display()),
+                            )
+                        })?;
+                recovered_dedup = recovered;
                 let writer = Arc::new(w);
                 info!(
                     "AOF enabled: {:?} (sync={})",
@@ -661,6 +666,9 @@ async fn run(
             ),
         )
     })?;
+    // The sidecar holds the marks of the last checkpoint; the AOF holds the
+    // marks of every write since, recorded with the write itself.
+    state.merge_recovered_dedup(recovered_dedup);
 
     if let Some(aof) = &state.aof
         && aof.sync == AofSync::EverySec

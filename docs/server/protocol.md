@@ -62,9 +62,25 @@ Every frame a client receives is exactly one of:
 | **Reply** | any RESP value not matching the rows below | Response to one command this connection sent. An error reply to a write means the server did not apply it |
 | **Mutation push** | RESP3 Push `>N` whose elements form a replayable command (`SET`, `HSET`, `JSET`, `JMERGE`, …) | Another client/backend mutated a key in scope — apply to the local store. **Not sent** when every key it touches is covered by one of this connection's live queries or `WATCH`es, because the keychange below already delivers those authoritatively; sending both would apply a non-idempotent mutation twice |
 | **Pub/sub push** | RESP3 Push `>3` = `["message", channel, payload]` | Pub/sub delivery. The WebSocket transport is always RESP3 — `HELLO 2` on it is refused, because the frame taxonomy below depends on the push type existing |
-| **Keychange push** | Array `["keychange", key, value]` | A watched or live-queried key changed, or the server removed it on its own initiative. `value` is a full string, nil for deletion, or a type-tagged collection containing its complete current value. After `CLIENT EXPIRY ON`, an expiring key's value comes wrapped as `["px", ms, value]` |
-| **Key delta push** | Array `["keydelta", key, op, arg…]` | The same event as a keychange, carrying the *mutation* instead of the resulting value. Only sent to connections that asked with `CLIENT DELTA ON` |
-| **Query state** | Array `["qstate", pattern, k1, v1, …]` | **Both** the reply to a `QSUB` **and** initial state to apply (same value encoding as keychange) |
+| **Keychange push** | Array `["keychange", key, value]`, or Push `>3` after `CLIENT PUSHFRAMES ON` | A watched or live-queried key changed, or the server removed it on its own initiative. `value` is a full string, nil for deletion, or a type-tagged collection containing its complete current value. After `CLIENT EXPIRY ON`, an expiring key's value comes wrapped as `["px", ms, value]` |
+| **Key delta push** | Array `["keydelta", key, op, arg…]`, or Push after `CLIENT PUSHFRAMES ON` | The same event as a keychange, carrying the *mutation* instead of the resulting value. Only sent to connections that asked with `CLIENT DELTA ON` |
+| **Query state** | Array `["qstate", pattern, k1, v1, …]` | **Both** the reply to a `QSUB` **and** initial state to apply (same value encoding as keychange). A client applies it only as the reply to its own outstanding `QSUB` for that pattern |
+
+### Push framing (`CLIENT PUSHFRAMES ON`)
+
+Without push framing a keychange is a plain array, and a client tells it from
+a reply only by its first element. A reply can carry the same shape — `RPOP
+events 3` returning `["keychange", "x", "y"]` — and a client that takes it for
+a push applies a bogus change *and* leaves the write's reply slot for the next
+reply, which then acknowledges the wrong write. After `CLIENT PUSHFRAMES ON`
+keychange and keydelta arrive as RESP3 pushes, so every plain array is a reply.
+
+Opt-in, because a client that predates it only recognises the array form.
+Connection state, re-sent on every open before any `QSUB`. 0.5 clients enable
+it; a server that predates it answers with an error, and the client keeps the
+first-element rule for that connection. Independently of framing, a 0.5 client
+applies a `qstate` only as the reply to its own `QSUB`, so an array reply that
+merely looks like one cannot reconcile away local keys.
 
 ### Key deltas (`CLIENT DELTA ON`)
 
@@ -156,24 +172,37 @@ Expiry deletion is eventual. Without `CLIENT EXPIRY ON` a local copy does not ex
 
 This is the invariant that makes reply correlation cheap: a client keeps a FIFO of sent commands; each incoming *reply* acknowledges the oldest entry. `qstate` counts as the reply to its `QSUB`; `keychange` and all `>` pushes are never replies. Acknowledgment means the server accepted and applied the write. Crash durability still follows the configured snapshot and AOF fsync policy.
 
-An error reply consumes its slot too, but it is not an acknowledgment: the server did not apply the write. What the client does with the queued write depends on the error:
+An error reply consumes its slot too, but it is not an acknowledgment: the server did not apply the write. What the client does with the queued write depends on the error (the classification is `core_engine::resp::is_transient_refusal`, shared by client and server):
 
 - **It can clear without the write changing** — `NOAUTH`, `NOSCOPE send SYNC TOKEN…` (no token accepted yet), `READONLY`, `MISCONF`, `OOM`, and Redis's `LOADING`, `BUSY` and `TRYAGAIN`. The write stays queued. The client sends nothing more on that socket, reconnects, and replays it in order. The backoff keeps growing across such reconnects until a write is accepted, so a missing token does not turn into a reconnect loop.
 - **It cannot** — a key out of scope or read-only, a wrong type, a bad argument. Replaying it would be refused again, so the write leaves the queue and the application is told. The client cannot undo its local effect; it re-subscribes the live queries covering the write's keys, whose snapshots put back the server's values.
 
-A refused write does not advance the client's `DEDUP` high-water mark, so its replay is applied normally. One case escapes: when a later write already in flight on the same socket is accepted, it raises the mark past the refused one, and the replay is answered `+DUP` and dropped. The client stops sending as soon as the first refusal arrives, which leaves only the writes already on the wire exposed.
+A refused write does not advance the client's `DEDUP` high-water mark. Two cases used to escape that, both because a later write already in flight on the same socket can be accepted and raise the mark past the refused one:
+
+- **A deferred write** would then have its replay answered `+DUP` and dropped. After `CLIENT DEDUPBARRIER ON` the server defers every later `DEDUP` write from the same client on that socket too (`-TRYAGAIN an earlier write from this client was deferred on this connection…`), so nothing can overtake it. 0.5 clients send it before replaying their outbox. It is opt-in because a client from before 0.4 counted an error reply as an acknowledgment and would drop the writes it defers.
+- **A permanently refused write** whose reply was lost would have its replay answered `+DUP`, and the client would retire it as applied, never hearing it was refused. The server now remembers recent permanent refusals per client (the last 64, durable in the AOF and the `.dedup-refusals` sidecar) and answers a replay below the mark with the original error. A refused write replayed while still *above* the mark runs again, as before, and may now succeed.
+
+### Write-path ordering
+
+For a `DEDUP` write the server, in order: authenticates the connection; answers a replay from its mark (`+DUP` or the remembered refusal) — before the scope check in strict mode, so a write applied under an earlier token reads as applied under a narrower one; checks scope; takes the key-order guards; executes; appends the frame to the AOF (inside its envelope, see below) and fans it out to replicas, watchers and sync connections; commits the mark in memory; and only then replies. A crash before the AOF append loses the write and its mark together; after it, both survive within the AOF's fsync policy.
 
 ## Session establishment
 
 On every (re)connect, in this order:
 
 1. `AUTH password` — required first when `RECACHED_PASSWORD` is set
-2. `CLIENT DELTA ON` and `CLIENT EXPIRY ON` — connection state, so they are re-sent every time, and sent before `QSUB` so the live query's own traffic is already compact and its snapshot already carries expiries
+2. `CLIENT DELTA ON`, `CLIENT EXPIRY ON`, `CLIENT PUSHFRAMES ON` and `CLIENT DEDUPBARRIER ON` — connection state, so they are re-sent every time, and sent before the outbox and `QSUB`s they affect
 3. `SYNC TOKEN token` (strict scoping) or `SYNC pattern…` (open mode) — see [Sync Scopes](/server/sync-scopes)
 4. Replay of the outbox (unacknowledged writes), oldest first — after the session, which grants their access
 5. `QSUB pattern` per live query — the `qstate` replies re-hydrate local state
 
 The outbox replays before the live queries so each `qstate` snapshot already contains the client's own queued writes. Taken before the replay, a snapshot lacks them, and reconciling against it would remove a key created offline (or revert an offline edit) until the write's own `keychange` restored it.
+
+A replayed write the server *defers* is not in the snapshot either. A 0.5 client therefore leaves alone every key a still-queued write covers when it applies a `qstate`: the write's own acknowledgment and keychange bring the server's value. If such a write comes back `+DUP` — applied in an earlier session, so no keychange follows — the client re-subscribes the covering live query.
+
+The client reports progress through this sequence as a status — `Disconnected → Connecting → Authenticating` (steps 1–3) `→ Replaying` (4) `→ Hydrating` (5) `→ Ready`, or `Degraded` when authentication, the scope or a live query is refused. An open socket alone is never `Ready`. A live query added later reports its own progress without taking the connection out of `Ready`.
+
+The server reads every frame a client pipelines, however long the replay: before taking each command a connection drains the mutation fan-out it shares with every other connection. Before 0.5 a client replaying more than a few hundred writes could lag that fan-out with its own writes' echoes and be closed with `4001` mid-replay.
 
 ## Deduplicated write replay (`DEDUP`)
 
@@ -184,16 +213,44 @@ DEDUP <client-id> <wire-id> <command> <args…>
 ```
 
 - `client-id`: 1–64 chars, stable per client, **unguessable** (a guessable id lets another authenticated client poison your high-water mark); browsers use `crypto.randomUUID()`
-- `wire-id`: `(session-epoch << 32) | write-counter` — strictly increasing across a client's lifetime, including across page reloads (the epoch is persisted and bumped per session)
-- Server behavior: per `client-id`, ids at or below the high-water mark reply `+DUP` and do **not** execute. A higher id is committed only after its wrapped write succeeds. Marks are persisted in the snapshot's `.dedup` sidecar. When the map exceeds 10,000 clients, duplicate checks sweep marks idle for at least 24 hours.
+- `wire-id`: `(session-epoch << 32) | write-counter` — strictly increasing across a client identity's lifetime. Native clients persist one identity and bump its epoch per open; when the epoch is exhausted they take a new identity rather than reuse one. Browsers take a fresh identity per page load, because tabs share one IndexedDB and must not share a mark. A client refuses a write rather than wrap the 32-bit counter within an epoch.
+- Server behavior: per `client-id`, ids at or below the high-water mark reply `+DUP` and do **not** execute — or, for a remembered permanent refusal, reply its original error. A higher id is committed only after its wrapped write succeeds. When the map exceeds 10,000 clients, duplicate checks sweep marks idle for at least 24 hours.
 - `+DUP` is a normal reply — it acknowledges and retires the write.
 - Scope checks, replica write-rejection, and metrics apply to the *wrapped* command.
 - Connection-scoped commands (`SUBSCRIBE`, `UNSUBSCRIBE`, `PUBLISH`) are **never** wrapped — a replayed subscribe must re-execute, not be skipped.
 
-The sidecar and snapshot are one checkpoint, so neither can claim a write absent from that snapshot.
-The AOF currently records the inner mutation rather than its dedup identity. If the AOF replays a
-write newer than the snapshot, a client retry after that restart can apply a non-idempotent command
-twice. `DEDUP` is reconnect duplicate suppression, not a cross-crash transaction log.
+### Crash consistency
+
+Since 0.5 the AOF records a `DEDUP` write **inside its envelope** — one frame,
+`>N DEDUP <client> <id> <mutation…>` — so a torn tail drops the write and its
+mark together or keeps both. A write that changed nothing (an `HDEL` of a
+missing field) gets a mark-only `RECACHED-DEDUP <client> <id>` record, and a
+permanent refusal a `RECACHED-DEDUP-REFUSED <client> <id> <error>` record.
+Startup restores marks and refusals from the whole AOF and merges them with the
+sidecars, so a retry of an `INCR` whose reply was lost is answered `+DUP` after
+a crash, not run again.
+
+A checkpoint writes the `.dedup` and `.dedup-refusals` sidecars **before** the
+snapshot, while writes are blocked. A crash between the two leaves marks ahead
+of the old snapshot: with an AOF every write they cover replays from it;
+without one those writes are lost with the crash — the snapshot-only durability
+contract — and a retry of one is answered as applied. Before 0.5 the order was
+reversed, and the same crash left marks behind a snapshot holding their writes,
+so a retry ran twice.
+
+What `DEDUP` therefore guarantees:
+
+| Situation | A retried write… |
+|---|---|
+| Server running, mark retained | is not run again |
+| Server restarted, AOF on, write within the fsync window | is not run again |
+| Server restarted, write lost by the persistence policy (no AOF, or the unsynced `everysec` tail) | is run once — or, snapshot-only with a crash inside a checkpoint, answered as applied though lost |
+| Client idle for 24 h while the server tracks over 10,000 clients | may run again: its mark was swept |
+| Replica promoted to primary | may run again: replication carries bare mutations, not marks, so older replicas can read the stream |
+| Permanently refused, reply lost, a later write accepted | is refused again while among the client's last 64 refusals; beyond that, answered `+DUP` |
+
+It is duplicate suppression with documented limits, not an exactly-once
+guarantee. Use application-level idempotency when duplicates are unacceptable.
 
 ## Token format (strict scoping)
 
@@ -210,7 +267,8 @@ The HMAC is computed over the base64url payload *text*. Expiry is validated when
 |---|---|
 | `qstate` initial-state entries | 10 000 keys |
 | Live queries per connection | 64 |
-| Client outbox | 10 000 writes (oldest dropped) |
+| Client outbox | 10 000 writes; a write past it is refused (`OutboxFull`), or the oldest dropped under the legacy eviction policy |
+| Remembered `DEDUP` refusals | 64 per client |
 | `DEDUP` client id | 64 chars |
 | Watched keys per connection | 1 024 |
 | Bulk string / total message | 64 MB |
@@ -228,4 +286,6 @@ The HMAC is computed over the base64url payload *text*. Expiry is validated when
 - **New commands** never change the one-reply-per-command invariant.
 - **Replication**: the `RCP1` marker is mandatory; incompatible peers fail instead of interpreting a
   snapshot or command with the wrong framing.
-- **Client IndexedDB schema**: bumps create missing object stores idempotently; existing stores are never dropped in an upgrade.
+- **Client IndexedDB schema**: bumps create missing object stores idempotently; existing stores are never dropped in an upgrade. 0.5 keys rows per session (`[t, session, seq]` in `wal`, `[session, id]` in `outbox`); numeric keys written earlier sort first and replay first.
+- **AOF**: a 0.5 AOF contains `DEDUP`, `RECACHED-DEDUP` and `RECACHED-DEDUP-REFUSED` records, which a 0.4 server refuses to replay. Run `SAVE` (which truncates the AOF) before downgrading. A 0.5 server replays any earlier AOF.
+- **Opt-ins**: `CLIENT PUSHFRAMES` and `CLIENT DEDUPBARRIER` are refused by servers before 0.5, which leaves a 0.5 client on the 0.4 behaviour for that connection.

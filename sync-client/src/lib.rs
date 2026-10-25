@@ -19,11 +19,245 @@ use core_engine::cmd::Command;
 use core_engine::resp::Value;
 use core_engine::store::{KeyValueStore, glob_match};
 use std::collections::{HashSet, VecDeque};
+use std::fmt;
 use std::sync::Arc;
 
-/// Cap on outbox entries. When full, the oldest is dropped (reported via
-/// [`Enqueued::dropped`] so durable storage can be cleaned up too).
+/// Default cap on outbox entries. What happens to a write past it is the
+/// [`OverflowPolicy`]: by default the write is refused, never an older one
+/// dropped to make room.
 pub const MAX_PENDING_WRITES: usize = 10_000;
+
+/// Highest outbox id a duplicate-suppressed write can carry within one epoch.
+/// The low 32 bits of a wire id are the outbox id, so one more would wrap onto
+/// an id the server has already seen and the write would be skipped as a
+/// duplicate. [`SyncClient::try_enqueue_write`] refuses it instead.
+pub const MAX_WIRE_SEQ: u64 = u32::MAX as u64;
+
+/// What [`SyncClient::try_enqueue_write`] does with a write that arrives while
+/// the outbox is full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverflowPolicy {
+    /// Refuse the new write with [`EnqueueError::OutboxFull`] and leave every
+    /// queued write where it is. The default: the caller learns at once that
+    /// the write was not accepted, before it has shown it as done.
+    #[default]
+    Reject,
+    /// The behaviour up to 0.4: evict the oldest queued write to make room,
+    /// reported through [`Enqueued::dropped`]. The evicted write never reaches
+    /// the server, though the application may already have shown it as saved.
+    /// Only for callers that would rather lose old writes than refuse new ones.
+    EvictOldest,
+}
+
+/// Why a write could not be queued. Nothing was queued, and nothing already
+/// queued was changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnqueueError {
+    /// The outbox holds `pending` writes and its cap is `capacity`. Writes
+    /// drain as the server acknowledges them.
+    OutboxFull { pending: usize, capacity: usize },
+    /// This session has used every duplicate-suppression id its epoch can
+    /// hold ([`MAX_WIRE_SEQ`]). A new session — a new epoch, see
+    /// [`next_epoch`] — is needed before another write can be queued.
+    WireIdsExhausted,
+}
+
+impl fmt::Display for EnqueueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutboxFull { pending, capacity } => write!(
+                f,
+                "outbox full: {pending} writes pending, capacity {capacity}"
+            ),
+            Self::WireIdsExhausted => {
+                f.write_str("this session has used every write id; start a new session")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EnqueueError {}
+
+/// The epoch a new session should use after `previous`, or `None` when the
+/// epoch space is used up.
+///
+/// `None` means the client must take a new identity — a fresh client id,
+/// starting again at epoch 1 — because every epoch of this one has been used.
+/// Saturating at `u32::MAX` instead, as adapters used to, makes two sessions
+/// share an epoch: the second reuses the first's wire ids, and the server
+/// skips its writes as duplicates.
+pub fn next_epoch(previous: u32) -> Option<u32> {
+    previous.checked_add(1)
+}
+
+/// Where the connection is in establishing synchronization.
+///
+/// An open socket is only the start. The client is [`Ready`](Self::Ready)
+/// once the session is authenticated and scoped, every write queued before
+/// the socket opened has been answered, and every live query registered at
+/// that point has received its snapshot. Live queries added later report their
+/// own progress through [`SubscriptionState`] without taking the connection
+/// out of `Ready`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SyncPhase {
+    /// No socket, or the last one closed.
+    Disconnected,
+    /// The adapter is opening a socket ([`SyncClient::on_connecting`]).
+    Connecting,
+    /// Session setup — `AUTH`, the `CLIENT` opt-ins, `SYNC TOKEN` or `SYNC`
+    /// scopes — sent and not yet answered. Never skipped: every open sends
+    /// the opt-ins, so `Ready` always waits for at least one reply.
+    Authenticating,
+    /// Writes queued before the socket opened have been sent and not all
+    /// answered yet.
+    Replaying,
+    /// Live-query snapshots requested on open have not all arrived.
+    Hydrating,
+    /// Everything above has completed.
+    Ready,
+    /// The socket is open but synchronization is impaired: authentication or
+    /// the sync scope was refused, a live query was refused, or the socket is
+    /// being abandoned after a deferred write or an unparseable frame. The
+    /// status's error says which.
+    Degraded,
+}
+
+/// A connection-level synchronization problem, from [`SyncStatus::error`].
+///
+/// Reasons are the server's error text. The server never echoes a password
+/// or token into one, and the client adds nothing that could carry one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncError {
+    /// `AUTH` was refused.
+    AuthFailed { reason: String },
+    /// `SYNC TOKEN` or `SYNC` scopes were refused.
+    ScopeRefused { reason: String },
+    /// A queued write was refused for a reason that can clear. It stays
+    /// queued and replays on the next connection.
+    WriteDeferred { reason: String },
+    /// A live query was refused; its keys are not being kept in sync.
+    SubscriptionFailed {
+        pattern: String,
+        failure: SubscriptionFailure,
+        reason: String,
+    },
+    /// An incoming frame could not be parsed, so reply matching on this
+    /// socket can no longer be trusted.
+    MalformedFrame,
+}
+
+/// Why a live query was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SubscriptionFailure {
+    /// More keys match than the server will send in one snapshot
+    /// (`RECACHED_MAX_QSUB_INITIAL_KEYS`). The server sends no partial
+    /// snapshot, so nothing local was reconciled against one.
+    SnapshotTooLarge,
+    /// The pattern is outside this connection's sync scope.
+    OutOfScope,
+    /// Any other refusal, such as the per-connection live-query limit.
+    Other,
+}
+
+/// The connection's synchronization status: see [`SyncClient::status`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncStatus {
+    pub phase: SyncPhase,
+    /// What is wrong, when something is. While
+    /// [`Disconnected`](SyncPhase::Disconnected) or
+    /// [`Connecting`](SyncPhase::Connecting) this is the problem that ended
+    /// the last connection, if any.
+    pub error: Option<SyncError>,
+}
+
+/// One live query's progress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubscriptionState {
+    /// Registered, waiting for a connection to request its snapshot. Local
+    /// copies of its keys are whatever the last session left.
+    Pending,
+    /// Snapshot requested and not yet received.
+    Hydrating,
+    /// The snapshot has been applied; changes stream as they happen.
+    Current,
+    /// The server refused it. Retried on the next connection.
+    Failed {
+        failure: SubscriptionFailure,
+        reason: String,
+    },
+}
+
+/// Counters for diagnostics. Monotonic over the client's lifetime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SyncCounters {
+    /// Sockets opened ([`SyncClient::on_open`] calls).
+    pub connections: u64,
+    /// Queued writes re-sent by `on_open`.
+    pub replayed_writes: u64,
+    /// Writes the server refused for a reason that can clear.
+    pub deferred_writes: u64,
+    /// Writes the server refused for good.
+    pub refused_writes: u64,
+    /// Writes [`SyncClient::try_enqueue_write`] refused (full outbox,
+    /// exhausted ids).
+    pub rejected_writes: u64,
+    /// Writes evicted under [`OverflowPolicy::EvictOldest`].
+    pub evicted_writes: u64,
+    /// Live-query snapshots applied.
+    pub snapshots_applied: u64,
+    /// Frames that could not be parsed.
+    pub malformed_frames: u64,
+}
+
+/// One reply slot: what the next reply in send order answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Slot {
+    /// A queued write. `replay`: re-sent by `on_open`, so part of the replay
+    /// that [`SyncPhase::Replaying`] waits for.
+    Write {
+        id: u64,
+        replay: bool,
+    },
+    Auth,
+    /// `SYNC TOKEN` or `SYNC <patterns>`.
+    Scope,
+    Capability(Capability),
+    /// `QSUB`. `initial`: sent by `on_open`, so part of the hydration that
+    /// [`SyncPhase::Hydrating`] waits for.
+    LiveQuery {
+        pattern: String,
+        initial: bool,
+    },
+    /// Anything else: `QUNSUB`, a one-shot command.
+    Session,
+}
+
+impl Slot {
+    /// Part of session setup, which [`SyncPhase::Authenticating`] waits for.
+    fn is_setup(&self) -> bool {
+        matches!(self, Slot::Auth | Slot::Scope | Slot::Capability(_))
+    }
+}
+
+/// The `CLIENT` opt-ins sent on every open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Capability {
+    Delta,
+    Expiry,
+    /// `CLIENT PUSHFRAMES ON`: `keychange` and `keydelta` arrive as RESP3
+    /// push frames, so no command reply can be mistaken for one.
+    PushFrames,
+    /// `CLIENT DEDUPBARRIER ON`: after a write is deferred, the server defers
+    /// every later write from this client on the same socket too, so none of
+    /// them can raise the duplicate-suppression mark past the deferred one.
+    DedupBarrier,
+}
+
+#[derive(Debug, Clone)]
+struct LiveQuery {
+    pattern: String,
+    state: SubscriptionState,
+}
 
 /// Reconnect backoff: `500ms * 2^attempts`, capped.
 pub const BACKOFF_BASE_MS: u32 = 500;
@@ -66,10 +300,13 @@ pub enum Incoming {
     /// The write still shows in the local store; the client has no way to undo
     /// it. For keys a live query covers,
     /// [`resubscribe_covering`](SyncClient::resubscribe_covering) puts back the
-    /// server's values.
+    /// server's values. `unreconciled` lists the keys no live query covers:
+    /// their local value is the refused one, and nothing will correct it until
+    /// the application writes them again or watches them.
     Refused {
         retired: u64,
         keys: Vec<String>,
+        unreconciled: Vec<String>,
         reason: String,
     },
     /// The server refused a queued write for a reason that can clear without
@@ -82,10 +319,12 @@ pub enum Incoming {
     /// here would raise the server's duplicate-suppression mark past this one,
     /// and its replay would be skipped as already applied.
     Deferred { reason: String },
-    /// A `qstate` frame: the reply to a QSUB (retire the row, if any) *and*
-    /// state applied to the local store — notify the subscribers of `keys`,
-    /// which covers every key in the snapshot and every local key the
-    /// snapshot reconciled away.
+    /// A `qstate` frame: the reply to a QSUB *and* state applied to the local
+    /// store — notify the subscribers of `keys`, which covers every key in the
+    /// snapshot and every local key the snapshot reconciled away.
+    ///
+    /// `retired` is always `None`: a snapshot answers a `QSUB`, never a write.
+    /// It is kept so adapters can treat both reply kinds alike.
     AppliedReply {
         retired: Option<u64>,
         keys: Vec<String>,
@@ -126,9 +365,21 @@ pub struct Enqueued {
     /// Send `frame` now (the caller reported the socket open, and the write
     /// was recorded as inflight).
     pub send_now: bool,
-    /// The outbox overflowed and this row id was evicted — delete it from
-    /// durable storage.
+    /// Only under [`OverflowPolicy::EvictOldest`]: the outbox was full and
+    /// this row id was evicted — delete it from durable storage. That write
+    /// will never reach the server.
     pub dropped: Option<u64>,
+}
+
+/// Result of [`SyncClient::restore_outbox`].
+#[derive(Debug, PartialEq)]
+pub struct Restored {
+    /// `(old id, new id, frame)` for every restored row, in replay order.
+    /// Replace durable storage with these rows atomically.
+    pub rewrites: Vec<(u64, u64, Vec<u8>)>,
+    /// Frames to send now, in order: the restored rows, when the socket was
+    /// already open. Each holds a reply slot.
+    pub send_now: Vec<Vec<u8>>,
 }
 
 /// The platform-neutral sync state machine. One instance per connection
@@ -138,10 +389,9 @@ pub struct SyncClient {
     /// Writes not yet acknowledged by the server, in send order.
     outbox: VecDeque<(u64, Vec<u8>)>,
     outbox_seq: u64,
-    /// One entry per frame sent on the current socket: `Some(outbox id)` for
-    /// data writes, `None` for session commands. Replies arrive in send
-    /// order; each acknowledges the front entry.
-    inflight: VecDeque<Option<u64>>,
+    /// One slot per frame sent on the current socket, in send order. Replies
+    /// arrive in send order; each answers the front slot.
+    inflight: VecDeque<Slot>,
     /// Ids overflow evicted after they were sent on the current socket. Their
     /// replies still arrive, in their slots, and must retire nothing; knowing
     /// them here answers that in O(1) instead of searching the surviving
@@ -155,12 +405,13 @@ pub struct SyncClient {
     password: Option<String>,
     sync_token: Option<String>,
     sync_scopes_csv: Option<String>,
-    live_queries: Vec<String>,
+    live_queries: Vec<LiveQuery>,
     attempts: u32,
-    /// Cap on queued-but-unacknowledged writes. Beyond it the oldest is
-    /// evicted. Configurable because the right depth depends on how long a
-    /// client is expected to be offline and how large its writes are.
+    /// Cap on queued-but-unacknowledged writes. Configurable because the
+    /// right depth depends on how long a client is expected to be offline and
+    /// how large its writes are.
     max_pending: usize,
+    overflow: OverflowPolicy,
     /// Jitter source for reconnect backoff. Seeded from `client_id` rather than
     /// a system RNG so this crate stays dependency-free and I/O-free — and so
     /// the sequence is reproducible in tests. Different clients get different
@@ -173,6 +424,39 @@ pub struct SyncClient {
     /// the backoff growing instead of resetting it, so a client whose token
     /// stays missing does not reconnect twice a second forever.
     deferring: bool,
+    /// The server accepted `CLIENT PUSHFRAMES ON` on this socket: every
+    /// `keychange` and `keydelta` now arrives as a push, so a plain array is
+    /// always a reply. Until then a reply shaped like one is ambiguous.
+    push_frames: bool,
+    // ── lifecycle ────────────────────────────────────────────────────────
+    open: bool,
+    connecting: bool,
+    /// Session-setup slots (`AUTH`, `CLIENT` opt-ins, `SYNC`) not yet
+    /// answered on this socket.
+    setup_pending: usize,
+    /// Writes `on_open` replayed that are not yet answered.
+    replay_pending: usize,
+    /// `QSUB`s `on_open` sent that are not yet answered.
+    hydrate_pending: usize,
+    auth_failed: Option<String>,
+    scope_refused: Option<String>,
+    /// Why this socket is being abandoned, while `paused`.
+    pause_reason: Option<SyncError>,
+    /// The problem that ended the last connection, shown while disconnected.
+    disconnect_reason: Option<SyncError>,
+    reported_status: Option<SyncStatus>,
+    /// Patterns whose [`SubscriptionState`] changed since the last
+    /// [`take_subscription_changes`](Self::take_subscription_changes).
+    subscription_changes: Vec<String>,
+    /// Keys a snapshot on this socket left alone because a queued write
+    /// covered them (see `apply_qstate`).
+    protected: HashSet<String>,
+    /// Protected keys whose write then came back `+DUP` — applied in an
+    /// earlier session, so no `keychange` will bring the server's value.
+    /// Their live queries are re-subscribed by
+    /// [`take_frames_to_send`](SyncClient::take_frames_to_send).
+    resync_keys: Vec<String>,
+    counters: SyncCounters,
 }
 
 impl SyncClient {
@@ -192,9 +476,25 @@ impl SyncClient {
             live_queries: Vec::new(),
             attempts: 0,
             max_pending: MAX_PENDING_WRITES,
+            overflow: OverflowPolicy::default(),
             jitter,
             paused: false,
             deferring: false,
+            push_frames: false,
+            open: false,
+            connecting: false,
+            setup_pending: 0,
+            replay_pending: 0,
+            hydrate_pending: 0,
+            auth_failed: None,
+            scope_refused: None,
+            pause_reason: None,
+            disconnect_reason: None,
+            reported_status: None,
+            subscription_changes: Vec::new(),
+            protected: HashSet::new(),
+            resync_keys: Vec::new(),
+            counters: SyncCounters::default(),
         }
     }
 
@@ -206,8 +506,8 @@ impl SyncClient {
         &self.client_id
     }
 
-    /// Set the outbox cap (minimum 1). Writes past it evict the oldest, which
-    /// is reported through the adapter's overflow callback.
+    /// Set the outbox cap (minimum 1). A lower cap than the rows already
+    /// queued drops none of them; new writes are refused until it drains.
     pub fn set_max_pending(&mut self, max: usize) {
         self.max_pending = max.max(1);
     }
@@ -215,6 +515,16 @@ impl SyncClient {
     /// Current outbox cap.
     pub fn max_pending(&self) -> usize {
         self.max_pending
+    }
+
+    /// Choose what a write past the cap does. [`OverflowPolicy::Reject`]
+    /// unless changed.
+    pub fn set_overflow_policy(&mut self, policy: OverflowPolicy) {
+        self.overflow = policy;
+    }
+
+    pub fn overflow_policy(&self) -> OverflowPolicy {
+        self.overflow
     }
 
     pub fn epoch(&self) -> u32 {
@@ -243,6 +553,10 @@ impl SyncClient {
         }
     }
 
+    pub fn counters(&self) -> SyncCounters {
+        self.counters
+    }
+
     // ── session state ─────────────────────────────────────────────────────
     // Setters record state for re-establishment on every reconnect and, when
     // the socket is open, return the frame to send now (recording it as
@@ -251,12 +565,12 @@ impl SyncClient {
 
     pub fn set_password(&mut self, password: &str, connected: bool) -> Option<Vec<u8>> {
         self.password = Some(password.to_string());
-        self.session_frame(to_resp(&["AUTH", password]), connected)
+        self.session_frame(to_resp(&["AUTH", password]), Slot::Auth, connected)
     }
 
     pub fn set_sync_token(&mut self, token: &str, connected: bool) -> Option<Vec<u8>> {
         self.sync_token = Some(token.to_string());
-        self.session_frame(to_resp(&["SYNC", "TOKEN", token]), connected)
+        self.session_frame(to_resp(&["SYNC", "TOKEN", token]), Slot::Scope, connected)
     }
 
     /// Comma-separated glob patterns. Returns `None` (and records nothing)
@@ -264,30 +578,62 @@ impl SyncClient {
     pub fn set_sync_scopes(&mut self, patterns_csv: &str, connected: bool) -> Option<Vec<u8>> {
         let frame = sync_scopes_frame(patterns_csv)?;
         self.sync_scopes_csv = Some(patterns_csv.to_string());
-        self.session_frame(frame, connected)
+        self.session_frame(frame, Slot::Scope, connected)
     }
 
     /// Register a live query (idempotent). The returned frame re-hydrates
     /// matching keys via the `qstate` reply.
     pub fn add_live_query(&mut self, pattern: &str, connected: bool) -> Option<Vec<u8>> {
-        if !self.live_queries.iter().any(|p| p == pattern) {
-            self.live_queries.push(pattern.to_string());
+        if !self.live_queries.iter().any(|q| q.pattern == pattern) {
+            self.live_queries.push(LiveQuery {
+                pattern: pattern.to_string(),
+                state: SubscriptionState::Pending,
+            });
+            self.subscription_changes.push(pattern.to_string());
         }
-        self.session_frame(to_resp(&["QSUB", pattern]), connected)
+        self.qsub_frame(pattern, false, connected)
     }
 
     pub fn remove_live_query(&mut self, pattern: Option<&str>, connected: bool) -> Option<Vec<u8>> {
         let frame = match pattern {
             Some(p) => {
-                self.live_queries.retain(|q| q != p);
+                if self.live_queries.iter().any(|q| q.pattern == p) {
+                    self.subscription_changes.push(p.to_string());
+                }
+                self.live_queries.retain(|q| q.pattern != p);
                 to_resp(&["QUNSUB", p])
             }
             None => {
-                self.live_queries.clear();
+                self.subscription_changes
+                    .extend(self.live_queries.drain(..).map(|q| q.pattern));
                 to_resp(&["QUNSUB"])
             }
         };
-        self.session_frame(frame, connected)
+        self.session_frame(frame, Slot::Session, connected)
+    }
+
+    /// The live queries currently registered, with their progress.
+    pub fn subscriptions(&self) -> Vec<(String, SubscriptionState)> {
+        self.live_queries
+            .iter()
+            .map(|q| (q.pattern.clone(), q.state.clone()))
+            .collect()
+    }
+
+    /// One live query's progress, or `None` when `pattern` is not registered.
+    pub fn subscription_state(&self, pattern: &str) -> Option<SubscriptionState> {
+        self.live_queries
+            .iter()
+            .find(|q| q.pattern == pattern)
+            .map(|q| q.state.clone())
+    }
+
+    /// True when a registered live query covers `key`, so a fresh snapshot
+    /// can correct its local copy.
+    pub fn is_covered(&self, key: &str) -> bool {
+        self.live_queries
+            .iter()
+            .any(|q| glob_match(&q.pattern, key))
     }
 
     /// Register a one-shot frame the adapter is about to send whose reply must
@@ -299,22 +645,58 @@ impl SyncClient {
     /// server-side adapter that offers read-through must still take a slot, or
     /// its reply would falsely acknowledge the oldest queued write.
     pub fn session_command(&mut self, frame: Vec<u8>, connected: bool) -> Option<Vec<u8>> {
-        self.session_frame(frame, connected)
+        self.session_frame(frame, Slot::Session, connected)
     }
 
-    fn session_frame(&mut self, frame: Vec<u8>, connected: bool) -> Option<Vec<u8>> {
+    fn session_frame(&mut self, frame: Vec<u8>, slot: Slot, connected: bool) -> Option<Vec<u8>> {
         if connected && !self.paused {
-            self.inflight.push_back(None);
+            if slot.is_setup() {
+                self.setup_pending += 1;
+            }
+            self.inflight.push_back(slot);
             Some(frame)
         } else {
             None
         }
     }
 
+    fn qsub_frame(&mut self, pattern: &str, initial: bool, connected: bool) -> Option<Vec<u8>> {
+        let frame = self.session_frame(
+            to_resp(&["QSUB", pattern]),
+            Slot::LiveQuery {
+                pattern: pattern.to_string(),
+                initial,
+            },
+            connected,
+        )?;
+        if initial {
+            self.hydrate_pending += 1;
+        }
+        self.set_subscription(pattern, SubscriptionState::Hydrating);
+        Some(frame)
+    }
+
+    fn set_subscription(&mut self, pattern: &str, state: SubscriptionState) {
+        if let Some(q) = self.live_queries.iter_mut().find(|q| q.pattern == pattern)
+            && q.state != state
+        {
+            q.state = state;
+            self.subscription_changes.push(pattern.to_string());
+        }
+    }
+
     // ── connection lifecycle ──────────────────────────────────────────────
 
+    /// The adapter is opening a socket. Optional: it only makes the status
+    /// read [`SyncPhase::Connecting`] until the socket opens or fails.
+    pub fn on_connecting(&mut self) {
+        if !self.open {
+            self.connecting = true;
+        }
+    }
+
     /// The socket opened: returns every frame to send, in order — the session
-    /// (AUTH → CLIENT DELTA → CLIENT EXPIRY → SYNC), then the full outbox replay, then the
+    /// (AUTH → CLIENT opt-ins → SYNC), then the full outbox replay, then the
     /// live queries. Live-query re-subscription re-hydrates local state;
     /// outbox entries stay queued until their replies acknowledge them.
     ///
@@ -331,49 +713,95 @@ impl SyncClient {
             self.attempts = 0;
         }
         self.paused = false;
+        self.push_frames = false;
+        self.open = true;
+        self.connecting = false;
+        self.setup_pending = 0;
+        self.replay_pending = 0;
+        self.hydrate_pending = 0;
+        self.auth_failed = None;
+        self.scope_refused = None;
+        self.pause_reason = None;
+        self.disconnect_reason = None;
+        // Every live query re-snapshots below, so nothing protected on the
+        // last socket still needs a resubscribe of its own.
+        self.protected.clear();
+        self.resync_keys.clear();
+        self.counters.connections += 1;
         self.inflight.clear();
         self.sent_then_dropped.clear();
         let mut frames = Vec::new();
         if let Some(pwd) = &self.password {
             frames.push(to_resp(&["AUTH", pwd]));
-            self.inflight.push_back(None);
+            self.inflight.push_back(Slot::Auth);
+            self.setup_pending += 1;
         }
         // This client understands `keydelta`, so say so. Sent every time the
         // socket opens because it is connection state, not session state, and
         // sent before QSUB so the initial live-query traffic already benefits.
-        // An older server answers with an error, which `ack_reply` retires
-        // like any other reply and which changes nothing: it simply keeps
-        // sending whole values.
+        // An older server answers with an error, which changes nothing: it
+        // simply keeps sending whole values.
         frames.push(to_resp(&["CLIENT", "DELTA", "ON"]));
-        self.inflight.push_back(None);
+        self.inflight.push_back(Slot::Capability(Capability::Delta));
+        self.setup_pending += 1;
         // Likewise for expiry: keychange and qstate values then carry the
         // key's time to live, so an expiring key stays expiring here. An older
         // server refuses it and sends bare values, as before.
         frames.push(to_resp(&["CLIENT", "EXPIRY", "ON"]));
-        self.inflight.push_back(None);
+        self.inflight
+            .push_back(Slot::Capability(Capability::Expiry));
+        self.setup_pending += 1;
+        // Push framing: keychange/keydelta as RESP3 pushes, so a reply can
+        // never be taken for one. Until a server says yes, a reply shaped like
+        // a keychange is still read as one — the 0.4 behaviour.
+        frames.push(to_resp(&["CLIENT", "PUSHFRAMES", "ON"]));
+        self.inflight
+            .push_back(Slot::Capability(Capability::PushFrames));
+        self.setup_pending += 1;
+        // Ordered deferral: the server then refuses every write after a
+        // deferred one on this socket, so none can raise the duplicate mark
+        // past it. Sent before the outbox, which it protects.
+        frames.push(to_resp(&["CLIENT", "DEDUPBARRIER", "ON"]));
+        self.inflight
+            .push_back(Slot::Capability(Capability::DedupBarrier));
+        self.setup_pending += 1;
         if let Some(tok) = &self.sync_token {
             frames.push(to_resp(&["SYNC", "TOKEN", tok]));
-            self.inflight.push_back(None);
+            self.inflight.push_back(Slot::Scope);
+            self.setup_pending += 1;
         } else if let Some(csv) = &self.sync_scopes_csv
             && let Some(frame) = sync_scopes_frame(csv)
         {
             frames.push(frame);
-            self.inflight.push_back(None);
+            self.inflight.push_back(Slot::Scope);
+            self.setup_pending += 1;
         }
         for (id, frame) in &self.outbox {
             frames.push(frame.clone());
-            self.inflight.push_back(Some(*id));
+            self.inflight.push_back(Slot::Write {
+                id: *id,
+                replay: true,
+            });
         }
-        for pat in &self.live_queries {
-            frames.push(to_resp(&["QSUB", pat]));
-            self.inflight.push_back(None);
+        self.replay_pending = self.outbox.len();
+        self.counters.replayed_writes += self.outbox.len() as u64;
+        let patterns: Vec<String> = self
+            .live_queries
+            .iter()
+            .map(|q| q.pattern.clone())
+            .collect();
+        for pat in patterns {
+            if let Some(frame) = self.qsub_frame(&pat, true, true) {
+                frames.push(frame);
+            }
         }
         frames
     }
 
     /// The socket closed: returns the delay before the next reconnect
-    /// attempt (exponential backoff, capped).
-    /// Delay before the next reconnect attempt, in milliseconds.
+    /// attempt, in milliseconds. Call it for every close, whether or not the
+    /// adapter will reconnect — it is also what moves the status to
+    /// [`SyncPhase::Disconnected`].
     ///
     /// Exponential with a cap, then **jittered into `[delay/2, delay]`**. Without
     /// jitter every client disconnected by the same event computes an identical
@@ -381,7 +809,26 @@ impl SyncClient {
     /// recovering server down. Halving the floor keeps the growth shape intact
     /// while spreading arrivals across the window.
     pub fn on_close(&mut self) -> u32 {
+        if self.open {
+            self.disconnect_reason = self.current_error();
+        }
         self.paused = false;
+        self.open = false;
+        self.connecting = false;
+        self.push_frames = false;
+        self.setup_pending = 0;
+        self.replay_pending = 0;
+        self.hydrate_pending = 0;
+        self.pause_reason = None;
+        let stale: Vec<String> = self
+            .live_queries
+            .iter()
+            .filter(|q| !matches!(q.state, SubscriptionState::Failed { .. }))
+            .map(|q| q.pattern.clone())
+            .collect();
+        for pattern in stale {
+            self.set_subscription(&pattern, SubscriptionState::Pending);
+        }
         let delay = BACKOFF_BASE_MS
             .saturating_mul(1u32 << self.attempts.min(6))
             .min(BACKOFF_CAP_MS);
@@ -405,13 +852,147 @@ impl SyncClient {
         x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
 
+    // ── status ────────────────────────────────────────────────────────────
+
+    /// The connection's synchronization status, derived from protocol events
+    /// alone — never from a timer, and never from the socket merely being
+    /// open.
+    pub fn status(&self) -> SyncStatus {
+        SyncStatus {
+            phase: self.phase(),
+            error: if self.open {
+                self.current_error()
+            } else {
+                self.disconnect_reason.clone()
+            },
+        }
+    }
+
+    /// The status, when it differs from the one this last returned. Adapters
+    /// call it after each `on_open`, `on_close` and `handle_frame` (and after
+    /// session setters) and notify their listeners on `Some` — so status
+    /// changes are pushed, never polled for.
+    pub fn take_status_change(&mut self) -> Option<SyncStatus> {
+        let status = self.status();
+        if self.reported_status.as_ref() == Some(&status) {
+            return None;
+        }
+        self.reported_status = Some(status.clone());
+        Some(status)
+    }
+
+    /// Patterns whose [`SubscriptionState`] changed since the last call, each
+    /// once, with its current state (`None` when the pattern was removed).
+    pub fn take_subscription_changes(&mut self) -> Vec<(String, Option<SubscriptionState>)> {
+        let mut seen = HashSet::new();
+        let changed: Vec<String> = self
+            .subscription_changes
+            .drain(..)
+            .filter(|p| seen.insert(p.clone()))
+            .collect();
+        changed
+            .into_iter()
+            .map(|p| {
+                let state = self.subscription_state(&p);
+                (p, state)
+            })
+            .collect()
+    }
+
+    fn phase(&self) -> SyncPhase {
+        if !self.open {
+            return if self.connecting {
+                SyncPhase::Connecting
+            } else {
+                SyncPhase::Disconnected
+            };
+        }
+        if self.paused {
+            SyncPhase::Degraded
+        } else if self.setup_pending > 0 {
+            SyncPhase::Authenticating
+        } else if self.auth_failed.is_some() || self.scope_refused.is_some() {
+            SyncPhase::Degraded
+        } else if self.replay_pending > 0 {
+            SyncPhase::Replaying
+        } else if self.hydrate_pending > 0 {
+            SyncPhase::Hydrating
+        } else if self
+            .live_queries
+            .iter()
+            .any(|q| matches!(q.state, SubscriptionState::Failed { .. }))
+        {
+            SyncPhase::Degraded
+        } else {
+            SyncPhase::Ready
+        }
+    }
+
+    fn current_error(&self) -> Option<SyncError> {
+        if let Some(reason) = &self.pause_reason {
+            return Some(reason.clone());
+        }
+        if let Some(reason) = &self.auth_failed {
+            return Some(SyncError::AuthFailed {
+                reason: reason.clone(),
+            });
+        }
+        if let Some(reason) = &self.scope_refused {
+            return Some(SyncError::ScopeRefused {
+                reason: reason.clone(),
+            });
+        }
+        self.live_queries.iter().find_map(|q| match &q.state {
+            SubscriptionState::Failed { failure, reason } => Some(SyncError::SubscriptionFailed {
+                pattern: q.pattern.clone(),
+                failure: *failure,
+                reason: reason.clone(),
+            }),
+            _ => None,
+        })
+    }
+
     // ── writes ────────────────────────────────────────────────────────────
+
+    /// Whether a write could be queued now. Adapters that apply a write to
+    /// the local store before queueing it call this first, so a write the
+    /// outbox would refuse never changes local state. A refusal counts in
+    /// [`SyncCounters::rejected_writes`].
+    pub fn check_capacity(&mut self, dedup: bool) -> Result<(), EnqueueError> {
+        let refusal = if dedup && self.outbox_seq > MAX_WIRE_SEQ {
+            Some(EnqueueError::WireIdsExhausted)
+        } else if self.overflow == OverflowPolicy::Reject && self.outbox.len() >= self.max_pending {
+            Some(EnqueueError::OutboxFull {
+                pending: self.outbox.len(),
+                capacity: self.max_pending,
+            })
+        } else {
+            None
+        };
+        match refusal {
+            Some(e) => {
+                self.counters.rejected_writes += 1;
+                Err(e)
+            }
+            None => Ok(()),
+        }
+    }
 
     /// Queue a write for the server. `dedup` wraps it in a duplicate-suppression
     /// envelope — store writes want this; connection-scoped commands
     /// (pub/sub) must not be wrapped, or a legitimately replayed SUBSCRIBE
     /// would be skipped as a duplicate.
-    pub fn enqueue_write(&mut self, encoded: &[u8], dedup: bool, connected: bool) -> Enqueued {
+    ///
+    /// Fails, queueing nothing and changing nothing already queued, when the
+    /// outbox is full (under the default [`OverflowPolicy::Reject`]) or the
+    /// session's wire ids are used up.
+    pub fn try_enqueue_write(
+        &mut self,
+        encoded: &[u8],
+        dedup: bool,
+        connected: bool,
+    ) -> Result<Enqueued, EnqueueError> {
+        self.check_capacity(dedup)?;
         let connected = connected && !self.paused;
         let id = self.outbox_seq;
         self.outbox_seq += 1;
@@ -421,6 +1002,9 @@ impl SyncClient {
             encoded.to_vec()
         };
         let dropped = if self.outbox.len() >= self.max_pending {
+            // Only reachable under `EvictOldest`: `check_capacity` refused it
+            // otherwise.
+            self.counters.evicted_writes += 1;
             self.outbox.pop_front().map(|(old, _)| old)
         } else {
             None
@@ -433,14 +1017,55 @@ impl SyncClient {
         }
         self.outbox.push_back((id, frame.clone()));
         if connected {
-            self.inflight.push_back(Some(id));
+            self.inflight.push_back(Slot::Write { id, replay: false });
         }
-        Enqueued {
+        Ok(Enqueued {
             id,
             frame,
             send_now: connected,
             dropped,
+        })
+    }
+
+    /// Take back the write just queued with `connected = false`, before it was
+    /// sent — for an adapter whose durable commit of that write failed, so
+    /// the write is neither kept nor sent. Returns whether it was removed:
+    /// only the newest row, and only when it is not in flight, can be.
+    pub fn cancel_enqueued(&mut self, id: u64) -> bool {
+        let in_flight = self
+            .inflight
+            .iter()
+            .any(|s| matches!(s, Slot::Write { id: i, .. } if *i == id));
+        if in_flight || self.outbox.back().map(|(i, _)| *i) != Some(id) {
+            return false;
         }
+        self.outbox.pop_back();
+        true
+    }
+
+    /// Send a row queued with `connected = false`, now that it is safely
+    /// stored: records its reply slot and returns its frame, or `None` when
+    /// the socket is closed or being abandoned (the next open replays it).
+    pub fn send_enqueued(&mut self, id: u64, connected: bool) -> Option<Vec<u8>> {
+        if !connected || self.paused {
+            return None;
+        }
+        let in_flight = self
+            .inflight
+            .iter()
+            .rev()
+            .any(|s| matches!(s, Slot::Write { id: i, .. } if *i == id));
+        if in_flight {
+            return None;
+        }
+        let frame = self
+            .outbox
+            .iter()
+            .rev()
+            .find(|(i, _)| *i == id)
+            .map(|(_, f)| f.clone())?;
+        self.inflight.push_back(Slot::Write { id, replay: false });
+        Some(frame)
     }
 
     /// Splice a `DEDUP <client> <wire-id>` envelope into an already-encoded
@@ -461,7 +1086,10 @@ impl SyncClient {
         if n == 0 {
             return plain.to_vec();
         }
-        let wire_id = ((self.epoch as u64) << 32) | (outbox_id & 0xFFFF_FFFF);
+        // `check_capacity` keeps `outbox_id` within 32 bits, so this never
+        // wraps onto an id the server has already seen.
+        debug_assert!(outbox_id <= MAX_WIRE_SEQ);
+        let wire_id = ((self.epoch as u64) << 32) | (outbox_id & MAX_WIRE_SEQ);
         let id_s = wire_id.to_string();
         let mut out = format!(
             "*{}\r\n$5\r\nDEDUP\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
@@ -481,7 +1109,18 @@ impl SyncClient {
     /// original order. Adapters must replace durable storage atomically with
     /// the returned rows: an in-place delete/put loop can overwrite a row that
     /// has not been visited yet.
-    pub fn restore_outbox(&mut self, mut rows: Vec<(u64, Vec<u8>)>) -> Vec<(u64, u64, Vec<u8>)> {
+    ///
+    /// Every row is kept, even past the outbox cap: they are writes the
+    /// application was told were accepted. New writes are refused until the
+    /// outbox drains below the cap.
+    ///
+    /// `connected` says whether the socket is already open. If it is, the
+    /// restored rows are returned in [`Restored::send_now`] and must be sent
+    /// at once. Holding them for the next reconnect is unsafe: a write this
+    /// session sends under the same identity carries a higher wire id, and
+    /// once the server has accepted it every restored row would be skipped as
+    /// a duplicate — and retired as though applied.
+    pub fn restore_outbox(&mut self, mut rows: Vec<(u64, Vec<u8>)>, connected: bool) -> Restored {
         rows.sort_by_key(|(id, _)| *id);
         let mut rewrites = Vec::with_capacity(rows.len());
         for (old_id, frame) in rows {
@@ -492,14 +1131,33 @@ impl SyncClient {
         for (_, new_id, frame) in rewrites.iter().rev() {
             self.outbox.push_front((*new_id, frame.clone()));
         }
-        rewrites
+        let mut send_now = Vec::new();
+        if connected && self.open && !self.paused {
+            for (_, new_id, frame) in &rewrites {
+                send_now.push(frame.clone());
+                self.inflight.push_back(Slot::Write {
+                    id: *new_id,
+                    replay: true,
+                });
+                self.replay_pending += 1;
+            }
+            self.counters.replayed_writes += rewrites.len() as u64;
+        }
+        Restored { rewrites, send_now }
     }
 
     /// Discard all queued writes and reply bookkeeping (sign-out semantics).
     pub fn clear_outbox(&mut self) {
         self.deferring = false;
         self.outbox.clear();
-        self.inflight.clear();
+        // Session slots keep their meaning; only write slots are forgotten,
+        // and their replies then retire nothing.
+        for slot in self.inflight.iter_mut() {
+            if matches!(slot, Slot::Write { .. }) {
+                *slot = Slot::Session;
+            }
+        }
+        self.replay_pending = 0;
         self.sent_then_dropped.clear();
     }
 
@@ -507,12 +1165,20 @@ impl SyncClient {
         self.outbox.len()
     }
 
+    /// The queued rows, oldest first: `(id, frame)`. For an adapter that must
+    /// persist rows queued before its storage was available.
+    pub fn outbox_rows(&self) -> impl Iterator<Item = (u64, &[u8])> {
+        self.outbox
+            .iter()
+            .map(|(id, frame)| (*id, frame.as_slice()))
+    }
+
     // ── incoming frames ───────────────────────────────────────────────────
 
-    /// Classify and apply one incoming text frame.
+    /// Classify and apply one incoming frame.
     ///
     /// Pushes (RESP3 Push mutations, pub/sub, `keychange` arrays) are applied
-    /// or surfaced; everything else is a command reply that acknowledges the
+    /// or surfaced; everything else is a command reply that answers the
     /// oldest inflight command — `qstate` arrays are both the reply to a
     /// QSUB *and* state to apply. See `docs/server/protocol.md`.
     pub fn handle_frame(&mut self, raw: &[u8]) -> Incoming {
@@ -531,6 +1197,21 @@ impl SyncClient {
                         message: payload.clone(),
                     };
                 }
+                // `CLIENT PUSHFRAMES ON` sends live-query changes as pushes.
+                match push_tag(&arr) {
+                    b"keychange" => {
+                        return Incoming::Applied {
+                            keys: self.apply_keychange(&arr),
+                        };
+                    }
+                    b"keydelta" => {
+                        return match self.apply_keydelta(&arr) {
+                            Some(key) => Incoming::Applied { keys: vec![key] },
+                            None => Incoming::Ignored,
+                        };
+                    }
+                    _ => {}
+                }
                 if let Ok(cmd) = Command::from_value(Value::Array(Some(arr)))
                     && is_replayable_mutation(&cmd)
                 {
@@ -541,54 +1222,120 @@ impl SyncClient {
                 Incoming::Ignored
             }
             Ok((Value::Array(Some(items)), _)) => {
-                let tag: &[u8] = match items.first() {
-                    Some(Value::BulkString(Some(t))) => t,
-                    _ => &[],
-                };
-                if tag == b"keychange" {
-                    Incoming::Applied {
+                let tag = push_tag(&items);
+                // Without push framing a keychange is a plain array, and the
+                // only way to tell it from a reply is its first element.
+                if !self.push_frames && tag == b"keychange" {
+                    return Incoming::Applied {
                         keys: self.apply_keychange(&items),
-                    }
-                } else if tag == b"keydelta" {
-                    match self.apply_keydelta(&items) {
+                    };
+                }
+                if !self.push_frames && tag == b"keydelta" {
+                    return match self.apply_keydelta(&items) {
                         Some(key) => Incoming::Applied { keys: vec![key] },
                         None => Incoming::Ignored,
-                    }
-                } else if tag == b"qstate" {
-                    let retired = self.ack_reply();
+                    };
+                }
+                // A snapshot is only ever the reply to a QSUB. An array that
+                // merely looks like one — an `LRANGE` of a list whose first
+                // element is "qstate" — answering any other command is that
+                // command's reply, and must not be applied: reconciling
+                // against it would delete local keys.
+                if tag == b"qstate"
+                    && let Some(Slot::LiveQuery { pattern, .. }) = self.inflight.front()
+                    && items.get(1).is_some_and(
+                        |p| matches!(p, Value::BulkString(Some(b)) if b == pattern.as_bytes()),
+                    )
+                {
+                    let Some(Slot::LiveQuery { pattern, initial }) = self.inflight.pop_front()
+                    else {
+                        unreachable!("front slot checked above");
+                    };
                     let keys = self.apply_qstate(&items);
-                    Incoming::AppliedReply { retired, keys }
-                } else {
-                    Incoming::Reply {
-                        retired: self.ack_reply(),
-                    }
+                    self.counters.snapshots_applied += 1;
+                    self.live_query_answered(&pattern, initial, SubscriptionState::Current);
+                    return Incoming::AppliedReply {
+                        retired: None,
+                        keys,
+                    };
+                }
+                Incoming::Reply {
+                    retired: self.ack_reply(false),
                 }
             }
             Ok((Value::Error(reason), _)) => self.error_reply(reason),
-            Ok(_) => {
-                let retired = self.ack_reply();
-                if retired.is_some() && self.deferring {
-                    // A write got through: whatever deferred the last one has
-                    // cleared, so the next drop starts the backoff over.
-                    self.deferring = false;
-                    self.attempts = 0;
-                }
-                Incoming::Reply { retired }
-            }
+            Ok((value, _)) => Incoming::Reply {
+                retired: self.ack_reply(matches!(&value, Value::SimpleString(s) if s == "DUP")),
+            },
             Err(_) => {
                 self.paused = true;
+                self.pause_reason = Some(SyncError::MalformedFrame);
+                self.counters.malformed_frames += 1;
                 Incoming::Malformed
             }
         }
     }
 
+    /// A `QSUB` was answered, by a snapshot or a refusal.
+    fn live_query_answered(&mut self, pattern: &str, initial: bool, state: SubscriptionState) {
+        if initial {
+            self.hydrate_pending = self.hydrate_pending.saturating_sub(1);
+        }
+        // Another QSUB for the same pattern still in flight will answer
+        // again; until it does the query is still hydrating.
+        let again = self
+            .inflight
+            .iter()
+            .any(|s| matches!(s, Slot::LiveQuery { pattern: p, .. } if p == pattern));
+        if !again {
+            self.set_subscription(pattern, state);
+        }
+    }
+
     /// An error reply. A session command's error changes nothing — an older
-    /// server refusing `CLIENT DELTA ON`, say. A queued write's error means the
-    /// server did not apply it, which is not an acknowledgment: the row is kept
-    /// when the refusal can clear and retired, and reported, when it cannot.
+    /// server refusing `CLIENT DELTA ON`, say — beyond what it says about the
+    /// session: a refused `AUTH`, sync scope or live query degrades it. A
+    /// queued write's error means the server did not apply it, which is not
+    /// an acknowledgment: the row is kept when the refusal can clear and
+    /// retired, and reported, when it cannot.
     fn error_reply(&mut self, reason: String) -> Incoming {
-        let Some(Some(id)) = self.inflight.pop_front() else {
-            return Incoming::Reply { retired: None };
+        let id = match self.inflight.pop_front() {
+            Some(Slot::Write { id, replay }) => {
+                if replay {
+                    self.replay_pending = self.replay_pending.saturating_sub(1);
+                }
+                id
+            }
+            Some(Slot::Auth) => {
+                self.setup_pending = self.setup_pending.saturating_sub(1);
+                self.auth_failed = Some(reason);
+                return Incoming::Reply { retired: None };
+            }
+            Some(Slot::Scope) => {
+                self.setup_pending = self.setup_pending.saturating_sub(1);
+                self.scope_refused = Some(reason);
+                return Incoming::Reply { retired: None };
+            }
+            Some(Slot::LiveQuery { pattern, initial }) => {
+                let failure = if reason.starts_with("NOSCOPE") {
+                    SubscriptionFailure::OutOfScope
+                } else if reason.contains("initial state exceeds") {
+                    SubscriptionFailure::SnapshotTooLarge
+                } else {
+                    SubscriptionFailure::Other
+                };
+                self.live_query_answered(
+                    &pattern,
+                    initial,
+                    SubscriptionState::Failed { failure, reason },
+                );
+                return Incoming::Reply { retired: None };
+            }
+            Some(Slot::Capability(_)) => {
+                self.setup_pending = self.setup_pending.saturating_sub(1);
+                return Incoming::Reply { retired: None };
+            }
+            Some(Slot::Session) | None => return Incoming::Reply { retired: None },
         };
         if self.sent_then_dropped.remove(&id) {
             // Overflow already evicted it; there is nothing left to keep.
@@ -597,8 +1344,13 @@ impl SyncClient {
         if is_transient_refusal(&reason) {
             self.paused = true;
             self.deferring = true;
+            self.counters.deferred_writes += 1;
+            self.pause_reason = Some(SyncError::WriteDeferred {
+                reason: reason.clone(),
+            });
             return Incoming::Deferred { reason };
         }
+        self.counters.refused_writes += 1;
         let keys = match self.outbox.iter().position(|(i, _)| *i == id) {
             Some(position) => self
                 .outbox
@@ -607,9 +1359,15 @@ impl SyncClient {
                 .unwrap_or_default(),
             None => Vec::new(),
         };
+        let unreconciled = keys
+            .iter()
+            .filter(|k| !self.is_covered(k))
+            .cloned()
+            .collect();
         Incoming::Refused {
             retired: id,
             keys,
+            unreconciled,
             reason,
         }
     }
@@ -623,30 +1381,92 @@ impl SyncClient {
         let patterns: Vec<String> = self
             .live_queries
             .iter()
-            .filter(|p| keys.iter().any(|k| glob_match(p, k)))
-            .cloned()
+            .filter(|q| keys.iter().any(|k| glob_match(&q.pattern, k)))
+            .map(|q| q.pattern.clone())
             .collect();
         patterns
             .iter()
-            .filter_map(|p| self.session_frame(to_resp(&["QSUB", p]), connected))
+            .filter_map(|p| self.qsub_frame(p, false, connected))
             .collect()
     }
 
-    /// A reply arrived: acknowledge the oldest inflight command. Returns the
-    /// retired outbox row id for durable deletion, if it was a data write.
-    fn ack_reply(&mut self) -> Option<u64> {
-        let id = self.inflight.pop_front()??;
+    /// Frames the client needs sent that no other call returned: today, the
+    /// re-subscriptions that repair keys a snapshot protected for a write
+    /// which then turned out to be a duplicate. Adapters call this after each
+    /// [`handle_frame`](Self::handle_frame) and send what it returns, in
+    /// order; each frame holds a reply slot. Empty while disconnected.
+    pub fn take_frames_to_send(&mut self, connected: bool) -> Vec<Vec<u8>> {
+        if self.resync_keys.is_empty() || !connected || self.paused {
+            return Vec::new();
+        }
+        let keys = std::mem::take(&mut self.resync_keys);
+        self.resubscribe_covering(&keys, connected)
+    }
+
+    /// A non-error reply arrived: it answers the oldest inflight command.
+    /// Returns the retired outbox row id for durable deletion, if that was a
+    /// data write.
+    fn ack_reply(&mut self, duplicate: bool) -> Option<u64> {
+        let (id, replay) = match self.inflight.pop_front()? {
+            Slot::Write { id, replay } => (id, replay),
+            Slot::Auth => {
+                self.setup_pending = self.setup_pending.saturating_sub(1);
+                return None;
+            }
+            Slot::Scope => {
+                self.setup_pending = self.setup_pending.saturating_sub(1);
+                return None;
+            }
+            Slot::Capability(capability) => {
+                self.setup_pending = self.setup_pending.saturating_sub(1);
+                if capability == Capability::PushFrames {
+                    self.push_frames = true;
+                }
+                return None;
+            }
+            // A QSUB answered by something other than a snapshot — not a
+            // reply any server sends — leaves the query unhydrated rather
+            // than claiming it current.
+            Slot::LiveQuery { pattern, initial } => {
+                self.live_query_answered(&pattern, initial, SubscriptionState::Pending);
+                return None;
+            }
+            Slot::Session => return None,
+        };
+        if replay {
+            self.replay_pending = self.replay_pending.saturating_sub(1);
+        }
+        if self.deferring {
+            // A write got through: whatever deferred the last one has
+            // cleared, so the next drop starts the backoff over.
+            self.deferring = false;
+            self.attempts = 0;
+        }
         // Replies arrive in send order and the outbox is sent in queue order,
         // so the acknowledged row is almost always the front one. Scanning the
         // whole queue on every reply made draining n writes O(n²). A row that
         // overflow already evicted is known by id and retires nothing. The
         // search remains only for a row a restore placed out of send order.
-        if self.outbox.front().is_some_and(|(front, _)| *front == id) {
-            self.outbox.pop_front();
+        let row = if self.outbox.front().is_some_and(|(front, _)| *front == id) {
+            self.outbox.pop_front()
         } else if self.sent_then_dropped.remove(&id) {
             // Evicted after it was sent: nothing left to remove.
+            None
         } else if let Some(position) = self.outbox.iter().position(|(i, _)| *i == id) {
-            self.outbox.remove(position);
+            self.outbox.remove(position)
+        } else {
+            None
+        };
+        if !self.protected.is_empty()
+            && let Some((_, frame)) = row
+        {
+            for key in frame_keys(&frame, &self.store) {
+                // An applied write's own keychange brings the server's value;
+                // a duplicate produces none, so its live query must re-send.
+                if self.protected.remove(&key) && duplicate {
+                    self.resync_keys.push(key);
+                }
+            }
         }
         Some(id)
     }
@@ -722,7 +1542,7 @@ impl SyncClient {
                 // Sending one frame per deleted key would mean millions of
                 // frames for a single command, so the server announces it once
                 // per pattern and the client expands it locally.
-                if self.live_queries.contains(&key) {
+                if self.live_queries.iter().any(|q| q.pattern == key) {
                     let matched: Vec<String> = self
                         .store
                         .matching_key_values(&key, usize::MAX)
@@ -856,15 +1676,32 @@ impl SyncClient {
     ///
     /// The server refuses snapshots above `RECACHED_MAX_QSUB_INITIAL_KEYS`
     /// rather than sending a partial one, so every qstate reaching this method
-    /// is complete and absence is safe to interpret as deletion.
+    /// is complete and absence is safe to interpret as deletion. A refusal is
+    /// an error reply, which never reaches here.
+    ///
+    /// **Keys with a queued write are left alone.** The server answers in
+    /// send order, so by the time a snapshot arrives every write sent before
+    /// its `QSUB` has been answered, and any row still queued is one the
+    /// snapshot does not reflect: sent after the `QSUB`, deferred, or not sent
+    /// yet. Applying the snapshot to its keys would roll back a write the
+    /// application has already seen succeed — or, for a key it created
+    /// offline, delete it — until the write's own change came back. Those
+    /// keys keep their local value; the write's acknowledgment and the
+    /// `keychange` it produces bring the server's value, and a refusal
+    /// re-subscribes so a fresh snapshot does.
     ///
     /// Returns every key the snapshot carried followed by every stale key it
-    /// removed.
-    fn apply_qstate(&self, items: &[Value]) -> Vec<String> {
+    /// removed, leaving out the protected keys, which did not change.
+    fn apply_qstate(&mut self, items: &[Value]) -> Vec<String> {
         let pattern = match items.get(1) {
             Some(Value::BulkString(Some(p))) => String::from_utf8_lossy(p).into_owned(),
             _ => String::new(),
         };
+        let protected: HashSet<String> = self
+            .outbox
+            .iter()
+            .flat_map(|(_, frame)| frame_keys(frame, &self.store))
+            .collect();
 
         let mut present: HashSet<String> = HashSet::new();
         let mut changed: Vec<String> = Vec::new();
@@ -873,9 +1710,14 @@ impl SyncClient {
                 continue;
             };
             let key = String::from_utf8_lossy(k).into_owned();
-            if present.insert(key.clone()) {
-                changed.push(key.clone());
+            if !present.insert(key.clone()) {
+                continue;
             }
+            if protected.contains(&key) {
+                self.protected.insert(key);
+                continue;
+            }
+            changed.push(key.clone());
             let (value, ttl_ms) = split_expiry(&pair[1]);
             match value {
                 Value::BulkString(Some(v)) => {
@@ -902,6 +1744,9 @@ impl SyncClient {
             .into_iter()
             .filter(|k| !present.contains(k))
             .collect();
+        let (kept, stale): (Vec<String>, Vec<String>) =
+            stale.into_iter().partition(|k| protected.contains(k));
+        self.protected.extend(kept);
         if !stale.is_empty() {
             self.store.execute(Command::Del(stale.clone()));
             changed.extend(stale);
@@ -922,20 +1767,18 @@ fn split_expiry(value: &Value) -> (&Value, Option<u64>) {
     (value, None)
 }
 
-/// Whether a refused write may be accepted later unchanged. These refusals are
-/// about the session or the server's state, not the write: a missing password
-/// or sync token, a read-only replica, persistence or memory trouble, and the
-/// Redis busy and loading states. Anything else — a key out of scope or
-/// read-only, a wrong type, a bad argument — would be refused again.
-pub fn is_transient_refusal(reason: &str) -> bool {
-    let code = reason.split_whitespace().next().unwrap_or("");
-    match code {
-        "NOAUTH" | "READONLY" | "MISCONF" | "OOM" | "LOADING" | "BUSY" | "TRYAGAIN"
-        | "MASTERDOWN" => true,
-        "NOSCOPE" => reason.contains("send SYNC TOKEN"),
-        _ => false,
+/// The first element of an array frame as bytes, or empty: the tag that
+/// names `keychange`, `keydelta` and `qstate` frames.
+fn push_tag(items: &[Value]) -> &[u8] {
+    match items.first() {
+        Some(Value::BulkString(Some(t))) => t,
+        _ => &[],
     }
 }
+
+/// Whether a refused write may be accepted later unchanged; shared with the
+/// server so both sides classify a refusal alike.
+pub use core_engine::resp::is_transient_refusal;
 
 /// The keys a queued write frame changes, looking through its `DEDUP` envelope.
 fn frame_keys(frame: &[u8], store: &KeyValueStore) -> Vec<String> {
@@ -1090,3 +1933,9 @@ pub fn to_resp_bytes(parts: &[&[u8]]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reliability_tests;
+
+#[cfg(test)]
+mod model_tests;

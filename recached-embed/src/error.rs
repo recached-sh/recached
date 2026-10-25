@@ -47,6 +47,18 @@ pub enum Error {
 
     /// The initial connection could not be established. Carries the reason.
     Connect(String),
+
+    /// The write was not queued: `pending` writes already wait for the server
+    /// and the queue holds `capacity`
+    /// ([`CacheBuilder::max_pending`](crate::CacheBuilder::max_pending)).
+    /// Nothing was sent or applied, and every queued write is intact; retry
+    /// once the queue drains ([`pending_writes`](crate::Cache::pending_writes)).
+    OutboxFull {
+        /// Writes waiting for the server.
+        pending: usize,
+        /// The queue's cap.
+        capacity: usize,
+    },
 }
 
 impl fmt::Display for Error {
@@ -63,6 +75,10 @@ impl fmt::Display for Error {
             Error::Closed => write!(f, "cache connection task has shut down"),
             Error::Timeout => write!(f, "timed out waiting for the server"),
             Error::Connect(msg) => write!(f, "could not connect: {msg}"),
+            Error::OutboxFull { pending, capacity } => write!(
+                f,
+                "pending-write queue full ({pending} of {capacity}); the write was not queued"
+            ),
         }
     }
 }

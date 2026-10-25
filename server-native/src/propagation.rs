@@ -258,9 +258,33 @@ pub(crate) async fn execute_locked_write(
     watch_registry: &WatchRegistry,
     store: &KeyValueStore,
 ) -> Value {
+    execute_locked_write_identified(cmd, None, tx, origin, state, watch_registry, store).await
+}
+
+/// [`execute_locked_write`] for the write inside a DEDUP envelope, whose
+/// identity the AOF records with it.
+async fn execute_locked_write_identified(
+    cmd: &Command,
+    dedup: Option<(&str, u64)>,
+    tx: &broadcast::Sender<SyncMsg>,
+    origin: u64,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+) -> Value {
     let claimable_members = claimable_eadd_members(cmd, state, store);
     let (response, evicted) = execute_and_record_with_evictions(store, cmd.clone());
-    apply_write_effects(cmd, &response, tx, origin, state, watch_registry, store).await;
+    apply_write_effects_identified(
+        cmd,
+        &response,
+        dedup,
+        tx,
+        origin,
+        state,
+        watch_registry,
+        store,
+    )
+    .await;
     apply_eviction_effects(&evicted, tx, origin, state, watch_registry, store).await;
     reconcile_ephemeral_state(cmd, &response, &claimable_members, origin, state);
     response
@@ -296,10 +320,10 @@ pub(crate) async fn execute_ordered_write(
         None
     };
     if let Some((client, id)) = dedup
-        && state.dedup_is_duplicate(client, id)
+        && let Some(replay) = state.dedup_replay(client, id)
     {
         record_command(command_name(effective));
-        return Value::SimpleString("DUP".to_string());
+        return dedup_replay_reply(replay);
     }
 
     // Capacity eviction may choose any key, so capped stores already serialize
@@ -313,13 +337,43 @@ pub(crate) async fn execute_ordered_write(
             .lock_commands(std::slice::from_ref(effective))
             .await
     };
-    let response = execute_locked_write(effective, tx, origin, state, watch_registry, store).await;
-    if !matches!(response, Value::Error(_))
-        && let Some((client, id)) = dedup
-    {
-        state.commit_dedup(client, id);
+    let response =
+        execute_locked_write_identified(effective, dedup, tx, origin, state, watch_registry, store)
+            .await;
+    if let Some((client, id)) = dedup {
+        match &response {
+            Value::Error(error) => record_dedup_refusal(state, client, id, error).await,
+            _ => state.commit_dedup(client, id),
+        }
     }
     response
+}
+
+/// The reply to a DEDUP write seen before.
+pub(crate) fn dedup_replay_reply(replay: DedupReplay) -> Value {
+    match replay {
+        DedupReplay::Duplicate => {
+            counter!("recached_dedup_replays_total", "outcome" => "duplicate").increment(1);
+            Value::SimpleString("DUP".to_string())
+        }
+        DedupReplay::Refused(error) => {
+            counter!("recached_dedup_replays_total", "outcome" => "refused").increment(1);
+            Value::Error(error)
+        }
+    }
+}
+
+/// A DEDUP write was refused. A permanent refusal is remembered — in memory
+/// and in the AOF — so its replay is refused again; a transient one is left
+/// for the client to retry.
+pub(crate) async fn record_dedup_refusal(state: &ServerState, client: &str, id: u64, error: &str) {
+    if core_engine::resp::is_transient_refusal(error) {
+        counter!("recached_sync_write_refusals_total", "class" => "transient").increment(1);
+        return;
+    }
+    counter!("recached_sync_write_refusals_total", "class" => "permanent").increment(1);
+    state.remember_dedup_refusal(client, id, error);
+    state.log_dedup_outcome(client, id, Some(error)).await;
 }
 
 /// Release one connection's ephemeral holds while keeping the affected keys
@@ -770,6 +824,30 @@ pub(crate) async fn apply_write_effects(
     watch_registry: &WatchRegistry,
     store: &KeyValueStore,
 ) {
+    apply_write_effects_identified(
+        cmd,
+        response,
+        None,
+        tx,
+        origin,
+        state,
+        watch_registry,
+        store,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_write_effects_identified(
+    cmd: &Command,
+    response: &Value,
+    dedup: Option<(&str, u64)>,
+    tx: &broadcast::Sender<SyncMsg>,
+    origin: u64,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+) {
     let has_ws = tx.receiver_count() > 0;
     let needs_log = state.needs_write_log();
     let has_watch = !watch_registry.is_empty();
@@ -779,10 +857,18 @@ pub(crate) async fn apply_write_effects(
     // Read once, after the early-out above, so a standalone server with nothing
     // listening still pays no clock read per write.
     let Some(msg) = broadcast_for(cmd, response, now_unix_ms()) else {
+        // A DEDUP write that changed nothing still has an outcome to keep, or
+        // a crash would let its retry run where the first try did not.
+        // Refusals are recorded by the caller.
+        if let Some((client, id)) = dedup
+            && !matches!(response, Value::Error(_))
+        {
+            state.log_dedup_outcome(client, id, None).await;
+        }
         return;
     };
     if needs_log {
-        state.on_write(&msg).await;
+        state.on_write_identified(&msg, dedup).await;
     }
     if has_watch {
         if matches!(cmd, Command::FlushDb) {

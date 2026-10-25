@@ -89,7 +89,8 @@ The examples assume your app supplies a backend-minted `token` and a `render` fu
 ## Show sync state
 
 ```kotlin
-cache.connectionState   // StateFlow: OFFLINE, CONNECTING, CONNECTED, WAITING
+cache.syncStatus        // StateFlow<SyncStatus>: DISCONNECTED … READY, DEGRADED (next release)
+cache.connectionState   // StateFlow: the socket alone — OFFLINE, CONNECTING, CONNECTED, WAITING
 cache.pendingWrites     // StateFlow<Long>: writes the server has not acknowledged yet
 cache.refusedWrites     // SharedFlow<RefusedWrite>: writes the server refused for good
 ```
@@ -103,7 +104,7 @@ A connected state means the socket is open, not that authorization or hydration 
 
 ## Check native limits
 
-The default outbox holds 10,000 pending writes; overflow drops the oldest. Set `maxPendingWrites` to change the cap. Successful writes commit SQLite data and their queue rows together. A storage error can leave a change in memory without saving it, so handle write errors. SQLite uses WAL with `synchronous = NORMAL`; OS crashes or power loss can lose recent commits.
+The default outbox holds 10,000 pending writes; set `maxPendingWrites` to change the cap. In 0.1 overflow drops the oldest queued write. From the next release, built on recached 0.5, a write past the cap throws `RecachedException.OutboxFull` and changes nothing (`evictOldestWhenFull = true` keeps the old behaviour), a write that throws `Storage` is rolled back rather than left in memory, and `syncStatus` reports `READY` only once authentication, the replay of queued writes and the watched patterns' snapshots have completed. Successful writes commit SQLite data and their queue rows together. SQLite uses WAL with `synchronous = NORMAL`; OS crashes or power loss can lose recent commits.
 
 See [native API support and replay limits](/guide/client-support) for binary values, TTLs, JSON operations, refusal handling, and duplicate-suppression boundaries. Omit the config URL for a local cache; writes still queue for a later open with a server URL.
 

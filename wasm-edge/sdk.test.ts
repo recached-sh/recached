@@ -24,7 +24,14 @@ vi.mock('./pkg/recached_edge.js', () => ({
   }),
 }));
 
-import { Cache, createCache, init } from './sdk.js';
+import {
+  Cache,
+  OutboxFullError,
+  createCache,
+  init,
+  type SubscriptionState,
+  type SyncStatus,
+} from './sdk.js';
 
 /** A stand-in for the generated `RecachedCache`, with the real signatures. */
 function makeRaw() {
@@ -74,6 +81,28 @@ function makeRaw() {
     set_mutation_callback: vi.fn<(cb: (keys: string[]) => void) => void>(),
     set_message_callback: vi.fn(),
     set_outbox_full_callback: vi.fn(),
+    set_status_callback: vi.fn<(cb: (status: SyncStatus) => void) => void>(),
+    set_subscription_callback:
+      vi.fn<(cb: (pattern: string, state: SubscriptionState | null) => void) => void>(),
+    set_refused_callback:
+      vi.fn<(cb: (keys: string[], unreconciled: string[], reason: string) => void) => void>(),
+    set_persistence_error_callback:
+      vi.fn<(cb: (operation: string, message: string) => void) => void>(),
+    // 0.5 durability and status surface
+    flush: vi.fn(async () => undefined),
+    sync_status: vi.fn(
+      (): SyncStatus => ({
+        phase: 'disconnected',
+        error: null,
+        pendingWrites: 0,
+        lastSyncedAt: null,
+        persistenceFailures: 0,
+      }),
+    ),
+    subscription_state: vi.fn((): SubscriptionState | null => null),
+    set_overflow_policy: vi.fn(),
+    set_max_pending: vi.fn(),
+    set_persist_synced_state: vi.fn(),
     free: vi.fn(),
   };
 }
@@ -467,5 +496,131 @@ describe('createCache', () => {
 
   it('init resolves without constructing a cache', async () => {
     await expect(init()).resolves.toBeUndefined();
+  });
+});
+
+// ── 0.5: reliability surface ─────────────────────────────────────────────────
+
+/** What the wasm side throws when the outbox cannot take a write. */
+function wasmOutboxFull(): Error {
+  const e = new Error('outbox full: 3 writes pending, capacity 3') as Error & {
+    pending: number;
+    capacity: number;
+  };
+  e.name = 'OutboxFullError';
+  e.pending = 3;
+  e.capacity = 3;
+  return e;
+}
+
+describe('a full outbox', () => {
+  it('surfaces as OutboxFullError from every write', () => {
+    for (const method of ['set', 'setBytes', 'set_ex', 'del', 'incr_by', 'jset', 'jmerge'] as const) {
+      raw[method].mockImplementation(() => {
+        throw wasmOutboxFull();
+      });
+    }
+    const writes: Array<() => unknown> = [
+      () => cache.set('k', 'v'),
+      () => cache.setBytes('k', new Uint8Array([1])),
+      () => cache.setEx('k', 'v', 5),
+      () => cache.setJSON('k', { a: 1 }),
+      () => cache.del('k'),
+      () => cache.incr('n'),
+      () => cache.jset('d', '$', {}),
+      () => cache.jmerge('d', {}),
+    ];
+    for (const write of writes) {
+      let caught: unknown;
+      try {
+        write();
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(OutboxFullError);
+      expect(caught).toMatchObject({ pending: 3, capacity: 3, name: 'OutboxFullError' });
+    }
+  });
+
+  it('leaves any other error as it was', () => {
+    raw.set.mockImplementation(() => {
+      throw new TypeError('boom');
+    });
+    expect(() => cache.set('k', 'v')).toThrow(TypeError);
+  });
+});
+
+describe('synchronization status', () => {
+  const ready: SyncStatus = {
+    phase: 'ready',
+    error: null,
+    pendingWrites: 0,
+    lastSyncedAt: 1,
+    persistenceFailures: 0,
+  };
+
+  it('forwards status changes to every listener until they unsubscribe', () => {
+    const a = vi.fn();
+    const b = vi.fn();
+    const stopA = cache.onStatusChange(a);
+    cache.onStatusChange(b);
+    raw.set_status_callback.mock.calls[0]![0](ready);
+    stopA();
+    raw.set_status_callback.mock.calls[0]![0]({ ...ready, phase: 'disconnected' });
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(b).toHaveBeenCalledTimes(2);
+    expect(b).toHaveBeenLastCalledWith(expect.objectContaining({ phase: 'disconnected' }));
+  });
+
+  it('reads the current status and a live query state from the binding', () => {
+    expect(cache.status().phase).toBe('disconnected');
+    raw.subscription_state.mockReturnValue({ state: 'current' });
+    expect(cache.subscriptionState('a:*')).toEqual({ state: 'current' });
+    expect(raw.subscription_state).toHaveBeenCalledWith('a:*');
+  });
+
+  it('forwards live-query progress, refusals and persistence failures', () => {
+    const sub = vi.fn();
+    const refused = vi.fn();
+    const failed = vi.fn();
+    cache.onSubscriptionChange(sub);
+    cache.onWriteRefused(refused);
+    cache.onPersistenceError(failed);
+    raw.set_subscription_callback.mock.calls[0]![0]('a:*', { state: 'hydrating' });
+    raw.set_refused_callback.mock.calls[0]![0](['k'], ['k'], 'NOSCOPE');
+    raw.set_persistence_error_callback.mock.calls[0]![0]('write', 'QuotaExceededError');
+    expect(sub).toHaveBeenCalledWith('a:*', { state: 'hydrating' });
+    expect(refused).toHaveBeenCalledWith(['k'], ['k'], 'NOSCOPE');
+    expect(failed).toHaveBeenCalledWith('write', 'QuotaExceededError');
+  });
+
+  it('flush waits on the binding and passes its failure through', async () => {
+    await cache.flush();
+    raw.flush.mockRejectedValueOnce(new Error('QuotaExceededError'));
+    await expect(cache.flush()).rejects.toThrow('QuotaExceededError');
+  });
+});
+
+describe('createCache: outbox and synced-state options', () => {
+  it('applies outbox bounds and the synced-state switch before persistence', async () => {
+    const c = await createCache({
+      persistence: true,
+      persistSyncedState: false,
+      outbox: { maxPending: 50, whenFull: 'evict-oldest' },
+    });
+    const r = c.raw as unknown as Raw;
+    expect(r.set_max_pending).toHaveBeenCalledWith(50);
+    expect(r.set_overflow_policy).toHaveBeenCalledWith('evict-oldest');
+    expect(r.set_persist_synced_state).toHaveBeenCalledWith(false);
+    const order = (fn: { mock: { invocationCallOrder: number[] } }) => fn.mock.invocationCallOrder[0]!;
+    expect(order(r.set_overflow_policy)).toBeLessThan(order(r.enable_persistence));
+  });
+
+  it('leaves the defaults alone when no options are given', async () => {
+    const c = await createCache();
+    const r = c.raw as unknown as Raw;
+    expect(r.set_max_pending).not.toHaveBeenCalled();
+    expect(r.set_overflow_policy).not.toHaveBeenCalled();
+    expect(r.set_persist_synced_state).not.toHaveBeenCalled();
   });
 });

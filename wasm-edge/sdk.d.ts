@@ -35,14 +35,46 @@ export interface ConnectOptions {
 export interface CacheOptions {
     /**
      * Load the IndexedDB WAL and enable write-through persistence so the cache
-     * survives page refreshes.
+     * survives page refreshes: the writes this browser made, the writes still
+     * waiting for the server, and — unless {@link persistSyncedState} is
+     * `false` — the last state the server synchronized.
      *
-     * Gracefully ignored if IndexedDB is unavailable (e.g. some private-browsing
-     * modes or non-browser environments).
+     * `createCache` rejects when IndexedDB cannot be opened or read (some
+     * private-browsing modes, storage access denied) rather than carrying on
+     * without the persistence that was asked for. Retry without `persistence`
+     * to run memory-only.
      *
      * @default false
      */
     persistence?: boolean;
+    /**
+     * With {@link persistence}, also write server-applied changes to IndexedDB,
+     * so an offline reload shows the last synchronized state rather than only
+     * this browser's own writes. Changes are written in batches, a fraction of
+     * a second after they arrive.
+     *
+     * @default true
+     */
+    persistSyncedState?: boolean;
+    /**
+     * Bounds on the queue of writes waiting for the server.
+     */
+    outbox?: {
+        /** Writes the queue holds. @default 10000 */
+        maxPending?: number;
+        /**
+         * What a write past `maxPending` does. `'reject'` throws
+         * {@link OutboxFullError} from the write and changes nothing.
+         * `'evict-oldest'` — the behaviour before 0.5 — drops the oldest queued
+         * write instead, which then never reaches the server; see
+         * {@link Cache.onOutboxFull}. A cache without `connect` always evicts:
+         * it keeps every write locally, and only the queued copy for a later
+         * connection is dropped.
+         *
+         * @default 'reject'
+         */
+        whenFull?: 'reject' | 'evict-oldest';
+    };
     /**
      * BroadcastChannel name for cross-tab mutation sharing.
      * All tabs that open with the same name see each other's writes automatically,
@@ -58,6 +90,16 @@ export interface CacheOptions {
 }
 export interface RawCache {
     enable_persistence(): Promise<void>;
+    flush(): Promise<void>;
+    sync_status(): RawSyncStatus;
+    subscription_state(pattern: string): RawSubscriptionState | null;
+    set_status_callback(cb: (status: RawSyncStatus) => void): void;
+    set_subscription_callback(cb: (pattern: string, state: RawSubscriptionState | null) => void): void;
+    set_refused_callback(cb: (keys: string[], unreconciled: string[], reason: string) => void): void;
+    set_persistence_error_callback(cb: (operation: string, message: string) => void): void;
+    set_overflow_policy(policy: string): void;
+    set_max_pending(max: number): void;
+    set_persist_synced_state(enabled: boolean): void;
     clear_persistence(): Promise<void>;
     broadcast(channel_name: string): void;
     connect(url: string): void;
@@ -94,6 +136,73 @@ export interface RawCache {
     free(): void;
 }
 /**
+ * Where the connection is in establishing synchronization.
+ *
+ * An open socket is only the start: `'ready'` also needs authentication, the
+ * replay of every write queued while offline, and the snapshot of every live
+ * query registered when the socket opened. Live queries added later report
+ * their own progress through {@link Cache.subscriptionState}.
+ */
+export type SyncPhase = 'disconnected' | 'connecting' | 'authenticating' | 'replaying' | 'hydrating' | 'ready' | 'degraded';
+/** Why a live query was refused. */
+export type SubscriptionFailure = 'snapshot-too-large' | 'out-of-scope' | 'other';
+/** A connection-level synchronization problem. `reason` is the server's text. */
+export type SyncIssue = {
+    kind: 'auth-failed';
+    reason: string;
+} | {
+    kind: 'scope-refused';
+    reason: string;
+}
+/** A queued write was refused for a reason that can clear; it replays on reconnect. */
+ | {
+    kind: 'write-deferred';
+    reason: string;
+} | {
+    kind: 'subscription-failed';
+    pattern: string;
+    failure: SubscriptionFailure;
+    reason: string;
+} | {
+    kind: 'malformed-frame';
+};
+export interface SyncStatus {
+    phase: SyncPhase;
+    /** What is wrong, when something is; while disconnected, what ended the last connection. */
+    error: SyncIssue | null;
+    /** Writes queued and not yet acknowledged by the server. */
+    pendingWrites: number;
+    /**
+     * When the status last became `'ready'` (ms since the epoch), or `null`.
+     * The moment synchronization completed — never merely when a socket opened.
+     */
+    lastSyncedAt: number | null;
+    /** IndexedDB writes that have failed since the cache was created. */
+    persistenceFailures: number;
+}
+export type SubscriptionState = {
+    state: 'pending' | 'hydrating' | 'current';
+} | {
+    state: 'failed';
+    failure: SubscriptionFailure;
+    reason: string;
+};
+/** @internal Shapes the wasm side hands over; validated by `types-check.ts`. */
+export type RawSyncStatus = SyncStatus;
+/** @internal */
+export type RawSubscriptionState = SubscriptionState;
+/**
+ * Thrown by a write when the queue of writes waiting for the server is full.
+ * Nothing was applied, stored or sent, and every queued write is intact.
+ * Retry once {@link Cache.pendingWrites} drops — the queue drains as the
+ * server acknowledges writes.
+ */
+export declare class OutboxFullError extends Error {
+    readonly pending: number;
+    readonly capacity: number;
+    constructor(pending: number, capacity: number, message?: string);
+}
+/**
  * A typed wrapper around the Recached WASM cache.
  *
  * Obtain an instance via {@link createCache} rather than `new Cache()`.
@@ -112,6 +221,10 @@ export declare class Cache {
     private readonly _patternListeners;
     private readonly _messageListeners;
     private readonly _outboxFullListeners;
+    private readonly _statusListeners;
+    private readonly _subscriptionListeners;
+    private readonly _refusedListeners;
+    private readonly _persistenceErrorListeners;
     /**
      * @internal Arrow function so `this` is always bound when passed as a
      * callback. `keys` names every key the mutation may have changed.
@@ -123,6 +236,62 @@ export declare class Cache {
     private readonly _notifyMessage;
     /** @internal */
     constructor(raw: RawCache);
+    /**
+     * Where synchronization stands. `phase` is `'ready'` only once the session
+     * is authenticated, every queued write has been replayed and answered, and
+     * every live query has its snapshot — an open socket alone is not enough.
+     */
+    status(): SyncStatus;
+    /**
+     * Called on every status change, as it happens — never on a timer.
+     * Returns an unsubscribe function.
+     *
+     * ```ts
+     * cache.onStatusChange(({ phase, error }) => {
+     *   badge.textContent = phase === 'ready' ? 'Synced' : phase;
+     *   if (error?.kind === 'auth-failed') signIn();
+     * });
+     * ```
+     */
+    onStatusChange(cb: (status: SyncStatus) => void): () => void;
+    /** One live query's progress, or `null` when the pattern is not registered. */
+    subscriptionState(pattern: string): SubscriptionState | null;
+    /**
+     * Called when a live query's progress changes: `state` is `null` once it is
+     * stopped. Returns an unsubscribe function.
+     */
+    onSubscriptionChange(cb: (pattern: string, state: SubscriptionState | null) => void): () => void;
+    /**
+     * Called when the server refuses a queued write for good — out of the sync
+     * token's scope, read-only, the wrong type. The write never reached the
+     * server. Keys a live query covers get the server's values back shortly
+     * after; `unreconciled` lists the rest, whose local value is the refused
+     * one and stays so until the application rewrites or re-reads them.
+     *
+     * Returns an unsubscribe function.
+     */
+    onWriteRefused(cb: (keys: readonly string[], unreconciled: readonly string[], reason: string) => void): () => void;
+    /**
+     * Called when an IndexedDB write fails — quota exceeded, storage cleared,
+     * access denied. The change it carried is in memory and syncs while the page
+     * stays open, but would not survive a reload. Returns an unsubscribe
+     * function.
+     */
+    onPersistenceError(cb: (operation: string, message: string) => void): () => void;
+    /**
+     * Resolves once every write made so far is committed to IndexedDB, and
+     * rejects with the first IndexedDB failure since the last `flush()`.
+     *
+     * Writes return as soon as the change is in memory; this is how to know it
+     * is on disk. A committed IndexedDB transaction survives a reload or a
+     * closed tab, but browsers do not promise it survives a power cut.
+     *
+     * ```ts
+     * cache.set('draft', text);
+     * await cache.flush(); // on disk now
+     * ```
+     */
+    flush(): Promise<void>;
     /**
      * Subscribe to store mutations from any source — local writes, server
      * WebSocket push, and BroadcastChannel cross-tab sync. The callback receives
@@ -172,14 +341,13 @@ export declare class Cache {
      */
     onPatternChange(pattern: string, cb: () => void): () => void;
     /**
-     * Called when the offline write queue overflows and the **oldest** queued
-     * write is discarded.
+     * Only with `outbox: { whenFull: 'evict-oldest' }`: called when the queue
+     * of writes waiting for the server overflows and the **oldest** queued write
+     * is discarded. That write never reaches the server.
      *
-     * The queue holds 10,000 writes. Past that, each new write evicts the oldest
-     * one — without this callback that is silent data loss: no error is thrown
-     * and the write is simply gone. If a client can plausibly be offline long
-     * enough to hit the cap, do not treat the outbox as the system of record;
-     * persist the mutation yourself and reconcile on reconnect.
+     * By default a full queue instead throws {@link OutboxFullError} from the
+     * write that does not fit, before it changes anything, and this is never
+     * called.
      *
      * Returns an unsubscribe function.
      *
@@ -194,7 +362,8 @@ export declare class Cache {
      * Writes queued locally and not yet acknowledged by the server.
      *
      * Useful for a "syncing…" indicator, or to apply back-pressure before the
-     * queue reaches its 10,000-write cap.
+     * queue reaches its cap (10,000 by default), past which writes throw
+     * {@link OutboxFullError}.
      */
     pendingWrites(): number;
     /**
@@ -234,9 +403,7 @@ export declare class Cache {
      * if (bytes) img.src = URL.createObjectURL(new Blob([bytes]));
      * ```
      *
-     * Note: the browser SDK can *read* binary values but cannot yet *write* them
-     * — `set()` takes a string. Binary values originate from a backend writing
-     * over the RESP port.
+     * Write them with {@link setBytes}.
      */
     getBytes(key: string): Uint8Array | null;
     /**
@@ -259,6 +426,13 @@ export declare class Cache {
     ttl(key: string): number;
     /**
      * Store a string value. Syncs to the server and other tabs when connected.
+     *
+     * Returns once the value is in memory and queued for the server; see
+     * {@link flush} for when it is on disk, and {@link onWriteRefused} for a
+     * write the server refuses.
+     *
+     * @throws {OutboxFullError} when the queue of writes waiting for the server
+     * is full. Nothing is changed.
      */
     set(key: string, value: string): void;
     /**
@@ -439,7 +613,8 @@ export declare function init(): Promise<void>;
  *
  * Loads and initialises the WASM module on first call (subsequent calls reuse
  * the existing module). Options are applied in order:
- * `persistence` → `broadcastChannel` → `connect` + `auth`.
+ * `outbox` and `persistSyncedState` → `persistence` → `broadcastChannel` →
+ * `connect` + `auth`.
  *
  * ```ts
  * import { createCache } from 'recached-edge';

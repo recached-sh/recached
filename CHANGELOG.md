@@ -2,6 +2,45 @@
 
 All notable changes to Recached are documented here.
 
+<<<<<<< Updated upstream
+## [0.5.0] (unreleased) — synchronization reliability
+=======
+## 0.5.0 (2026-10-25) synchronization reliability
+>>>>>>> Stashed changes
+
+### Fixed — lost, duplicated or misreported writes
+- Two browser tabs sharing one IndexedDB no longer lose writes: each tab adopted the same stored identity with a newer epoch, so the server skipped the older tab's writes as duplicates. Every page load now has its own identity, and IndexedDB rows are keyed per session so tabs cannot overwrite each other's pending writes
+- Duplicate suppression survives a server crash: the AOF records each `DEDUP` write inside its envelope (and a mark-only record for writes that changed nothing), startup restores the marks, and a checkpoint writes the dedup sidecar before the snapshot. A retried `INCR` whose reply was lost is no longer applied twice after a restart
+- A deferred write can no longer be overtaken: with `CLIENT DEDUPBARRIER ON` (sent by 0.5 clients) the server defers every later write from the client on that socket, so its replay is not answered `+DUP` and dropped
+- A permanently refused write whose reply was lost is refused again on replay instead of answered `+DUP` and retired as applied; the server remembers the last 64 refusals per client (AOF and a new `.dedup-refusals` sidecar)
+- A replayed write that was applied under an earlier sync token is answered `+DUP` rather than refused under a narrower one
+- Writes a browser queues after `subscribe()` are accepted: the WebSocket transport (RESP3) no longer applies the RESP2 subscribe-mode rule, which refused them for good
+- Duplicate-suppressed binary writes (`setBytes`, mobile binary `set`) are accepted: the parser no longer checks the whole `DEDUP` envelope against the envelope's own value positions
+- A client pipelining a long outbox replay is no longer disconnected (`4001`, "sync stream gap") by its own writes' echoes lagging the fan-out
+- Restoring the browser outbox while the socket is already open sends the restored writes at once; held for the next reconnect, they replayed behind newer writes and were skipped as duplicates
+- An array reply shaped like a `qstate` or `keychange` (e.g. `RPOP list 3`) is no longer applied as one; with `CLIENT PUSHFRAMES ON` live-query changes arrive as RESP3 pushes
+- Wire ids no longer wrap within an epoch, and an exhausted epoch takes a new identity instead of saturating into reuse
+
+### Changed
+- **Breaking (beta):** a write past the outbox cap is refused (`OutboxFullError`, `RecachedException.OutboxFull`, `RecachedError.outboxFull`, `Error::OutboxFull`) before it changes anything, instead of evicting the oldest queued write. The old behaviour is opt-in (`whenFull: 'evict-oldest'`, `evictOldestWhenFull`, `evict_oldest_when_full`). A browser cache with no server configured keeps evicting
+- **Breaking (beta):** browser write methods throw `OutboxFullError`; `RefusedWrite` and refusal callbacks carry `unreconciled` keys
+- A mobile write whose SQLite transaction fails is rolled back in memory and never sent: an error now means nothing happened
+- A reconnect snapshot no longer rolls back a write still queued (deferred, or sent after the snapshot's `QSUB`)
+- Browser IndexedDB writes resolve on transaction commit; a write's WAL record and outbox row commit in one transaction; server-applied state is persisted for offline cold start (`persistSyncedState`); WAL expiries are absolute, so a reload no longer restarts a TTL
+- The sync-client's `enqueue_write` is replaced by `try_enqueue_write`; `restore_outbox` takes whether the socket is open
+
+### Added
+- A synchronization status in every SDK — `Disconnected → Connecting → Authenticating → Replaying → Hydrating → Ready`, plus `Degraded` — driven by protocol events, with the current problem, `lastSyncedAt`, and per-live-query states (`status()`/`onStatusChange` in the browser, `syncStatus` in Kotlin and Swift, `status()`/`status_changes()` in Rust)
+- Browser `flush()`, `onPersistenceError`, `onWriteRefused`, and `outbox` / `persistSyncedState` options
+- Server metrics `recached_dedup_replays_total`, `recached_sync_write_refusals_total`, `recached_dedup_barrier_deferrals_total`, `recached_qsub_snapshots_total`, `recached_qsub_snapshot_duration_seconds`
+- Model-based randomized sync tests, real-process crash-recovery tests, and a browser end-to-end script (`wasm-edge/scripts/e2e-browser.mjs`)
+
+### Upgrade notes
+- A 0.5 AOF cannot be replayed by 0.4: run `SAVE` before downgrading. Snapshot and `.dedup` formats are unchanged
+- Replication still carries bare mutations, so a promoted replica has no duplicate-suppression marks for replicated writes
+- Writes after `subscribe()` and binary writes need a 0.5 server; the other client fixes work against 0.4
+- Duplicate suppression is not exactly-once; see the protocol page's crash-consistency table
+
 ## [0.4.0] (2026-10-11)
 
 - Added `recached-mobile`, the shared UniFFI core for the preview Kotlin/Android and Swift/iOS/macOS SDKs

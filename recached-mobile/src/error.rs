@@ -22,6 +22,16 @@ pub enum RecachedError {
     /// The key holds bytes that are not valid UTF-8, so it has no string form.
     /// Read it with `get` instead.
     NotUtf8 { key: String },
+
+    /// The write was refused before anything changed: `pending` writes wait
+    /// for the server and the outbox holds `capacity`
+    /// (`ClientConfig.max_pending_writes`). Nothing was applied, stored or
+    /// sent, and every queued write is intact. Retry once it drains.
+    OutboxFull { pending: u64, capacity: u64 },
+
+    /// This session has used every write id it can carry (four billion).
+    /// Nothing was applied; reopen the client to start a new session.
+    WriteIdsExhausted,
 }
 
 impl fmt::Display for RecachedError {
@@ -30,11 +40,28 @@ impl fmt::Display for RecachedError {
             Self::Storage { reason } => write!(f, "storage: {reason}"),
             Self::Command { reason } => f.write_str(reason),
             Self::NotUtf8 { key } => write!(f, "value of {key:?} is not valid UTF-8"),
+            Self::OutboxFull { pending, capacity } => write!(
+                f,
+                "outbox full: {pending} writes pending, capacity {capacity}; nothing was written"
+            ),
+            Self::WriteIdsExhausted => f.write_str("write ids exhausted; reopen the client"),
         }
     }
 }
 
 impl std::error::Error for RecachedError {}
+
+impl From<sync_client::EnqueueError> for RecachedError {
+    fn from(e: sync_client::EnqueueError) -> Self {
+        match e {
+            sync_client::EnqueueError::OutboxFull { pending, capacity } => Self::OutboxFull {
+                pending: pending as u64,
+                capacity: capacity as u64,
+            },
+            sync_client::EnqueueError::WireIdsExhausted => Self::WriteIdsExhausted,
+        }
+    }
+}
 
 impl From<rusqlite::Error> for RecachedError {
     fn from(e: rusqlite::Error) -> Self {

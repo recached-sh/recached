@@ -77,6 +77,14 @@ pub(crate) struct ClientMeta {
     /// Set by `CLIENT EXPIRY ON`: keychange and qstate values carry the key's
     /// remaining time to live (see `propagation::with_expiry`).
     pub(crate) expiry: bool,
+    /// Set by `CLIENT PUSHFRAMES ON`: `keychange` and `keydelta` go out as
+    /// RESP3 push frames, so a client can never mistake a command reply for
+    /// one.
+    pub(crate) push_frames: bool,
+    /// Set by `CLIENT DEDUPBARRIER ON`: once a DEDUP write from a client is
+    /// deferred on this connection, every later DEDUP write from that client
+    /// here is deferred too, so none can raise the duplicate mark past it.
+    pub(crate) dedup_barrier: bool,
 }
 
 impl ClientMeta {
@@ -92,6 +100,8 @@ impl ClientMeta {
             resp: 2,
             deltas: false,
             expiry: false,
+            push_frames: false,
+            dedup_barrier: false,
             sub: 0,
             psub: 0,
         }
