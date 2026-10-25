@@ -69,6 +69,55 @@ pub(crate) fn queue_time_rejection(cmd: &Command) -> Option<Vec<u8>> {
     }
 }
 
+/// Whether a fan-out push goes to this connection.
+///
+/// Its own writes never do. With scopes set, only matching keys are forwarded;
+/// without them, legacy mode forwards everything and strict mode nothing
+/// until a token has been presented.
+///
+/// A key this connection watches or live-queries is already delivered
+/// authoritatively on the notification channel, so forwarding the mutation
+/// here too would apply it twice. That was previously masked: the keychange
+/// carries the key's whole value, so arriving second it overwrote the
+/// double-applied result. The two channels are independent arms of the
+/// connection's `select!` though, so that ordering was never guaranteed — and
+/// a `keydelta` is not a snapshot and could not repair it at all. Suppressed
+/// only when *every* key is covered: a multi-key mutation with one watched key
+/// still needs this frame for the others, and FLUSHDB names no keys at all.
+pub(crate) fn forwards_push(
+    push: &SyncPush,
+    conn_id: u64,
+    sync_scopes: Option<&[Grant]>,
+    strict: bool,
+    watched_keys: &HashSet<String>,
+    qsub_patterns: &HashSet<String>,
+) -> bool {
+    if push.origin == conn_id {
+        return false;
+    }
+    let visible = match sync_scopes {
+        Some(scopes) => scopes_match(scopes, &push.keys),
+        None => !strict,
+    };
+    let superseded = !push.keys.is_empty()
+        && push.keys.iter().all(|k| {
+            watched_keys.contains(k)
+                || qsub_patterns
+                    .iter()
+                    .any(|p| core_engine::store::glob_match(p, k))
+        });
+    visible && !superseded
+}
+
+/// A WebSocket message carrying RESP bytes: text when they are valid UTF-8,
+/// binary otherwise.
+fn ws_message(bytes: &[u8]) -> Message {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Message::Text(text.into()),
+        Err(_) => Message::Binary(bytes.to_vec().into()),
+    }
+}
+
 /// Re-tag a top-level RESP array as a RESP3 push (`*` → `>`) when the
 /// connection asked for push framing. The two share one layout below the
 /// type byte, so nothing is re-encoded.
@@ -1065,6 +1114,43 @@ pub(crate) async fn handle_ws<S>(
                     // valid UTF-8 — impossible over a text frame, which the
                     // WebSocket spec requires to be well-formed UTF-8.
                     Some(Ok(frame @ (Message::Text(_) | Message::Binary(_)))) => {
+                        // Keep up with the fan-out before taking another
+                        // command. `select!` polls its arms from a random
+                        // start, and with the others idle this arm wins about
+                        // five times in six — so a client pipelining writes
+                        // (a reconnect replaying its outbox) produced pushes,
+                        // its own included, faster than they were drained,
+                        // lagged the channel and was disconnected mid-replay,
+                        // to replay again on the next socket. Draining here
+                        // leaves lag to what it is meant to catch: a socket
+                        // too slow to take what other writers produce.
+                        loop {
+                            match rx.try_recv() {
+                                Ok(push) => {
+                                    if forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns)
+                                        && ws_sender.send(ws_message(&push.resp)).await.is_err()
+                                    {
+                                        break 'outer;
+                                    }
+                                }
+                                Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                                    warn!(
+                                        "WS conn {} lagged, missed {} mutations; closing so the client resynchronises",
+                                        conn_id, n
+                                    );
+                                    counter!("recached_sync_lag_disconnects_total").increment(1);
+                                    let _ = ws_sender
+                                        .send(Message::Close(Some(CloseFrame {
+                                            code: CloseCode::Library(WS_CLOSE_SYNC_GAP),
+                                            reason: "sync stream gap; reconnect to resynchronise".into(),
+                                        })))
+                                        .await;
+                                    break 'outer;
+                                }
+                                Err(broadcast::error::TryRecvError::Empty) => break,
+                                Err(broadcast::error::TryRecvError::Closed) => break 'outer,
+                            }
+                        }
                         let raw: Vec<u8> = match &frame {
                             Message::Text(t) => t.as_bytes().to_vec(),
                             Message::Binary(b) => b.to_vec(),
@@ -1157,7 +1243,10 @@ pub(crate) async fn handle_ws<S>(
                                 ws_send!(b"-TRYAGAIN an earlier write from this client was deferred on this connection; reconnect to replay in order\r\n");
                                 continue;
                             }
-                            if let Some(replay) = state.dedup_replay(client, *id) {
+                            // Only scope can refuse a replay before the write
+                            // path checks it, so without strict scopes the
+                            // write path's own check is enough.
+                            if strict && let Some(replay) = state.dedup_replay(client, *id) {
                                 ws_send!(&dedup_replay_reply(replay).serialize());
                                 continue;
                             }
@@ -1547,6 +1636,7 @@ pub(crate) async fn handle_ws<S>(
                                 // serialization and socket I/O happen after releasing all
                                 // write barriers. A slow client therefore cannot pause
                                 // unrelated writers.
+                                let snapshot_started = std::time::Instant::now();
                                 let qstate = {
                                     let _snapshot_guards =
                                         state.replicas.lock_all_writes().await;
@@ -1569,6 +1659,15 @@ pub(crate) async fn handle_ws<S>(
                                         Err(limit) => Err(limit),
                                     }
                                 };
+                                // Taken under every write barrier, so this is
+                                // also how long writers waited for it.
+                                histogram!("recached_qsub_snapshot_duration_seconds")
+                                    .record(snapshot_started.elapsed().as_secs_f64());
+                                counter!(
+                                    "recached_qsub_snapshots_total",
+                                    "outcome" => if qstate.is_ok() { "sent" } else { "too_large" }
+                                )
+                                .increment(1);
                                 let kvs = match qstate {
                                     Ok(values) => values,
                                     Err(limit) => {
@@ -1767,42 +1866,11 @@ pub(crate) async fn handle_ws<S>(
 
             result = rx.recv() => {
                 match result {
-                    Ok(push) if push.origin != conn_id => {
-                        // Scope filter: with scopes set, only matching keys are
-                        // forwarded. Without scopes, legacy mode forwards
-                        // everything; strict mode forwards nothing until a
-                        // token has been presented.
-                        let visible = match &sync_scopes {
-                            Some(scopes) => scopes_match(scopes, &push.keys),
-                            None => !strict,
-                        };
-                        // A key this connection watches or live-queries is
-                        // already delivered authoritatively on the
-                        // notification channel, so forwarding the mutation
-                        // here too would apply it twice. That was previously
-                        // masked: the keychange carries the key's whole value,
-                        // so arriving second it overwrote the double-applied
-                        // result. The two channels are independent arms of
-                        // this `select!` though, so that ordering was never
-                        // guaranteed — and a `keydelta` is not a snapshot and
-                        // could not repair it at all.
-                        //
-                        // Suppressed only when *every* key is covered: a
-                        // multi-key mutation with one watched key still needs
-                        // this frame for the others, and FLUSHDB names no keys
-                        // at all.
-                        let superseded = !push.keys.is_empty()
-                            && push.keys.iter().all(|k| {
-                                watched_keys.contains(k)
-                                    || qsub_patterns.iter().any(|p| {
-                                        core_engine::store::glob_match(p, k)
-                                    })
-                            });
-                        if visible && !superseded {
+                    Ok(push) => {
+                        if forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns) {
                             ws_send!(&push.resp);
                         }
                     }
-                    Ok(_) => {}
                     // The fan-out overran this connection. Resubscribing here
                     // would keep the socket open having silently skipped `n`
                     // mutations: `SyncPush` carries no sequence number, so the

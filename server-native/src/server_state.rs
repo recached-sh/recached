@@ -389,12 +389,29 @@ impl ServerState {
     pub(crate) fn commit_dedup(&self, client: &str, id: u64) {
         let now = now_ms();
         let mut map = self.dedup.lock().expect("dedup mutex poisoned");
-        let mark = map.entry(client.to_string()).or_default();
-        mark.hwm = mark.hwm.max(id);
-        mark.seen = now;
-        // Applied on a retry after an earlier refusal: the refusal no longer
-        // describes it.
-        mark.refused.retain(|(refused, _)| *refused != id);
+        // Looked up before inserting: `entry` would allocate the client id on
+        // every write, under the one lock every DEDUP write takes.
+        match map.get_mut(client) {
+            Some(mark) => {
+                mark.hwm = mark.hwm.max(id);
+                mark.seen = now;
+                // Applied on a retry after an earlier refusal: the refusal no
+                // longer describes it.
+                if !mark.refused.is_empty() {
+                    mark.refused.retain(|(refused, _)| *refused != id);
+                }
+            }
+            None => {
+                map.insert(
+                    client.to_string(),
+                    DedupMark {
+                        hwm: id,
+                        seen: now,
+                        refused: VecDeque::new(),
+                    },
+                );
+            }
+        }
         self.dedup_dirty.store(true, Ordering::Release);
     }
 

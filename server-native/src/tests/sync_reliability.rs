@@ -581,3 +581,39 @@ async fn a_duplicate_suppressed_binary_write_is_accepted_over_websocket() {
     // And its replay is recognised.
     assert_eq!(c.cmd_binary(frame).await, dup());
 }
+
+#[tokio::test]
+async fn a_client_pipelining_a_long_replay_is_not_disconnected_by_its_own_echoes() {
+    // A reconnect replays the whole outbox at once. Every write is broadcast,
+    // and the writer's own socket has to drain those pushes (it skips its
+    // own) — which the connection loop, choosing the socket arm five times in
+    // six, did slower than they arrived: past ~600 writes the channel lagged
+    // and the server closed the socket "sync stream gap" mid-replay.
+    let srv = spawn_ws_server().await;
+    let mut c = WsClient::connect(srv.tcp_addr).await;
+    const WRITES: usize = 3_000;
+    for i in 0..WRITES {
+        let id = (i + 1).to_string();
+        let key = format!("replay:{i}");
+        let mut frame = format!(
+            "*6\r\n$5\r\nDEDUP\r\n$3\r\ntab\r\n${}\r\n{id}\r\n",
+            id.len()
+        );
+        frame.push_str(&format!(
+            "$3\r\nSET\r\n${}\r\n{key}\r\n$1\r\nv\r\n",
+            key.len()
+        ));
+        c.ws.feed(Message::Text(frame.into())).await.unwrap();
+    }
+    c.ws.flush().await.unwrap();
+    for i in 0..WRITES {
+        match tokio::time::timeout(std::time::Duration::from_secs(10), c.ws.next()).await {
+            Ok(Some(Ok(Message::Text(t)))) => assert_eq!(t.as_str(), "+OK\r\n", "reply {i}"),
+            other => panic!("reply {i}: {other:?}"),
+        }
+    }
+    assert_eq!(
+        get(&srv.store, &format!("replay:{}", WRITES - 1)),
+        bulk("v")
+    );
+}

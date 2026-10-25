@@ -956,3 +956,44 @@ fn errors_carry_the_server_text_and_never_the_token() {
     let shown = format!("{:?}", c.status());
     assert!(!shown.contains("secret-token-value"), "{shown}");
 }
+
+/// What snapshot protection costs at the worst case: a full outbox
+/// (10,000 queued rows, each parsed for its keys) when a 1,000-key snapshot
+/// arrives. Ignored: it measures, it does not check.
+///
+/// `cargo test --release -p sync-client snapshot_protection_cost -- --ignored --nocapture`
+#[test]
+#[ignore = "benchmark"]
+fn snapshot_protection_cost_with_a_full_outbox() {
+    let mut c = client();
+    c.add_live_query("k:*", false);
+    for i in 0..MAX_PENDING_WRITES {
+        c.try_enqueue_write(&set(&format!("q:{i}"), "v"), true, false)
+            .unwrap();
+    }
+    let pairs: Vec<(String, String)> = (0..1_000).map(|i| (format!("k:{i}"), "v".into())).collect();
+    let refs: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let frame = qstate("k:*", &refs);
+    let mut times = Vec::new();
+    for _ in 0..9 {
+        c.on_open();
+        ack_opt_ins_v5(&mut c);
+        // Answer the replay, keeping every row queued (deferred, as by OOM).
+        c.handle_frame(b"-OOM command not allowed\r\n");
+        let start = std::time::Instant::now();
+        c.inflight.retain(|s| matches!(s, Slot::LiveQuery { .. }));
+        c.paused = false;
+        let _ = c.handle_frame(&frame);
+        times.push(start.elapsed());
+        c.on_close();
+    }
+    times.sort();
+    println!(
+        "qstate of 1,000 keys with {} queued rows: median {:?}",
+        MAX_PENDING_WRITES,
+        times[times.len() / 2]
+    );
+}
