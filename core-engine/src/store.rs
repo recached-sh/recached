@@ -2991,10 +2991,7 @@ impl KeyValueStore {
                         // short, which breaks ported test suites asserting the
                         // value they just set and makes any client that renews
                         // at a threshold renew early, forever.
-                        Some(exp) => {
-                            let remaining_ms = exp.saturating_sub(now);
-                            Value::Integer((remaining_ms.saturating_add(500) / 1000) as i64)
-                        }
+                        Some(exp) => Value::Integer(ttl_seconds(exp.saturating_sub(now))),
                     },
                 }
             }
@@ -4997,6 +4994,12 @@ pub const MAX_PATTERN_BYTES: usize = 1024;
 /// earlier version of this comment claimed class support; it was never
 /// implemented. Matching is byte-wise, so `?` matches one *byte* and a
 /// multi-byte UTF-8 character spans several positions.
+/// `TTL`'s answer for `remaining_ms` left: whole seconds, rounded to the
+/// nearest with half up — Redis's `(ttl + 500) / 1000`.
+fn ttl_seconds(remaining_ms: u64) -> i64 {
+    (remaining_ms.saturating_add(500) / 1000) as i64
+}
+
 pub fn glob_match(pattern: &str, s: &str) -> bool {
     let pat = pattern.as_bytes();
     let text = s.as_bytes();
@@ -10384,12 +10387,24 @@ mod ttl_rounding_tests {
     #[test]
     fn remainders_round_to_the_nearest_second() {
         // 1600 ms is nearer 2 s than 1 s; 1400 ms is nearer 1 s. Truncation
-        // answered 1 for both.
+        // answered 1 for both. Through the store, the clock runs between SET
+        // and TTL, so each value keeps a margin from the half-second boundary:
+        // a slow CI runner read 2 for an expiry set at exactly 2_500 ms.
         assert_eq!(ttl(&store_with_expiry_in(1_600)), 2);
         assert_eq!(ttl(&store_with_expiry_in(1_400)), 1);
-        // Exactly half a second rounds up, matching Redis's `(ttl + 500) / 1000`.
-        assert_eq!(ttl(&store_with_expiry_in(2_500)), 3);
+        assert_eq!(ttl(&store_with_expiry_in(2_600)), 3);
         assert_eq!(ttl(&store_with_expiry_in(600)), 1);
+    }
+
+    #[test]
+    fn exactly_half_a_second_rounds_up() {
+        // The boundary itself, without a clock: Redis's `(ttl + 500) / 1000`.
+        assert_eq!(ttl_seconds(2_500), 3);
+        assert_eq!(ttl_seconds(2_499), 2);
+        assert_eq!(ttl_seconds(500), 1);
+        assert_eq!(ttl_seconds(499), 0);
+        assert_eq!(ttl_seconds(0), 0);
+        assert_eq!(ttl_seconds(u64::MAX), (u64::MAX / 1000) as i64);
     }
 
     #[test]
