@@ -10,7 +10,7 @@ name    = "recached"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "A Rust cache server that runs on your backend and inside the browser."
+description = "The Recached cache server: an in-memory key-value store with a Redis-compatible RESP command subset, plus WebSocket sync for browser, mobile, and embedded Rust clients."
 repository.workspace = true
 # Not publishable to crates.io: this crate depends on `core-engine` by path, and a
 # path dependency carries no version, which crates.io rejects. Stated rather than

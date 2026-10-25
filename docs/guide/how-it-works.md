@@ -78,6 +78,12 @@ Setting `broadcastChannel` shares local write commands with tabs on the same ori
 
 BroadcastChannel does not elect a connection leader or proxy server traffic. Each tab that needs server updates must connect independently. It has no role in native mobile or cross-device sync.
 
+## Where your database fits
+
+A database is optional and sits outside Recached. When MySQL or PostgreSQL owns your records, your backend commits each change there first, then publishes the resulting cache value to the server over RESP, typically from a transactional outbox worker. Recached delivers that value to clients like any other write.
+
+Nothing in Recached reads from or writes to SQL: there is no connector, change-data-capture pipeline, or write-through hook. Client cache writes reach the Recached server only. See [database integration](/guide/database-integration) for the publishing pattern and for handling offline business edits.
+
 ## Read the protocol contract
 
 TCP and WebSocket carry RESP (Redis Serialization Protocol). WebSocket commands and replies use text frames for valid UTF-8 and binary frames for other bytes. Values are binary-safe; keys, fields, members, patterns, and channels must be UTF-8 text.

@@ -1,6 +1,6 @@
 # @recached/react
 
-Official React hooks for [Recached](https://github.com/recached-sh/recached) — a local reactive cache with automatic server sync and cross-tab sharing.
+Official React hooks for [Recached](https://github.com/recached-sh/recached), the local-first cache and real-time sync engine. Components read the local `recached-edge` cache and re-render when a key changes locally, in another tab, or on the server.
 
 This package targets React in the browser. For native mobile apps, use the [Kotlin](https://recached.dev/android/getting-started) or [Swift](https://recached.dev/ios/getting-started) preview. React Native is planned.
 

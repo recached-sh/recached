@@ -7,7 +7,7 @@ Recached competes on **where the data can live** — the same engine on the serv
 
 ## Native clients: implemented previews and planned adapters
 
-- **Kotlin + Swift: in preview.** One `uniffi`-annotated Rust crate (`recached-mobile`) generates bindings for both. The platform WebSocket (OkHttp / URLSession) feeds frames into `sync-client`, with no embedded async runtime. Data and outbox persist to SQLite, and reactivity is Kotlin `Flow` and Swift `AsyncStream` / Observation over keychange pushes. Both SDKs include demo apps, automated tests, and CI workflows. They are not published yet: see [Android](/android/getting-started) and [iOS](/ios/getting-started).
+- **Kotlin + Swift: in preview.** One `uniffi`-annotated Rust crate (`recached-mobile`) generates bindings for both. The platform WebSocket (OkHttp / URLSession) feeds frames into `sync-client`, with no embedded async runtime. Data and outbox persist to SQLite, and reactivity is Kotlin `Flow` and Swift `AsyncStream` / Observation over keychange pushes. Both SDKs include demo apps, automated tests, and CI workflows. Version 0.1.0 is published to Maven Central and SwiftPM; the APIs may change before 1.0. See [Android](/android/getting-started) and [iOS](/ios/getting-started).
 - **Flutter: planned, not implemented.** The proposed adapter uses `flutter_rust_bridge`: synchronous local reads into Rust memory, `watchKey()` → `Stream` for rebuilds.
 - **React Native: planned, not implemented.** The proposed adapter reuses the UniFFI binding layer through `uniffi-bindgen-react-native`, with an API modeled on the browser React hooks.
 
@@ -26,7 +26,7 @@ The current browser adapter uses Web APIs, including a JavaScript clock and `win
 
 ## AI-era features
 
-Recached's unfair advantage is *where the data lives* — so the winning AI features put the intelligence layer **next to the user** instead of behind another network hop. Ordered by intended sequence.
+Recached's distinguishing property is *where the data lives*, so these features aim to put AI-related caching **next to the user** instead of behind another network hop. Each section states what exists today; the rest are proposals. Ordered by intended sequence.
 
 ### Token-cost rate limiting
 

@@ -1,5 +1,5 @@
 class Recached < Formula
-  desc "Blazing fast, multi-core drop-in replacement for Redis"
+  desc "Local-first cache server with a Redis-compatible RESP subset and WebSocket sync"
   homepage "https://github.com/recached-sh/recached"
   version "0.4.0"
   license "Apache-2.0"

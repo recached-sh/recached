@@ -1,5 +1,6 @@
 [package]
 name    = "sync-client"
+description = "The platform-neutral Recached sync state machine shared by browser, mobile, and embedded Rust clients: session replay, reply matching, outbox, DEDUP envelopes, and backoff."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

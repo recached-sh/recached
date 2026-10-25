@@ -73,3 +73,7 @@ bench-results/
 bench-private/
 
 brand
+
+# Internal reports and positioning notes. Kept beside the docs for reference,
+# never committed or published (also excluded from the VitePress build).
+/docs/reports/

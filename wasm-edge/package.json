@@ -1,6 +1,6 @@
 {
   "name": "recached-edge",
-  "description": "Browser and edge WebAssembly client for Recached \u2014 local cache with automatic server sync",
+  "description": "Recached browser client: the shared Rust cache engine in WebAssembly, with local reads, optional IndexedDB persistence, and real-time WebSocket sync",
   "version": "0.4.0",
   "type": "module",
   "main": "sdk.js",
@@ -50,9 +50,8 @@
     "wasm",
     "webassembly",
     "redis",
-    "redis-compatible",
     "local-first",
-    "offline-first",
+    "offline",
     "edge",
     "websocket",
     "indexeddb",
