@@ -4,11 +4,11 @@
   <p><b>A local-first cache and real-time sync engine, powered by Rust.</b></p>
   <p>Cache locally. Sync everywhere.</p>
 
-  <a href="https://recached.dev"><img src="https://img.shields.io/badge/Docs-recached.dev-blue.svg" alt="Docs"></a>
-  <a href="https://www.npmjs.com/package/recached-edge"><img src="https://img.shields.io/npm/v/recached-edge?label=npm" alt="npm"></a>
-  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Language-Rust-orange.svg?logo=rust" alt="Rust"></a>
-  <a href="https://webassembly.org"><img src="https://img.shields.io/badge/Ecosystem-WebAssembly-yellow.svg" alt="Wasm"></a>
-  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="Apache 2.0"></a>
+  <a href="https://recached.dev"><img src="https://img.shields.io/badge/Docs-recached.dev-FBBF24.svg?labelColor=171C2B" alt="Docs"></a>
+  <a href="https://www.npmjs.com/package/recached-edge"><img src="https://img.shields.io/npm/v/recached-edge?label=npm&color=FBBF24&labelColor=171C2B" alt="npm"></a>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Language-Rust-FBBF24.svg?logo=rust&labelColor=171C2B" alt="Rust"></a>
+  <a href="https://webassembly.org"><img src="https://img.shields.io/badge/Ecosystem-WebAssembly-FBBF24.svg?labelColor=171C2B" alt="Wasm"></a>
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-Apache_2.0-FBBF24.svg?labelColor=171C2B" alt="Apache 2.0"></a>
 </div>
 
 ---
