@@ -49,15 +49,19 @@
 //! meaning unacknowledged rather than lost. Two limits on that, both
 //! deliberate and both worth sizing for:
 //!
-//! - The queue is capped ([`CacheBuilder::max_pending`]). Past the cap the
-//!   *oldest* queued write is discarded, counted in
-//!   [`pending_dropped`](Cache::pending_dropped) and logged at `WARN`.
+//! - The queue is capped ([`CacheBuilder::max_pending`]). Past the cap a new
+//!   write is refused with [`Error::OutboxFull`] — nothing queued is touched,
+//!   and nothing is sent. Until 0.5 the *oldest* queued write was discarded
+//!   instead; [`CacheBuilder::evict_oldest_when_full`] restores that, counted
+//!   in [`pending_dropped`](Cache::pending_dropped) and logged at `WARN`.
 //! - The queue does not outlive the process. A pod that restarts mid-outage
 //!   loses whatever it had queued. The browser SDK backs the same queue with
 //!   IndexedDB; there is no equivalent here.
 //!
 //! Local reads keep working throughout — they just stop receiving updates, so
-//! check [`is_connected`](Cache::is_connected) if staleness matters. On
+//! check [`status`](Cache::status) if staleness matters: an open socket is
+//! not yet [`SyncPhase::Ready`], which also waits for authentication, the
+//! replay of queued writes and every live query's snapshot. On
 //! reconnect each live query is re-hydrated from a fresh snapshot, and keys the
 //! snapshot no longer carries are dropped locally, so a delete or expiry that
 //! happened during the outage is not served afterwards.
@@ -70,6 +74,7 @@ mod error;
 
 pub use core_engine::resp::Value;
 pub use error::{Error, Result};
+pub use sync_client::{SubscriptionFailure, SubscriptionState, SyncError, SyncPhase, SyncStatus};
 
 use conn::{Ack, Op, Shared, Task};
 pub use core_engine::store::EvictionPolicy;
@@ -77,8 +82,8 @@ use core_engine::store::{KeyValueStore, glob_match};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use sync_client::{SyncClient, to_resp, to_resp_bytes};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use sync_client::{OverflowPolicy, SyncClient, to_resp, to_resp_bytes};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 /// A handle to the local cache. Cheap to clone and safe to share across tasks;
 /// every clone reads the same store.
@@ -116,6 +121,7 @@ pub struct CacheBuilder {
     password: Option<String>,
     sync_token: Option<String>,
     max_pending: Option<usize>,
+    evict_oldest_when_full: bool,
     max_keys: Option<usize>,
     max_memory_bytes: Option<usize>,
     eviction_policy: EvictionPolicy,
@@ -147,13 +153,23 @@ impl CacheBuilder {
         self
     }
 
-    /// Cap on writes queued while disconnected. Beyond it the oldest is
-    /// dropped. The default suits a client that is briefly offline; a service
-    /// taking heavy write traffic through a long partition should size this
-    /// deliberately.
+    /// Cap on writes queued and not yet acknowledged. Beyond it a new write
+    /// is refused with [`Error::OutboxFull`]. The default suits a client that
+    /// is briefly offline; a service taking heavy write traffic through a
+    /// long partition should size this deliberately.
     #[must_use]
     pub fn max_pending(mut self, max: usize) -> Self {
         self.max_pending = Some(max);
+        self
+    }
+
+    /// Past [`max_pending`](Self::max_pending), evict the oldest queued
+    /// write to admit the new one — the behaviour before 0.5 — instead of
+    /// refusing the new one. An evicted write never reaches the server;
+    /// [`Cache::pending_dropped`] counts them.
+    #[must_use]
+    pub fn evict_oldest_when_full(mut self, evict: bool) -> Self {
+        self.evict_oldest_when_full = evict;
         self
     }
 
@@ -230,6 +246,9 @@ impl CacheBuilder {
         if let Some(max) = self.max_pending {
             client.set_max_pending(max);
         }
+        if self.evict_oldest_when_full {
+            client.set_overflow_policy(OverflowPolicy::EvictOldest);
+        }
         // Recorded, not sent: `on_open` emits these in the right order on this
         // connection and on every reconnect.
         if let Some(password) = &self.password {
@@ -243,6 +262,8 @@ impl CacheBuilder {
             connected: AtomicBool::new(false),
             outbox_len: AtomicUsize::new(0),
             dropped_writes: AtomicU64::new(0),
+            status: watch::channel(client.status()).0,
+            subscriptions: std::sync::Mutex::new(Default::default()),
         });
         let (ops_tx, ops_rx) = mpsc::channel(self.max_queued_ops);
         let (open_tx, open_rx) = oneshot::channel();
@@ -284,6 +305,7 @@ impl Cache {
             password: None,
             sync_token: None,
             max_pending: None,
+            evict_oldest_when_full: false,
             max_keys: None,
             max_memory_bytes: None,
             eviction_policy: EvictionPolicy::NoEviction,
@@ -461,9 +483,13 @@ impl Cache {
     /// While disconnected the write is queued in memory and replayed on
     /// reconnect, and this returns [`Error::Disconnected`] — unacknowledged
     /// rather than lost. Two caveats, both covered in the crate docs: the
-    /// queue is capped and evicts its oldest entry when full
-    /// ([`pending_dropped`](Self::pending_dropped) counts those), and it does
-    /// not survive a process restart.
+    /// queue is capped, and a write past the cap is refused with
+    /// [`Error::OutboxFull`] instead of queued; and the queue does not
+    /// survive a process restart.
+    ///
+    /// `Ok` means the server applied the write — in its memory, not
+    /// necessarily on its disk: what survives a server crash is the server's
+    /// persistence configuration, not this acknowledgment.
     pub async fn set(&self, key: &str, value: impl AsRef<[u8]>) -> Result<()> {
         self.write(to_resp_bytes(&[b"SET", key.as_bytes(), value.as_ref()]))
             .await
@@ -559,8 +585,43 @@ impl Cache {
 
     /// Whether the sync socket is currently up. Local reads keep working
     /// either way — they just stop receiving updates.
+    ///
+    /// An open socket is not a synchronized one: see [`status`](Self::status).
     pub fn is_connected(&self) -> bool {
         self.inner.shared.connected.load(Ordering::Acquire)
+    }
+
+    /// Where synchronization stands: [`SyncPhase::Ready`] once the session
+    /// is authenticated, queued writes have been replayed and answered, and
+    /// every live query has its snapshot.
+    pub fn status(&self) -> SyncStatus {
+        self.inner.shared.status.borrow().clone()
+    }
+
+    /// Every status change as it happens, without polling.
+    ///
+    /// ```no_run
+    /// # async fn demo(cache: recached_embed::Cache) {
+    /// let mut changes = cache.status_changes();
+    /// while changes.changed().await.is_ok() {
+    ///     let status = changes.borrow().clone();
+    ///     tracing::info!(?status, "sync status");
+    /// }
+    /// # }
+    /// ```
+    pub fn status_changes(&self) -> watch::Receiver<SyncStatus> {
+        self.inner.shared.status.subscribe()
+    }
+
+    /// One live query's progress, or `None` when `pattern` is not watched.
+    pub fn subscription_state(&self, pattern: &str) -> Option<SubscriptionState> {
+        self.inner
+            .shared
+            .subscriptions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(pattern)
+            .cloned()
     }
 
     /// Writes queued but not yet acknowledged by the server.
@@ -569,8 +630,9 @@ impl Cache {
     }
 
     /// Writes discarded because the pending queue was full, since start-up.
+    /// Always zero unless [`CacheBuilder::evict_oldest_when_full`] is set.
     ///
-    /// Non-zero means writes were lost, not merely delayed: the queue evicts
+    /// Non-zero means writes were lost, not merely delayed: the queue evicted
     /// its oldest entry to admit a new one, and an evicted write is never
     /// replayed. Each one is also logged at `WARN`. If this moves, raise
     /// [`CacheBuilder::max_pending`] or send fewer writes through an outage.

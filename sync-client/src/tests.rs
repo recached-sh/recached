@@ -5,6 +5,18 @@ fn client() -> SyncClient {
     SyncClient::new(Arc::new(KeyValueStore::new()), "client-a".to_string())
 }
 
+/// The 0.4 infallible call, for the many tests that queue well under the cap.
+trait EnqueueExt {
+    fn enqueue_write(&mut self, encoded: &[u8], dedup: bool, connected: bool) -> Enqueued;
+}
+
+impl EnqueueExt for SyncClient {
+    fn enqueue_write(&mut self, encoded: &[u8], dedup: bool, connected: bool) -> Enqueued {
+        self.try_enqueue_write(encoded, dedup, connected)
+            .expect("write queued")
+    }
+}
+
 fn get(c: &SyncClient, key: &str) -> Value {
     c.store().execute(Command::Get(key.to_string()))
 }
@@ -23,16 +35,24 @@ fn applied(keys: &[&str]) -> Incoming {
 
 /// Render a wire frame as text for assertions. Frames are bytes because values
 /// may be binary; every frame in these tests has a text payload.
-/// Answer the two frames every open starts with, `CLIENT DELTA ON` and
-/// `CLIENT EXPIRY ON`. Neither retires an outbox row.
+/// Answer the four frames every open starts with — `CLIENT DELTA ON`,
+/// `CLIENT EXPIRY ON`, `CLIENT PUSHFRAMES ON` and `CLIENT DEDUPBARRIER ON` —
+/// as a 0.4 server does: the first two accepted, the two 0.5 opt-ins refused.
+/// Keychanges then stay plain arrays, which most tests here are written in.
+/// None retires an outbox row.
 fn ack_opt_ins(c: &mut SyncClient) {
-    for _ in 0..2 {
-        assert_eq!(
-            c.handle_frame(b"+OK\r\n"),
-            Incoming::Reply { retired: None }
-        );
+    for reply in [
+        &b"+OK\r\n"[..],
+        b"+OK\r\n",
+        b"-ERR unknown subcommand 'PUSHFRAMES'\r\n",
+        b"-ERR unknown subcommand 'DEDUPBARRIER'\r\n",
+    ] {
+        assert_eq!(c.handle_frame(reply), Incoming::Reply { retired: None });
     }
 }
+
+/// Frames `on_open` sends before the session's AUTH/SYNC and the outbox.
+const OPT_INS: usize = 4;
 
 fn t(frame: &[u8]) -> String {
     String::from_utf8_lossy(frame).into_owned()
@@ -109,12 +129,14 @@ fn a_binary_write_replays_unchanged_after_reconnect() {
     let e = c.enqueue_write(&to_resp_bytes(&[b"SET", b"k", binary]), true, false);
 
     let frames = c.on_open();
-    // CLIENT DELTA ON and CLIENT EXPIRY ON, then the queued write.
-    assert_eq!(frames.len(), 3);
+    // The four CLIENT opt-ins, then the queued write.
+    assert_eq!(frames.len(), OPT_INS + 1);
     assert!(t(&frames[0]).contains("DELTA"));
     assert!(t(&frames[1]).contains("EXPIRY"));
+    assert!(t(&frames[2]).contains("PUSHFRAMES"));
+    assert!(t(&frames[3]).contains("DEDUPBARRIER"));
     assert_eq!(
-        frames[2], e.frame,
+        frames[OPT_INS], e.frame,
         "replayed frame must be byte-identical to the queued one"
     );
 }
@@ -152,26 +174,29 @@ fn on_open_replays_session_then_outbox_in_order() {
     let w2 = c.enqueue_write(&to_resp(&["SET", "b", "2"]), true, false);
 
     let frames = c.on_open();
-    assert_eq!(frames.len(), 7);
+    assert_eq!(frames.len(), 9);
     assert!(t(&frames[0]).contains("AUTH"));
     // Before QSUB, so the live query's own traffic can already be deltas
     // and its snapshot already carries expiries.
     assert!(t(&frames[1]).contains("DELTA"));
     assert!(t(&frames[2]).contains("EXPIRY"));
-    assert!(t(&frames[3]).contains("TOKEN"));
+    assert!(t(&frames[3]).contains("PUSHFRAMES"));
+    // Before the outbox it protects.
+    assert!(t(&frames[4]).contains("DEDUPBARRIER"));
+    assert!(t(&frames[5]).contains("TOKEN"));
     // The outbox before QSUB, so the snapshot already holds the replayed
     // writes and reconciling against it cannot remove or revert them.
-    assert_eq!(frames[4], w1.frame);
-    assert_eq!(frames[5], w2.frame);
-    assert!(t(&frames[6]).contains("QSUB"));
+    assert_eq!(frames[6], w1.frame);
+    assert_eq!(frames[7], w2.frame);
+    assert!(t(&frames[8]).contains("QSUB"));
 }
 
 #[test]
 fn session_commands_sent_while_open_occupy_reply_slots() {
     let mut c = client();
-    // Open with nothing queued: the two opt-ins are the only session
-    // frames, and each occupies a reply slot like any other.
-    assert_eq!(c.on_open().len(), 2);
+    // Open with nothing queued: the opt-ins are the only session frames,
+    // and each occupies a reply slot like any other.
+    assert_eq!(c.on_open().len(), OPT_INS);
     ack_opt_ins(&mut c);
     // A session command on the live socket...
     let frame = c.set_sync_token("tok", true);
@@ -272,8 +297,8 @@ fn replies_retire_outbox_rows_in_order() {
     let w1 = c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, false);
     let w2 = c.enqueue_write(&to_resp(&["SET", "b", "2"]), true, false);
     let frames = c.on_open();
-    // The two opt-ins, then the two writes.
-    assert_eq!(frames.len(), 4);
+    // The opt-ins, then the two writes.
+    assert_eq!(frames.len(), OPT_INS + 2);
     ack_opt_ins(&mut c);
 
     assert_eq!(
@@ -297,14 +322,14 @@ fn replies_retire_outbox_rows_in_order() {
 fn unacked_rows_survive_reconnect_and_replay() {
     let mut c = client();
     let w = c.enqueue_write(&to_resp(&["INCRBY", "n", "1"]), true, false);
-    assert_eq!(c.on_open().len(), 3);
+    assert_eq!(c.on_open().len(), OPT_INS + 1);
     // Connection dies before the reply arrives.
     c.on_close();
     // The row is still queued; the next open replays the identical frame,
     // behind the session's opt-ins.
     let frames = c.on_open();
-    assert_eq!(frames.len(), 3);
-    assert_eq!(frames[2], w.frame);
+    assert_eq!(frames.len(), OPT_INS + 1);
+    assert_eq!(frames[OPT_INS], w.frame);
 }
 
 #[test]
@@ -336,6 +361,7 @@ fn pushes_are_not_replies() {
 fn a_reply_for_an_evicted_row_retires_nothing_else() {
     let mut c = client();
     c.set_max_pending(2);
+    c.set_overflow_policy(OverflowPolicy::EvictOldest);
     c.on_open();
     ack_opt_ins(&mut c);
     let w1 = c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, true);
@@ -368,6 +394,7 @@ fn draining_after_overflow_retires_every_reply_without_searching() {
     const N: usize = 1_000;
     let mut c = client();
     c.set_max_pending(N);
+    c.set_overflow_policy(OverflowPolicy::EvictOldest);
     c.on_open();
     ack_opt_ins(&mut c);
     let ids: Vec<u64> = (0..2 * N)
@@ -392,14 +419,16 @@ fn rows_dropped_while_offline_are_not_awaited() {
     // Nothing was sent, so no reply will come for the evicted row.
     let mut c = client();
     c.set_max_pending(1);
+    c.set_overflow_policy(OverflowPolicy::EvictOldest);
     c.enqueue_write(&to_resp(&["SET", "a", "1"]), true, false);
     c.enqueue_write(&to_resp(&["SET", "b", "2"]), true, false);
     assert!(c.sent_then_dropped.is_empty());
 }
 
 #[test]
-fn outbox_overflow_drops_oldest() {
+fn outbox_overflow_drops_oldest_under_the_legacy_policy() {
     let mut c = client();
+    c.set_overflow_policy(OverflowPolicy::EvictOldest);
     let first = c.enqueue_write(&to_resp(&["SET", "k0", "v"]), true, false);
     for i in 1..MAX_PENDING_WRITES {
         c.enqueue_write(&to_resp(&["SET", &format!("k{i}"), "v"]), true, false);
@@ -416,6 +445,7 @@ fn qstate_applies_state_and_counts_as_reply() {
     let mut c = client();
     assert!(c.add_live_query("cart:*", false).is_none());
     c.on_open();
+    ack_opt_ins(&mut c);
     let qstate = "*4\r\n$6\r\nqstate\r\n$6\r\ncart:*\r\n$6\r\ncart:1\r\n$5\r\napple\r\n";
     assert_eq!(
         c.handle_frame(qstate.as_bytes()),
@@ -436,6 +466,7 @@ fn a_resnapshot_drops_keys_the_snapshot_no_longer_carries() {
     let mut c = client();
     assert!(c.add_live_query("cart:*", false).is_none());
     c.on_open();
+    ack_opt_ins(&mut c);
     c.handle_frame(
         b"*6\r\n$6\r\nqstate\r\n$6\r\ncart:*\r\n$6\r\ncart:1\r\n$5\r\napple\r\n$6\r\ncart:2\r\n$4\r\npear\r\n",
     );
@@ -444,7 +475,9 @@ fn a_resnapshot_drops_keys_the_snapshot_no_longer_carries() {
 
     // Reconnect. cart:2 went away while we were offline, so the fresh
     // snapshot simply does not mention it.
+    c.on_close();
     c.on_open();
+    ack_opt_ins(&mut c);
     c.handle_frame(b"*4\r\n$6\r\nqstate\r\n$6\r\ncart:*\r\n$6\r\ncart:1\r\n$6\r\nbanana\r\n");
     assert_eq!(get(&c, "cart:1"), bulk("banana"));
     assert_eq!(get(&c, "cart:2"), Value::BulkString(None));
@@ -456,7 +489,9 @@ fn a_resnapshot_leaves_keys_outside_its_pattern_alone() {
     // query's keys are not its business.
     let mut c = client();
     c.handle_frame(b"*3\r\n$9\r\nkeychange\r\n$6\r\nuser:1\r\n$3\r\nabc\r\n");
+    c.add_live_query("cart:*", false);
     c.on_open();
+    ack_opt_ins(&mut c);
     c.handle_frame(b"*4\r\n$6\r\nqstate\r\n$6\r\ncart:*\r\n$6\r\ncart:1\r\n$5\r\napple\r\n");
     assert_eq!(get(&c, "user:1"), bulk("abc"));
     assert_eq!(get(&c, "cart:1"), bulk("apple"));
@@ -520,7 +555,12 @@ fn restore_renumbers_without_collisions_and_preserves_order() {
     // Two rows from the previous session, stored under old ids.
     let old_frame_a = "*5\r\n$5\r\nDEDUP\r\n$8\r\nclient-a\r\n$1\r\n7\r\n$3\r\nDEL\r\n$1\r\na\r\n";
     let old_frame_b = "*5\r\n$5\r\nDEDUP\r\n$8\r\nclient-a\r\n$1\r\n8\r\n$3\r\nDEL\r\n$1\r\nb\r\n";
-    let rewrites = c.restore_outbox(vec![(8, old_frame_b.into()), (7, old_frame_a.into())]);
+    let rewrites = c
+        .restore_outbox(
+            vec![(8, old_frame_b.into()), (7, old_frame_a.into())],
+            false,
+        )
+        .rewrites;
 
     assert_eq!(
         rewrites
@@ -531,12 +571,12 @@ fn restore_renumbers_without_collisions_and_preserves_order() {
     );
     // Replay order: restored rows first (oldest first), then this session's.
     let frames = c.on_open();
-    assert_eq!(frames.len(), 5);
+    assert_eq!(frames.len(), OPT_INS + 3);
     assert!(t(&frames[0]).contains("DELTA"));
     assert!(t(&frames[1]).contains("EXPIRY"));
-    assert_eq!(t(&frames[2]), old_frame_a);
-    assert_eq!(t(&frames[3]), old_frame_b);
-    assert_eq!(frames[4], session_write.frame);
+    assert_eq!(t(&frames[OPT_INS]), old_frame_a);
+    assert_eq!(t(&frames[OPT_INS + 1]), old_frame_b);
+    assert_eq!(frames[OPT_INS + 2], session_write.frame);
 
     let next = c.enqueue_write(&to_resp(&["SET", "later", "1"]), true, false);
     assert_eq!(next.id, 3);
@@ -549,12 +589,12 @@ fn restore_cannot_collide_with_a_same_numbered_session_write() {
     assert_eq!(session.id, 0);
     let old = to_resp(&["SET", "old", "1"]);
 
-    let rewrites = c.restore_outbox(vec![(0, old.clone())]);
+    let rewrites = c.restore_outbox(vec![(0, old.clone())], false).rewrites;
     assert_eq!(rewrites[0].1, 1);
     let frames = c.on_open();
-    assert_eq!(frames.len(), 4);
+    assert_eq!(frames.len(), OPT_INS + 2);
     assert!(t(&frames[0]).contains("DELTA"));
-    assert_eq!(frames[2..], [old, session.frame]);
+    assert_eq!(frames[OPT_INS..], [old, session.frame]);
 }
 
 // ── Sync scopes ───────────────────────────────────────────────────────────────
@@ -947,6 +987,9 @@ fn qstate_delivers_complete_collections_on_subscribe() {
     source.execute(Command::RPush("cart:2".into(), vec!["a".into()]));
 
     let mut c = client();
+    c.add_live_query("cart:*", false);
+    c.on_open();
+    ack_opt_ins(&mut c);
     let frame = push(vec![
         Value::BulkString(Some(b"qstate".to_vec())),
         Value::BulkString(Some(b"cart:*".to_vec())),
@@ -1048,6 +1091,7 @@ fn a_lower_cap_evicts_sooner() {
     // its writes are, so it is configurable rather than fixed.
     let mut c = client();
     c.set_max_pending(3);
+    c.set_overflow_policy(OverflowPolicy::EvictOldest);
     for i in 0..3 {
         let e = c.enqueue_write(&to_resp(&["SET", &format!("k{i}"), "v"]), true, false);
         assert!(e.dropped.is_none(), "within the cap, nothing is evicted");
@@ -1201,14 +1245,14 @@ fn a_resnapshot_reports_the_keys_it_reconciled_away() {
     let mut c = client();
     c.add_live_query("cart:*", false);
     c.on_open();
-    c.handle_frame(b"+OK\r\n"); // CLIENT DELTA ON
+    ack_opt_ins(&mut c);
     c.handle_frame(
         b"*6\r\n$6\r\nqstate\r\n$6\r\ncart:*\r\n$6\r\ncart:1\r\n$5\r\napple\r\n$6\r\ncart:2\r\n$4\r\npear\r\n",
     );
 
     c.on_close();
     c.on_open();
-    c.handle_frame(b"+OK\r\n");
+    ack_opt_ins(&mut c);
     let incoming =
         c.handle_frame(b"*4\r\n$6\r\nqstate\r\n$6\r\ncart:*\r\n$6\r\ncart:1\r\n$6\r\nbanana\r\n");
     assert_eq!(sorted(incoming), ["cart:1", "cart:2"]);
@@ -1296,6 +1340,7 @@ fn a_refusal_for_good_retires_the_row_and_names_its_keys() {
             retired,
             keys,
             reason,
+            ..
         } => {
             assert_eq!(retired, w.id);
             assert_eq!(keys, vec![s("catalog:1")]);
@@ -1364,7 +1409,10 @@ fn a_refusal_that_can_clear_keeps_the_row_for_the_reconnect() {
 
     c.on_close();
     let frames = c.on_open();
-    let replayed: Vec<&Vec<u8>> = frames.iter().filter(|f| t(f).contains("DEDUP")).collect();
+    let replayed: Vec<&Vec<u8>> = frames
+        .iter()
+        .filter(|f| t(f).contains("$5\r\nDEDUP\r\n"))
+        .collect();
     assert_eq!(
         replayed,
         [&w.frame, &later.frame],
@@ -1415,10 +1463,12 @@ fn an_error_for_a_session_command_retires_nothing() {
         c.handle_frame(b"+OK\r\n"),
         Incoming::Reply { retired: None }
     );
-    assert_eq!(
-        c.handle_frame(b"-ERR unknown subcommand 'EXPIRY'\r\n"),
-        Incoming::Reply { retired: None }
-    );
+    for refusal in ["EXPIRY", "PUSHFRAMES", "DEDUPBARRIER"] {
+        assert_eq!(
+            c.handle_frame(format!("-ERR unknown subcommand '{refusal}'\r\n").as_bytes()),
+            Incoming::Reply { retired: None }
+        );
+    }
     assert_eq!(
         c.handle_frame(b"+OK\r\n"),
         Incoming::Reply {
