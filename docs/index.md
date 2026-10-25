@@ -4,12 +4,12 @@ title: "Recached: local-first cache and real-time sync engine"
 description: "A local-first cache and real-time sync engine, powered by Rust. Read shared cache data from local memory in browsers, Android and Apple apps, and Rust services, and sync updates over WebSocket."
 
 hero:
-  name: "Recached ⚡"
-  text: "Cache locally. Synchronize everywhere."
+  name: "Recached"
+  text: "Cache locally. Sync everywhere."
   tagline: "A local-first cache and real-time sync engine, powered by Rust. Keep shared cache data in your application, read it from local memory, and sync updates across browser, mobile, and Rust clients."
   image:
-    src: /recached.jpg
-    alt: Recached
+    src: /brand/hero.svg
+    alt: Connected R and synchronized server, browser, mobile, and Rust clients
   actions:
     - theme: brand
       text: Get Started
