@@ -18,18 +18,30 @@
 //! Reads never touch the network or the database: they read local memory.
 //! Writes apply locally, commit to disk together with their outbox row, and
 //! go out on the socket when it is open — or on the next reconnect when not.
+//! A write that returns `Ok` is in the database; one that returns an error
+//! left nothing behind — not in memory, not on disk, not on the socket.
+//!
+//! An open socket is not a synchronized one. [`sync_status`](RecachedClient::sync_status)
+//! moves through authentication, the replay of queued writes and the
+//! snapshots of watched patterns before it reads `Ready`.
 
 use core_engine::cmd::{Command, SetExpiry, SetOptions};
 use core_engine::resp::Value;
-use core_engine::store::{KeyValueStore, glob_match};
+use core_engine::store::{KeyValueStore, SnapshotEntry, glob_match};
 use std::sync::{Arc, Mutex, MutexGuard};
-use sync_client::{Incoming, SyncClient, mutation_keys, to_resp, to_resp_bytes};
+use sync_client::{
+    Incoming, OverflowPolicy, SyncClient, mutation_keys, next_epoch, to_resp, to_resp_bytes,
+};
 
 mod error;
 mod persist;
+mod status;
 
 pub use error::RecachedError;
 use persist::Db;
+pub use status::{
+    SubscriptionFailure, SubscriptionState, SyncCounters, SyncError, SyncPhase, SyncStatus,
+};
 
 uniffi::setup_scaffolding!();
 
@@ -42,10 +54,15 @@ pub struct ClientConfig {
     /// Sent as `SYNC TOKEN` each time the socket opens.
     #[uniffi(default = None)]
     pub sync_token: Option<String>,
-    /// Cap on queued, unacknowledged writes; past it the oldest is dropped.
-    /// Defaults to 10,000.
+    /// Cap on queued, unacknowledged writes; past it a write fails with
+    /// `OutboxFull` and changes nothing. Defaults to 10,000.
     #[uniffi(default = None)]
     pub max_pending_writes: Option<u32>,
+    /// Past the cap, evict the oldest queued write instead of refusing the
+    /// new one — the behaviour before 0.5. An evicted write never reaches
+    /// the server, though the app may already have shown it as saved.
+    #[uniffi(default = None)]
+    pub evict_oldest_when_full: Option<bool>,
 }
 
 /// Where the client sends frames while the socket is open.
@@ -80,6 +97,9 @@ pub struct FrameOutcome {
     /// A queued write the server refused for good, now removed from the
     /// outbox. Tell the application: it never reached the server.
     pub refused: Option<RefusedWrite>,
+    /// The synchronization status, when this frame changed it. Notify status
+    /// observers.
+    pub status: Option<SyncStatus>,
 }
 
 /// A write the server will never apply, from [`FrameOutcome::refused`].
@@ -91,9 +111,22 @@ pub struct FrameOutcome {
 pub struct RefusedWrite {
     /// The keys the write would have changed.
     pub keys: Vec<String>,
+    /// Those of `keys` no watched pattern covers. Their local value is the
+    /// refused one, and nothing will correct it: show the write as failed,
+    /// and rewrite or re-read them.
+    pub unreconciled: Vec<String>,
     /// The server's error, such as `NOSCOPE key 'k' is read-only on this
     /// connection`.
     pub reason: String,
+}
+
+/// A watched pattern whose [`SubscriptionState`] changed, from
+/// [`RecachedClient::take_subscription_changes`]. `state` is `None` when the
+/// pattern was unwatched.
+#[derive(Debug, PartialEq, uniffi::Record)]
+pub struct SubscriptionChange {
+    pub pattern: String,
+    pub state: Option<SubscriptionState>,
 }
 
 /// One key and its value, from [`RecachedClient::get_matching`].
@@ -147,34 +180,50 @@ impl RecachedClient {
         // The id must persist so the server's duplicate suppression spans
         // restarts, and must be unguessable, or another client could poison
         // this one's high-water mark.
-        let client_id = match db.meta_get("client_id")? {
+        let new_id = || format!("{:032x}", rand::random::<u128>());
+        let mut client_id = match db.meta_get("client_id")? {
             Some(id) => id,
             None => {
-                let id = format!("{:032x}", rand::random::<u128>());
+                let id = new_id();
                 db.meta_put("client_id", &id)?;
                 id
             }
         };
-        let mut sync = SyncClient::new(Arc::clone(&store), client_id);
 
         // A new epoch per open puts this session's write ids above every id
         // the last one sent. Durable before any write can use it.
-        let epoch = db
+        let previous = db
             .meta_get("epoch")?
             .and_then(|e| e.parse::<u32>().ok())
-            .unwrap_or(0)
-            .saturating_add(1);
+            .unwrap_or(0);
+        let epoch = match next_epoch(previous) {
+            Some(epoch) => epoch,
+            // Every epoch of this identity is used. Saturating would give
+            // this session the last one's ids, and the server would skip its
+            // writes as duplicates; a fresh identity starts clean. Rows still
+            // queued keep the old identity inside their frames.
+            None => {
+                client_id = new_id();
+                db.meta_put("client_id", &client_id)?;
+                1
+            }
+        };
         db.meta_put("epoch", &epoch.to_string())?;
+        let mut sync = SyncClient::new(Arc::clone(&store), client_id);
         sync.set_epoch(epoch);
 
         if let Some(max) = config.max_pending_writes {
             sync.set_max_pending(max as usize);
         }
+        if config.evict_oldest_when_full == Some(true) {
+            sync.set_overflow_policy(OverflowPolicy::EvictOldest);
+        }
         // Restored frames keep their original bytes, wire ids included, so a
         // write the server applied before the app died is recognised and
-        // skipped on replay rather than applied twice.
-        let restored = sync.restore_outbox(db.load_outbox()?);
-        db.replace_outbox(&restored)?;
+        // skipped on replay rather than applied twice. Every row is kept,
+        // even past the cap.
+        let restored = sync.restore_outbox(db.load_outbox()?, false);
+        db.replace_outbox(&restored.rewrites)?;
 
         if let Some(password) = &config.password {
             sync.set_password(password, false);
@@ -324,6 +373,49 @@ impl RecachedClient {
         self.lock().sync.outbox_len() as u64
     }
 
+    // ── synchronization status ───────────────────────────────────────────
+
+    /// Where synchronization stands. `Ready` needs more than an open socket:
+    /// authentication, the replay of every queued write, and the snapshot of
+    /// every pattern watched when the socket opened.
+    pub fn sync_status(&self) -> SyncStatus {
+        self.lock().sync.status().into()
+    }
+
+    /// The status, when it changed since this (or a
+    /// [`FrameOutcome::status`]) last reported it. Call after
+    /// `connection_opening`, `connection_opened`, `connection_closed`,
+    /// `watch` and `unwatch` to push changes to observers without polling.
+    pub fn take_status_change(&self) -> Option<SyncStatus> {
+        self.lock().sync.take_status_change().map(Into::into)
+    }
+
+    /// One watched pattern's progress, or `None` when it is not watched.
+    pub fn subscription_state(&self, pattern: String) -> Option<SubscriptionState> {
+        self.lock()
+            .sync
+            .subscription_state(&pattern)
+            .map(Into::into)
+    }
+
+    /// Patterns whose progress changed since the last call, each once.
+    pub fn take_subscription_changes(&self) -> Vec<SubscriptionChange> {
+        self.lock()
+            .sync
+            .take_subscription_changes()
+            .into_iter()
+            .map(|(pattern, state)| SubscriptionChange {
+                pattern,
+                state: state.map(Into::into),
+            })
+            .collect()
+    }
+
+    /// Diagnostic counters.
+    pub fn sync_counters(&self) -> SyncCounters {
+        self.lock().sync.counters().into()
+    }
+
     // ── session ──────────────────────────────────────────────────────────
 
     /// Keep every key matching `pattern` in sync: the server sends their
@@ -357,6 +449,12 @@ impl RecachedClient {
 
     // ── transport ────────────────────────────────────────────────────────
 
+    /// The app is about to open a socket. Optional: it only makes the status
+    /// read `Connecting` until the socket opens or fails.
+    pub fn connection_opening(&self) {
+        self.lock().sync.on_connecting();
+    }
+
     /// The socket opened. Sends the session (auth, sync scope, live queries)
     /// and then every queued write through `sink`, and uses `sink` for
     /// everything sent until [`connection_closed`](Self::connection_closed).
@@ -375,6 +473,7 @@ impl RecachedClient {
     /// the next snapshot from the server repairs the saved copy.
     pub fn frame_received(&self, frame: Vec<u8>) -> Result<FrameOutcome, RecachedError> {
         let mut inner = self.lock();
+        let connected = inner.sink.is_some();
         let mut refused = None;
         let (changed_keys, retired, reconnect) = match inner.sync.handle_frame(&frame) {
             Incoming::Applied { keys } => (keys, None, false),
@@ -383,28 +482,42 @@ impl RecachedClient {
             Incoming::Refused {
                 retired,
                 keys,
+                unreconciled,
                 reason,
             } => {
-                let connected = inner.sink.is_some();
                 for frame in inner.sync.resubscribe_covering(&keys, connected) {
                     inner.send(Some(frame));
                 }
-                refused = Some(RefusedWrite { keys, reason });
+                refused = Some(RefusedWrite {
+                    keys,
+                    unreconciled,
+                    reason,
+                });
                 (Vec::new(), Some(retired), false)
             }
             // The write stays queued, on disk too; the reconnect replays it.
             Incoming::Deferred { .. } | Incoming::Malformed => (Vec::new(), None, true),
             Incoming::PubSub { .. } | Incoming::Ignored => (Vec::new(), None, false),
         };
-        if !changed_keys.is_empty() || retired.is_some() {
+        // Frames the client recorded reply slots for must go out whatever
+        // happens to the commit below, or every later reply is mismatched.
+        for frame in inner.sync.take_frames_to_send(connected) {
+            inner.send(Some(frame));
+        }
+        let saved = if !changed_keys.is_empty() || retired.is_some() {
             inner
                 .db
-                .commit(&self.store, &changed_keys, None, retired.as_slice())?;
-        }
+                .commit(&self.store, &changed_keys, None, retired.as_slice())
+        } else {
+            Ok(())
+        };
+        let status = inner.sync.take_status_change().map(Into::into);
+        saved?;
         Ok(FrameOutcome {
             changed_keys,
             reconnect,
             refused,
+            status,
         })
     }
 
@@ -430,31 +543,62 @@ impl RecachedClient {
     }
 
     /// Apply a write locally, commit it with its outbox row, and send it when
-    /// the socket is open.
+    /// the socket is open — all or nothing.
+    ///
+    /// The capacity check comes first, so a write the outbox cannot take
+    /// never shows locally. The row is queued unsent, then committed together
+    /// with the keys it changed; only a committed row goes out on the socket,
+    /// so its reply can never retire a row that is not on disk. If the commit
+    /// fails, the row is withdrawn and the keys restored: the caller gets an
+    /// error, and an error means nothing happened.
     fn write(&self, cmd: Command, frame: Vec<u8>) -> Result<Value, RecachedError> {
         let mut inner = self.lock();
+        inner.sync.check_capacity(true)?;
         let keys = mutation_keys(&cmd, &self.store);
+        let before: Vec<SnapshotEntry> = keys
+            .iter()
+            .filter_map(|key| self.store.snapshot_key(key))
+            .collect();
         let reply = self.store.execute(cmd);
         if let Value::Error(reason) = reply {
             return Err(RecachedError::Command { reason });
         }
-        let connected = inner.sink.is_some();
-        let queued = inner.sync.enqueue_write(&frame, true, connected);
-        // Committed before the frame is sent, so its reply can never retire a
-        // row that is not on disk yet.
-        let saved = inner.db.commit(
+        let queued = match inner.sync.try_enqueue_write(&frame, true, false) {
+            Ok(queued) => queued,
+            Err(e) => {
+                self.restore_keys(&keys, before);
+                return Err(e.into());
+            }
+        };
+        if let Err(e) = inner.db.commit(
             &self.store,
             &keys,
             Some((queued.id, &queued.frame)),
             queued.dropped.as_slice(),
-        );
-        // Sent even when saving failed: the client has recorded the frame as
-        // in flight, and a reply to a frame that never went out would
-        // acknowledge the wrong write.
-        if queued.send_now {
-            inner.send(Some(queued.frame));
+        ) {
+            // Under `evict_oldest_when_full` the evicted row is gone from
+            // memory but, the transaction having rolled back, still on disk:
+            // it replays after the next restart rather than being lost.
+            inner.sync.cancel_enqueued(queued.id);
+            self.restore_keys(&keys, before);
+            return Err(e);
         }
-        saved.map(|()| reply)
+        let connected = inner.sink.is_some();
+        if let Some(frame) = inner.sync.send_enqueued(queued.id, connected) {
+            inner.send(Some(frame));
+        }
+        Ok(reply)
+    }
+
+    /// Put `keys` back as `before` held them, after a write that could not
+    /// be kept.
+    fn restore_keys(&self, keys: &[String], before: Vec<SnapshotEntry>) {
+        if !keys.is_empty() {
+            self.store.execute(Command::Del(keys.to_vec()));
+        }
+        if !before.is_empty() {
+            self.store.restore(before);
+        }
     }
 }
 

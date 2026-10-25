@@ -6633,3 +6633,5 @@ mod sweep_notification {
         assert_eq!(registry.watched_keys.load(Ordering::Relaxed), 0);
     }
 }
+
+mod sync_reliability;

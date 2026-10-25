@@ -319,7 +319,20 @@ impl Command {
                 // different from what was sent — the command is refused here,
                 // before anything is written. Values are exempt: they are
                 // stored verbatim. See `is_payload_index`.
-                if let Some(pos) = (1..arr.len()).find(|&i| {
+                //
+                // `DEDUP <client> <id> <command…>` checks only its own two
+                // arguments here: the wrapped command is parsed again below,
+                // from its own first element, and that parse knows which of
+                // its positions are values. Checking the whole envelope here,
+                // against DEDUP's own (empty) payload positions, refused every
+                // duplicate-suppressed write of a binary value — which is how
+                // every browser and mobile write reaches the server.
+                let checked = if cmd_name == "DEDUP" {
+                    arr.len().min(3)
+                } else {
+                    arr.len()
+                };
+                if let Some(pos) = (1..checked).find(|&i| {
                     !is_payload_index(&cmd_name, i)
                         && matches!(&arr[i], Value::BulkString(Some(b)) if std::str::from_utf8(b).is_err())
                 }) {
@@ -2575,6 +2588,43 @@ mod tests {
                 Box::new(Command::IncrBy("k".into(), 2))
             )
         );
+    }
+
+    #[test]
+    fn a_dedup_wrapped_write_may_carry_a_binary_value() {
+        let binary = vec![0x00, 0xff, 0x80];
+        let frame = Value::Array(Some(vec![
+            Value::BulkString(Some(b"DEDUP".to_vec())),
+            Value::BulkString(Some(b"client-a".to_vec())),
+            Value::BulkString(Some(b"9".to_vec())),
+            Value::BulkString(Some(b"SET".to_vec())),
+            Value::BulkString(Some(b"k".to_vec())),
+            Value::BulkString(Some(binary.clone())),
+        ]));
+        assert_eq!(
+            Command::from_value(frame).unwrap(),
+            Command::Dedup(
+                "client-a".into(),
+                9,
+                Box::new(Command::Set("k".into(), binary, SetOptions::default()))
+            )
+        );
+    }
+
+    #[test]
+    fn a_dedup_wrapped_write_still_refuses_a_binary_key_or_client_id() {
+        let wrap = |client: &[u8], key: &[u8]| {
+            Value::Array(Some(vec![
+                Value::BulkString(Some(b"DEDUP".to_vec())),
+                Value::BulkString(Some(client.to_vec())),
+                Value::BulkString(Some(b"9".to_vec())),
+                Value::BulkString(Some(b"SET".to_vec())),
+                Value::BulkString(Some(key.to_vec())),
+                Value::BulkString(Some(b"v".to_vec())),
+            ]))
+        };
+        assert!(Command::from_value(wrap(b"\xff", b"k")).is_err());
+        assert!(Command::from_value(wrap(b"client", b"\xff")).is_err());
     }
 
     #[test]

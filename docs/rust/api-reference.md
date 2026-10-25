@@ -35,11 +35,26 @@ let cache = Cache::builder("wss://cache.internal:6380")
 | --- | --- |
 | `.password(p)` | The server's `RECACHED_PASSWORD` |
 | `.sync_token(t)` | A scoped sync token — required when the server sets `RECACHED_SYNC_SECRET`. See [Sync Scopes](/server/sync-scopes) |
-| `.max_pending(n)` | Cap on writes queued while disconnected (default 10,000). Beyond it the oldest is dropped |
+| `.max_pending(n)` | Cap on writes queued and not yet acknowledged (default 10,000). Beyond it a write fails with `Error::OutboxFull` and nothing is queued |
+| `.evict_oldest_when_full(true)` | Past the cap, drop the oldest queued write instead (the pre-0.5 behaviour), counted by `pending_dropped()` |
 | `.connect()` | Opens the socket and returns `Result<Cache>` |
 
 `Cache` is `Clone`. Every clone shares one local store and one connection —
 clone it into handlers rather than wrapping it in another `Arc`.
+
+### Synchronization status
+
+```rust
+let mut changes = cache.status_changes(); // tokio::sync::watch::Receiver<SyncStatus>
+while changes.changed().await.is_ok() {
+    let SyncStatus { phase, error } = changes.borrow().clone();
+}
+let fares = cache.subscription_state("fare:*"); // Option<SubscriptionState>
+```
+
+`status().phase` is `SyncPhase::Ready` once the session is authenticated, every
+queued write has been replayed and answered, and every pattern watched when the
+socket opened has its snapshot. `is_connected()` reports the socket alone.
 
 ---
 

@@ -15,9 +15,11 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
-use sync_client::{Incoming, SyncClient, to_resp};
+use sync_client::{
+    EnqueueError, Enqueued, Incoming, SubscriptionState, SyncClient, SyncStatus, to_resp,
+};
 use tokio::net::TcpStream;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -60,9 +62,15 @@ pub(crate) enum Op {
 pub(crate) struct Shared {
     pub(crate) connected: AtomicBool,
     pub(crate) outbox_len: AtomicUsize,
-    /// Writes evicted from a full outbox, cumulative. Never resets, so a
-    /// caller polling it can tell "none yet" from "none since I last looked".
+    /// Writes evicted from a full outbox under the legacy
+    /// [`OverflowPolicy::EvictOldest`](sync_client::OverflowPolicy), cumulative.
+    /// Never resets, so a caller polling it can tell "none yet" from "none
+    /// since I last looked".
     pub(crate) dropped_writes: AtomicU64,
+    /// The synchronization status, published on every change.
+    pub(crate) status: watch::Sender<SyncStatus>,
+    /// Each live query's progress, as last reported.
+    pub(crate) subscriptions: std::sync::Mutex<HashMap<String, SubscriptionState>>,
 }
 
 pub(crate) struct Task {
@@ -84,6 +92,8 @@ pub(crate) struct Task {
     /// Held for the periodic sweep. Reads do not come through here.
     store: Arc<KeyValueStore>,
     connect_timeout: Duration,
+    /// Keys of refused writes whose live queries must re-snapshot.
+    resync: Vec<String>,
 }
 
 impl Task {
@@ -104,6 +114,33 @@ impl Task {
             first_open: Some(first_open),
             store,
             connect_timeout,
+            resync: Vec::new(),
+        }
+    }
+
+    /// Publish whatever the client's status and live queries did since the
+    /// last call. Called after every event that can move them.
+    fn publish(&mut self) {
+        if let Some(status) = self.client.take_status_change() {
+            self.shared.status.send_replace(status);
+        }
+        let changes = self.client.take_subscription_changes();
+        if !changes.is_empty() {
+            let mut subs = self
+                .shared
+                .subscriptions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for (pattern, state) in changes {
+                match state {
+                    Some(state) => {
+                        subs.insert(pattern, state);
+                    }
+                    None => {
+                        subs.remove(&pattern);
+                    }
+                }
+            }
         }
     }
 
@@ -115,6 +152,8 @@ impl Task {
 
     pub(crate) async fn run(mut self, mut ops: mpsc::Receiver<Op>) {
         loop {
+            self.client.on_connecting();
+            self.publish();
             // A TCP connect to a black-holed address otherwise hangs for the
             // OS timeout — around two minutes — which the caller sees as
             // `connect()` never returning.
@@ -168,7 +207,9 @@ impl Task {
         // Session re-establishment: AUTH -> SYNC -> QSUB -> outbox replay, in
         // that order. The client counts each of these as inflight itself, so
         // the waiter slots here are pure padding to stay aligned.
-        for frame in self.client.on_open() {
+        let frames = self.client.on_open();
+        self.publish();
+        for frame in frames {
             self.waiters.push_back(None);
             if !send(&mut write, frame).await {
                 return false;
@@ -197,8 +238,19 @@ impl Task {
                 incoming = read.next() => {
                     match incoming {
                         Some(Ok(msg)) => {
-                            if !self.on_message(msg) {
+                            let alive = self.on_message(msg);
+                            // Frames the client asked for in response, each
+                            // holding a reply slot nobody awaits.
+                            let extra = self.take_extra_frames(alive);
+                            self.publish();
+                            if !alive {
                                 return false; // server closed
+                            }
+                            for frame in extra {
+                                self.waiters.push_back(None);
+                                if !send(&mut write, frame).await {
+                                    return false;
+                                }
                             }
                         }
                         // A transport error or clean end of stream both mean
@@ -238,10 +290,27 @@ impl Task {
 
         match self.client.handle_frame(&raw) {
             // A refused write resolves its caller with the server's error.
-            Incoming::Reply { .. } | Incoming::AppliedReply { .. } | Incoming::Refused { .. } => {
+            Incoming::Reply { .. } | Incoming::AppliedReply { .. } => {
                 if let Some(Some(ack)) = self.waiters.pop_front() {
                     let _ = ack.send(reply_result(parsed));
                 }
+            }
+            Incoming::Refused {
+                keys, unreconciled, ..
+            } => {
+                if let Some(Some(ack)) = self.waiters.pop_front() {
+                    let _ = ack.send(reply_result(parsed));
+                }
+                if !unreconciled.is_empty() {
+                    tracing::warn!(
+                        ?unreconciled,
+                        "recached: a refused write's keys are not covered by any live query; \
+                         their local copies are not corrected"
+                    );
+                }
+                // The live queries covering the keys re-snapshot, so the local
+                // copy shows the server's values, not the refused write.
+                self.resync.extend(keys);
             }
             Incoming::PubSub { channel, message } => {
                 if let Some(tx) = self.channels.get(&channel) {
@@ -282,11 +351,60 @@ impl Task {
         true
     }
 
+    /// Frames to send after a frame was handled: re-subscriptions after a
+    /// refusal, and any the client queued itself.
+    fn take_extra_frames(&mut self, alive: bool) -> Vec<Vec<u8>> {
+        if !alive {
+            self.resync.clear();
+            return Vec::new();
+        }
+        let keys = std::mem::take(&mut self.resync);
+        let mut frames = self.client.resubscribe_covering(&keys, true);
+        frames.extend(self.client.take_frames_to_send(true));
+        frames
+    }
+
+    /// Queue a write, or refuse it with the reason. `connected` says whether
+    /// the socket is up.
+    fn enqueue(&mut self, encoded: &[u8], connected: bool) -> std::result::Result<Enqueued, Error> {
+        let queued = self
+            .client
+            .try_enqueue_write(encoded, true, connected)
+            .map_err(|e| match e {
+                EnqueueError::OutboxFull { pending, capacity } => {
+                    tracing::warn!(
+                        pending,
+                        capacity,
+                        "recached: pending-write queue full — refused a new write"
+                    );
+                    Error::OutboxFull { pending, capacity }
+                }
+                // A process holds one session for its whole life; four billion
+                // writes in it is not reachable in practice.
+                EnqueueError::WireIdsExhausted => Error::OutboxFull {
+                    pending: self.client.outbox_len(),
+                    capacity: self.client.max_pending(),
+                },
+            });
+        self.shared
+            .outbox_len
+            .store(self.client.outbox_len(), Ordering::Release);
+        queued
+    }
+
     /// Perform one op against a live socket. Returns false if the socket died.
     async fn on_op(&mut self, op: Op, write: &mut WsWrite) -> bool {
         match op {
             Op::Write { encoded, ack } => {
-                let queued = self.client.enqueue_write(&encoded, true, true);
+                let queued = match self.enqueue(&encoded, true) {
+                    Ok(queued) => queued,
+                    Err(e) => {
+                        if let Some(ack) = ack {
+                            let _ = ack.send(Err(e));
+                        }
+                        return true;
+                    }
+                };
                 self.note_dropped(queued.dropped);
                 self.shared
                     .outbox_len
@@ -311,18 +429,24 @@ impl Task {
                     true
                 }
             },
-            Op::Watch { pattern, ack } => match self.client.add_live_query(&pattern, true) {
-                Some(frame) => {
-                    self.waiters.push_back(Some(ack));
-                    send(write, frame).await
+            Op::Watch { pattern, ack } => {
+                let frame = self.client.add_live_query(&pattern, true);
+                self.publish();
+                match frame {
+                    Some(frame) => {
+                        self.waiters.push_back(Some(ack));
+                        send(write, frame).await
+                    }
+                    None => {
+                        let _ = ack.send(Err(Error::Disconnected));
+                        true
+                    }
                 }
-                None => {
-                    let _ = ack.send(Err(Error::Disconnected));
-                    true
-                }
-            },
+            }
             Op::Unwatch { pattern, ack } => {
-                match self.client.remove_live_query(Some(&pattern), true) {
+                let frame = self.client.remove_live_query(Some(&pattern), true);
+                self.publish();
+                match frame {
                     Some(frame) => {
                         self.waiters.push_back(Some(ack));
                         send(write, frame).await
@@ -366,6 +490,7 @@ impl Task {
     /// have to.
     async fn backoff(&mut self, ops: &mut mpsc::Receiver<Op>) -> bool {
         let delay = Duration::from_millis(u64::from(self.client.on_close()));
+        self.publish();
         let deadline = tokio::time::sleep(delay);
         tokio::pin!(deadline);
         let mut upkeep = tokio::time::interval(MAINTENANCE_INTERVAL);
@@ -381,13 +506,15 @@ impl Task {
                 op = ops.recv() => match op {
                     Some(Op::Write { encoded, ack }) => {
                         // Queued in memory; it replays on the next `on_open`.
-                        let queued = self.client.enqueue_write(&encoded, true, false);
-                        self.note_dropped(queued.dropped);
-                        self.shared
-                            .outbox_len
-                            .store(self.client.outbox_len(), Ordering::Release);
+                        let result = self.enqueue(&encoded, false);
+                        if let Ok(queued) = &result {
+                            self.note_dropped(queued.dropped);
+                        }
                         if let Some(ack) = ack {
-                            let _ = ack.send(Err(Error::Disconnected));
+                            let _ = ack.send(Err(match result {
+                                Ok(_) => Error::Disconnected,
+                                Err(e) => e,
+                            }));
                         }
                     }
                     // Everything else needs the network to mean anything.
@@ -410,10 +537,9 @@ impl Task {
         }
     }
 
-    /// A full outbox evicts its oldest entry to make room. That write is gone
-    /// — it will never be replayed — so it has to be visible rather than
-    /// silently absent: `set()` documents the queue as unacknowledged, not
-    /// lost, and past the cap that stops being true.
+    /// Under the legacy eviction policy a full outbox evicts its oldest entry
+    /// to make room. That write is gone — it will never be replayed — so it
+    /// has to be visible rather than silently absent.
     fn note_dropped(&self, dropped: Option<u64>) {
         if dropped.is_some() {
             let total = self

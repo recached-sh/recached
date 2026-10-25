@@ -47,7 +47,7 @@ Authorization is separate from watches. With no sync secret or scopes, the defau
 
 Client reads consult local `core-engine` memory without waiting for the network. Until hydration completes, a browser or mobile read may return a saved value or a miss. Embedded Rust reads outside hydrated watches return `NotHydrated`.
 
-Browser and mobile writes apply locally, then enter an outbox for sending or reconnect replay. A successful local write does not mean the server accepted it. Embedded Rust writes await the server reply; their queue is held in memory. The server can refuse a write because of authorization, type, or resource limits; see [write durability and replay](/guide/client-support#write-durability-and-replay).
+Browser and mobile writes apply locally, then enter an outbox for sending or reconnect replay — or, when the outbox is full, fail before changing anything. A successful local write does not mean the server accepted it. Embedded Rust writes await the server reply; their queue is held in memory. The server can refuse a write because of authorization, type, or resource limits; see [write durability and replay](/guide/client-support#write-durability-and-replay).
 
 The server orders command replies on each connection. Pushes can interleave with replies, so `sync-client` distinguishes mutations, pub/sub messages, `keychange`, `keydelta`, and `qstate`. It uses a FIFO to retire the write acknowledged by each reply.
 
@@ -64,11 +64,11 @@ Each adapter has a different storage contract:
 
 | Adapter | What is saved | When it is saved |
 |---|---|---|
-| Browser | Local API write commands in an IndexedDB WAL, pending writes, client identity and epoch | Asynchronously; writes do not await a storage commit |
-| Native mobile | Materialized per-key snapshots, pending writes, client identity and epoch in SQLite | A successful local write commits data and its outbox row before returning; received frames commit changed keys and retired rows together |
+| Browser | Local write commands and, by default, the state of keys the server changed, in an IndexedDB WAL; pending writes | Asynchronously: a write's WAL record and outbox row commit in one transaction after the call returns; `flush()` resolves once committed, and failures reach `onPersistenceError` |
+| Native mobile | Materialized per-key snapshots, pending writes, client identity and epoch in SQLite | A successful local write commits data and its outbox row before returning, and a failed one is rolled back; received frames commit changed keys and retired rows together |
 | Embedded Rust | No on-disk client persistence | Store and outbox live only in the process |
 
-Browser startup replays the WAL and restores queued writes before connecting. Incoming server pushes and cross-tab messages do not append to the browser WAL. Compaction runs during hydration when the WAL exceeds 1,000 rows, replacing it atomically with snapshot commands while leaving the outbox intact. See [browser persistence](/browser/persistence) for TTL and cold-start limits.
+Browser startup replays the WAL and restores queued writes, sending them at once if the socket is already open. Server-applied changes are written to the WAL a fraction of a second after they arrive (turn this off with `persistSyncedState: false`), so an offline reload shows the last synchronized state; cross-tab messages are persisted by the tab that made the write. Compaction runs during hydration when the WAL exceeds 1,000 rows, replacing the records it read atomically with snapshot commands while leaving the outbox intact. Each page load is its own sync identity, and tabs key their rows apart, so two tabs on one IndexedDB cannot overwrite or suppress each other's writes. See [browser persistence](/browser/persistence).
 
 Mobile startup restores the saved state before opening its socket, so saved server-pushed values remain readable offline after an app restart. SQLite runs in WAL mode with `synchronous = NORMAL`; an app kill preserves committed writes, but OS crashes or power loss can lose recent commits. See [native client limits](/guide/client-support).
 
@@ -88,4 +88,4 @@ Nothing in Recached reads from or writes to SQL: there is no connector, change-d
 
 TCP and WebSocket carry RESP (Redis Serialization Protocol). WebSocket commands and replies use text frames for valid UTF-8 and binary frames for other bytes. Values are binary-safe; keys, fields, members, patterns, and channels must be UTF-8 text.
 
-The [wire protocol reference](/server/protocol) defines frame shapes, reply ordering, negotiated expiry/deltas, and duplicate suppression. `DEDUP` covers replay while the server retains the corresponding client mark; it does not guarantee exactly-once delivery across every server crash or retention window.
+The [wire protocol reference](/server/protocol) defines frame shapes, reply ordering, negotiated expiry/deltas/push framing, the session order behind the [synchronization status](/guide/client-support#synchronization-status), and duplicate suppression. `DEDUP` covers replay while the server retains the corresponding client mark, including across a server crash with an AOF; it does not guarantee exactly-once delivery in every case — [the protocol page](/server/protocol#crash-consistency) lists the exceptions.

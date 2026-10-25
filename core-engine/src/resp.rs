@@ -606,6 +606,29 @@ impl Value {
     }
 }
 
+/// Whether a refused write may be accepted later unchanged, judged from the
+/// error reply alone. These refusals are about the session or the server's
+/// state, not the write: a missing password or sync token, a read-only
+/// replica, persistence or memory trouble, the busy and loading states, and
+/// `TRYAGAIN` — which is also what a server answers for every write behind
+/// one that was deferred. Anything else — a key out of scope or read-only, a
+/// wrong type, a bad argument — would be refused again.
+///
+/// Shared by the sync client, which keeps a write queued on a transient
+/// refusal and drops it on a permanent one, and the server, which remembers
+/// permanent refusals so a replay of one is answered the same way. The two
+/// must agree, or a write could be kept by one side and forgotten by the
+/// other.
+pub fn is_transient_refusal(reason: &str) -> bool {
+    let code = reason.split_whitespace().next().unwrap_or("");
+    match code {
+        "NOAUTH" | "READONLY" | "MISCONF" | "OOM" | "LOADING" | "BUSY" | "TRYAGAIN"
+        | "MASTERDOWN" => true,
+        "NOSCOPE" => reason.contains("send SYNC TOKEN"),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod header_parse_equivalence_tests {
     use super::*;

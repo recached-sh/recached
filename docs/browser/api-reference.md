@@ -34,8 +34,23 @@ async function createCache(options?: CacheOptions): Promise<Cache>
 
 ```typescript
 interface CacheOptions {
-  /** Restore the local-write WAL and save later local writes asynchronously. */
+  /**
+   * Restore local writes, pending writes and (by default) the last synchronized
+   * state from IndexedDB, and save later changes asynchronously. Rejects when
+   * IndexedDB cannot be opened.
+   */
   persistence?: boolean
+
+  /** With persistence, also save server-applied changes. Default true. */
+  persistSyncedState?: boolean
+
+  /**
+   * The queue of writes waiting for the server: its size (default 10000) and
+   * what a write past it does — 'reject' (default) throws OutboxFullError and
+   * changes nothing; 'evict-oldest' drops the oldest queued write. A cache
+   * without `connect` always evicts.
+   */
+  outbox?: { maxPending?: number; whenFull?: 'reject' | 'evict-oldest' }
 
   /**
    * BroadcastChannel name. All tabs opened with the same name share mutations
@@ -169,6 +184,8 @@ ttl(key: string): number
 ### Writes
 
 All write methods also notify the listeners of the key they wrote and, when connected, forward the change to the server and other tabs via BroadcastChannel.
+
+Every write method throws `OutboxFullError` (with `pending` and `capacity`) when the queue of writes waiting for the server is full, before changing anything. A write returns once the change is in memory and queued; `flush()` confirms it is in IndexedDB, and `onWriteRefused` reports a write the server later refuses.
 
 #### `set(key, value)`
 
@@ -448,16 +465,55 @@ publishBytes(channel: string, message: Uint8Array): void
 
 ---
 
-### Pending writes and overflow
+### Synchronization status
 
-`pendingWrites()` reports writes not yet acknowledged by the server. `onOutboxFull` reports when the 10,000-write queue drops its oldest entry and returns a function that removes the listener.
+```typescript
+status(): SyncStatus
+onStatusChange(cb: (status: SyncStatus) => void): () => void
+subscriptionState(pattern: string): SubscriptionState | null
+onSubscriptionChange(cb: (pattern: string, state: SubscriptionState | null) => void): () => void
+
+interface SyncStatus {
+  phase: 'disconnected' | 'connecting' | 'authenticating' | 'replaying'
+       | 'hydrating' | 'ready' | 'degraded'
+  error: SyncIssue | null      // what is wrong; while disconnected, what ended the last connection
+  pendingWrites: number
+  lastSyncedAt: number | null  // when phase last became 'ready', ms since the epoch
+  persistenceFailures: number  // IndexedDB writes that have failed
+}
+
+type SyncIssue =
+  | { kind: 'auth-failed' | 'scope-refused' | 'write-deferred'; reason: string }
+  | { kind: 'subscription-failed'; pattern: string; failure: SubscriptionFailure; reason: string }
+  | { kind: 'malformed-frame' }
+
+type SubscriptionFailure = 'snapshot-too-large' | 'out-of-scope' | 'other'
+type SubscriptionState =
+  | { state: 'pending' | 'hydrating' | 'current' }
+  | { state: 'failed'; failure: SubscriptionFailure; reason: string }
+```
+
+`'ready'` means the session is authenticated, every queued write has been replayed and answered, and every live query registered when the socket opened has its snapshot. A live query started later hydrates on its own — follow it with `subscriptionState` — without taking the cache out of `'ready'`. Listeners are pushed every change; nothing polls. See [synchronization status](/guide/client-support#synchronization-status).
+
+### Pending writes, refusals and durability
 
 ```typescript
 pendingWrites(): number
+onWriteRefused(cb: (keys: readonly string[], unreconciled: readonly string[], reason: string) => void): () => void
+onPersistenceError(cb: (operation: string, message: string) => void): () => void
+flush(): Promise<void>
 onOutboxFull(cb: (droppedId: number, pending: number) => void): () => void
+
+class OutboxFullError extends Error { readonly pending: number; readonly capacity: number }
 ```
 
-These are queue signals, not a durable acknowledgment log. See [offline replay limits](/browser/offline).
+- `pendingWrites()` — writes not yet acknowledged by the server.
+- `onWriteRefused` — the server refused a queued write for good; it left the queue. Keys a live query covers get the server's values back; `unreconciled` lists the rest, whose local value is the refused one.
+- `onPersistenceError` — an IndexedDB write failed (quota, storage cleared). The change is in memory but not durable.
+- `flush()` — resolves when every write so far is committed to IndexedDB; rejects with the first failure since the last `flush()`.
+- `onOutboxFull` — only with `whenFull: 'evict-oldest'`, or without `connect`: the oldest queued write was dropped from the queue.
+
+These are live signals, not a durable acknowledgment log. See [offline replay limits](/browser/offline).
 
 ### Persistence
 
@@ -491,6 +547,6 @@ Direct access to the underlying WASM instance (`RecachedCache` from wasm-bindgen
 get raw(): RawCache
 ```
 
-Available methods on `raw`: `set()`, `setBytes()`, `set_ex()`, `get()`, `getBytes()`, `del()`, `ttl()`, `exists()`, `subscribe()`, `unsubscribe()`, `publish()`, `publishBytes()`, `connect()`, `auth()`, `broadcast()`, `enable_persistence()`, `clear_persistence()`, `set_mutation_callback()`, `free()`.
+Available methods on `raw`: `set()`, `setBytes()`, `set_ex()`, `get()`, `getBytes()`, `del()`, `ttl()`, `exists()`, `subscribe()`, `unsubscribe()`, `publish()`, `publishBytes()`, `connect()`, `auth()`, `broadcast()`, `enable_persistence()`, `clear_persistence()`, `flush()`, `sync_status()`, `subscription_state()`, `set_overflow_policy()`, `set_max_pending()`, `set_persist_synced_state()`, the `set_*_callback()` registrations, `free()`. Raw writes throw an `Error` named `OutboxFullError` rather than the SDK class. Call `enable_persistence()` before writing: a WAL replay that finishes after a write can overwrite that write's local value.
 
 > Raw write methods use the mutation callback registered by `Cache`, so they also notify listeners. Replacing that callback directly bypasses the SDK's listener routing. Raw signatures differ from the TypeScript wrapper; use the typed methods when possible.

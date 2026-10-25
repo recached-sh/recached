@@ -1,9 +1,9 @@
 # Persist a browser cache
 
-Enable `persistence: true` to restore local API writes and pending server writes from IndexedDB after a page reload. Browser persistence does not save each server push, so it does not guarantee the last server-synced state on an offline cold start. [Native Kotlin and Swift clients](/guide/client-support) use a different SQLite persistence contract.
+Enable `persistence: true` to restore, after a reload: the writes this browser made, the writes still waiting for the server, and — by default — the last state the server synchronized. [Native Kotlin and Swift clients](/guide/client-support) use a different SQLite persistence contract.
 
 ::: warning Older releases
-Versions 0.1.1 through 0.2.0 had a clock panic that could destroy the WAL during compaction. Versions 0.1.3 through 0.3.0 also had broken npm packaging. See [browser installation](/browser/getting-started) before using an older package.
+Versions 0.1.1 through 0.2.0 had a clock panic that could destroy the WAL during compaction. Versions 0.1.3 through 0.3.0 also had broken npm packaging. Before 0.5, two tabs sharing the database could silently lose writes, and server-applied changes were not persisted. See [browser installation](/browser/getting-started) before using an older package.
 :::
 
 ## Enable persistence before connecting
@@ -20,49 +20,62 @@ const cache = await createCache({
 cache.liveQuery('todo:*')
 ```
 
-Omit `connect` for a local-only cache. If IndexedDB is unavailable or initialization fails, `createCache` rejects. Handle that error or omit persistence when you need an in-memory fallback.
+Omit `connect` for a local-only cache. If IndexedDB is unavailable or initialization fails — some private-browsing modes, storage access denied — `createCache` rejects rather than carrying on without the persistence you asked for. Handle that error, or retry without `persistence` for an in-memory cache.
+
+## Know when a write is on disk
+
+A write call returns once the change is in memory and queued for the server. Its IndexedDB record commits shortly after. `flush()` tells you when:
+
+```typescript
+cache.set('draft', text)
+await cache.flush() // every write so far is committed to IndexedDB
+```
+
+`flush()` resolves when every write made before the call has committed, and rejects with the first IndexedDB failure since the last `flush()`. Failures also reach `onPersistenceError(operation, message)` as they happen, and `status().persistenceFailures` counts them. A write whose record failed is in memory and syncs while the page stays open; it would not survive a reload.
+
+A committed IndexedDB transaction survives a reload or a closed tab. Browsers do not promise it survives a power cut or an OS crash, so `flush()` is not a guarantee against those.
 
 ## What IndexedDB stores
 
 The browser opens the database `recached`, schema version 3:
 
-| Object store | Contents |
-|---|---|
-| `wal` | RESP command bytes from local API writes, keyed by a numeric sequence |
-| `outbox` | Pending write frames, including their original `DEDUP` identities |
-| `meta` | Client identity and session epoch |
+| Object store | Contents | Key |
+|---|---|---|
+| `wal` | RESP commands that rebuild the local copy: local writes, and the current state of keys the server changed | `[t, session, seq]` — the writing tab's clock, its session, a sequence |
+| `outbox` | Pending write frames, including their original `DEDUP` identities | `[session, id]` |
+| `meta` | Unused since 0.5 | |
 
-Older WAL rows stored text; hydration accepts both those rows and current byte arrays. There is no per-entry timestamp field.
+A local write's WAL record and its outbox row commit in **one transaction**, so a reload never shows a write that will not sync, nor syncs one it does not show. Rows written before 0.5 have numeric keys; IndexedDB orders them first, so they replay first. Older WAL rows stored text; hydration accepts both.
 
-Local `set`, `setEx`, `del`, counter, and JSON writes append to the WAL. Incoming WebSocket state and BroadcastChannel messages change memory and notify listeners without appending to it. Reads use memory only.
+Server-applied changes — live-query snapshots, keychanges, mutation pushes — are written as the key's whole current state (`DEL`, then the commands that rebuild it), batched a fraction of a second after they arrive. That is what lets an offline reload show the last synchronized state, including keys the server deleted and writes it refused. Turn it off with `persistSyncedState: false` to persist only this browser's own writes. BroadcastChannel messages are persisted by the tab that made the write.
 
-Writes start IndexedDB operations asynchronously. A synchronous `cache.set()` returning does not confirm a durable storage commit, and closing a tab immediately can lose an unfinished persistence operation. WAL and outbox writes are separate transactions, unlike mobile's combined SQLite transaction.
+## Tabs
+
+Every page load is its own sync identity, and every tab keys its rows apart, so two tabs sharing the database neither overwrite each other's pending writes nor make the server skip each other's writes as duplicates. A tab that loads restores *all* pending rows, its own and those of tabs that closed before sending them; if another tab is still open, both may replay a row, and the server applies it once.
+
+Before 0.5 every tab adopted one stored identity and bumped its epoch, and the newer tab's writes made the server skip the older tab's as already applied.
 
 ## Restore and reconcile
 
 Startup proceeds in this order:
 
-1. Open IndexedDB and load the client identity; bump the session epoch.
-2. Restore pending outbox frames, preserving their wire identities.
+1. Open IndexedDB.
+2. Restore pending outbox rows in the order written, keeping their wire identities, and rewrite them under this session's keys — deleting only the rows read, so another tab's newer rows stay. If the socket is already open, they are sent at once, ahead of anything this session writes.
 3. Replay WAL commands into the local engine.
 4. Compact the WAL if it exceeds 1,000 rows.
-5. Enable persistence for later local writes, then open the socket when configured.
+5. Persist any writes made before persistence was enabled, then persist later writes as they happen.
 
-A live query requests current state for its pattern. The server does not replay every missed browser mutation or send its entire keyspace automatically on connect. A fresh `qstate` replaces matching values and removes matching keys absent from the server. Register live queries again when creating a new cache instance.
-
-Offline startup can restore local writes, but saved WAL commands may not represent the most recent server state. Use [mobile previews](/guide/client-support#write-durability-and-replay) when comparing persistence guarantees across platforms.
+A live query requests current state for its pattern. A fresh `qstate` replaces matching values and removes matching keys absent from the server — except keys a still-queued write covers, which keep their local value until that write is acknowledged. Register live queries again when creating a new cache instance.
 
 ## Compact the WAL
 
-Compaction runs during hydration when the WAL contains more than 1,000 entries. It serializes the restored store into snapshot commands and replaces the WAL in one IndexedDB transaction. It leaves the outbox untouched.
+Compaction runs during hydration when the WAL contains more than 1,000 entries. It serializes the restored store into snapshot commands and replaces the records it read in one IndexedDB transaction, keeping records another tab appended meanwhile. It leaves the outbox untouched.
 
-Compaction does not run after every successful WebSocket sync, and it does not keep the WAL bounded throughout a long-lived tab session. The WAL grows again as local writes append.
+Compaction does not run during a session, so a long-lived tab's WAL grows with its writes and with server changes until the next load.
 
-## TTL replay limits
+## Expiry
 
-Local TTL writes are logged as relative `SET ... EX` commands. Replaying them starts the TTL again. Compacted string snapshots also use relative `PX`; non-string snapshot expiries use `PEXPIREAT`. Browser persistence therefore does not guarantee the original expiry across reloads.
-
-During a connected session, negotiated expiry metadata lets watched values expire locally while offline. That does not change the WAL replay limitation. Native SQLite snapshots instead store absolute expiry timestamps and discard expired entries when restoring.
+The WAL stores absolute deadlines (`SET … PXAT`, `PEXPIREAT`), so a reload does not restart a key's time to live: a key with a minute left, reloaded an hour later, is gone. Before 0.5 relative `EX`/`PX` commands restarted the clock on every reload. A queued `setEx` still reaches the server in relative form, so a write queued offline starts its time to live when the server applies it.
 
 ## Clear persisted state
 
@@ -78,4 +91,4 @@ For sign-out, stop sync before clearing and reload into a new cache instance to 
 
 ## Check delivery limits
 
-Persisted writes replay on reconnect, but [duplicate suppression has server-crash and retention limits](/server/protocol#deduplicated-write-replay-dedup). The outbox drops the oldest write after 10,000 pending entries; `onOutboxFull` reports overflow. A local-only persistent browser cache still accumulates outbox entries even without a server URL. See [offline and reconnection](/browser/offline).
+Persisted writes replay on reconnect, with [duplicate suppression and its documented limits](/server/protocol#crash-consistency). With a server configured, the outbox holds 10,000 writes by default and a write past it throws `OutboxFullError` before changing anything. A persistent cache without `connect` still queues each write for a later page load that connects, but never refuses a write over it: past the cap the oldest queued copy is dropped, `onOutboxFull` reports it, and the write itself stays in memory and in the WAL. See [offline and reconnection](/browser/offline).

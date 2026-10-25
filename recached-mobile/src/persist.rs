@@ -155,3 +155,17 @@ impl Db {
         Ok(())
     }
 }
+
+#[cfg(test)]
+impl Db {
+    /// Make every later commit fail inside its transaction — the outbox row's
+    /// insert — as a full disk or a corrupted file would.
+    pub(crate) fn break_outbox_for_test(&self) {
+        self.conn.execute_batch("DROP TABLE outbox").unwrap();
+    }
+
+    /// Undo [`break_outbox_for_test`](Self::break_outbox_for_test).
+    pub(crate) fn repair_outbox_for_test(&self) {
+        self.conn.execute_batch(SCHEMA).unwrap();
+    }
+}
