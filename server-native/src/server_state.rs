@@ -9,12 +9,15 @@ pub(crate) struct ServerState {
     pub(crate) replicas: ReplRegistry,
     /// true = currently acting as a read-only replica
     pub(crate) is_replica: std::sync::atomic::AtomicBool,
-    /// Duplicate-suppression bookkeeping for DEDUP-wrapped writes: client id →
-    /// (highest id applied, last-seen ms). Clients send monotonically
-    /// increasing ids and replay in order, so a single high-water mark per
-    /// client suffices — no seen-set. Marks are committed only after the
-    /// wrapped write succeeds and are persisted with snapshot checkpoints.
-    pub(crate) dedup: std::sync::Mutex<HashMap<String, (u64, u64)>>,
+    /// Duplicate-suppression bookkeeping for DEDUP-wrapped writes, per client
+    /// id: the highest id applied, when the client was last seen, and its
+    /// recent permanent refusals. Clients send monotonically increasing ids
+    /// and replay in order, so one high-water mark per client suffices for
+    /// writes that were applied; the refusals are what a mark alone cannot
+    /// say (see [`DedupMark`]). Marks are committed only after the wrapped
+    /// write succeeds, recorded in the AOF with the write itself, and
+    /// persisted with snapshot checkpoints.
+    pub(crate) dedup: std::sync::Mutex<HashMap<String, DedupMark>>,
     /// Ephemeral (`ESET`) keys → every connection currently holding them.
     ///
     /// A *set* of holders rather than one owner, because presence is the case
@@ -266,6 +269,71 @@ pub(crate) const DEDUP_IDLE_MS: u64 = 24 * 60 * 60 * 1000;
 
 pub(crate) const DEDUP_SWEEP_THRESHOLD: usize = 10_000;
 
+/// Permanent refusals remembered per client. Past it the oldest is forgotten,
+/// and a replay of that write is answered `+DUP` as before 0.5.
+pub(crate) const DEDUP_REFUSALS_PER_CLIENT: usize = 64;
+
+/// One client's duplicate-suppression state.
+///
+/// The high-water mark answers "was this write applied?" only for writes that
+/// were. A write refused for good never raises it, but a later write that is
+/// accepted does — so after a lost reply the refused write's replay sits below
+/// the mark and would be answered `+DUP`, and the client would retire it as
+/// applied without ever hearing it was refused. Remembering recent refusals
+/// lets the replay be refused again instead: the first outcome is final.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct DedupMark {
+    pub(crate) hwm: u64,
+    pub(crate) seen: u64,
+    /// `(id, error)` of recent permanent refusals, oldest first.
+    pub(crate) refused: VecDeque<(u64, String)>,
+}
+
+/// How a DEDUP write that has been seen before must be answered.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum DedupReplay {
+    /// Applied before: answer `+DUP` and do nothing.
+    Duplicate,
+    /// Refused for good before: answer the same error and do nothing.
+    Refused(String),
+}
+
+/// Dedup state recovered from the AOF: marks of the writes it carries, and
+/// refusals it recorded.
+#[derive(Debug, Default)]
+pub(crate) struct RecoveredDedup {
+    pub(crate) marks: HashMap<String, u64>,
+    pub(crate) refusals: Vec<(String, u64, String)>,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// Write `value` as MessagePack to `path` atomically: temp file, fsync,
+/// rename, directory fsync.
+async fn write_atomically<T: serde::Serialize>(
+    path: &std::path::Path,
+    tag: &str,
+    value: &T,
+) -> std::io::Result<()> {
+    let tmp = temp_sibling(path, tag);
+    let bytes = rmp_serde::to_vec(value)
+        .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
+    if let Err(error) = write_private(&tmp, &bytes).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(error);
+    }
+    if let Err(error) = tokio::fs::rename(&tmp, path).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(error);
+    }
+    sync_parent_dir(path).await
+}
+
 impl ServerState {
     pub(crate) fn is_replica(&self) -> bool {
         self.is_replica.load(Ordering::Relaxed)
@@ -282,49 +350,92 @@ impl ServerState {
         self.aof.is_some() || self.replicas.is_enabled()
     }
 
-    pub(crate) fn dedup_is_duplicate(&self, client: &str, id: u64) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+    /// Whether a DEDUP write has been seen before, and how to answer it.
+    /// `None` means it must be executed.
+    ///
+    /// Only an id at or below the mark has been seen. Above it — a refused
+    /// write retried before anything later was accepted — the write runs
+    /// again, as it always has, and may now succeed; its success clears the
+    /// remembered refusal. At or below it, the write cannot run again, and a
+    /// remembered refusal is what says it was refused rather than applied.
+    pub(crate) fn dedup_replay(&self, client: &str, id: u64) -> Option<DedupReplay> {
+        let now = now_ms();
         let mut map = self.dedup.lock().expect("dedup mutex poisoned");
         if map.len() > DEDUP_SWEEP_THRESHOLD {
             let before = map.len();
-            map.retain(|_, (_, seen)| now.saturating_sub(*seen) < DEDUP_IDLE_MS);
+            map.retain(|_, mark| now.saturating_sub(mark.seen) < DEDUP_IDLE_MS);
             if map.len() != before {
                 self.dedup_dirty.store(true, Ordering::Release);
             }
         }
-        match map.get_mut(client) {
-            Some((hwm, seen)) => {
-                *seen = now;
-                id <= *hwm
-            }
-            None => false,
+        let mark = map.get_mut(client)?;
+        mark.seen = now;
+        if id > mark.hwm {
+            return None;
         }
+        Some(
+            match mark.refused.iter().find(|(refused, _)| *refused == id) {
+                Some((_, error)) => DedupReplay::Refused(error.clone()),
+                None => DedupReplay::Duplicate,
+            },
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn dedup_is_duplicate(&self, client: &str, id: u64) -> bool {
+        self.dedup_replay(client, id).is_some()
     }
 
     pub(crate) fn commit_dedup(&self, client: &str, id: u64) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now = now_ms();
         let mut map = self.dedup.lock().expect("dedup mutex poisoned");
-        match map.get_mut(client) {
-            Some((hwm, seen)) => {
-                *hwm = (*hwm).max(id);
-                *seen = now;
-            }
-            None => {
-                map.insert(client.to_string(), (id, now));
-            }
-        }
+        let mark = map.entry(client.to_string()).or_default();
+        mark.hwm = mark.hwm.max(id);
+        mark.seen = now;
+        // Applied on a retry after an earlier refusal: the refusal no longer
+        // describes it.
+        mark.refused.retain(|(refused, _)| *refused != id);
         self.dedup_dirty.store(true, Ordering::Release);
+    }
+
+    /// Remember that a DEDUP write was refused for good, so its replay is
+    /// refused again rather than answered as a duplicate. Transient refusals
+    /// are not remembered: the write is meant to be retried.
+    pub(crate) fn remember_dedup_refusal(&self, client: &str, id: u64, error: &str) {
+        let mut map = self.dedup.lock().expect("dedup mutex poisoned");
+        let mark = map.entry(client.to_string()).or_default();
+        mark.seen = now_ms();
+        if mark.refused.iter().any(|(refused, _)| *refused == id) {
+            return;
+        }
+        if mark.refused.len() >= DEDUP_REFUSALS_PER_CLIENT {
+            mark.refused.pop_front();
+        }
+        mark.refused.push_back((id, error.to_string()));
+        self.dedup_dirty.store(true, Ordering::Release);
+    }
+
+    /// Merge what AOF replay recovered: marks only ever rise, and recovered
+    /// refusals join the remembered ones. Startup only.
+    pub(crate) fn merge_recovered_dedup(&self, recovered: RecoveredDedup) {
+        if recovered.marks.is_empty() && recovered.refusals.is_empty() {
+            return;
+        }
+        let count = recovered.marks.len();
+        for (client, hwm) in recovered.marks {
+            self.commit_dedup(&client, hwm);
+        }
+        for (client, id, error) in recovered.refusals {
+            self.remember_dedup_refusal(&client, id, &error);
+        }
+        info!("Recovered {} dedup high-water mark(s) from the AOF", count);
     }
 
     /// Test/support convenience for the check-then-commit operation.
     #[cfg(test)]
     pub(crate) fn dedup_seen(&self, client: &str, id: u64) -> bool {
+        // Spelled out rather than `dedup_is_duplicate`, so a test reads it as
+        // the check-then-commit the write path performs.
         if self.dedup_is_duplicate(client, id) {
             true
         } else {
@@ -352,19 +463,60 @@ impl ServerState {
     /// Called after every successful in-memory write. A runtime AOF error
     /// latches the server unhealthy so later client writes fail closed.
     pub(crate) async fn on_write(&self, resp: &[u8]) {
-        if let Some(aof) = &self.aof
-            && let Err(e) = aof.append(resp).await
-        {
-            self.record_persistence_failure("aof_append", &e);
+        self.on_write_identified(resp, None).await;
+    }
+
+    /// [`on_write`](Self::on_write) for a write that arrived DEDUP-wrapped.
+    ///
+    /// The AOF records the write *inside* its DEDUP envelope — one frame, so
+    /// a torn tail drops both or neither — and replay restores the mark with
+    /// the mutation. Logging the bare mutation, as before 0.5, let a crash
+    /// between checkpoints bring back the write without its mark: the
+    /// client's retry of an `INCR` whose reply was lost then ran it twice.
+    ///
+    /// Replicas still get the bare mutation. An older replica refuses a
+    /// DEDUP frame as a failed command and drops the link, and there is no
+    /// handshake to ask; so a promoted replica holds no marks for replicated
+    /// writes, which the documentation states.
+    pub(crate) async fn on_write_identified(&self, resp: &[u8], dedup: Option<(&str, u64)>) {
+        if let Some(aof) = &self.aof {
+            let result = match dedup {
+                Some((client, id)) => aof.append(&dedup_wrap(client, id, resp)).await,
+                None => aof.append(resp).await,
+            };
+            if let Err(e) = result {
+                self.record_persistence_failure("aof_append", &e);
+            }
         }
         if self.replicas.is_enabled() {
             self.replicas.fan_out(resp.to_vec()).await;
         }
     }
 
+    /// Record a DEDUP outcome that changed no data — a write that did nothing
+    /// (`HDEL` of a missing field), or a permanent refusal — in the AOF, so
+    /// it survives a crash before the next checkpoint like an applied one.
+    pub(crate) async fn log_dedup_outcome(&self, client: &str, id: u64, refusal: Option<&str>) {
+        if let Some(aof) = &self.aof {
+            let frame = match refusal {
+                None => dedup_mark_frame(client, id),
+                Some(error) => dedup_refusal_frame(client, id, error),
+            };
+            if let Err(e) = aof.append(&frame).await {
+                self.record_persistence_failure("aof_append", &e);
+            }
+        }
+    }
+
     /// Path of the dedup sidecar, alongside the snapshot.
     pub(crate) fn dedup_path(&self) -> std::path::PathBuf {
         self.snap.path.with_extension("dedup")
+    }
+
+    /// Path of the remembered-refusals sidecar. A separate file, so the
+    /// marks sidecar keeps the format every earlier server reads.
+    pub(crate) fn dedup_refusals_path(&self) -> std::path::PathBuf {
+        self.snap.path.with_extension("dedup-refusals")
     }
 
     /// Persist dedup high-water marks in the same checkpoint as store data.
@@ -375,26 +527,29 @@ impl ServerState {
             return Ok(());
         }
         let result = async {
-            let marks: Vec<(String, u64)> = self
-                .dedup
-                .lock()
-                .map_err(|_| std::io::Error::other("dedup mutex poisoned"))?
-                .iter()
-                .map(|(client, (hwm, _))| (client.clone(), *hwm))
-                .collect();
-            let path = self.dedup_path();
-            let tmp = temp_sibling(&path, "dedup");
-            let bytes = rmp_serde::to_vec(&marks)
-                .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
-            if let Err(error) = write_private(&tmp, &bytes).await {
-                let _ = tokio::fs::remove_file(&tmp).await;
-                return Err(error);
-            }
-            if let Err(error) = tokio::fs::rename(&tmp, &path).await {
-                let _ = tokio::fs::remove_file(&tmp).await;
-                return Err(error);
-            }
-            sync_parent_dir(&path).await
+            let (marks, refusals) = {
+                let map = self
+                    .dedup
+                    .lock()
+                    .map_err(|_| std::io::Error::other("dedup mutex poisoned"))?;
+                let marks: Vec<(String, u64)> = map
+                    .iter()
+                    .map(|(client, mark)| (client.clone(), mark.hwm))
+                    .collect();
+                let refusals: Vec<(String, u64, String)> = map
+                    .iter()
+                    .flat_map(|(client, mark)| {
+                        mark.refused
+                            .iter()
+                            .map(move |(id, error)| (client.clone(), *id, error.clone()))
+                    })
+                    .collect();
+                (marks, refusals)
+            };
+            // Refusals first: a crash between the two files then leaves
+            // extra refusals at worst, each for an id that was refused.
+            write_atomically(&self.dedup_refusals_path(), "dedupr", &refusals).await?;
+            write_atomically(&self.dedup_path(), "dedup", &marks).await
         }
         .await;
         if result.is_err() {
@@ -418,13 +573,28 @@ impl ServerState {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
+        let refusals = match tokio::fs::read(self.dedup_refusals_path()).await {
+            Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e),
+            Ok(bytes) => rmp_serde::from_slice::<Vec<(String, u64, String)>>(&bytes)
+                .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e.to_string()))?,
+        };
         let mut map = self
             .dedup
             .lock()
             .map_err(|_| std::io::Error::other("dedup mutex poisoned"))?;
         let count = marks.len();
         for (client, hwm) in marks {
-            map.insert(client, (hwm, now));
+            let mark = map.entry(client).or_default();
+            mark.hwm = mark.hwm.max(hwm);
+            mark.seen = now;
+        }
+        for (client, id, error) in refusals {
+            let mark = map.entry(client).or_default();
+            mark.seen = now;
+            if mark.refused.len() < DEDUP_REFUSALS_PER_CLIENT {
+                mark.refused.push_back((id, error));
+            }
         }
         info!("Restored {} dedup high-water mark(s)", count);
         Ok(())
@@ -446,13 +616,23 @@ impl ServerState {
             if let Some(aof) = &self.aof {
                 // The marker must be durable before the snapshot that names it.
                 // Startup can then distinguish every crash point around the
-                // later AOF truncation.
+                // later AOF truncation. Its flush also makes every write the
+                // marks below describe durable in the AOF.
                 aof.append(&checkpoint_frame(checkpoint_id)).await?;
                 aof.flush().await?;
             }
+            // The marks before the snapshot, never after. Writes are blocked,
+            // so they describe exactly the state being saved. A crash after
+            // the marks but before the snapshot rename leaves marks *ahead*
+            // of the old snapshot: with an AOF, every write they cover is in
+            // it and replays; without one, those writes are lost with the
+            // crash anyway — the snapshot-only contract — and a retry of one
+            // is answered as applied. Written after, as before 0.5, a crash
+            // in the same window left marks *behind* a snapshot that held
+            // their writes, and a retried `INCR` ran twice.
+            self.persist_dedup().await?;
             let entries = self.durable_snapshot(store);
             save_snapshot_entries(entries, &self.snap, checkpoint_id).await?;
-            self.persist_dedup().await?;
             if let Some(aof) = &self.aof {
                 aof.truncate().await?;
                 for frame in self.ephemeral_aof_seed(store) {

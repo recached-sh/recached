@@ -69,6 +69,16 @@ pub(crate) fn queue_time_rejection(cmd: &Command) -> Option<Vec<u8>> {
     }
 }
 
+/// Re-tag a top-level RESP array as a RESP3 push (`*` → `>`) when the
+/// connection asked for push framing. The two share one layout below the
+/// type byte, so nothing is re-encoded.
+pub(crate) fn as_push_if(mut frame: Vec<u8>, push: bool) -> Vec<u8> {
+    if push && frame.first() == Some(&b'*') {
+        frame[0] = b'>';
+    }
+    frame
+}
+
 /// Build a complete initial live-query snapshot or refuse it. Returning a
 /// partial snapshot is unsafe because reconnect reconciliation treats absence
 /// as deletion and would drop locally held keys that still exist upstream.
@@ -1020,6 +1030,11 @@ pub(crate) async fn handle_ws<S>(
     let mut qsub_patterns: HashSet<String> = HashSet::new();
     let (qsub_subscriber, mut q_rx) =
         notification_channel(conn_id, overflow_tx, Arc::clone(&deltas));
+    // Client ids with a DEDUP write deferred on this connection, under
+    // `CLIENT DEDUPBARRIER ON`. Their later DEDUP writes here are deferred
+    // too: accepting one would raise the duplicate mark past the deferred
+    // write, whose replay would then be skipped as already applied.
+    let mut dedup_deferred: HashSet<String> = HashSet::new();
 
     // Replies go out as *text* frames whenever the RESP bytes are valid UTF-8,
     // which is the overwhelming majority and is what every existing client
@@ -1075,6 +1090,12 @@ pub(crate) async fn handle_ws<S>(
                                 continue;
                             }
                         };
+                        // The identity of a DEDUP-wrapped write, for the
+                        // refusal bookkeeping below.
+                        let dedup_id: Option<(String, u64)> = match &cmd {
+                            Command::Dedup(client, id, _) => Some((client.clone(), *id)),
+                            _ => None,
+                        };
 
                         // AUTH
                         if let Command::Auth(ref pwd) = cmd {
@@ -1119,6 +1140,29 @@ pub(crate) async fn handle_ws<S>(
                             continue;
                         }
 
+                        // ── Replayed writes ───────────────────────────────────
+                        // A DEDUP write seen before is answered from its mark
+                        // before scope is checked: a write applied under the
+                        // last token, whose reply was lost, must read as
+                        // applied even if this token no longer covers the key —
+                        // refusing it would tell the client it never happened.
+                        // Nothing executes, so scope is not bypassed. The write
+                        // path checks again under its lock; this only answers
+                        // early.
+                        if multi_queue.is_none()
+                            && let Some((client, id)) = &dedup_id
+                        {
+                            if client_meta.dedup_barrier && dedup_deferred.contains(client) {
+                                counter!("recached_dedup_barrier_deferrals_total").increment(1);
+                                ws_send!(b"-TRYAGAIN an earlier write from this client was deferred on this connection; reconnect to replay in order\r\n");
+                                continue;
+                            }
+                            if let Some(replay) = state.dedup_replay(client, *id) {
+                                ws_send!(&dedup_replay_reply(replay).serialize());
+                                continue;
+                            }
+                        }
+
                         // ── Sync scoping ──────────────────────────────────────
                         if let Command::Sync(ref args) = cmd {
                             let resp = handle_sync_command(args, (*sync_secret).as_deref(), &mut sync_scopes, conn_id);
@@ -1139,6 +1183,11 @@ pub(crate) async fn handle_ws<S>(
                                 CommandScope::Keys(keys) => {
                                     let Some(ref scopes) = sync_scopes else {
                                         record_scope_denial("no_token");
+                                        if client_meta.dedup_barrier
+                                            && let Some((client, _)) = &dedup_id
+                                        {
+                                            dedup_deferred.insert(client.clone());
+                                        }
                                         ws_send!(b"-NOSCOPE send SYNC TOKEN <token> before issuing commands\r\n");
                                         continue;
                                     };
@@ -1152,7 +1201,7 @@ pub(crate) async fn handle_ws<S>(
                                         .iter()
                                         .find(|(k, need)| !scopes_allow(scopes, k, *need))
                                     {
-                                        let err = Value::Error(if *need == Access::Write
+                                        let reason = if *need == Access::Write
                                             && scopes_allow(scopes, denied, Access::Read)
                                         {
                                             record_scope_denial("read_only");
@@ -1166,9 +1215,14 @@ pub(crate) async fn handle_ws<S>(
                                                 "NOSCOPE key '{}' is outside this connection's sync scopes",
                                                 denied
                                             )
-                                        })
-                                        .serialize();
-                                        ws_send!(&err);
+                                        };
+                                        // Refused for good: remembered, so a
+                                        // replay is refused again rather than
+                                        // answered as a duplicate.
+                                        if let Some((client, id)) = &dedup_id {
+                                            record_dedup_refusal(&state, client, *id, &reason).await;
+                                        }
+                                        ws_send!(&Value::Error(reason).serialize());
                                         continue;
                                     }
                                 }
@@ -1565,12 +1619,22 @@ pub(crate) async fn handle_ws<S>(
                             }
 
                             cmd => {
-                                if is_subscribed && !matches!(cmd, Command::Ping(_)) {
-                                    ws_send!(b"-ERR only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING / QUIT allowed in subscribe mode\r\n");
-                                    continue 'outer;
-                                }
+                                // No subscribe-mode restriction here. That rule
+                                // is RESP2's, where a subscribed connection's
+                                // replies and deliveries share one array shape;
+                                // this transport is RESP3, deliveries are push
+                                // frames, and Redis lifts the rule for RESP3 too.
+                                // Enforcing it refused every write a browser
+                                // queued after `subscribe()` — refused for good,
+                                // so the client dropped them.
+                                //
                                 // Replica: reject writes
                                 if state.is_replica() && is_write_command(&cmd) {
+                                    if client_meta.dedup_barrier
+                                        && let Some((client, _)) = &dedup_id
+                                    {
+                                        dedup_deferred.insert(client.clone());
+                                    }
                                     ws_send!(b"-READONLY You can't write against a read only replica.\r\n");
                                     continue 'outer;
                                 }
@@ -1681,6 +1745,13 @@ pub(crate) async fn handle_ws<S>(
                                 } else {
                                     execute_and_record(&store, cmd)
                                 };
+                                if client_meta.dedup_barrier
+                                    && let (Value::Error(error), Some((client, _))) =
+                                        (&response, &dedup_id)
+                                    && core_engine::resp::is_transient_refusal(error)
+                                {
+                                    dedup_deferred.insert(client.clone());
+                                }
                                 ws_send!(&response.serialize());
                             }
                         }
@@ -1778,7 +1849,10 @@ pub(crate) async fn handle_ws<S>(
                     // following EXEC aborts) and still push the keychange to the
                     // client for the observable-keys feature.
                     watch_dirty = true;
-                    let bytes = encode_notification(&notif, client_meta.expiry);
+                    let bytes = as_push_if(
+                        encode_notification(&notif, client_meta.expiry),
+                        client_meta.push_frames,
+                    );
                     ws_send!(&bytes);
                 }
             }
@@ -1787,7 +1861,10 @@ pub(crate) async fn handle_ws<S>(
             // dirties transactions.
             notif = q_rx.recv(), if !qsub_patterns.is_empty() => {
                 if let Some(notif) = notif {
-                    let bytes = encode_notification(&notif, client_meta.expiry);
+                    let bytes = as_push_if(
+                        encode_notification(&notif, client_meta.expiry),
+                        client_meta.push_frames,
+                    );
                     ws_send!(&bytes);
                 }
             }

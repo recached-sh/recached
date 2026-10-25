@@ -366,13 +366,33 @@ pub(crate) async fn replay_aof(
     replay_aof_from_checkpoint(store, path, 0).await
 }
 
+#[cfg(test)]
 pub(crate) async fn replay_aof_from_checkpoint(
     store: &KeyValueStore,
     path: &std::path::Path,
     snapshot_checkpoint: u64,
 ) -> std::io::Result<usize> {
+    Ok(replay_aof_recovering(store, path, snapshot_checkpoint)
+        .await?
+        .0)
+}
+
+/// Replay the AOF after the snapshot's checkpoint, and recover the
+/// duplicate-suppression state its records carry.
+///
+/// Marks are collected from the *whole* file, the part before the matching
+/// checkpoint included: those writes are already in the snapshot, but a
+/// crash between the snapshot and its dedup sidecar (as servers before 0.5
+/// ordered them) leaves their marks nowhere else. Marks only rise, so taking
+/// them from writes the snapshot holds is always safe.
+pub(crate) async fn replay_aof_recovering(
+    store: &KeyValueStore,
+    path: &std::path::Path,
+    snapshot_checkpoint: u64,
+) -> std::io::Result<(usize, RecoveredDedup)> {
+    let mut recovered = RecoveredDedup::default();
     let bytes = match tokio::fs::read(path).await {
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok((0, recovered)),
         Err(e) => return Err(e),
         Ok(b) => b,
     };
@@ -385,6 +405,16 @@ pub(crate) async fn replay_aof_from_checkpoint(
                 offset += consumed;
                 if checkpoint_marker(&value) == Some(snapshot_checkpoint) {
                     replay_start = offset;
+                }
+                match dedup_record(&value) {
+                    Some(DedupRecord::Mark(client, id)) => {
+                        let hwm = recovered.marks.entry(client).or_default();
+                        *hwm = (*hwm).max(id);
+                    }
+                    Some(DedupRecord::Refused(client, id, error)) => {
+                        recovered.refusals.push((client, id, error));
+                    }
+                    None => {}
                 }
             }
             Err(e) if e.is_incomplete() => break,
@@ -407,18 +437,30 @@ pub(crate) async fn replay_aof_from_checkpoint(
                 if checkpoint_marker(&value).is_some() {
                     continue;
                 }
+                // Marks and refusals were collected above; these records carry
+                // no data.
+                if matches!(dedup_record(&value), Some(DedupRecord::Refused(..)))
+                    || is_dedup_mark_only(&value)
+                {
+                    continue;
+                }
                 // Writes are recorded via `on_write` in RESP3 Push form (`>N`);
                 // normalise to Array so Command::from_value can parse them.
                 let normalised = match value {
                     Value::Push(inner) => Value::Array(Some(inner)),
                     other => other,
                 };
-                let cmd = Command::from_value(normalised).map_err(|e| {
-                    std::io::Error::new(
-                        ErrorKind::InvalidData,
-                        format!("invalid AOF command at offset {}: {e}", offset - consumed),
-                    )
-                })?;
+                let cmd = match Command::from_value(normalised) {
+                    // The write inside its envelope; the mark was taken above.
+                    Ok(Command::Dedup(_, _, inner)) => *inner,
+                    Ok(cmd) => cmd,
+                    Err(e) => {
+                        return Err(std::io::Error::new(
+                            ErrorKind::InvalidData,
+                            format!("invalid AOF command at offset {}: {e}", offset - consumed),
+                        ));
+                    }
+                };
                 let claimable = ephemeral.claimable_members(&cmd, store);
                 let response = store.execute(cmd.clone());
                 if let Value::Error(message) = &response {
@@ -449,7 +491,92 @@ pub(crate) async fn replay_aof_from_checkpoint(
     if replayed > 0 {
         info!("AOF replayed: {} commands ← {:?}", replayed, path);
     }
-    Ok(replayed)
+    Ok((replayed, recovered))
+}
+
+/// The dedup information an AOF record carries.
+enum DedupRecord {
+    /// `DEDUP <client> <id> <write…>` or `RECACHED-DEDUP <client> <id>`.
+    Mark(String, u64),
+    /// `RECACHED-DEDUP-REFUSED <client> <id> <error>`.
+    Refused(String, u64, String),
+}
+
+fn dedup_record(value: &Value) -> Option<DedupRecord> {
+    let items = match value {
+        Value::Push(items) | Value::Array(Some(items)) => items,
+        _ => return None,
+    };
+    let bulk = |i: usize| match items.get(i) {
+        Some(Value::BulkString(Some(b))) => Some(b.as_slice()),
+        _ => None,
+    };
+    let name = bulk(0)?;
+    let client = String::from_utf8(bulk(1)?.to_vec()).ok()?;
+    let id: u64 = std::str::from_utf8(bulk(2)?).ok()?.parse().ok()?;
+    let wrapped_write = name.eq_ignore_ascii_case(b"DEDUP") && items.len() > 3;
+    let mark_only = name == b"RECACHED-DEDUP" && items.len() == 3;
+    if wrapped_write || mark_only {
+        Some(DedupRecord::Mark(client, id))
+    } else if name == b"RECACHED-DEDUP-REFUSED" && items.len() == 4 {
+        let error = String::from_utf8_lossy(bulk(3)?).into_owned();
+        Some(DedupRecord::Refused(client, id, error))
+    } else {
+        None
+    }
+}
+
+fn is_dedup_mark_only(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Push(items) | Value::Array(Some(items))
+            if matches!(items.first(), Some(Value::BulkString(Some(n))) if n == b"RECACHED-DEDUP")
+    )
+}
+
+/// Wrap a write frame (`>N …`, as `broadcast_for` builds them) in the
+/// `DEDUP <client> <id>` envelope it arrived in, for the AOF: one frame, so
+/// the write and its mark survive or are lost together.
+pub(crate) fn dedup_wrap(client: &str, id: u64, frame: &[u8]) -> Vec<u8> {
+    let Some(split) = frame.windows(2).position(|w| w == b"\r\n") else {
+        return frame.to_vec();
+    };
+    let count: Option<usize> = std::str::from_utf8(&frame[1..split])
+        .ok()
+        .and_then(|n| n.parse().ok());
+    let Some(count) = count.filter(|_| frame.first() == Some(&b'>')) else {
+        return frame.to_vec();
+    };
+    let id = id.to_string();
+    let mut out = format!(
+        ">{}\r\n$5\r\nDEDUP\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
+        count + 3,
+        client.len(),
+        client,
+        id.len(),
+        id
+    )
+    .into_bytes();
+    out.extend_from_slice(&frame[split + 2..]);
+    out
+}
+
+/// The AOF record for a DEDUP write that was applied but changed nothing, so
+/// there is no mutation to wrap.
+pub(crate) fn dedup_mark_frame(client: &str, id: u64) -> Vec<u8> {
+    let id = id.to_string();
+    resp_push(&[b"RECACHED-DEDUP", client.as_bytes(), id.as_bytes()])
+}
+
+/// The AOF record for a DEDUP write refused for good.
+pub(crate) fn dedup_refusal_frame(client: &str, id: u64, error: &str) -> Vec<u8> {
+    let id = id.to_string();
+    resp_push(&[
+        b"RECACHED-DEDUP-REFUSED",
+        client.as_bytes(),
+        id.as_bytes(),
+        error.as_bytes(),
+    ])
 }
 
 fn checkpoint_marker(value: &Value) -> Option<u64> {
