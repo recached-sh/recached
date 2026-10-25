@@ -67,7 +67,9 @@ export interface CacheOptions {
          * {@link OutboxFullError} from the write and changes nothing.
          * `'evict-oldest'` — the behaviour before 0.5 — drops the oldest queued
          * write instead, which then never reaches the server; see
-         * {@link Cache.onOutboxFull}.
+         * {@link Cache.onOutboxFull}. A cache without `connect` always evicts:
+         * it keeps every write locally, and only the queued copy for a later
+         * connection is dropped.
          *
          * @default 'reject'
          */

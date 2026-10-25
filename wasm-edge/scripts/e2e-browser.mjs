@@ -215,8 +215,13 @@ scenario('the status reaches ready only after replay and hydration', async ({ co
 
 scenario('a full outbox throws OutboxFullError and changes nothing', async ({ context, base }) => {
   const p = await page(context, base);
+  // A server that is configured but unreachable: the app is offline.
   const r = await p.evaluate(`(async () => {
-    const c = await sdk.createCache({ persistence: true, outbox: { maxPending: 2 } });
+    const c = await sdk.createCache({
+      persistence: true,
+      outbox: { maxPending: 2 },
+      connect: { url: 'ws://127.0.0.1:9' },
+    });
     await c.clearPersistence();
     c.set('full:a', '1');
     c.set('full:b', '1');
@@ -230,6 +235,20 @@ scenario('a full outbox throws OutboxFullError and changes nothing', async ({ co
     };
   })()`);
   if (!r.isClass || r.pending !== 2 || r.capacity !== 2 || r.a !== '1') throw new Error(JSON.stringify(r));
+  await p.close();
+});
+
+scenario('a cache with no server keeps writing past the queue cap', async ({ context, base }) => {
+  const p = await page(context, base);
+  const r = await p.evaluate(`(async () => {
+    const c = await sdk.createCache({ persistence: true, outbox: { maxPending: 2 } });
+    const dropped = [];
+    c.onOutboxFull((id) => dropped.push(id));
+    for (let i = 0; i < 5; i++) c.set('local:' + i, 'v');
+    await c.flush();
+    return { last: c.get('local:4'), pending: c.pendingWrites(), dropped: dropped.length };
+  })()`);
+  if (r.last !== 'v' || r.pending !== 2 || r.dropped !== 3) throw new Error(JSON.stringify(r));
   await p.close();
 });
 

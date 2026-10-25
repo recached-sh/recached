@@ -858,9 +858,20 @@ fn syncing(sh: &WsShared) -> bool {
     sh.url.borrow().is_some() || sh.idb.borrow().is_some()
 }
 
+/// No server is configured: the outbox only holds writes for a connection a
+/// later page load may make.
+fn local_only(sh: &WsShared) -> bool {
+    sh.url.borrow().is_none()
+}
+
 /// Refuse a write the outbox cannot take, before anything changes.
+///
+/// Not in local-only mode: there the write itself is kept, in memory and in
+/// the WAL, and only its queued copy for a future server is at stake — so a
+/// full queue drops its oldest copy (reported through the outbox-full
+/// callback) rather than make a cache with no server refuse writes.
 fn preflight(sh: &WsShared, dedup: bool) -> Result<(), JsValue> {
-    if !syncing(sh) {
+    if !syncing(sh) || local_only(sh) {
         return Ok(());
     }
     sh.core
@@ -877,11 +888,16 @@ fn queue_write(sh: &WsShared, encoded: &[u8], dedup: bool) -> Result<Option<Enqu
         return Ok(None);
     }
     let connected = socket_is_open(sh);
-    let e = sh
-        .core
-        .borrow_mut()
-        .try_enqueue_write(encoded, dedup, connected)
-        .map_err(enqueue_error)?;
+    let e = {
+        let mut core = sh.core.borrow_mut();
+        let policy = core.overflow_policy();
+        if local_only(sh) {
+            core.set_overflow_policy(OverflowPolicy::EvictOldest);
+        }
+        let queued = core.try_enqueue_write(encoded, dedup, connected);
+        core.set_overflow_policy(policy);
+        queued.map_err(enqueue_error)?
+    };
     if let Some(old) = e.dropped {
         outbox_delete(sh, old);
         web_sys::console::warn_1(&JsValue::from_str(
