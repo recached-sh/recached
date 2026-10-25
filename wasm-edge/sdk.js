@@ -1,4 +1,35 @@
 // ── Types ─────────────────────────────────────────────────────────────────────
+/**
+ * Thrown by a write when the queue of writes waiting for the server is full.
+ * Nothing was applied, stored or sent, and every queued write is intact.
+ * Retry once {@link Cache.pendingWrites} drops — the queue drains as the
+ * server acknowledges writes.
+ */
+export class OutboxFullError extends Error {
+    constructor(pending, capacity, message) {
+        super(message ?? `outbox full: ${pending} writes pending, capacity ${capacity}`);
+        this.name = 'OutboxFullError';
+        this.pending = pending;
+        this.capacity = capacity;
+    }
+}
+/** Rethrow the wasm side's `OutboxFullError`-named error as the class above. */
+function rethrow(e) {
+    if (e instanceof Error && e.name === 'OutboxFullError') {
+        const fields = e;
+        throw new OutboxFullError(fields.pending ?? 0, fields.capacity ?? 0, e.message);
+    }
+    throw e;
+}
+/** Run a write, turning a full-outbox refusal into {@link OutboxFullError}. */
+function guarded(write) {
+    try {
+        return write();
+    }
+    catch (e) {
+        rethrow(e);
+    }
+}
 let _module = null;
 let _initPromise = null;
 async function ensureModule() {
@@ -49,6 +80,10 @@ export class Cache {
         this._patternListeners = new Map();
         this._messageListeners = new Map();
         this._outboxFullListeners = new Set();
+        this._statusListeners = new Set();
+        this._subscriptionListeners = new Set();
+        this._refusedListeners = new Set();
+        this._persistenceErrorListeners = new Set();
         /**
          * @internal Arrow function so `this` is always bound when passed as a
          * callback. `keys` names every key the mutation may have changed.
@@ -92,6 +127,97 @@ export class Cache {
         raw.set_mutation_callback(this._notifyMutation);
         raw.set_message_callback(this._notifyMessage);
         raw.set_outbox_full_callback(this._notifyOutboxFull);
+        raw.set_status_callback((status) => {
+            for (const cb of this._statusListeners)
+                cb(status);
+        });
+        raw.set_subscription_callback((pattern, state) => {
+            for (const cb of this._subscriptionListeners)
+                cb(pattern, state);
+        });
+        raw.set_refused_callback((keys, unreconciled, reason) => {
+            for (const cb of this._refusedListeners)
+                cb(keys, unreconciled, reason);
+        });
+        raw.set_persistence_error_callback((operation, message) => {
+            for (const cb of this._persistenceErrorListeners)
+                cb(operation, message);
+        });
+    }
+    // ── Synchronization status ────────────────────────────────────────────────
+    /**
+     * Where synchronization stands. `phase` is `'ready'` only once the session
+     * is authenticated, every queued write has been replayed and answered, and
+     * every live query has its snapshot — an open socket alone is not enough.
+     */
+    status() {
+        return this.raw.sync_status();
+    }
+    /**
+     * Called on every status change, as it happens — never on a timer.
+     * Returns an unsubscribe function.
+     *
+     * ```ts
+     * cache.onStatusChange(({ phase, error }) => {
+     *   badge.textContent = phase === 'ready' ? 'Synced' : phase;
+     *   if (error?.kind === 'auth-failed') signIn();
+     * });
+     * ```
+     */
+    onStatusChange(cb) {
+        this._statusListeners.add(cb);
+        return () => this._statusListeners.delete(cb);
+    }
+    /** One live query's progress, or `null` when the pattern is not registered. */
+    subscriptionState(pattern) {
+        return this.raw.subscription_state(pattern);
+    }
+    /**
+     * Called when a live query's progress changes: `state` is `null` once it is
+     * stopped. Returns an unsubscribe function.
+     */
+    onSubscriptionChange(cb) {
+        this._subscriptionListeners.add(cb);
+        return () => this._subscriptionListeners.delete(cb);
+    }
+    /**
+     * Called when the server refuses a queued write for good — out of the sync
+     * token's scope, read-only, the wrong type. The write never reached the
+     * server. Keys a live query covers get the server's values back shortly
+     * after; `unreconciled` lists the rest, whose local value is the refused
+     * one and stays so until the application rewrites or re-reads them.
+     *
+     * Returns an unsubscribe function.
+     */
+    onWriteRefused(cb) {
+        this._refusedListeners.add(cb);
+        return () => this._refusedListeners.delete(cb);
+    }
+    /**
+     * Called when an IndexedDB write fails — quota exceeded, storage cleared,
+     * access denied. The change it carried is in memory and syncs while the page
+     * stays open, but would not survive a reload. Returns an unsubscribe
+     * function.
+     */
+    onPersistenceError(cb) {
+        this._persistenceErrorListeners.add(cb);
+        return () => this._persistenceErrorListeners.delete(cb);
+    }
+    /**
+     * Resolves once every write made so far is committed to IndexedDB, and
+     * rejects with the first IndexedDB failure since the last `flush()`.
+     *
+     * Writes return as soon as the change is in memory; this is how to know it
+     * is on disk. A committed IndexedDB transaction survives a reload or a
+     * closed tab, but browsers do not promise it survives a power cut.
+     *
+     * ```ts
+     * cache.set('draft', text);
+     * await cache.flush(); // on disk now
+     * ```
+     */
+    flush() {
+        return this.raw.flush();
     }
     /**
      * Subscribe to store mutations from any source — local writes, server
@@ -149,14 +275,13 @@ export class Cache {
         return addListener(this._patternListeners, pattern, cb);
     }
     /**
-     * Called when the offline write queue overflows and the **oldest** queued
-     * write is discarded.
+     * Only with `outbox: { whenFull: 'evict-oldest' }`: called when the queue
+     * of writes waiting for the server overflows and the **oldest** queued write
+     * is discarded. That write never reaches the server.
      *
-     * The queue holds 10,000 writes. Past that, each new write evicts the oldest
-     * one — without this callback that is silent data loss: no error is thrown
-     * and the write is simply gone. If a client can plausibly be offline long
-     * enough to hit the cap, do not treat the outbox as the system of record;
-     * persist the mutation yourself and reconcile on reconnect.
+     * By default a full queue instead throws {@link OutboxFullError} from the
+     * write that does not fit, before it changes anything, and this is never
+     * called.
      *
      * Returns an unsubscribe function.
      *
@@ -174,7 +299,8 @@ export class Cache {
      * Writes queued locally and not yet acknowledged by the server.
      *
      * Useful for a "syncing…" indicator, or to apply back-pressure before the
-     * queue reaches its 10,000-write cap.
+     * queue reaches its cap (10,000 by default), past which writes throw
+     * {@link OutboxFullError}.
      */
     pendingWrites() {
         return this.raw.pending_writes();
@@ -231,9 +357,7 @@ export class Cache {
      * if (bytes) img.src = URL.createObjectURL(new Blob([bytes]));
      * ```
      *
-     * Note: the browser SDK can *read* binary values but cannot yet *write* them
-     * — `set()` takes a string. Binary values originate from a backend writing
-     * over the RESP port.
+     * Write them with {@link setBytes}.
      */
     getBytes(key) {
         return this.raw.getBytes(key) ?? null;
@@ -281,11 +405,18 @@ export class Cache {
     // ── Writes ────────────────────────────────────────────────────────────────
     /**
      * Store a string value. Syncs to the server and other tabs when connected.
+     *
+     * Returns once the value is in memory and queued for the server; see
+     * {@link flush} for when it is on disk, and {@link onWriteRefused} for a
+     * write the server refuses.
+     *
+     * @throws {OutboxFullError} when the queue of writes waiting for the server
+     * is full. Nothing is changed.
      */
     set(key, value) {
         // raw.set fires the mutation callback registered in the constructor, so
         // listeners are already notified — no second _notifyMutation() here.
-        this.raw.set(key, value);
+        guarded(() => this.raw.set(key, value));
     }
     /**
      * Store raw bytes. Syncs to the server and other tabs when connected.
@@ -299,14 +430,14 @@ export class Cache {
      * ```
      */
     setBytes(key, value) {
-        this.raw.setBytes(key, value);
+        guarded(() => this.raw.setBytes(key, value));
     }
     /**
      * Store a string value with a TTL (seconds). The key is deleted automatically
      * once the TTL elapses.
      */
     setEx(key, value, seconds) {
-        this.raw.set_ex(key, value, seconds);
+        guarded(() => this.raw.set_ex(key, value, seconds));
     }
     /**
      * Serialize `value` as JSON and store it under `key`.
@@ -319,10 +450,10 @@ export class Cache {
     setJSON(key, value, ttl) {
         const serialized = JSON.stringify(value);
         if (ttl !== undefined) {
-            this.raw.set_ex(key, serialized, ttl);
+            guarded(() => this.raw.set_ex(key, serialized, ttl));
         }
         else {
-            this.raw.set(key, serialized);
+            guarded(() => this.raw.set(key, serialized));
         }
     }
     /**
@@ -332,7 +463,7 @@ export class Cache {
      * Syncs to the server and other tabs when connected.
      */
     del(key) {
-        const existed = this.raw.del(key) === 1;
+        const existed = guarded(() => this.raw.del(key)) === 1;
         return existed;
     }
     /**
@@ -347,11 +478,11 @@ export class Cache {
      * `Number.MAX_SAFE_INTEGER` (2^53 - 1) and loses precision beyond it.
      */
     incr(key, by = 1) {
-        return Number(this.raw.incr_by(key, BigInt(by)));
+        return Number(guarded(() => this.raw.incr_by(key, BigInt(by))));
     }
     /** Decrement an integer counter. See {@link incr}. */
     decr(key, by = 1) {
-        return Number(this.raw.incr_by(key, BigInt(-by)));
+        return Number(guarded(() => this.raw.incr_by(key, BigInt(-by))));
     }
     /**
      * Close the server connection and stop reconnecting. Local reads and writes
@@ -375,7 +506,7 @@ export class Cache {
      * ```
      */
     jset(key, path, value) {
-        const err = this.raw.jset(key, path, JSON.stringify(value));
+        const err = guarded(() => this.raw.jset(key, path, JSON.stringify(value)));
         if (err !== 'OK')
             throw new Error(err);
     }
@@ -410,7 +541,7 @@ export class Cache {
      * ```
      */
     jmerge(key, patch) {
-        const err = this.raw.jmerge(key, JSON.stringify(patch));
+        const err = guarded(() => this.raw.jmerge(key, JSON.stringify(patch)));
         if (err !== 'OK')
             throw new Error(err);
     }
@@ -420,18 +551,18 @@ export class Cache {
      * WebSocket `onmessage` callback.
      */
     subscribe(channel) {
-        this.raw.subscribe(channel);
+        guarded(() => this.raw.subscribe(channel));
     }
     /** Unsubscribe from a server pub/sub channel. */
     unsubscribe(channel) {
-        this.raw.unsubscribe(channel);
+        guarded(() => this.raw.unsubscribe(channel));
     }
     /**
      * Publish a message to a server pub/sub channel. All subscribers — browser
      * and server-side — receive the message.
      */
     publish(channel, message) {
-        this.raw.publish(channel, message);
+        guarded(() => this.raw.publish(channel, message));
     }
     /**
      * Publish raw bytes to a server pub/sub channel.
@@ -440,7 +571,7 @@ export class Cache {
      * not valid UTF-8 — see {@link onMessage}.
      */
     publishBytes(channel, message) {
-        this.raw.publishBytes(channel, message);
+        guarded(() => this.raw.publishBytes(channel, message));
     }
     // ── Sync scoping & live queries ───────────────────────────────────────────
     /**
@@ -544,7 +675,8 @@ export async function init() {
  *
  * Loads and initialises the WASM module on first call (subsequent calls reuse
  * the existing module). Options are applied in order:
- * `persistence` → `broadcastChannel` → `connect` + `auth`.
+ * `outbox` and `persistSyncedState` → `persistence` → `broadcastChannel` →
+ * `connect` + `auth`.
  *
  * ```ts
  * import { createCache } from 'recached-edge';
@@ -569,6 +701,15 @@ export async function init() {
 export async function createCache(options = {}) {
     const mod = await ensureModule();
     const raw = new mod.RecachedCache();
+    if (options.outbox?.maxPending !== undefined) {
+        raw.set_max_pending(options.outbox.maxPending);
+    }
+    if (options.outbox?.whenFull !== undefined) {
+        raw.set_overflow_policy(options.outbox.whenFull);
+    }
+    if (options.persistSyncedState === false) {
+        raw.set_persist_synced_state(false);
+    }
     if (options.persistence) {
         await raw.enable_persistence();
     }

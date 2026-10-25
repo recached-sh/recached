@@ -76,13 +76,15 @@ function committed(tx) {
 // site data, an invalid key — becomes a rejection, and aborts the
 // transaction, rather than an exception unwinding into wasm.
 function write(db, names, body) {
-    let tx;
+    let tx, done;
     try {
         tx = db.transaction(names, 'readwrite');
-        const done = committed(tx);
+        done = committed(tx);
         body(tx);
         return done;
     } catch (e) {
+        // The abort rejects `done` too; the caller hears `e` instead.
+        if (done) done.catch(() => {});
         try { if (tx) tx.abort(); } catch (_) {}
         return Promise.reject(e);
     }
