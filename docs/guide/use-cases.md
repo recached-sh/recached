@@ -23,6 +23,17 @@ The browser client is a complete cache on its own — see
 than the one this page is mostly about, and it is judged against `Map`, IndexedDB wrappers and
 React Query rather than against Redis.
 
+## Use cases at a glance
+
+| If you build | Typical data | Start with |
+|---|---|---|
+| Real-time interfaces | Live dashboards and counters, shared carts, presence, typing indicators, reactive UI state | [Live dashboards](#live-dashboards-and-counters), [shared state and presence](#shared-carts-collaborative-state-presence) |
+| Offline-capable apps | Reference data, cached configuration, offline-readable state that reconciles after reconnecting | [Flaky-network UIs](#offline-capable-and-flaky-network-uis), [native apps offline](#native-apps-that-need-saved-shared-state-offline) |
+| Backend services | Feature flags, tenant configuration, entitlements, shared cache projections | [Hot configuration in backend services](#hot-configuration-in-backend-services) |
+| Frontend-only caching | TTL caches in front of `fetch`, refresh-surviving state, cross-tab state | [No server at all](#no-server-at-all) |
+
+In every row Recached holds cache state. If the data is a business record, keep it in your database and publish a projection; see [using Recached with a main database](#using-recached-with-a-main-database).
+
 ## Where the difference actually shows up
 
 ### Live dashboards and counters
@@ -52,12 +63,28 @@ Recached ships that path: clients replay queued writes after reconnect, `incr`/`
 additively rather than clobbering, `jmerge` deep-merges documents, and a `DEDUP` envelope suppresses
 ordinary reconnect replays. See [Offline & Reconnection](/browser/offline) for the server-crash boundary.
 
-### Feature flags and config that must flip instantly
+### Feature flags and config that must change without polling
 
 Flags read on every render are the pathological case for a network cache: either you round-trip
 constantly or you cache locally and accept staleness. Recached holds the flag in browser WASM or native client memory (read
 cost: a local map lookup) while a server-side flip propagates in milliseconds. You get local-read
 speed *and* immediate invalidation, which is normally a tradeoff.
+
+### Hot configuration in backend services
+
+Fare tables, feature flags, tenant settings, and entitlement checks are read on nearly every request and change rarely. A Redis lookup per request adds a round trip; a process-local `HashMap` with a pub/sub invalidation listener goes quietly stale whenever the listener misses a message during a disconnect.
+
+`recached-embed` holds the watched slice in the service's own memory and re-hydrates it from a fresh snapshot after every reconnect, so a missed window heals instead of lingering:
+
+```rust
+use recached_embed::Cache;
+
+let cache = Cache::connect("ws://127.0.0.1:6380").await?;
+cache.watch("flags:*").await?;                       // snapshot, then live updates
+let checkout = cache.get_str("flags:new-checkout")?; // local memory read
+```
+
+It fits small, shared, read-heavy, slowly changing data. It does not fit data where milliseconds of staleness matter, such as payments, seat locks, or inventory decrements; keep those on the server. See the [embedded Rust guide](/rust/getting-started). A WASI build for edge runtimes is [planned](/roadmap#planned-wasi-target), not implemented.
 
 ### Offline-capable and flaky-network UIs
 

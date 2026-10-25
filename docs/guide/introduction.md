@@ -1,6 +1,43 @@
 # Introduction
 
-Recached is a Rust cache and sync engine for backends, browsers, native Android and Apple apps, and embedded Rust services. Client adapters keep local cache data in memory, exchange writes and updates over WebSocket, and expose APIs for reacting to changes.
+Recached is a local-first cache and real-time sync engine, powered by Rust: **cache locally, synchronize everywhere**.
+
+It keeps shared cache data close to your application. The same Rust cache engine runs in the server, in browsers as WebAssembly, inside native Android and Apple apps, and in embedded Rust services. Clients read cached values from local memory, exchange writes and updates with the server over WebSocket, and expose APIs for reacting to changes. Your backend writes through a Redis-compatible RESP command subset.
+
+The difference from a conventional cache is where it runs. Instead of every read crossing the network to a central server, each client holds the keys it watches and the server keeps those copies current.
+
+## What Recached is — and isn't {#what-recached-is-and-isnt}
+
+Recached **is**:
+
+- **A cache and synchronization engine.** It distributes cache state between your backend and its clients.
+- **An in-memory key-value cache server** with snapshot and AOF persistence, replication, and a RESP command subset that existing Redis clients can use.
+- **A local cache runtime** for browsers, Android, Apple platforms, and Rust services.
+- **A real-time cache synchronization layer.** Clients subscribe to key patterns, receive changes over WebSocket, and reconcile after reconnecting, within [sync scopes](/server/sync-scopes) your backend grants.
+- **An offline-capable client cache.** Clients keep reading local data while disconnected, queue writes for replay, and on browser and mobile can persist locally.
+
+Recached **is not**:
+
+- **A replacement for PostgreSQL or MySQL.** It holds cache state, not your system of record.
+- **A local SQL database.** Clients store keys and values, not tables you can query.
+- **A complete Redis implementation.** It implements a [command subset](/server/commands); Lua scripting, streams, blocking commands, and cluster mode are absent.
+- **A general CRDT collaboration engine.** Plain writes resolve by arrival order at the server. Counter deltas add and JSON merge patches preserve untouched fields, but there is no general conflict-resolution model.
+- **An automatic SQL synchronization system.** It has no connector that copies database tables into the cache or cache writes into the database, in either direction.
+- **A durable business transaction queue.** The client outbox replays cache commands to the Recached server. It does not confirm SQL commits, it is bounded, and its duplicate suppression is [not unconditional](/guide/client-support#write-durability-and-replay).
+
+### Your database stays the source of truth
+
+MySQL or PostgreSQL can remain authoritative while Recached distributes derived cache state. Business edits go through your application API and a SQL transaction; a worker publishes the committed result to Recached; clients read it locally. [Database integration](/guide/database-integration) describes the outbox pattern, ordering, and recovery.
+
+Four different acknowledgments are involved, and none implies another:
+
+| Acknowledgment | What it confirms | What it does not confirm |
+|---|---|---|
+| SQL transaction commit, reported by your API | The business change is durable in your database | That Recached or any client holds the new value yet |
+| Recached server reply | The server accepted a cache write | A SQL commit, or delivery to every client |
+| Local optimistic write (`set` returns) | The value is in local memory; on Kotlin and Swift its data and outbox row are also committed to SQLite | That the server will accept the write |
+| Queued offline cache write | The write is waiting in the outbox for replay on reconnect | Acceptance: it can be refused, or dropped when the outbox overflows |
+
 
 ## Where the engine runs
 
@@ -100,10 +137,12 @@ The road to 1.0 is hardening, not features: fuzzing the parser surfaces, automat
 
 ## Recached vs Redis
 
+Redis, and Valkey, which forked from Redis 7.2, are mature centralized cache servers with broad command coverage and a large operational ecosystem. Recached implements a smaller subset of that surface and adds the client runtimes and sync layer described above.
+
 | | Recached | Redis |
 |---|---|---|
 | Protocol | RESP (compatible) | RESP |
-| Local client cache | Browser WASM, native Kotlin/Swift previews, embedded Rust | No built-in client replica |
+| Local client cache | Browser WASM, native Kotlin/Swift previews, embedded Rust | Server-assisted client-side caching (`CLIENT TRACKING`) through supporting client libraries |
 | WebSocket sync | Built-in | Not built-in |
 | Persistence | Snapshot + AOF | RDB + AOF |
 | Replication | Primary/replica + manually fenced promotion | Yes (+ Sentinel/Cluster) |
@@ -111,6 +150,18 @@ The road to 1.0 is hardening, not features: fuzzing the parser surfaces, automat
 | Cluster mode | No | Yes |
 | Command coverage | 124 catalog entries | 250+ |
 | License | Apache 2.0 | AGPLv3 / RSALv2 + SSPLv1 (BSD-3 up to 7.2; Valkey stayed BSD-3) |
+
+Client-side caching in Redis sends invalidations to a client library, which then refetches. Recached clients instead receive watched values, can persist them, and replay queued writes after reconnecting, in browsers and mobile apps as well as backend processes.
+
+## Recached vs Dragonfly
+
+Dragonfly is a multithreaded, Redis- and Memcached-compatible server focused on server-side performance. Recached also executes commands on multiple threads, but it does not compete on server throughput and publishes no cross-project comparison; see [benchmarks](/guide/benchmarks). Choose between them on whether you need client runtimes and sync, and measure throughput on your own workload.
+
+## Recached vs ElectricSQL and PowerSync
+
+ElectricSQL synchronizes subsets of PostgreSQL data to clients. PowerSync synchronizes backend database data into an on-device SQLite database and uploads client writes through your backend. Both start from a database and keep a local copy of its rows.
+
+Recached starts from a cache. It synchronizes a key-value keyspace that your backend writes, which can include database-derived projections but has no built-in database connector. Its client store is a cache with TTLs, counters, and JSON documents, not a local SQL database. Use a database sync engine when clients need queryable local tables and database-backed offline writes; use Recached for shared cache state, presence, configuration, and other data that is natural to model as keys.
 
 ## Recached vs SWR / React Query
 

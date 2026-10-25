@@ -143,7 +143,7 @@ cache.setEx('api:response:products', JSON.stringify(products), 300)
 
 ## 4. Live sync example
 
-This is what makes Recached different from a regular cache. Write on the server; the browser sees the update instantly.
+This is what makes Recached different from a server-only cache. Write on the server; a subscribed browser receives the change over WebSocket and reads it from local memory.
 
 ### Backend (Node.js)
 
@@ -196,7 +196,7 @@ if (initialCount !== null) {
 }
 ```
 
-When your backend calls `SET cart:42:count 3` over RESP, the server pushes the mutation to the browser over WebSocket. The `onKeyChange` callback fires and the badge updates instantly — no polling, no extra endpoint, no client-side invalidation code.
+When your backend calls `SET cart:42:count 3` over RESP, the server pushes the new value to the browser over WebSocket. The `onKeyChange` callback fires and the badge updates — no polling, no extra endpoint, no client-side invalidation code.
 
 ---
 

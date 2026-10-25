@@ -5,7 +5,7 @@
 ## Requirements
 
 - Vue 3 or later
-- `recached-edge` 0.1.4 or later
+- `recached-edge` 0.3.1 or later (0.4.0 recommended); earlier releases do not install from npm
 
 ## Install
 
@@ -71,7 +71,7 @@ const theme = useKey('theme')
 </template>
 ```
 
-`useKey('theme')` returns a `Ref<string | null>` that updates every time the `theme` key changes — from any source. Click in one tab, every other tab updates instantly.
+`useKey('theme')` returns a `Ref<string | null>` that updates every time the `theme` key changes — from any source. Click in one tab, and every other tab updates too.
 
 ---
 
