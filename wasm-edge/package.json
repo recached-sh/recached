@@ -1,7 +1,7 @@
 {
   "name": "recached-edge",
   "description": "Recached browser client: the shared Rust cache engine in WebAssembly, with local reads, optional IndexedDB persistence, and real-time WebSocket sync",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "main": "sdk.js",
   "module": "sdk.js",
