@@ -2,15 +2,15 @@
 <title>Database-backed state with Recached</title>
 <desc>Clients send edits to an application API, which commits business rows and an outbox event in one SQL transaction. A worker publishes committed state to Recached, and WebSocket updates reach local client caches.</desc>
 <style>
-  .wire { fill:none; stroke:#46546a; stroke-width:2; }
-  .node { fill:#131b2a; stroke:#46546a; stroke-width:1.5; }
-  .accent { stroke:#E8542A; }
+  .wire { fill:none; stroke:#4A5268; stroke-width:2; }
+  .node { fill:#171C2B; stroke:#4A5268; stroke-width:1.5; }
+  .accent { stroke:#F59E0B; }
   text { font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; text-anchor:middle; }
-  .title { fill:#e6edf3; font-size:16px; font-weight:700; }
-  .sub { fill:#93a1b5; font-size:12px; }
-  .label { fill:#93a1b5; font-size:12px; font-weight:600; }
+  .title { fill:#FFFBEB; font-size:16px; font-weight:700; }
+  .sub { fill:#AAB2BF; font-size:12px; }
+  .label { fill:#AAB2BF; font-size:12px; font-weight:600; }
 </style>
-<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#46546a" stroke-width="1.5"/></marker></defs>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#4A5268" stroke-width="1.5"/></marker></defs>
 <path class="wire" d="M240 78 H354" marker-end="url(#arrow)"/>
 <path class="wire" d="M560 78 H774" marker-end="url(#arrow)"/>
 <path class="wire" d="M900 126 V194" marker-end="url(#arrow)"/>

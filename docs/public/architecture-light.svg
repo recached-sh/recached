@@ -4,12 +4,12 @@
 <style>
   .wire { fill:none; stroke:#d6dae0; stroke-width:2; }
   .node { fill:#f6f8fa; stroke:#d6dae0; stroke-width:1.5; }
-  .server { stroke:#E8542A; }
+  .server { stroke:#D97706; }
   .pill { fill:#ffffff; stroke:#d6dae0; }
   text { font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; text-anchor:middle; }
-  .title { fill:#1f2328; font-size:16px; font-weight:700; }
+  .title { fill:#171C2B; font-size:16px; font-weight:700; }
   .sub { fill:#656d76; font-size:12px; }
-  .code { fill:#1f2328; font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .code { fill:#171C2B; font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace; }
   .label { fill:#656d76; font-size:12px; font-weight:600; }
 </style>
 <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#d6dae0" stroke-width="1.5"/></marker></defs>
