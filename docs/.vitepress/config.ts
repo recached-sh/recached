@@ -6,9 +6,9 @@ export default defineConfig({
   // makes every asset 404 on a custom domain, which renders the site as
   // unstyled HTML.
   base: '/',
-  // Working plans for upcoming milestones live beside the docs but are not
-  // part of the published site.
-  srcExclude: ['plans/**'],
+  // Working plans for upcoming milestones and internal reports live beside the
+  // docs but are not part of the published site. reports/ is also gitignored.
+  srcExclude: ['plans/**', 'reports/**'],
   title: 'Recached',
   titleTemplate: ':title — Recached',
   description:
