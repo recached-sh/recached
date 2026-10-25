@@ -49,6 +49,11 @@ Traffic metrics are event-driven:
 | `recached_notification_overflows_total` | counter | — | WATCH/QSUB clients disconnected because their bounded notification queue filled. |
 | `recached_sync_lag_disconnects_total` | counter | — | WebSocket sync clients closed (code `4001`) because they fell behind the mutation fan-out far enough to miss frames. They reconnect and resynchronise via `qstate`, so this is a backpressure signal, not data loss — but a sustained rate means clients cannot drain as fast as you are writing. |
 | `recached_pubsub_overflows_total` | counter | — | Pub/sub clients disconnected because their bounded delivery queue filled. |
+| `recached_dedup_replays_total` | counter | `outcome` | `DEDUP` writes answered from the duplicate-suppression record instead of being run: `duplicate` (`+DUP`, already applied) or `refused` (a remembered permanent refusal, answered again). A steady `duplicate` rate is normal — every reconnect after a lost reply produces some. |
+| `recached_sync_write_refusals_total` | counter | `class` | `DEDUP` writes the server refused: `transient` (memory, persistence, read-only replica — the client keeps them queued) or `permanent` (wrong type, bad argument — the client drops them and tells the application). |
+| `recached_dedup_barrier_deferrals_total` | counter | — | Writes deferred only because an earlier write from the same client was deferred on the same connection (`CLIENT DEDUPBARRIER ON`). Follows the transient refusals that cause it. |
+| `recached_qsub_snapshots_total` | counter | `outcome` | Live-query snapshots: `sent`, or `too_large` — refused for exceeding `RECACHED_MAX_QSUB_INITIAL_KEYS`, so that client's live query is not syncing. |
+| `recached_qsub_snapshot_duration_seconds` | histogram | — | Time to build a live-query snapshot. It is taken under every write barrier, so this is also how long writers waited for it. |
 | `recached_scope_denials_total` | counter | `reason` | Commands refused on scope-limited WebSocket connections. A misconfigured scope fails silently from the server's side — the page just stops working — so this is the signal that it happened. `reason="admin"` is refused by design and is normally non-zero; the other three mean something is wrong. `read_only` is a grant that is too narrow (the key is granted `r=`, the command writes), `out_of_scope` a grant that is missing entirely, and `no_token` a client issuing commands before `SYNC TOKEN`. A rising `read_only` after a deploy usually means a page was given a write it was never granted. |
 
 ### Capacity and sync
@@ -203,7 +208,7 @@ than compiled — see [Configuration](/server/configuration#environment-variable
 
 Snapshots are MessagePack files at `RECACHED_SAVE_PATH`, written atomically (temp file, fsync,
 rename, and directory fsync). A single snapshot read therefore sees a complete old or new file, but
-a durable deployment is a checkpoint set: snapshot, `.dedup` sidecar, and—when enabled—AOF. Do not
+a durable deployment is a checkpoint set: snapshot, `.dedup` and `.dedup-refusals` sidecars, and—when enabled—AOF. Do not
 copy those files one by one while writes or another save can run; that can combine files from
 different checkpoints.
 
@@ -212,15 +217,19 @@ different checkpoints.
 redis-cli -p 6379 BGSAVE
 redis-cli -p 6379 LASTSAVE     # timestamp advances when the save lands
 
-# Stop the server after SAVE, then copy the snapshot, its .dedup sidecar,
+# Stop the server after SAVE, then copy the snapshot, its .dedup and
+# .dedup-refusals sidecars,
 # and the AOF (when configured), or capture them with one atomic filesystem
 # snapshot while the server is paused.
 ```
 
-A sidecar file sits next to the snapshot with a `.dedup` extension, holding duplicate-suppression
-high-water marks. Back it up as part of the same checkpoint set: without it a restarted server can
-re-apply a write a client replays. A missing sidecar is a clean first boot; a present but corrupt
-sidecar is a startup error.
+Two sidecar files sit next to the snapshot: `.dedup` holds duplicate-suppression high-water marks,
+and `.dedup-refusals` (since 0.5) the recent permanent refusals per client. Back them up as part of
+the same checkpoint set: without them a restarted server can re-apply a write a client replays, or
+answer a refused one as applied. A missing sidecar is a clean first boot; a present but corrupt one is
+a startup error. A checkpoint writes them before the snapshot, never after; with an AOF, the AOF also
+carries the marks of every write since the checkpoint, inside each write's own record. What that
+does and does not guarantee is set out in the [protocol spec](/server/protocol#crash-consistency).
 
 To restore, stop the server, put the snapshot (and its `.dedup` sidecar) at `RECACHED_SAVE_PATH`, and
 start it — both load at boot. There is **no import path from a Redis RDB file**; the formats are unrelated.
@@ -238,3 +247,10 @@ not supported.
 
 The current versioned snapshot envelope accepts legacy bare-entry snapshots. The reverse is not
 guaranteed, so keep a complete copy of the pre-upgrade checkpoint set if you may need to roll back.
+
+**0.4 → 0.5.** The snapshot and `.dedup` formats are unchanged. The AOF gains records a 0.4 server
+cannot replay (`DEDUP`-wrapped writes, `RECACHED-DEDUP`, `RECACHED-DEDUP-REFUSED`): to roll back,
+run `SAVE` on 0.5 first — it truncates the AOF — then start 0.4. Replicas keep receiving bare
+mutations, so a mixed-version primary and replica still replicate; a promoted replica has no
+duplicate-suppression marks for the writes it replicated. Upgrade the server before or together with
+the browser SDK: writes after `subscribe()` and binary writes reach only a 0.5 server.
