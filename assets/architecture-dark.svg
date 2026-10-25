@@ -2,17 +2,17 @@
 <title>Recached server and local client caches</title>
 <desc>Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory. Mobile SDKs are implemented previews.</desc>
 <style>
-  .wire { fill:none; stroke:#2b3648; stroke-width:2; }
-  .node { fill:#131b2a; stroke:#2b3648; stroke-width:1.5; }
-  .server { stroke:#E8542A; }
-  .pill { fill:#0f1620; stroke:#2b3648; }
+  .wire { fill:none; stroke:#2F3649; stroke-width:2; }
+  .node { fill:#171C2B; stroke:#2F3649; stroke-width:1.5; }
+  .server { stroke:#F59E0B; }
+  .pill { fill:#101522; stroke:#2F3649; }
   text { font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; text-anchor:middle; }
-  .title { fill:#e6edf3; font-size:16px; font-weight:700; }
-  .sub { fill:#93a1b5; font-size:12px; }
-  .code { fill:#e6edf3; font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace; }
-  .label { fill:#93a1b5; font-size:12px; font-weight:600; }
+  .title { fill:#FFFBEB; font-size:16px; font-weight:700; }
+  .sub { fill:#AAB2BF; font-size:12px; }
+  .code { fill:#FFFBEB; font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .label { fill:#AAB2BF; font-size:12px; font-weight:600; }
 </style>
-<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#2b3648" stroke-width="1.5"/></marker></defs>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#2F3649" stroke-width="1.5"/></marker></defs>
 <path class="wire" d="M190 190 H320" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
 <path class="wire" d="M530 190 H625 M625 80 V300 M625 80 H710 M625 190 H710 M625 300 H710"/>
 <path class="wire" d="M635 80 H704" marker-start="url(#arrow)" marker-end="url(#arrow)"/>

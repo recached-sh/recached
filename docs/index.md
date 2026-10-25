@@ -22,32 +22,56 @@ hero:
       link: https://github.com/recached-sh/recached
 
 features:
-  - icon: ⚡
+  - icon:
+      src: /brand/icons/local-reads.svg
+      width: 24
+      height: 24
+      wrap: true
     title: Local reads
     details: Browser, Android, Apple, and embedded Rust clients read cached values from their own memory instead of making a server request for every read.
     link: /guide/how-it-works#read-and-write-locally
     linkText: Read and write locally
-  - icon: 🔄
+  - icon:
+      src: /brand/icons/real-time-sync.svg
+      width: 24
+      height: 24
+      wrap: true
     title: Real-time sync
     details: Subscribe to key patterns to receive a snapshot and later changes over WebSocket. Reconnecting clients replay queued writes, then refresh what they watch.
     link: /guide/how-it-works#connect-and-hydrate
     linkText: Connect and hydrate
-  - icon: 🦀
+  - icon:
+      src: /brand/icons/rust-engine.svg
+      width: 24
+      height: 24
+      wrap: true
     title: One Rust engine
     details: The server and every client run the same core-engine. Each platform adds its own transport, persistence, and reactive API, so behavior differs by client.
     link: /guide/client-support
     linkText: Compare clients
-  - icon: 📴
+  - icon:
+      src: /brand/icons/offline.svg
+      width: 24
+      height: 24
+      wrap: true
     title: Offline-capable caching
     details: Persist browser data to IndexedDB or native data to SQLite. Writes made while disconnected queue and replay on reconnect, within outbox limits.
     link: /guide/client-support#write-durability-and-replay
     linkText: Durability and replay
-  - icon: 🔌
+  - icon:
+      src: /brand/icons/server.svg
+      width: 24
+      height: 24
+      wrap: true
     title: Redis-compatible server interface
     details: Connect ioredis, node-redis, or redis-py over RESP using the supported command subset. The server adds TLS, authentication, metrics, persistence, and replication.
     link: /server/commands
     linkText: Supported commands
-  - icon: 🔒
+  - icon:
+      src: /brand/icons/scoped-access.svg
+      width: 24
+      height: 24
+      wrap: true
     title: Scoped sync access
     details: Backend-minted sync tokens limit which keys each connection may read and write. Watching a pattern never grants access to it.
     link: /server/sync-scopes

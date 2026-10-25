@@ -32,3 +32,6 @@ jobs:
           test -f docs/.vitepress/dist/brand/logo.svg
           test -f docs/.vitepress/dist/brand/hero.svg
           test -f docs/.vitepress/dist/brand/social-card.png
+          for icon in local-reads real-time-sync rust-engine offline server scoped-access; do
+            test -f "docs/.vitepress/dist/brand/icons/$icon.svg"
+          done
