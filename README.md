@@ -1,8 +1,8 @@
 <div align="center">
-  <img src="recached.jpg" alt="Recached" width="800" />
+  <img src="brand/banner.svg" alt="Recached — Cache locally. Sync everywhere." width="100%" />
   <h1>Recached</h1>
   <p><b>A local-first cache and real-time sync engine, powered by Rust.</b></p>
-  <p>Cache locally. Synchronize everywhere.</p>
+  <p>Cache locally. Sync everywhere.</p>
 
   <a href="https://recached.dev"><img src="https://img.shields.io/badge/Docs-recached.dev-blue.svg" alt="Docs"></a>
   <a href="https://www.npmjs.com/package/recached-edge"><img src="https://img.shields.io/npm/v/recached-edge?label=npm" alt="npm"></a>
