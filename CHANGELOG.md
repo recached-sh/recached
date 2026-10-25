@@ -2,7 +2,11 @@
 
 All notable changes to Recached are documented here.
 
+<<<<<<< Updated upstream
 ## [0.5.0] (unreleased) — synchronization reliability
+=======
+## 0.5.0 (2026-10-25) synchronization reliability
+>>>>>>> Stashed changes
 
 ### Fixed — lost, duplicated or misreported writes
 - Two browser tabs sharing one IndexedDB no longer lose writes: each tab adopted the same stored identity with a newer epoch, so the server skipped the older tab's writes as duplicates. Every page load now has its own identity, and IndexedDB rows are keyed per session so tabs cannot overwrite each other's pending writes
