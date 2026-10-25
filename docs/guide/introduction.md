@@ -1,6 +1,6 @@
 # Introduction
 
-Recached is a local-first cache and real-time sync engine, powered by Rust: **cache locally, synchronize everywhere**.
+Recached is a local-first cache and real-time sync engine, powered by Rust: **cache locally, sync everywhere**.
 
 It keeps shared cache data close to your application. The same Rust cache engine runs in the server, in browsers as WebAssembly, inside native Android and Apple apps, and in embedded Rust services. Clients read cached values from local memory, exchange writes and updates with the server over WebSocket, and expose APIs for reacting to changes. Your backend writes through a Redis-compatible RESP command subset.
 
