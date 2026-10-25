@@ -1,6 +1,6 @@
 {
   "name": "@recached/react",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Official React hooks for Recached: render from the local browser cache and re-render on local, cross-tab, and server-synced key changes",
   "type": "module",
   "main": "./dist/index.js",

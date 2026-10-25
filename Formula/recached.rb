@@ -1,7 +1,7 @@
 class Recached < Formula
   desc "Local-first cache server with a Redis-compatible RESP subset and WebSocket sync"
   homepage "https://github.com/recached-sh/recached"
-  version "0.4.0"
+  version "0.5.0"
   license "Apache-2.0"
 
   # The checksums below are placeholders until this version's release artifacts
@@ -17,12 +17,12 @@ class Recached < Formula
   # placeholder makes brew fail loudly, which is the far better failure.
   on_macos do
     on_intel do
-      url "https://github.com/recached-sh/recached/releases/download/v0.4.0/recached-macos-amd64"
-      sha256 "04abb0d30ed87747ce877a05ea5c55c8e3168815d207b5c40e42e226f809e48b"
+      url "https://github.com/recached-sh/recached/releases/download/v0.5.0/recached-macos-amd64"
+      sha256 "REPLACE_WITH_AMD64_SHA256"
     end
     on_arm do
-      url "https://github.com/recached-sh/recached/releases/download/v0.4.0/recached-macos-arm64"
-      sha256 "dc4a21e6070ecf854249a41e0f1469cc08e1ca7bd1f11f1f93a91604b243d38e"
+      url "https://github.com/recached-sh/recached/releases/download/v0.5.0/recached-macos-arm64"
+      sha256 "REPLACE_WITH_ARM64_SHA256"
     end
   end
 
