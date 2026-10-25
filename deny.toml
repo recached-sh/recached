@@ -12,7 +12,14 @@ all-features = true
 # Every known vulnerability fails the build. Accept one only by adding its
 # RustSec id here with a comment saying why it cannot reach us.
 yanked = "deny"
-ignore = []
+ignore = [
+  # basic-toml is unmaintained, with no fixed release. It reaches us only via
+  # uniffi_bindgen -> askama, where askama's derive macro parses its own
+  # template config at compile time; it never parses input at runtime. The
+  # latest uniffi_bindgen (0.32.2) still requires askama 0.16, whose latest
+  # askama_derive (0.16.1) still uses it. Drop this once uniffi moves on.
+  { id = "RUSTSEC-2026-0374", reason = "unmaintained compile-time dependency of uniffi_bindgen via askama; no fixed release" },
+]
 
 [licenses]
 # The workspace ships under Apache-2.0; these are the licences it is willing to

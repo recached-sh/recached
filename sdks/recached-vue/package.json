@@ -1,7 +1,7 @@
 {
   "name": "@recached/vue",
   "version": "0.4.0",
-  "description": "Official Vue 3 composables for Recached \u2014 local reactive cache",
+  "description": "Official Vue 3 composables for Recached: reactive refs over the local browser cache that update on local, cross-tab, and server-synced key changes",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",

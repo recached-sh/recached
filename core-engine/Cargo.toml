@@ -1,5 +1,6 @@
 [package]
 name    = "core-engine"
+description = "The shared Recached cache engine: RESP parsing, typed commands, a sharded in-memory store, TTLs, collections, JSON, and eviction. Used by the server and every client adapter."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

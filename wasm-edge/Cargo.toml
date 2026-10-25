@@ -7,7 +7,7 @@ edition.workspace = true
 # and `repository` were absent, so the published recached-edge package carried
 # neither — wasm-pack warns about exactly this on every build.
 license = "Apache-2.0"
-description = "The Recached cache engine compiled to WebAssembly: a Redis-compatible store that runs inside the browser and syncs with a Recached server."
+description = "The Recached cache engine compiled to WebAssembly: a local in-memory browser cache with optional IndexedDB persistence and WebSocket sync to a Recached server."
 repository.workspace = true
 # Publishes to **npm** as `recached-edge`, never to crates.io: it depends on
 # `core-engine` by path, and a path dependency carries no version, which

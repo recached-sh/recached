@@ -148,15 +148,28 @@ jobs:
           shared-key: "recached-wasm-cache"
 
       - name: Install wasm-pack
-        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
-        with:
-          # Pinned deliberately. Left unset, the action resolves "latest" through
-          # the GitHub API and silently falls back to a much older wasm-pack when
-          # that call is rate-limited — and versions before workspace inheritance
-          # cannot parse `license.workspace = true`, failing the build with
-          # "invalid type: map, expected a string for key `package.license`".
-          # That is why this passed for months and then broke on an unrelated run.
-          version: 'v0.15.0'
+        # Pinned deliberately. Left unset, the version resolves "latest" through
+        # the GitHub API and silently falls back to a much older wasm-pack when
+        # that call is rate-limited — and versions before workspace inheritance
+        # cannot parse `license.workspace = true`, failing the build with
+        # "invalid type: map, expected a string for key `package.license`".
+        # That is why this passed for months and then broke on an unrelated run.
+        # Installed by hand rather than with jetli/wasm-pack-action, which renames
+        # the binary from /tmp into ~/.cargo/bin and fails with EXDEV ("cross-device
+        # link not permitted") once the runner puts them on different filesystems.
+        # `install` copies instead, and the checksum pins the exact release asset.
+        env:
+          WASM_PACK_VERSION: v0.15.0
+          WASM_PACK_SHA256: c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a
+        run: |
+          name="wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/$name.tar.gz" \
+            "https://github.com/wasm-bindgen/wasm-pack/releases/download/${WASM_PACK_VERSION}/$name.tar.gz"
+          echo "${WASM_PACK_SHA256}  $RUNNER_TEMP/$name.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          mkdir -p "$HOME/.cargo/bin"
+          install -m 755 "$RUNNER_TEMP/$name/wasm-pack" "$HOME/.cargo/bin/wasm-pack"
+          wasm-pack --version
 
       # The runner ships Chrome and a matching chromedriver on PATH. Letting
       # wasm-pack download its own risks a version mismatch with the installed
@@ -198,10 +211,23 @@ jobs:
           shared-key: "recached-wasm-cache"
 
       - name: Install wasm-pack
-        uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
-        with:
-          # Pinned for the same reason as browser-tests above.
-          version: 'v0.15.0'
+        # Pinned for the same reason as browser-tests above.
+        # Installed by hand rather than with jetli/wasm-pack-action, which renames
+        # the binary from /tmp into ~/.cargo/bin and fails with EXDEV ("cross-device
+        # link not permitted") once the runner puts them on different filesystems.
+        # `install` copies instead, and the checksum pins the exact release asset.
+        env:
+          WASM_PACK_VERSION: v0.15.0
+          WASM_PACK_SHA256: c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a
+        run: |
+          name="wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/$name.tar.gz" \
+            "https://github.com/wasm-bindgen/wasm-pack/releases/download/${WASM_PACK_VERSION}/$name.tar.gz"
+          echo "${WASM_PACK_SHA256}  $RUNNER_TEMP/$name.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          mkdir -p "$HOME/.cargo/bin"
+          install -m 755 "$RUNNER_TEMP/$name/wasm-pack" "$HOME/.cargo/bin/wasm-pack"
+          wasm-pack --version
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

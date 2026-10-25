@@ -1,37 +1,57 @@
 <div align="center">
-  <img src="recached.jpg" alt="Recached" width="800" />
+  <img src="brand/banner.svg" alt="Recached — Cache locally. Sync everywhere." width="100%" />
   <h1>Recached</h1>
-  <p><b>A Rust cache and sync engine for servers, browsers, and native mobile apps.</b></p>
-  <p>Local client reads. Shared state over WebSocket. One Rust engine.</p>
+  <p><b>A local-first cache and real-time sync engine, powered by Rust.</b></p>
+  <p>Cache locally. Sync everywhere.</p>
 
-  <a href="https://recached.dev"><img src="https://img.shields.io/badge/Docs-recached.dev-blue.svg" alt="Docs"></a>
-  <a href="https://www.npmjs.com/package/recached-edge"><img src="https://img.shields.io/npm/v/recached-edge?label=npm" alt="npm"></a>
-  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Language-Rust-orange.svg?logo=rust" alt="Rust"></a>
-  <a href="https://webassembly.org"><img src="https://img.shields.io/badge/Ecosystem-WebAssembly-yellow.svg" alt="Wasm"></a>
-  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="Apache 2.0"></a>
+  <a href="https://recached.dev"><img src="https://img.shields.io/badge/Docs-recached.dev-FBBF24.svg?labelColor=171C2B" alt="Docs"></a>
+  <a href="https://www.npmjs.com/package/recached-edge"><img src="https://img.shields.io/npm/v/recached-edge?label=npm&color=FBBF24&labelColor=171C2B" alt="npm"></a>
+  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Language-Rust-FBBF24.svg?logo=rust&labelColor=171C2B" alt="Rust"></a>
+  <a href="https://webassembly.org"><img src="https://img.shields.io/badge/Ecosystem-WebAssembly-FBBF24.svg?labelColor=171C2B" alt="Wasm"></a>
+  <a href="LICENSE.md"><img src="https://img.shields.io/badge/License-Apache_2.0-FBBF24.svg?labelColor=171C2B" alt="Apache 2.0"></a>
 </div>
 
 ---
 
-Recached keeps a local copy of shared cache data where your application reads it: in a browser tab, a native Android or Apple app, or an embedded Rust service. Clients read local memory and exchange writes and server updates over WebSocket. Your backend uses the server's RESP command subset on port 6379.
+Recached keeps shared cache data close to your application. One Rust cache engine runs in the server, in browsers as WebAssembly, inside native Android and Apple apps, and in embedded Rust services. Clients read cached values from local memory while updates synchronize between connected clients over WebSocket. Your backend writes to the server with existing Redis clients, using the supported RESP command subset.
 
-The same `core-engine` runs on every target. Browser clients use WebAssembly and optional IndexedDB persistence. Native Kotlin and Swift clients use `recached-mobile` through UniFFI, with SQLite persistence for local data and queued writes. The native SDKs are 0.1.0 previews, on Maven Central and SwiftPM.
+## Why Recached
+
+When a browser, mobile app, or second service needs the data your backend caches, the usual options each cost something: poll an endpoint and tune the interval, run a separate WebSocket layer with its own reconnect and replay logic, or keep a second client-side cache that you invalidate by hand. Recached makes the cache and its delivery path one system. The backend writes as it already does; subscribed clients receive the change and read it locally.
+
+The difference is *where the cache runs*, not a claim about server throughput.
+
+- **Local reads.** Read cached values from application memory instead of making a remote request for every read.
+- **Real-time sync.** Subscribe to key patterns with `liveQuery` in the browser or `watch` on mobile and in Rust. Clients receive a snapshot, then later changes, and reconcile after reconnecting. [Sync scopes](https://recached.dev/server/sync-scopes) limit which keys each connection may read and write.
+- **One Rust foundation.** The server and every client run the same `core-engine`; browser, mobile, and Rust clients share the `sync-client` state machine. Each platform supplies its own transport, persistence, and reactive API.
+- **Offline-capable caching.** Browser clients can persist to IndexedDB. Kotlin and Swift clients save data and queued writes to SQLite and restore them after an app restart. Writes made while disconnected queue and replay on reconnect, within [outbox limits](https://recached.dev/guide/client-support#write-durability-and-replay).
+- **Familiar backend integration.** Connect ioredis, node-redis, redis-py, or `redis-cli` over RESP. No Recached-specific backend driver is required.
+
+Runtimes do not share identical APIs or guarantees. Persistence, write durability, and the size of the API surface differ by client:
+
+| Application | Client | Local persistence | Status | Getting started |
+|---|---|---|---|---|
+| Browser | `recached-edge` (WebAssembly), React and Vue adapters | Optional IndexedDB WAL and outbox | Sync layer beta | [Browser](https://recached.dev/browser/getting-started) |
+| Android | Kotlin `recached-android`, `Flow` observers | SQLite data and outbox | 0.1.0 preview, Maven Central | [Android preview](https://recached.dev/android/getting-started) |
+| iOS / macOS | Swift `Recached`, `AsyncStream` and SwiftUI models | SQLite data and outbox | 0.1.0 preview, SwiftPM | [Apple preview](https://recached.dev/ios/getting-started) |
+| Rust service | `recached-embed` | In-memory store and outbox | Git dependency, unpublished | [Rust](https://recached.dev/rust/getting-started) |
+
+See [client support and limits](https://recached.dev/guide/client-support) for differences between adapters. React Native, Flutter, and a WASI build for edge runtimes are [planned](https://recached.dev/roadmap), not implemented.
 
 The server executes commands across worker threads over a sharded keyspace. Scaling depends on your keys being spread across shards; see [benchmarks](#benchmarks) and the [concurrency model](https://recached.dev/server/commands#concurrency-model).
-
-| Application | Client | Local persistence | Getting started |
-|---|---|---|---|
-| Browser | `recached-edge` (WebAssembly), React and Vue adapters | Optional IndexedDB WAL and outbox | [Browser](https://recached.dev/browser/getting-started) |
-| Android | Kotlin `recached-android`, `Flow` observers | SQLite data and outbox | [Android preview](https://recached.dev/android/getting-started) |
-| iOS / macOS | Swift `Recached`, `AsyncStream` and SwiftUI models | SQLite data and outbox | [Apple preview](https://recached.dev/ios/getting-started) |
-| Rust service | `recached-embed` | In-memory store and outbox | [Rust](https://recached.dev/rust/getting-started) |
-
-See [client support and limits](https://recached.dev/guide/client-support) for differences between adapters. React Native and Flutter are planned.
 
 > [!NOTE]
 > Recached implements a Redis command subset: strings, expiry, counters, hashes, lists, sets, sorted sets, transactions, pub/sub, and observable keys, plus JSON and rate limiting. Client SDKs expose smaller APIs than the server. Best fit: shared UI state, offline-capable apps, config caches, and rate limiting.
 >
-> Notably absent: **Lua scripting (`EVAL`)**, **blocking operations** (`BLPOP`, `BRPOP`, `LMOVE`) and **streams** (`XADD`). Your Redis *client* will connect unchanged, but libraries built on those primitives — BullMQ, node-redlock, rate-limiter-flexible — ship Lua and will not run. `RLCHECK`/`RLSET` cover rate limiting natively instead. Run `COMMAND COUNT` against a live server for the exact surface (124 entries in this checkout).
+> Notably absent: **Lua scripting (`EVAL`)**, **blocking operations** (`BLPOP`, `BRPOP`), **`LMOVE`**, and **streams** (`XADD`). Your Redis *client* will connect unchanged, but libraries built on those primitives — BullMQ, node-redlock, rate-limiter-flexible — ship Lua and will not run. `RLCHECK`/`RLSET` cover rate limiting natively instead. Run `COMMAND COUNT` against a live server for the exact surface (124 entries in this checkout).
+
+## What Recached is — and isn't
+
+**Recached is** a cache and synchronization engine: an in-memory key-value cache server, a local cache runtime for browser, mobile, and Rust clients, and the real-time sync layer between them. Its client caches keep working offline.
+
+**Recached is not** a system of record. It does not replace PostgreSQL or MySQL, is not a local SQL database, and does not implement all of Redis. It is not a general CRDT collaboration engine, it does not synchronize SQL tables in either direction, and its client write queue is not a durable business transaction queue.
+
+Keep your database as the source of truth and publish committed state into Recached as a derived cache. A Recached acknowledgment confirms a cache write, not a SQL commit. See [what Recached is and isn't](https://recached.dev/guide/introduction#what-recached-is-and-isnt) and [database integration](https://recached.dev/guide/database-integration).
 
 **→ Full documentation, use cases, API reference, and guides at [recached.dev](https://recached.dev)**
 
@@ -176,6 +196,33 @@ What you give up is what needs a peer: pub/sub, live queries and cross-device sy
 
 ---
 
+## Use cases
+
+**Real-time applications.** Live dashboards and counters, shared application state such as carts, presence and typing indicators, and reactive data in operational consoles. The backend keeps writing with `SET`, `INCR`, or `HSET`; subscribed clients receive the change instead of polling for it.
+
+**Offline-capable applications.** Reference data, configuration, and application state that should stay readable without a network, and that reconciles after reconnecting. On Android and Apple platforms the cache persists across app restarts.
+
+**Backend services.** Feature flags, tenant configuration, entitlement checks, and other small, frequently read, slowly changing data. `recached-embed` holds that slice in your Rust service's memory and heals missed updates after a reconnect, instead of a hand-built `HashMap` plus pub/sub invalidation.
+
+**Without a server.** The browser client also works as a standalone local cache with TTLs, counters, JSON documents, and IndexedDB persistence.
+
+[Use cases](https://recached.dev/guide/use-cases) walks through each pattern, including where Redis, Memcached, or a database is the better choice.
+
+## How it compares
+
+Recached overlaps with several established projects. This summarizes what each is designed for; it is not a performance comparison.
+
+| Project | Designed for | How Recached differs |
+|---|---|---|
+| Redis / Valkey | Mature centralized cache servers with broad command coverage and a large operational ecosystem. Both support server-assisted client-side caching (`CLIENT TRACKING`). | Recached ships its own client runtimes for browsers, Android, Apple platforms, and Rust. They hydrate watched keys, receive value updates, and replay queued writes after reconnecting; browser and mobile clients also persist locally. Recached implements a smaller command subset. |
+| Dragonfly | A multithreaded, Redis- and Memcached-compatible server focused on server-side performance. | Recached's focus is the client cache and its sync path, not server throughput. |
+| ElectricSQL | Synchronizing subsets of PostgreSQL data to clients. | Recached synchronizes a cache keyspace, not database tables. You publish database-derived state into it. |
+| PowerSync | Synchronizing backend database data into an on-device SQLite database, with client writes uploaded through your backend. | Recached's client store is a key-value cache, not a local SQL database. |
+
+Use Recached when you want one cache engine across runtimes, local reads, and live key updates without assembling those pieces yourself. It also runs alongside Redis: keep server-only caching, queues, and sessions in Redis and move only the client-visible slice to Recached.
+
+---
+
 ## Benchmarks
 
 Recached's measured performance claim is narrow: command execution scales across worker threads. The project publishes no cross-project performance comparison, and these numbers are not one — they say nothing about how any other cache performs on this or any host.
@@ -208,6 +255,16 @@ Being honest about where things stand:
 - **The embedded Rust client (`recached-embed`) is brand new and unpublished** — it works end-to-end against a live server and is covered by a live test suite, but it has no production miles and is not on crates.io.
 
 The road to 1.0 is hardening, not features. Bug reports from production-like use are the most valuable contribution right now.
+
+## Documentation
+
+- [Introduction](https://recached.dev/guide/introduction): what Recached is and isn't, maturity, and comparisons
+- [Quick start](https://recached.dev/guide/quick-start): run a server and connect a backend and a browser client
+- [Client support](https://recached.dev/guide/client-support): runtime differences, persistence, and write durability
+- [How it works](https://recached.dev/guide/how-it-works): hydration, reconnect replay, and storage contracts
+- [Database integration](https://recached.dev/guide/database-integration): use Recached alongside MySQL or PostgreSQL
+- [Server](https://recached.dev/server/installation): installation, [configuration](https://recached.dev/server/configuration), [commands](https://recached.dev/server/commands), [security](https://recached.dev/server/security), and the [wire protocol](https://recached.dev/server/protocol)
+- [Roadmap](https://recached.dev/roadmap): planned features, kept separate from what is implemented
 
 ---
 
