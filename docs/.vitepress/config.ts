@@ -15,24 +15,27 @@ export default defineConfig({
     'A local-first cache and real-time sync engine, powered by Rust. Read shared cache data from local memory in browsers, Android and Apple apps, and Rust services, and sync updates over WebSocket.',
 
   head: [
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
+    ['meta', { name: 'theme-color', content: '#171C2B' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:site_name', content: 'Recached' }],
-    ['meta', { property: 'og:image', content: 'https://recached.dev/recached.jpg' }],
+    ['meta', { property: 'og:image', content: 'https://recached.dev/brand/social-card.png' }],
     [
       'meta',
       {
         property: 'og:description',
         content:
-          'Cache locally. Synchronize everywhere. A local-first cache and real-time sync engine for servers, browsers, and native apps, powered by Rust.',
+          'Cache locally. Sync everywhere. A local-first cache and real-time sync engine for servers, browsers, and native apps, powered by Rust.',
       },
     ],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
-    ['meta', { name: 'twitter:image', content: 'https://recached.dev/recached.jpg' }],
+    ['meta', { name: 'twitter:image', content: 'https://recached.dev/brand/social-card.png' }],
     ['meta', { name: 'keywords', content: 'local-first cache, real-time sync engine, cache synchronization, rust cache, redis compatible, resp, webassembly cache, wasm browser cache, kotlin cache, swift cache, android cache, ios cache, sqlite cache, websocket sync, in-memory cache, browser cache, offline cache, indexeddb cache, pub-sub' }],
   ],
 
   themeConfig: {
-    siteTitle: 'Recached ⚡',
+    siteTitle: 'Recached',
+    logo: '/brand/logo.svg',
 
     nav: [
       { text: 'Home', link: '/' },

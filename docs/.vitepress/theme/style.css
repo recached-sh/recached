@@ -1,37 +1,32 @@
-/* ── Brand colors from the Recached banner ───────────────────────────────────
-   Primary  : #E8542A  orange-red (the R logo)
-   Dark     : #A33A1A  darker facet
-   Accent   : #8DD4CC  teal slash
-   BG dark  : #131B2A  deep navy
-   ─────────────────────────────────────────────────────────────────────────── */
-
+/* Recached Amber Signal — accessible colors on light/dark themes.
+   Gold is used for decorative accents; small text on white uses dark amber. */
 :root {
-  --vp-c-brand-1: #e8542a;
-  --vp-c-brand-2: #d14a23;
-  --vp-c-brand-3: #b83f1c;
-  --vp-c-brand-soft: rgba(232, 84, 42, 0.12);
+  --vp-c-brand-1: #92400e;
+  --vp-c-brand-2: #b45309;
+  --vp-c-brand-3: #f59e0b;
+  --vp-c-brand-soft: rgba(245, 158, 11, 0.12);
 
-  --rc-teal: #8dd4cc;
-  --rc-navy: #131b2a;
-  --rc-navy-mid: #1a2535;
+  --rc-amber: #f59e0b;
+  --rc-navy: #171c2b;
+  --rc-navy-mid: #242938;
 }
 
 .dark {
-  --vp-c-brand-1: #f0622f;
-  --vp-c-brand-2: #e8542a;
-  --vp-c-brand-3: #d14a23;
-  --vp-c-brand-soft: rgba(240, 98, 47, 0.16);
+  --vp-c-brand-1: #fbbf24;
+  --vp-c-brand-2: #f59e0b;
+  --vp-c-brand-3: #d97706;
+  --vp-c-brand-soft: rgba(251, 191, 36, 0.16);
 
-  --vp-c-bg: #0f1620;
-  --vp-c-bg-soft: #131b2a;
-  --vp-c-bg-mute: #1a2535;
-  --vp-nav-bg-color: #0f1620;
+  --vp-c-bg: #101522;
+  --vp-c-bg-soft: #171c2b;
+  --vp-c-bg-mute: #242938;
+  --vp-nav-bg-color: #101522;
 }
 
 /* ── Hero ────────────────────────────────────────────────────────────────── */
 
 .VPHero .name {
-  background: linear-gradient(135deg, #e8542a 0%, #f07a50 50%, #8dd4cc 100%);
+  background: linear-gradient(135deg, #f59e0b 0%, #fde68a 50%, #fde68a 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -44,45 +39,45 @@
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 
 .VPButton.brand {
-  background-color: #e8542a;
-  border-color: #e8542a;
-  color: #fff;
+  background-color: #f59e0b;
+  border-color: #f59e0b;
+  color: #171c2b;
 }
 
 .VPButton.brand:hover {
-  background-color: #d14a23;
-  border-color: #d14a23;
+  background-color: #fbbf24;
+  border-color: #fbbf24;
 }
 
 /* ── Nav active link ─────────────────────────────────────────────────────── */
 
 .VPNavBarMenuLink.active,
 .VPNavBarMenuLink:hover {
-  color: #e8542a !important;
+  color: var(--vp-c-brand-1) !important;
 }
 
 /* ── Sidebar active link ─────────────────────────────────────────────────── */
 
 .VPSidebarItem.is-active > .item .link,
 .VPSidebarItem .link:hover {
-  color: #e8542a;
+  color: var(--vp-c-brand-1);
 }
 
 .VPSidebarItem.is-active > .item .indicator {
-  background-color: #e8542a;
+  background-color: #f59e0b;
 }
 
 /* ── Code blocks ─────────────────────────────────────────────────────────── */
 
 .dark .vp-code-group .tabs label:hover,
 .dark .vp-code-group .tabs input:checked + label {
-  color: #e8542a;
+  color: #f59e0b;
 }
 
 /* ── Feature card accent ─────────────────────────────────────────────────── */
 
 .VPFeature:hover {
-  border-color: rgba(232, 84, 42, 0.35) !important;
+  border-color: rgba(245, 158, 11, 0.35) !important;
 }
 
 /* ── Home hero image — constrain and add glow ────────────────────────────── */
@@ -90,43 +85,43 @@
 .VPHero .image-container img {
   border-radius: 12px;
   box-shadow:
-    0 0 0 1px rgba(232, 84, 42, 0.2),
-    0 24px 64px rgba(232, 84, 42, 0.15),
+    0 0 0 1px rgba(245, 158, 11, 0.2),
+    0 24px 64px rgba(245, 158, 11, 0.15),
     0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
 .dark .VPHero .image-container img {
   box-shadow:
-    0 0 0 1px rgba(232, 84, 42, 0.3),
-    0 24px 64px rgba(232, 84, 42, 0.2),
+    0 0 0 1px rgba(245, 158, 11, 0.3),
+    0 24px 64px rgba(245, 158, 11, 0.2),
     0 8px 24px rgba(0, 0, 0, 0.6);
 }
 
 /* ── Inline code ─────────────────────────────────────────────────────────── */
 
 :not(pre) > code {
-  color: #e8542a;
+  color: #92400e;
 }
 
 .dark :not(pre) > code {
-  color: #f07a50;
+  color: #fde68a;
 }
 
-/* ── Custom block — tip uses teal accent ─────────────────────────────────── */
+/* ── Custom block — tip uses amber accent ─────────────────────────────────── */
 
 .custom-block.tip {
-  border-color: #8dd4cc;
+  border-color: var(--vp-c-brand-1);
 }
 
 .custom-block.tip .custom-block-title {
-  color: #8dd4cc;
+  color: var(--vp-c-text-1);
 }
 
 /* ── Footer ──────────────────────────────────────────────────────────────── */
 
 .dark .VPFooter {
-  background-color: #0f1620;
-  border-top-color: #1a2535;
+  background-color: #101522;
+  border-top-color: #242938;
 }
 
 /* ── Theme-swapped figures ───────────────────────────────────────────────────
@@ -161,3 +156,9 @@ figcaption {
   font-size: 0.85rem;
   margin-top: 0.75rem;
 }
+
+.dark .VPButton.brand{color:#171c2b}
+.VPButton.brand:hover{background:#fbbf24;border-color:#fbbf24}
+:not(pre)>code{color:#92400e}
+.dark :not(pre)>code{color:#fbbf24}
+.VPNavBarTitle .logo{border-radius:6px}

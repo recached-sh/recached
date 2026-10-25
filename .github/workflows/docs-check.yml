@@ -1,0 +1,34 @@
+name: Documentation validation
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'README.md'
+      - 'brand/**'
+      - 'docs/**'
+      - '.github/workflows/docs-check.yml'
+permissions:
+  contents: read
+jobs:
+  docs-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.x'
+          cache: pnpm
+          cache-dependency-path: docs/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: docs
+      - run: pnpm build
+        working-directory: docs
+      - name: Check generated asset references
+        run: |
+          test -f docs/.vitepress/dist/favicon.svg
+          test -f docs/.vitepress/dist/brand/logo.svg
+          test -f docs/.vitepress/dist/brand/hero.svg
+          test -f docs/.vitepress/dist/brand/social-card.png
