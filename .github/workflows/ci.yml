@@ -394,8 +394,16 @@ jobs:
         with:
           shared-key: "recached-ci-cache"
 
+      # The ignored load and chaos tests, not the ignored benchmarks: those
+      # measure rather than check, take minutes in a debug build (dedup_bench
+      # alone 1-4 min depending on the runner), and are compared in release
+      # with RECACHED_TEST_SERVER_BIN instead. Skipped by name, so a new
+      # ignored test elsewhere still runs here.
       - name: Run load & chaos tests
-        run: cargo test -p recached -- --include-ignored
+        run: >-
+          cargo test -p recached -- --include-ignored
+          --skip dedup_write_throughput_over_websocket
+          --skip sync_paths
         timeout-minutes: 5
 
   typecheck-js:
