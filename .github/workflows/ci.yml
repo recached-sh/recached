@@ -262,6 +262,117 @@ jobs:
       - name: Verify the tarball is installable and works
         run: cd wasm-edge && npm run verify
 
+  # Real Chromium, real IndexedDB, a real recached-server, through the public
+  # SDK: offline writes across a reload, two tabs sharing one database, an
+  # offline cold start, a full outbox, an IndexedDB failure, the sync status,
+  # and the writes that need a 0.5 server. `wasm-pack test` above covers the
+  # IndexedDB layer in isolation; it cannot reload a page or open a second tab.
+  browser-e2e:
+    name: Browser End-to-End (Chromium + live server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show
+          rustup target add wasm32-unknown-unknown
+          rustc --version
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: "recached-wasm-cache"
+
+      - name: Install wasm-pack
+        # Pinned and checksummed for the reasons given in browser-tests.
+        env:
+          WASM_PACK_VERSION: v0.15.0
+          WASM_PACK_SHA256: c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a
+        run: |
+          name="wasm-pack-${WASM_PACK_VERSION}-x86_64-unknown-linux-musl"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/$name.tar.gz" \
+            "https://github.com/wasm-bindgen/wasm-pack/releases/download/${WASM_PACK_VERSION}/$name.tar.gz"
+          echo "${WASM_PACK_SHA256}  $RUNNER_TEMP/$name.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          mkdir -p "$HOME/.cargo/bin"
+          install -m 755 "$RUNNER_TEMP/$name/wasm-pack" "$HOME/.cargo/bin/wasm-pack"
+          wasm-pack --version
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.x"
+
+      - name: Build the server
+        run: cargo build --locked -p recached --bin recached-server
+
+      - name: Build the package
+        run: cd wasm-edge && npm install && npm run build
+
+      # Playwright is not a dependency of recached-edge; the script takes any
+      # install of it. Exact version, outside the package, and driving the
+      # runner's own Chrome rather than downloading a browser.
+      - name: Install playwright-core
+        run: npm install --prefix "$RUNNER_TEMP/pw" --no-save --ignore-scripts playwright-core@1.64.1
+
+      - name: Run the browser end-to-end scenarios
+        env:
+          PLAYWRIGHT_CORE: ${{ runner.temp }}/pw
+          RECACHED_SERVER_BIN: ${{ github.workspace }}/target/debug/recached-server
+        run: |
+          export CHROMIUM="$(which google-chrome)"
+          "$CHROMIUM" --version
+          cd wasm-edge && node scripts/e2e-browser.mjs
+
+  # This checkout against the previous minor release, as real processes: each
+  # version's embedded and mobile live suites against each version's server,
+  # replication in both directions, and AOF upgrade/downgrade. Failures are
+  # compared with scripts/compat-expected-failures.txt, which may only list
+  # documented mixed-version limitations.
+  compat-matrix:
+    name: Cross-version compatibility (v0.4.0 <-> this checkout)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show
+          rustc --version
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: "recached-compat-cache"
+          workspaces: |
+            . -> target
+            target/compat/v0.4.0 -> target
+
+      - name: Install redis-cli
+        run: sudo apt-get update -q && sudo apt-get install -y -q redis-tools
+
+      - name: Run the matrix
+        env:
+          OLD_REF: v0.4.0
+          COMPAT_LOG_DIR: ${{ runner.temp }}/compat-logs
+        run: scripts/compat-matrix.sh
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: compat-logs
+          path: ${{ runner.temp }}/compat-logs
+
   integration-load-chaos:
     name: Load & Chaos Tests
     runs-on: ubuntu-latest
@@ -338,6 +449,77 @@ jobs:
 
       - name: Test @recached/vue
         run: cd sdks/recached-vue && npm test
+
+  # The Kotlin and Swift SDKs live in their own repositories and pin a released
+  # core, so their CI only meets a core change after someone bumps the pin.
+  # Build this checkout's core, generate fresh UniFFI bindings from it, and
+  # compile and test each SDK's main branch against them: a binding or
+  # behaviour change that breaks an SDK fails here, on the change.
+  # The Android emulator and iOS simulator runs stay in those repositories.
+  sdk-downstream:
+    name: Kotlin and Swift SDKs against this core
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Checkout recached-kotlin
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: recached-sh/recached-kotlin
+          path: downstream/kotlin
+
+      - name: Checkout recached-swift
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: recached-sh/recached-swift
+          path: downstream/swift
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: "recached-sdk-downstream"
+
+      - name: Setup Java
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # Host library, server and Kotlin bindings; the Android ABIs are the
+      # mobile-android job's concern.
+      - name: Kotlin — stage this core
+        run: HOST_ONLY=1 downstream/kotlin/scripts/build-engine.sh "$GITHUB_WORKSPACE"
+
+      # Unit tests plus the live tests, which start the staged server.
+      - name: Kotlin — JVM unit and live tests
+        working-directory: downstream/kotlin
+        run: ./gradlew :recached:testDebugUnitTest --console=plain
+
+      - name: Swift — stage this core
+        run: downstream/swift/scripts/build-engine.sh "$GITHUB_WORKSPACE"
+
+      # The SDK commits its generated bindings; a difference here means the
+      # core changed its UniFFI surface and the SDK must regenerate on its
+      # next pin bump. Reported, not failed: the compile below is the gate.
+      - name: Swift — generated bindings vs the committed ones
+        working-directory: downstream/swift
+        run: |
+          if git diff --quiet -- Sources/RecachedCore; then
+            echo "generated bindings are identical to the SDK's committed ones"
+          else
+            echo "::notice::recached-swift's committed bindings differ from this core's"
+            git diff --stat -- Sources/RecachedCore
+          fi
+
+      - name: Swift — unit and live tests (Linux)
+        working-directory: downstream/swift
+        run: scripts/test-linux.sh
 
   # ── Mobile ──────────────────────────────────────────────────────────────────
   # The same packaging scripts the release runs, so a change that breaks the
