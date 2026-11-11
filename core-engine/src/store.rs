@@ -1773,7 +1773,7 @@ impl KeyValueStore {
     /// Incrementally maintained logical heap usage in bytes.
     ///
     /// This is key/value payload plus the fixed overhead used by
-    /// [`entry_size`]. It is O(1) to read and deliberately does not claim to be
+    /// `entry_size`. It is O(1) to read and deliberately does not claim to be
     /// allocator RSS.
     pub fn approximate_memory_bytes(&self) -> usize {
         self.memory_bytes.load(Ordering::Relaxed)
