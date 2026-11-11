@@ -61,6 +61,15 @@ jobs:
         with:
           shared-key: "recached-ci-cache"
 
+      # A conflict resolved by `git stash pop` leaves markers that nothing
+      # else here parses: v0.5.0 was tagged with them in CHANGELOG.md.
+      - name: No unresolved merge-conflict markers
+        run: |
+          if git grep -nE '^(<<<<<<<|>>>>>>>) |^=======$' -- . ':(exclude)*.lock' ':(exclude)*package-lock.json' ':(exclude)*pnpm-lock.yaml'; then
+            echo "::error::unresolved merge-conflict markers"
+            exit 1
+          fi
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
