@@ -25,6 +25,9 @@ All notable changes to Recached are documented here.
 - Browser: a failed WAL compaction (typically a full quota) no longer makes `createCache` reject on every load; it is reported through `flush()`
 - Browser: a reconnect timer pending when `connect()` was called opened a second socket and orphaned the first; replacing a live socket no longer throws from its dropped handlers
 
+### Security
+- Mobile: the bundled SQLite is 3.54.1 (`rusqlite` 0.41, `libsqlite3-sys` 0.39), fixing RUSTSEC-2026-0459 / CVE-2026-119375 — uninitialized page-cache memory returned when a database is opened with a `-wal` of a different page size. Local only; it needs attacker-written database files
+
 ### Documentation and release
 - The 0.5.0 upgrade notes said client fixes other than binary writes and writes after `subscribe()` work against a 0.4 server. Deferred-write ordering, remembered refusals and push framing need a 0.5 server, and their absence is not reported; see [version compatibility](https://recached.dev/guide/client-support#version-compatibility)
 - The 0.5.0 changelog shipped with unresolved merge-conflict markers in its heading; the release gate now refuses them and matches "unreleased" case-insensitively
