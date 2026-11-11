@@ -1,6 +1,6 @@
 # Use Recached in Android
 
-::: info 0.1.0 preview
+::: info 0.1.1 preview
 The Kotlin SDK lives in [recached-sh/recached-kotlin](https://github.com/recached-sh/recached-kotlin)
 and is on Maven Central, built on the native core of recached v0.4.0. Its API
 may still change before 1.0.
@@ -27,7 +27,7 @@ The SDK is on Maven Central, so the `mavenCentral()` repository most Android pro
 
 ```kotlin
 dependencies {
-    implementation("dev.recached:recached-android:0.1.0")
+    implementation("dev.recached:recached-android:0.1.1")
 }
 ```
 
