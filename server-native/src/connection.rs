@@ -1245,8 +1245,14 @@ pub(crate) async fn handle_ws<S>(
                             }
                             // Only scope can refuse a replay before the write
                             // path checks it, so without strict scopes the
-                            // write path's own check is enough.
-                            if strict && let Some(replay) = state.dedup_replay(client, *id) {
+                            // write path's own check is enough. Not before a
+                            // token: in strict mode it is the authorization,
+                            // and a mark or a remembered refusal (which echoes
+                            // a key name) is not for an anonymous socket.
+                            if strict
+                                && sync_scopes.is_some()
+                                && let Some(replay) = state.dedup_replay(client, *id)
+                            {
                                 ws_send!(&dedup_replay_reply(replay).serialize());
                                 continue;
                             }
@@ -1266,7 +1272,23 @@ pub(crate) async fn handle_ws<S>(
                                 CommandScope::KeyLess => {}
                                 CommandScope::Admin => {
                                     record_scope_denial("admin");
-                                    ws_send!(b"-NOSCOPE keyspace-wide and administrative commands are not available on scoped WebSocket connections\r\n");
+                                    const REASON: &str = "NOSCOPE keyspace-wide and administrative commands are not available on scoped WebSocket connections";
+                                    // Refused for good, like a key out of
+                                    // scope: remembered, or a later accepted
+                                    // write would make its replay read `+DUP`.
+                                    // Only once a token is in force — before
+                                    // that, the connection may not touch the
+                                    // dedup state at all.
+                                    if sync_scopes.is_some()
+                                        && let Some((client, id)) = &dedup_id
+                                    {
+                                        let _checkpoint = state
+                                            .replicas
+                                            .lock_commands(std::slice::from_ref(&cmd))
+                                            .await;
+                                        record_dedup_refusal(&state, client, *id, REASON).await;
+                                    }
+                                    ws_send!(&Value::Error(REASON.to_string()).serialize());
                                     continue;
                                 }
                                 CommandScope::Keys(keys) => {
@@ -1307,8 +1329,17 @@ pub(crate) async fn handle_ws<S>(
                                         };
                                         // Refused for good: remembered, so a
                                         // replay is refused again rather than
-                                        // answered as a duplicate.
+                                        // answered as a duplicate. Under the
+                                        // write's ordering guards, as on the
+                                        // write path: a checkpoint holds them
+                                        // all from the sidecars to the AOF
+                                        // truncate, and a refusal recorded in
+                                        // that window would be in neither.
                                         if let Some((client, id)) = &dedup_id {
+                                            let _checkpoint = state
+                                                .replicas
+                                                .lock_commands(std::slice::from_ref(&cmd))
+                                                .await;
                                             record_dedup_refusal(&state, client, *id, &reason).await;
                                         }
                                         ws_send!(&Value::Error(reason).serialize());

@@ -273,6 +273,12 @@ pub(crate) const DEDUP_SWEEP_THRESHOLD: usize = 10_000;
 /// and a replay of that write is answered `+DUP` as before 0.5.
 pub(crate) const DEDUP_REFUSALS_PER_CLIENT: usize = 64;
 
+/// Longest error text kept for one remembered refusal. An out-of-scope
+/// refusal echoes the key, which may be 512 KB; the class a client acts on is
+/// the error's first word, so the tail is not worth holding outside
+/// `maxmemory` and rewriting into the sidecar at every checkpoint.
+pub(crate) const DEDUP_REFUSAL_ERROR_BYTES: usize = 512;
+
 /// One client's duplicate-suppression state.
 ///
 /// The high-water mark answers "was this write applied?" only for writes that
@@ -283,7 +289,10 @@ pub(crate) const DEDUP_REFUSALS_PER_CLIENT: usize = 64;
 /// lets the replay be refused again instead: the first outcome is final.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct DedupMark {
-    pub(crate) hwm: u64,
+    /// Highest id applied; `None` while only refusals are known. Not `0`:
+    /// wire id 0 is a real first write, and an entry created by a refusal
+    /// must not claim it was applied.
+    pub(crate) hwm: Option<u64>,
     pub(crate) seen: u64,
     /// `(id, error)` of recent permanent refusals, oldest first.
     pub(crate) refused: VecDeque<(u64, String)>,
@@ -304,6 +313,19 @@ pub(crate) enum DedupReplay {
 pub(crate) struct RecoveredDedup {
     pub(crate) marks: HashMap<String, u64>,
     pub(crate) refusals: Vec<(String, u64, String)>,
+}
+
+/// `error` cut to at most [`DEDUP_REFUSAL_ERROR_BYTES`], on a character
+/// boundary. The leading error code — what a client classifies by — is kept.
+pub(crate) fn bounded_refusal(error: &str) -> &str {
+    if error.len() <= DEDUP_REFUSAL_ERROR_BYTES {
+        return error;
+    }
+    let mut end = DEDUP_REFUSAL_ERROR_BYTES;
+    while !error.is_char_boundary(end) {
+        end -= 1;
+    }
+    error.get(..end).unwrap_or_default()
 }
 
 fn now_ms() -> u64 {
@@ -370,7 +392,7 @@ impl ServerState {
         }
         let mark = map.get_mut(client)?;
         mark.seen = now;
-        if id > mark.hwm {
+        if mark.hwm.is_none_or(|hwm| id > hwm) {
             return None;
         }
         Some(
@@ -393,7 +415,7 @@ impl ServerState {
         // every write, under the one lock every DEDUP write takes.
         match map.get_mut(client) {
             Some(mark) => {
-                mark.hwm = mark.hwm.max(id);
+                mark.hwm = Some(mark.hwm.map_or(id, |hwm| hwm.max(id)));
                 mark.seen = now;
                 // Applied on a retry after an earlier refusal: the refusal no
                 // longer describes it.
@@ -405,7 +427,7 @@ impl ServerState {
                 map.insert(
                     client.to_string(),
                     DedupMark {
-                        hwm: id,
+                        hwm: Some(id),
                         seen: now,
                         refused: VecDeque::new(),
                     },
@@ -428,7 +450,8 @@ impl ServerState {
         if mark.refused.len() >= DEDUP_REFUSALS_PER_CLIENT {
             mark.refused.pop_front();
         }
-        mark.refused.push_back((id, error.to_string()));
+        mark.refused
+            .push_back((id, bounded_refusal(error).to_string()));
         self.dedup_dirty.store(true, Ordering::Release);
     }
 
@@ -517,7 +540,7 @@ impl ServerState {
         if let Some(aof) = &self.aof {
             let frame = match refusal {
                 None => dedup_mark_frame(client, id),
-                Some(error) => dedup_refusal_frame(client, id, error),
+                Some(error) => dedup_refusal_frame(client, id, bounded_refusal(error)),
             };
             if let Err(e) = aof.append(&frame).await {
                 self.record_persistence_failure("aof_append", &e);
@@ -549,9 +572,10 @@ impl ServerState {
                     .dedup
                     .lock()
                     .map_err(|_| std::io::Error::other("dedup mutex poisoned"))?;
+                // A client known only by its refusals has no mark to write.
                 let marks: Vec<(String, u64)> = map
                     .iter()
-                    .map(|(client, mark)| (client.clone(), mark.hwm))
+                    .filter_map(|(client, mark)| mark.hwm.map(|hwm| (client.clone(), hwm)))
                     .collect();
                 let refusals: Vec<(String, u64, String)> = map
                     .iter()
@@ -578,14 +602,14 @@ impl ServerState {
     /// Restore dedup marks at boot. `seen` timestamps are not persisted — they
     /// only drive idle sweeping, so restored entries start their idle clock now.
     pub(crate) async fn load_dedup(&self) -> std::io::Result<()> {
-        let path = self.dedup_path();
-        let bytes = match tokio::fs::read(&path).await {
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        // Each file on its own: the refusals sidecar is written first, so a
+        // crash during the first checkpoint can leave it without the marks.
+        let marks = match tokio::fs::read(self.dedup_path()).await {
+            Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e),
-            Ok(bytes) => bytes,
+            Ok(bytes) => rmp_serde::from_slice::<Vec<(String, u64)>>(&bytes)
+                .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e.to_string()))?,
         };
-        let marks = rmp_serde::from_slice::<Vec<(String, u64)>>(&bytes)
-            .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -603,14 +627,15 @@ impl ServerState {
         let count = marks.len();
         for (client, hwm) in marks {
             let mark = map.entry(client).or_default();
-            mark.hwm = mark.hwm.max(hwm);
+            mark.hwm = Some(mark.hwm.map_or(hwm, |old| old.max(hwm)));
             mark.seen = now;
         }
         for (client, id, error) in refusals {
             let mark = map.entry(client).or_default();
             mark.seen = now;
             if mark.refused.len() < DEDUP_REFUSALS_PER_CLIENT {
-                mark.refused.push_back((id, error));
+                mark.refused
+                    .push_back((id, bounded_refusal(&error).to_string()));
             }
         }
         info!("Restored {} dedup high-water mark(s)", count);
