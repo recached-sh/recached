@@ -61,8 +61,20 @@ jobs:
             echo "::error::CHANGELOG.md has no '## [$TAG_VERSION]' section"
             exit 1
           fi
-          if grep -qE "^## \[?${TAG_VERSION}\]?.*Unreleased" CHANGELOG.md; then
-            echo "::error::CHANGELOG.md still marks $TAG_VERSION as Unreleased"
+          # Case-insensitive: v0.5.0 shipped a heading reading "(unreleased)",
+          # which a case-sensitive match let through.
+          if grep -qiE "^## \[?${TAG_VERSION}\]?.*unreleased" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md still marks $TAG_VERSION as unreleased"
+            exit 1
+          fi
+          # v0.5.0 also shipped with git conflict markers around that heading;
+          # the second, conflicting heading is what satisfied the check above.
+          if grep -nE '^(<<<<<<<|=======|>>>>>>>)( |$)' CHANGELOG.md; then
+            echo "::error::CHANGELOG.md contains unresolved merge-conflict markers"
+            exit 1
+          fi
+          if [ "$(grep -cE "^## \[?${TAG_VERSION}\]?[ (]" CHANGELOG.md)" != 1 ]; then
+            echo "::error::CHANGELOG.md must have exactly one heading for $TAG_VERSION"
             exit 1
           fi
 

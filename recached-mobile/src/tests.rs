@@ -692,3 +692,154 @@ fn an_interrupted_open_never_reuses_an_epoch() {
     let second = db.open().lock().sync.epoch();
     assert!(second > first);
 }
+
+// ── v0.5.1 audit regressions ──────────────────────────────────────────────────
+
+#[test]
+fn a_status_change_survives_a_frame_whose_commit_failed() {
+    // The frame moved the status (Replaying → Ready) in memory; the commit of
+    // the row its reply retired then failed. The `Err` cannot carry the
+    // status, so it must stay pending for the next report instead of being
+    // consumed and lost — or status observers sit at `Replaying` for good.
+    let db = TempDb::new();
+    let c = db.open();
+    c.set(s("k"), b"v".to_vec()).unwrap();
+    connect(&c);
+    ack_opt_ins(&c);
+    assert_eq!(c.sync_status().phase, SyncPhase::Replaying);
+    let _ = c.take_status_change();
+
+    c.lock().db.break_outbox_for_test();
+    assert!(c.frame_received(OK.to_vec()).is_err());
+    c.lock().db.repair_outbox_for_test();
+
+    assert_eq!(c.sync_status().phase, SyncPhase::Ready);
+    assert_eq!(
+        c.take_status_change().map(|s| s.phase),
+        Some(SyncPhase::Ready),
+        "the change the failed frame made is still reported"
+    );
+}
+
+#[test]
+fn an_evicting_write_whose_commit_fails_keeps_the_write_it_would_have_evicted() {
+    // Under `evict_oldest_when_full` a write that fails to commit must leave
+    // the queue as it found it: the oldest row was accepted (`Ok`) and is
+    // still on disk, so it must still be queued in memory and replayed.
+    let db = TempDb::new();
+    let config = ClientConfig {
+        max_pending_writes: Some(1),
+        evict_oldest_when_full: Some(true),
+        ..ClientConfig::default()
+    };
+    let c = open_with(&db, config);
+    c.set(s("a"), b"1".to_vec()).unwrap();
+
+    c.lock().db.refuse_outbox_inserts_for_test();
+    assert!(matches!(
+        c.set(s("b"), b"2".to_vec()),
+        Err(RecachedError::Storage { .. })
+    ));
+    c.lock().db.allow_outbox_inserts_for_test();
+
+    assert!(!c.exists(s("b")));
+    assert_eq!(c.pending_writes(), 1, "`a` is still queued");
+    let sent = connect(&c).take();
+    let writes: Vec<&String> = sent
+        .iter()
+        .filter(|f| f.contains("$5\r\nDEDUP\r\n"))
+        .collect();
+    assert_eq!(writes.len(), 1, "`a` replays: {sent:?}");
+    assert!(writes[0].ends_with("$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n"));
+
+    // Its acknowledgment retires the row on disk too: nothing stale replays
+    // after the next open.
+    ack_opt_ins(&c);
+    c.frame_received(OK.to_vec()).unwrap();
+    assert_eq!(c.pending_writes(), 0);
+    drop(c);
+    assert_eq!(db.open().pending_writes(), 0);
+}
+
+#[test]
+fn a_write_put_back_after_a_failed_commit_still_replays_first_after_a_restart() {
+    // Put back under a fresh id, the oldest write would sort after newer
+    // ones when the outbox is read back from disk, replay behind them, and be
+    // answered `+DUP` (their wire ids are higher) — lost after all.
+    let db = TempDb::new();
+    let config = || ClientConfig {
+        max_pending_writes: Some(2),
+        evict_oldest_when_full: Some(true),
+        ..ClientConfig::default()
+    };
+    let c = open_with(&db, config());
+    c.set(s("a"), b"1".to_vec()).unwrap();
+    c.set(s("c"), b"3".to_vec()).unwrap();
+    c.lock().db.refuse_outbox_inserts_for_test();
+    assert!(c.set(s("b"), b"2".to_vec()).is_err());
+    c.lock().db.allow_outbox_inserts_for_test();
+    drop(c);
+
+    let c = open_with(&db, config());
+    assert_eq!(c.pending_writes(), 2);
+    let sent = connect(&c).take();
+    let keys: Vec<&str> = sent
+        .iter()
+        .filter(|f| f.contains("$5\r\nDEDUP\r\n"))
+        .map(|f| {
+            if f.ends_with("$1\r\na\r\n$1\r\n1\r\n") {
+                "a"
+            } else {
+                "c"
+            }
+        })
+        .collect();
+    assert_eq!(keys, ["a", "c"], "oldest first: {sent:?}");
+}
+
+#[test]
+fn an_evicted_in_flight_write_answered_with_a_transient_error_does_not_defer() {
+    // Evicted after it was sent, the write has nothing left to replay, so a
+    // transient refusal of it must not abandon the socket.
+    let db = TempDb::new();
+    let config = ClientConfig {
+        max_pending_writes: Some(1),
+        evict_oldest_when_full: Some(true),
+        ..ClientConfig::default()
+    };
+    let c = open_with(&db, config);
+    connect(&c);
+    ack_opt_ins(&c);
+    c.set(s("a"), b"1".to_vec()).unwrap();
+    c.set(s("b"), b"2".to_vec()).unwrap(); // evicts `a`, already in flight
+    let outcome = c
+        .frame_received(b"-READONLY You can't write against a read only replica.\r\n".to_vec())
+        .unwrap();
+    assert!(!outcome.reconnect, "nothing of `a` is left to replay");
+    assert_ne!(c.sync_status().phase, SyncPhase::Degraded);
+}
+
+#[test]
+fn an_accepted_sync_token_clears_an_earlier_refusal() {
+    let db = TempDb::new();
+    let c = open_with(
+        &db,
+        ClientConfig {
+            sync_token: Some(s("bad")),
+            ..ClientConfig::default()
+        },
+    );
+    connect(&c);
+    ack_opt_ins(&c);
+    c.frame_received(b"-ERR invalid sync token\r\n".to_vec())
+        .unwrap();
+    assert_eq!(c.sync_status().phase, SyncPhase::Degraded);
+    c.set_sync_token(s("good"));
+    c.frame_received(OK.to_vec()).unwrap();
+    assert_eq!(
+        c.sync_status().phase,
+        SyncPhase::Ready,
+        "the refusal was replaced by an accepted token: {:?}",
+        c.sync_status()
+    );
+}

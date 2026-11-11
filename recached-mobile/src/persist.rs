@@ -168,4 +168,22 @@ impl Db {
     pub(crate) fn repair_outbox_for_test(&self) {
         self.conn.execute_batch(SCHEMA).unwrap();
     }
+
+    /// Make every later outbox insert fail, keeping the rows already there —
+    /// a full disk rather than a lost table.
+    pub(crate) fn refuse_outbox_inserts_for_test(&self) {
+        self.conn
+            .execute_batch(
+                "CREATE TEMP TRIGGER refuse_outbox_insert BEFORE INSERT ON main.outbox
+                 BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END;",
+            )
+            .unwrap();
+    }
+
+    /// Undo [`refuse_outbox_inserts_for_test`](Self::refuse_outbox_inserts_for_test).
+    pub(crate) fn allow_outbox_inserts_for_test(&self) {
+        self.conn
+            .execute_batch("DROP TRIGGER temp.refuse_outbox_insert")
+            .unwrap();
+    }
 }
