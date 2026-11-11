@@ -2,7 +2,7 @@
 
 All notable changes to Recached are documented here.
 
-## [Unreleased] — 0.5.1 sync stabilization
+## [0.5.1] (2026-11-11) — sync stabilization
 
 ### Fixed — server
 - A write with wire id 0 — a client's first — could be answered `+DUP` and lost: a remembered refusal created the client's duplicate-suppression entry claiming id 0 was applied
@@ -41,6 +41,7 @@ All notable changes to Recached are documented here.
 
 ### Upgrade notes
 - No format changes from 0.5.0: snapshots, the AOF and both sidecars are compatible in both directions
+- The mobile core keeps 0.5.0's UniFFI API checksums, so Kotlin and Swift bindings generated from 0.5.0 load the 0.5.1 libraries. CI now fails any change that would break this
 
 ## [0.5.0] (2026-10-25) — synchronization reliability
 
