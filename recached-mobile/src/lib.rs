@@ -470,10 +470,13 @@ impl RecachedClient {
     /// retire the queued write its reply acknowledges or refuses for good.
     ///
     /// An `Err` means the frame was applied in memory but could not be saved;
-    /// the next snapshot from the server repairs the saved copy. A status
-    /// change the frame made is then reported by the next
-    /// [`take_status_change`](Self::take_status_change) or
-    /// [`FrameOutcome::status`].
+    /// the next snapshot from the server repairs the saved copy.
+    //
+    // A status change the frame made is then reported by the next
+    // `take_status_change` or `FrameOutcome::status`. Kept out of the doc
+    // comment above on purpose: UniFFI hashes an exported method's docs into
+    // its API checksum, so editing them makes bindings generated from an
+    // earlier core refuse to load this one.
     pub fn frame_received(&self, frame: Vec<u8>) -> Result<FrameOutcome, RecachedError> {
         let mut inner = self.lock();
         let connected = inner.sink.is_some();
