@@ -102,7 +102,11 @@ jobs:
             target: x86_64-apple-darwin
             artifact: recached-macos-amd64
 
-          - runner: macos-14
+          # Not a pinned image: GitHub retired macos-14 and refused the job
+          # outright ("configuration 'macos-14-arm64-us-default' is not
+          # supported"), which left v0.5.1 without this binary. macos-latest
+          # is Apple Silicon, so this still builds natively.
+          - runner: macos-latest
             target: aarch64-apple-darwin
             artifact: recached-macos-arm64
 

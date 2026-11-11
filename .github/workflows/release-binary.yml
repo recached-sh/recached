@@ -1,0 +1,120 @@
+name: Release binary (re-build one target)
+
+# Builds one server binary from an existing release tag and uploads it to that
+# tag's release — for when a single target of the release workflow failed and
+# the rest has already shipped. Re-running the release workflow is not an
+# option then: it would publish to npm and Docker again, and a re-run uses the
+# workflow file *at the tag*, so a broken runner label stays broken.
+#
+# v0.5.1 needed this: its aarch64-apple-darwin job asked for the retired
+# macos-14 image and was refused, so the release shipped without
+# recached-macos-arm64.
+#
+# The build is the release job's, at the tag's source: same toolchain
+# (rust-toolchain.toml at the tag), same command, same asset name.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag, e.g. v0.5.1"
+        required: true
+        type: string
+      target:
+        description: "Target to build and upload"
+        required: true
+        type: choice
+        options:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-pc-windows-msvc
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Resolve ${{ inputs.target }} for ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.map.outputs.runner }}
+      artifact: ${{ steps.map.outputs.artifact }}
+      suffix: ${{ steps.map.outputs.suffix }}
+    steps:
+      # Only ever an existing, published release: this workflow adds a missing
+      # asset, it does not create releases.
+      - name: The tag has a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || { echo "::error::'$TAG' is not a release tag"; exit 1; }
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft \
+            --jq 'if .isDraft then error("draft") else "release \(.tagName) found" end'
+
+      # The release workflow's matrix, with current runner labels.
+      - name: Map the target
+        id: map
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          case "$TARGET" in
+            aarch64-apple-darwin)      runner=macos-latest;      artifact=recached-macos-arm64;       suffix= ;;
+            x86_64-apple-darwin)       runner=macos-latest;      artifact=recached-macos-amd64;       suffix= ;;
+            x86_64-unknown-linux-gnu)  runner=ubuntu-latest;     artifact=recached-linux-amd64;       suffix= ;;
+            aarch64-unknown-linux-gnu) runner=ubuntu-24.04-arm;  artifact=recached-linux-arm64;       suffix= ;;
+            x86_64-pc-windows-msvc)    runner=windows-latest;    artifact=recached-windows-amd64.exe; suffix=.exe ;;
+            *) echo "::error::unknown target $TARGET"; exit 1 ;;
+          esac
+          { echo "runner=$runner"; echo "artifact=$artifact"; echo "suffix=$suffix"; } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ inputs.target }} at ${{ inputs.tag }}
+    needs: plan
+    runs-on: ${{ needs.plan.outputs.runner }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          rustup show
+          rustup target add ${{ inputs.target }}
+          rustc --version
+
+      - name: Build release binary
+        shell: bash
+        run: cargo build --locked --release --package recached --target ${{ inputs.target }}
+
+      # The binary must report the tag's version before it is attached to it.
+      # Not for x86_64-apple-darwin: it is cross-built on an Apple Silicon
+      # runner, which cannot be relied on to execute it.
+      - name: The binary is the tag's version
+        if: inputs.target != 'x86_64-apple-darwin'
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          got="$(target/${{ inputs.target }}/release/recached-server${{ needs.plan.outputs.suffix }} --version)"
+          echo "$got"
+          [ "$got" = "recached-server ${TAG#v}" ] || { echo "::error::expected recached-server ${TAG#v}"; exit 1; }
+
+      - name: Upload binary to the GitHub Release
+        uses: svenstaro/upload-release-action@29e53e917877a24fad85510ded594ab3c9ca12de # v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: target/${{ inputs.target }}/release/recached-server${{ needs.plan.outputs.suffix }}
+          asset_name: ${{ needs.plan.outputs.artifact }}
+          tag: refs/tags/${{ inputs.tag }}
+          overwrite: true
