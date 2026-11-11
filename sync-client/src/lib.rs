@@ -446,7 +446,9 @@ pub struct SyncClient {
     disconnect_reason: Option<SyncError>,
     reported_status: Option<SyncStatus>,
     /// Patterns whose [`SubscriptionState`] changed since the last
-    /// [`take_subscription_changes`](Self::take_subscription_changes).
+    /// [`take_subscription_changes`](Self::take_subscription_changes), each
+    /// once: an adapter that never takes them (the mobile core leaves that to
+    /// the app) must not grow this on every reconnect.
     subscription_changes: Vec<String>,
     /// Keys a snapshot on this socket left alone because a queued write
     /// covered them (see `apply_qstate`).
@@ -589,7 +591,7 @@ impl SyncClient {
                 pattern: pattern.to_string(),
                 state: SubscriptionState::Pending,
             });
-            self.subscription_changes.push(pattern.to_string());
+            self.note_subscription_change(pattern);
         }
         self.qsub_frame(pattern, false, connected)
     }
@@ -598,14 +600,15 @@ impl SyncClient {
         let frame = match pattern {
             Some(p) => {
                 if self.live_queries.iter().any(|q| q.pattern == p) {
-                    self.subscription_changes.push(p.to_string());
+                    self.note_subscription_change(p);
                 }
                 self.live_queries.retain(|q| q.pattern != p);
                 to_resp(&["QUNSUB", p])
             }
             None => {
-                self.subscription_changes
-                    .extend(self.live_queries.drain(..).map(|q| q.pattern));
+                for q in std::mem::take(&mut self.live_queries) {
+                    self.note_subscription_change(&q.pattern);
+                }
                 to_resp(&["QUNSUB"])
             }
         };
@@ -681,6 +684,12 @@ impl SyncClient {
             && q.state != state
         {
             q.state = state;
+            self.note_subscription_change(pattern);
+        }
+    }
+
+    fn note_subscription_change(&mut self, pattern: &str) {
+        if !self.subscription_changes.iter().any(|p| p == pattern) {
             self.subscription_changes.push(pattern.to_string());
         }
     }
@@ -1011,8 +1020,17 @@ impl SyncClient {
         };
         // While connected every queued row has been sent — `on_open` replays
         // the outbox and connected writes go out at once — so the dropped row
-        // still has a reply on its way.
-        if connected && let Some(old) = dropped {
+        // still has a reply on its way. A row queued with `connected = false`
+        // may have been sent since by `send_enqueued` (the mobile core sends
+        // every write that way), or on a socket now being abandoned; its
+        // reply is on its way too.
+        if let Some(old) = dropped
+            && (connected
+                || self
+                    .inflight
+                    .iter()
+                    .any(|s| matches!(s, Slot::Write { id: i, .. } if *i == old)))
+        {
             self.sent_then_dropped.insert(old);
         }
         self.outbox.push_back((id, frame.clone()));
@@ -1040,6 +1058,25 @@ impl SyncClient {
             return false;
         }
         self.outbox.pop_back();
+        true
+    }
+
+    /// Put back the row a [`try_enqueue_write`](Self::try_enqueue_write)
+    /// evicted, after the adapter failed to store that write and withdrew it
+    /// with [`cancel_enqueued`](Self::cancel_enqueued).
+    ///
+    /// The row returns to the front under its original id, so it keeps its
+    /// place both here and in durable storage (whose transaction rolled back
+    /// with the row still in it). If it was sent before it was evicted, its
+    /// reply retires it as normal. Returns `false`, changing nothing, unless
+    /// `id` is older than every queued row and not already queued.
+    pub fn reinstate_evicted(&mut self, id: u64, frame: Vec<u8>) -> bool {
+        if self.outbox.front().is_some_and(|(oldest, _)| *oldest <= id) {
+            return false;
+        }
+        self.sent_then_dropped.remove(&id);
+        self.counters.evicted_writes = self.counters.evicted_writes.saturating_sub(1);
+        self.outbox.push_front((id, frame));
         true
     }
 
@@ -1415,6 +1452,9 @@ impl SyncClient {
             }
             Slot::Scope => {
                 self.setup_pending = self.setup_pending.saturating_sub(1);
+                // A token accepted after a refused one (refreshed mid-session)
+                // ends that refusal.
+                self.scope_refused = None;
                 return None;
             }
             Slot::Capability(capability) => {

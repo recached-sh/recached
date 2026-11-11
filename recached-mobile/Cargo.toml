@@ -31,7 +31,7 @@ rand.workspace        = true
 rmp-serde.workspace   = true
 # Bundled: one SQLite version on every platform, rather than whichever the OS
 # ships (Android's varies by release and vendor).
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 uniffi   = "=0.32.2"
 
 [dev-dependencies]

@@ -436,6 +436,8 @@ struct WsShared {
     generation: Rc<Cell<u64>>,
     /// Keeps the pending reconnect timer's callback alive until it fires.
     reconnect_cb: TimerCallback,
+    /// The pending reconnect timer, so `connect`/`disconnect` can cancel it.
+    reconnect_timer: Rc<Cell<Option<i32>>>,
 }
 
 /// Handle to a pending timer's callback, kept alive until it fires.
@@ -625,6 +627,11 @@ fn track(sh: &WsShared, op: &'static str, promise: Promise) {
 fn next_wal_key(sh: &WsShared) -> JsValue {
     let t = js_sys::Date::now().max(sh.wal_clock.get());
     sh.wal_clock.set(t);
+    wal_key_at(sh, t)
+}
+
+/// A WAL key for this session at an explicit `t`.
+fn wal_key_at(sh: &WsShared, t: f64) -> JsValue {
     let seq = sh.seq.get();
     sh.seq.set(seq + 1);
     let key = js_sys::Array::new();
@@ -1037,6 +1044,9 @@ fn open_socket(sh: &WsShared) {
 /// Schedule an `open_socket` retry after `delay` ms. No-op when auto-reconnect
 /// is off or there is no window (non-browser contexts).
 fn schedule_reconnect(sh: &WsShared, delay: u32) {
+    // At most one reconnect is pending. A second timer would open a socket
+    // over the live one and orphan it, still open and never closed.
+    cancel_reconnect(sh);
     if !sh.auto_reconnect.get() {
         return;
     }
@@ -1045,15 +1055,29 @@ fn schedule_reconnect(sh: &WsShared, delay: u32) {
     };
     let sh2 = sh.clone();
     let cb = Closure::wrap(Box::new(move || {
+        sh2.reconnect_timer.set(None);
         if sh2.auto_reconnect.get() {
             open_socket(&sh2);
         }
     }) as Box<dyn FnMut()>);
-    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+    if let Ok(handle) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
         cb.as_ref().unchecked_ref(),
         delay as i32,
-    );
-    *sh.reconnect_cb.borrow_mut() = Some(cb);
+    ) {
+        sh.reconnect_timer.set(Some(handle));
+        *sh.reconnect_cb.borrow_mut() = Some(cb);
+    }
+}
+
+/// Cancel a pending reconnect, if any. Clearing the timer before dropping
+/// its callback matters: a timer that fires on a dropped callback throws.
+fn cancel_reconnect(sh: &WsShared) {
+    if let Some(handle) = sh.reconnect_timer.take()
+        && let Some(window) = web_sys::window()
+    {
+        window.clear_timeout_with_handle(handle);
+    }
+    sh.reconnect_cb.borrow_mut().take();
 }
 
 // ── RecachedCache ─────────────────────────────────────────────────────────────
@@ -1134,6 +1158,7 @@ impl RecachedCache {
                 auto_reconnect: Rc::new(Cell::new(false)),
                 generation: Rc::new(Cell::new(0)),
                 reconnect_cb: Rc::new(RefCell::new(None)),
+                reconnect_timer: Rc::new(Cell::new(None)),
             },
             store,
             bc: None,
@@ -1394,7 +1419,16 @@ impl RecachedCache {
             let vals = js_sys::Array::from(&pair.get(1));
 
             let entry_count = keys.length();
+            // The newest `t` among the records read (0 when every key is a
+            // pre-0.5 number).
+            let mut newest_t: f64 = 0.0;
             for i in 0..entry_count {
+                let key = keys.get(i);
+                if js_sys::Array::is_array(&key)
+                    && let Some(t) = js_sys::Array::from(&key).get(0).as_f64()
+                {
+                    newest_t = newest_t.max(t);
+                }
                 let raw = vals.get(i);
                 let cmd_bytes = match raw.as_string() {
                     // Written by 0.2.1 and earlier, when frames were strings.
@@ -1407,6 +1441,13 @@ impl RecachedCache {
                     store.execute(cmd);
                 }
             }
+
+            // This session's records must replay after every record read,
+            // even when the clock now reads earlier than one of them (an NTP
+            // step, a manual change): keyed by the raw clock, a newer write
+            // would sort first and the older record would overwrite it on the
+            // next load.
+            sh.wal_clock.set(sh.wal_clock.get().max(newest_t + 1.0));
 
             *sh.idb.borrow_mut() = Some(db.clone());
 
@@ -1430,15 +1471,32 @@ impl RecachedCache {
             // regardless of how many writes accumulated between refreshes.
             // Atomic, and limited to the records read, so neither an
             // interruption nor another tab's concurrent writes are lost.
+            //
+            // The snapshot takes the place of the records it replaces: keyed
+            // at the newest `t` read, not at the current time. A record
+            // another tab committed while this one was replaying is not in
+            // the snapshot and is newer than it; keyed at the current time,
+            // the snapshot would sort after that record and overwrite it on
+            // the next load.
+            //
+            // A failed compaction leaves the old log intact and the store
+            // fully hydrated, so it is reported (`onPersistenceError`,
+            // `flush`) rather than failing startup. The WAL most likely to
+            // fail compacting is one that filled the quota, and failing here
+            // would fail every later load the same way.
             if entry_count > WAL_COMPACT_THRESHOLD {
                 let cmds = snapshot_to_resp_cmds(&store.snapshot());
                 let new_keys = js_sys::Array::new();
                 let arr = js_sys::Array::new();
                 for cmd in &cmds {
-                    new_keys.push(&next_wal_key(&sh));
+                    new_keys.push(&wal_key_at(&sh, newest_t));
                     arr.push(&js_sys::Uint8Array::from(&cmd[..]));
                 }
-                JsFuture::from(idb_wal_replace_js(&db, &keys, &new_keys, &arr)).await?;
+                track(
+                    &sh,
+                    "compaction",
+                    idb_wal_replace_js(&db, &keys, &new_keys, &arr),
+                );
             }
 
             Ok(JsValue::UNDEFINED)
@@ -1502,10 +1560,19 @@ impl RecachedCache {
         // generation is now stale, so it cannot schedule a reconnect over the
         // new one, but closing it early keeps things tidy.
         self.shared.auto_reconnect.set(false);
+        // A reconnect pending from an earlier drop would open a second
+        // socket over the one opened below.
+        cancel_reconnect(&self.shared);
         if let Some(old_ws) = self.shared.ws.borrow_mut().take() {
+            // Detach first: `open_socket` below drops the closures these
+            // handlers point at, and the old socket's close event (and any
+            // message already queued) arrives after that.
+            old_ws.set_onopen(None);
+            old_ws.set_onmessage(None);
+            old_ws.set_onclose(None);
             let _ = old_ws.close();
-            // Its close event will be ignored as stale, so close it in the
-            // core now: the old socket's session is over.
+            // Its close event is no longer heard, so close it in the core
+            // now: the old socket's session is over.
             self.shared.core.borrow_mut().on_close();
         }
         *self.shared.url.borrow_mut() = Some(url.to_string());
@@ -1518,6 +1585,7 @@ impl RecachedCache {
     /// working; writes queue and are replayed on the next `connect`.
     pub fn disconnect(&mut self) {
         self.shared.auto_reconnect.set(false);
+        cancel_reconnect(&self.shared);
         if let Some(ws) = self.shared.ws.borrow_mut().take() {
             let _ = ws.close();
         }
@@ -2541,5 +2609,258 @@ mod browser_tests {
             restored.execute(Command::Ttl("t".into())),
             Value::Integer(n) if (1..=60).contains(&n)
         ));
+    }
+
+    // ── WAL ordering across sessions ──────────────────────────────────────────
+
+    async fn sleep_ms(ms: i32) {
+        let p = Promise::new(&mut |resolve, _| {
+            web_sys::window()
+                .expect("window")
+                .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+                .expect("setTimeout");
+        });
+        JsFuture::from(p).await.expect("sleep");
+    }
+
+    /// Append `cmds` to the WAL under the keys `[t, tag, i]`, as one session
+    /// would.
+    async fn wal_append_session(db: &JsValue, t: f64, tag: &str, cmds: &[Vec<u8>]) {
+        let keys = js_sys::Array::new();
+        let vals = js_sys::Array::new();
+        for (i, c) in cmds.iter().enumerate() {
+            keys.push(&arr(&[num(t), JsValue::from_str(tag), num(i as f64)]));
+            vals.push(&bytes(c));
+        }
+        JsFuture::from(idb_wal_append_many_js(db, &keys, &vals))
+            .await
+            .expect("wal append");
+    }
+
+    async fn reloaded_value(key: &str) -> Option<String> {
+        let cache = RecachedCache::new();
+        JsFuture::from(cache.enable_persistence())
+            .await
+            .expect("enable_persistence");
+        cache.get(key).expect("text value")
+    }
+
+    #[wasm_bindgen_test]
+    async fn a_write_another_tab_commits_during_compaction_is_not_overwritten_by_it() {
+        // Tab B loads a WAL past the compaction threshold. While B replays it,
+        // tab A — open all along — commits `SET k from-a`. B's snapshot, built
+        // from what it read, still holds the old `k`. The snapshot replaces
+        // only the rows B read, so A's row survives; it must also still win
+        // on the next load, as it did before compaction.
+        let db = fresh_db().await;
+        let history: Vec<Vec<u8>> = (0..=WAL_COMPACT_THRESHOLD)
+            .map(|i| to_resp(&["SET", "k", &format!("old-{i}")]))
+            .collect();
+        wal_append_session(&db, 1.0, "earlier-session", &history).await;
+
+        // A's clock reading when it wrote: before B's compaction finished.
+        let t_a = js_sys::Date::now();
+        sleep_ms(20).await;
+        let b = RecachedCache::new();
+        JsFuture::from(b.enable_persistence())
+            .await
+            .expect("B loads and compacts");
+        assert!(
+            wal_rows(&db).await.0.len() < history.len(),
+            "B must have compacted"
+        );
+        // A's commit. Its timing relative to B's replace transaction does not
+        // matter: B deletes only the keys it read, and A's key is not one.
+        wal_put(
+            &db,
+            arr(&[num(t_a), JsValue::from_str("tab-a"), num(0.0)]),
+            &to_resp(&["SET", "k", "from-a"]),
+        )
+        .await;
+
+        assert_eq!(reloaded_value("k").await.as_deref(), Some("from-a"));
+    }
+
+    #[wasm_bindgen_test]
+    async fn a_write_after_the_clock_steps_back_still_replays_last() {
+        // An earlier session ran while the system clock was an hour ahead
+        // (NTP correction, manual change). This session's write is newer and
+        // must replay after it; keyed by the raw clock it would sort first.
+        let db = fresh_db().await;
+        let ahead = js_sys::Date::now() + 3_600_000.0;
+        wal_append_session(
+            &db,
+            ahead,
+            "earlier-session",
+            &[to_resp(&["SET", "k", "old"])],
+        )
+        .await;
+
+        let cache = RecachedCache::new();
+        JsFuture::from(cache.enable_persistence())
+            .await
+            .expect("enable_persistence");
+        cache.set("k", "new").expect("set");
+        JsFuture::from(cache.flush()).await.expect("flush");
+
+        assert_eq!(reloaded_value("k").await.as_deref(), Some("new"));
+    }
+
+    #[wasm_bindgen(inline_js = r#"
+    export function failIdbPuts() {
+        const put = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function () {
+            throw new DOMException('quota exceeded (injected)', 'QuotaExceededError');
+        };
+        return () => { IDBObjectStore.prototype.put = put; };
+    }
+    "#)]
+    extern "C" {
+        /// Make every IndexedDB put throw, as a full quota does; returns the
+        /// function that undoes it.
+        #[wasm_bindgen(js_name = "failIdbPuts")]
+        fn fail_idb_puts() -> js_sys::Function;
+    }
+
+    #[wasm_bindgen_test]
+    async fn a_failed_compaction_does_not_fail_startup() {
+        // A WAL that grew until the quota ran out is exactly the one that
+        // compacts on the next load, and compaction must write. Its failure
+        // leaves the old log intact (one transaction) and the store fully
+        // hydrated, so it is reported — not turned into a failed
+        // `enable_persistence`, which `createCache` rethrows on every load.
+        let db = fresh_db().await;
+        let history: Vec<Vec<u8>> = (0..=WAL_COMPACT_THRESHOLD)
+            .map(|i| to_resp(&["SET", "k", &format!("v{i}")]))
+            .collect();
+        wal_append_session(&db, 1.0, "earlier-session", &history).await;
+
+        let undo = fail_idb_puts();
+        let cache = RecachedCache::new();
+        let result = JsFuture::from(cache.enable_persistence()).await;
+        let flushed = JsFuture::from(cache.flush()).await;
+        undo.call0(&JsValue::NULL).expect("restore put");
+
+        assert!(result.is_ok(), "startup failed: {result:?}");
+        let expected = format!("v{WAL_COMPACT_THRESHOLD}");
+        assert_eq!(
+            cache.get("k").expect("text").as_deref(),
+            Some(expected.as_str())
+        );
+        assert!(
+            flushed.is_err(),
+            "the compaction failure must still be reported"
+        );
+        assert_eq!(wal_rows(&db).await.0.len(), history.len(), "old log intact");
+    }
+
+    // ── Reconnect timers and replaced sockets ─────────────────────────────────
+    //
+    // A scripted `WebSocket` stands in for the browser's, so the socket
+    // lifecycle is driven by the test rather than by a server.
+
+    #[wasm_bindgen(inline_js = r#"
+    export function installFakeWebSocket() {
+        const state = { sockets: [], errors: [] };
+        const fire = (ws, name) => {
+            const h = ws[name];
+            if (typeof h !== 'function') return;
+            try { h({ data: '' }); } catch (e) { state.errors.push(String((e && e.message) || e)); }
+        };
+        class FakeWebSocket {
+            constructor(url) {
+                this.url = url;
+                this.readyState = 0;
+                this.binaryType = 'blob';
+                this.onopen = this.onclose = this.onmessage = null;
+                state.sockets.push(this);
+            }
+            send() {}
+            close() {
+                if (this.readyState === 3) return;
+                this.readyState = 3;
+                setTimeout(() => fire(this, 'onclose'), 0);
+            }
+        }
+        FakeWebSocket.CONNECTING = 0;
+        FakeWebSocket.OPEN = 1;
+        FakeWebSocket.CLOSING = 2;
+        FakeWebSocket.CLOSED = 3;
+        if (!globalThis.__recachedRealWebSocket) globalThis.__recachedRealWebSocket = globalThis.WebSocket;
+        globalThis.WebSocket = FakeWebSocket;
+        globalThis.__recachedFake = state;
+        state.open = (i) => { const ws = state.sockets[i]; ws.readyState = 1; fire(ws, 'onopen'); };
+        state.fail = (i) => { const ws = state.sockets[i]; ws.readyState = 3; fire(ws, 'onclose'); };
+    }
+    export function restoreWebSocket() {
+        if (globalThis.__recachedRealWebSocket) globalThis.WebSocket = globalThis.__recachedRealWebSocket;
+    }
+    export function fakeOpen(i) { globalThis.__recachedFake.open(i); }
+    export function fakeFail(i) { globalThis.__recachedFake.fail(i); }
+    export function fakeSocketCount() { return globalThis.__recachedFake.sockets.length; }
+    export function fakeLiveSockets() {
+        return globalThis.__recachedFake.sockets.filter((s) => s.readyState !== 3).length;
+    }
+    export function fakeHandlerErrors() { return globalThis.__recachedFake.errors.slice(); }
+    "#)]
+    extern "C" {
+        #[wasm_bindgen(js_name = "installFakeWebSocket")]
+        fn install_fake_ws();
+        #[wasm_bindgen(js_name = "restoreWebSocket")]
+        fn restore_ws();
+        #[wasm_bindgen(js_name = "fakeOpen")]
+        fn fake_open(i: u32);
+        #[wasm_bindgen(js_name = "fakeFail")]
+        fn fake_fail(i: u32);
+        #[wasm_bindgen(js_name = "fakeSocketCount")]
+        fn fake_socket_count() -> u32;
+        #[wasm_bindgen(js_name = "fakeLiveSockets")]
+        fn fake_live_sockets() -> u32;
+        #[wasm_bindgen(js_name = "fakeHandlerErrors")]
+        fn fake_handler_errors() -> Vec<String>;
+    }
+
+    #[wasm_bindgen_test]
+    async fn connect_cancels_a_pending_reconnect_instead_of_opening_a_second_socket() {
+        install_fake_ws();
+        let mut cache = RecachedCache::new();
+        cache.connect("ws://first.invalid").expect("connect");
+        // The first socket fails: a reconnect is scheduled 250–500 ms out.
+        fake_fail(0);
+        // The application connects again before that timer fires.
+        cache.connect("ws://second.invalid").expect("connect");
+        fake_open(1);
+        sleep_ms(1_200).await;
+        let (count, live, errors) = (
+            fake_socket_count(),
+            fake_live_sockets(),
+            fake_handler_errors(),
+        );
+        cache.disconnect();
+        restore_ws();
+        assert_eq!(
+            count, 2,
+            "the stale reconnect timer opened another socket over the live one"
+        );
+        assert_eq!(live, 1, "exactly one socket may remain open");
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[wasm_bindgen_test]
+    async fn replacing_a_live_socket_detaches_its_handlers() {
+        install_fake_ws();
+        let mut cache = RecachedCache::new();
+        cache.connect("ws://first.invalid").expect("connect");
+        fake_open(0);
+        // Replacing it closes it; its close event arrives afterwards.
+        cache.connect("ws://second.invalid").expect("connect");
+        sleep_ms(50).await;
+        let errors = fake_handler_errors();
+        cache.disconnect();
+        restore_ws();
+        assert!(
+            errors.is_empty(),
+            "the replaced socket's events reached dropped closures: {errors:?}"
+        );
     }
 }

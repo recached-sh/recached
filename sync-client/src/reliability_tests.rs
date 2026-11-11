@@ -997,3 +997,138 @@ fn snapshot_protection_cost_with_a_full_outbox() {
         times[times.len() / 2]
     );
 }
+
+// ── v0.5.1 audit regressions ─────────────────────────────────────────────────
+
+/// A token refreshed mid-session and accepted ends the scope refusal. The
+/// refusal used to outlive it: the status read `Degraded` / `ScopeRefused`
+/// for the rest of the socket's life although the server had accepted the
+/// new token.
+#[test]
+fn a_token_accepted_mid_session_clears_the_earlier_scope_refusal() {
+    let mut c = client();
+    c.set_sync_token("expired-token", false);
+    c.on_open();
+    ack_opt_ins_v5(&mut c);
+    c.handle_frame(b"-ERR invalid sync token: token expired\r\n");
+    assert_eq!(phase(&c), SyncPhase::Degraded);
+
+    // The app refreshes its token while the socket is still up.
+    let frame = c
+        .set_sync_token("fresh-token", true)
+        .expect("sent on the open socket");
+    assert!(text(&frame).contains("fresh-token"));
+    assert_eq!(phase(&c), SyncPhase::Authenticating);
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply { retired: None }
+    );
+    assert_eq!(c.status().error, None);
+    assert_eq!(phase(&c), SyncPhase::Ready);
+}
+
+/// Subscription changes are kept once per pattern however many reconnects
+/// happen between two `take_subscription_changes` calls. The mobile core
+/// exposes that call to the app and never drains it itself, so an app that
+/// does not poll it used to grow the list by three entries per live query
+/// on every reconnect, for the life of the process.
+#[test]
+fn subscription_changes_stay_bounded_across_reconnects_without_a_take() {
+    let mut c = client();
+    c.add_live_query("a:*", false);
+    c.add_live_query("b:*", false);
+    for _ in 0..1_000 {
+        c.on_open();
+        ack_opt_ins_v5(&mut c);
+        c.handle_frame(&qstate("a:*", &[]));
+        c.handle_frame(&qstate("b:*", &[]));
+        assert_eq!(phase(&c), SyncPhase::Ready);
+        c.on_close();
+    }
+    assert!(
+        c.subscription_changes.len() <= 2,
+        "grew to {} entries",
+        c.subscription_changes.len()
+    );
+    // Nothing reported is lost: each pattern once, with its current state.
+    assert_eq!(
+        c.take_subscription_changes(),
+        vec![
+            ("a:*".to_string(), Some(SubscriptionState::Pending)),
+            ("b:*".to_string(), Some(SubscriptionState::Pending)),
+        ]
+    );
+}
+
+/// The exact refusal a 0.4 server sends for the two 0.5 opt-ins
+/// (`server-native/src/info.rs` at v0.4.0, `unknown_subcommand`): each takes
+/// its own reply slot, leaves push framing off, and the session still reaches
+/// `Ready` with writes matched to their own replies.
+#[test]
+fn a_v4_server_refusing_the_new_opt_ins_keeps_reply_matching_exact() {
+    let mut c = client();
+    c.set_password("pw", false);
+    c.set_sync_token("tok", false);
+    c.add_live_query("a:*", false);
+    let w = c.try_enqueue_write(&set("a:1", "x"), true, false).unwrap();
+    c.on_open();
+    for reply in [
+        &b"+OK\r\n"[..],
+        b"+OK\r\n",
+        b"+OK\r\n",
+        b"-ERR Unknown subcommand or wrong number of arguments for 'PUSHFRAMES ON'. Try CLIENT HELP.\r\n",
+        b"-ERR Unknown subcommand or wrong number of arguments for 'DEDUPBARRIER ON'. Try CLIENT HELP.\r\n",
+        b"+OK\r\n",
+    ] {
+        assert_eq!(c.handle_frame(reply), Incoming::Reply { retired: None });
+    }
+    assert!(!c.push_frames);
+    assert_eq!(phase(&c), SyncPhase::Replaying);
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply {
+            retired: Some(w.id)
+        }
+    );
+    assert_eq!(phase(&c), SyncPhase::Hydrating);
+    assert!(matches!(
+        c.handle_frame(&qstate("a:*", &[("a:1", "x")])),
+        Incoming::AppliedReply { .. }
+    ));
+    assert_eq!(phase(&c), SyncPhase::Ready);
+    assert_eq!(c.status().error, None);
+}
+
+/// The mobile core queues every write with `connected = false`, commits it,
+/// then sends it with `send_enqueued`. A row evicted after it was sent that
+/// way still has a reply on its way, and that reply must retire nothing new:
+/// not a refusal of a write the application was already told was dropped,
+/// and not a deferral that abandons the socket for a row no longer queued.
+#[test]
+fn a_row_evicted_after_send_enqueued_is_not_refused_again() {
+    let mut c = client();
+    c.set_max_pending(1);
+    c.set_overflow_policy(OverflowPolicy::EvictOldest);
+    c.on_open();
+    ack_opt_ins_v5(&mut c);
+    let a = c.try_enqueue_write(&set("a", "1"), true, false).unwrap();
+    assert!(c.send_enqueued(a.id, true).is_some());
+    let b = c.try_enqueue_write(&set("b", "1"), true, false).unwrap();
+    assert_eq!(b.dropped, Some(a.id));
+    assert!(c.send_enqueued(b.id, true).is_some());
+
+    assert_eq!(
+        c.handle_frame(b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"),
+        Incoming::Reply {
+            retired: Some(a.id)
+        }
+    );
+    assert_eq!(c.counters().refused_writes, 0);
+    assert_eq!(
+        c.handle_frame(b"+OK\r\n"),
+        Incoming::Reply {
+            retired: Some(b.id)
+        }
+    );
+    assert_eq!(c.outbox_len(), 0);
+}

@@ -617,3 +617,318 @@ async fn a_client_pipelining_a_long_replay_is_not_disconnected_by_its_own_echoes
         bulk("v")
     );
 }
+
+// ── v0.5.1 audit regressions ─────────────────────────────────────────────────
+
+fn set(key: &str) -> Command {
+    Command::Set(key.into(), b"1".to_vec(), Default::default())
+}
+
+#[tokio::test]
+async fn a_refusal_before_any_accepted_write_does_not_mark_id_zero_applied() {
+    // A remembered refusal created the client's entry with a default mark of
+    // 0, which claims wire id 0 was applied. A client without the barrier
+    // whose first write (id 0) was deferred and whose second was refused for
+    // good then had its replay of id 0 answered `+DUP` — retired, never run.
+    let dir = scratch("refusal_id_zero");
+    {
+        let state = durable_state(&dir).await;
+        let store = KeyValueStore::new();
+        store.execute(set("text"));
+        store.execute(Command::Append("text".into(), b"x".to_vec()));
+        state.persistence_healthy.store(false, Ordering::Release);
+        assert!(matches!(
+            write(&state, &store, &dedup("fresh", 0, set("first"))).await,
+            Value::Error(e) if e.starts_with("MISCONF")
+        ));
+        state.persistence_healthy.store(true, Ordering::Release);
+        assert!(matches!(
+            write(&state, &store, &dedup("fresh", 1, Command::HSet("text".into(), vec![("f".into(), b"v".to_vec())]))).await,
+            Value::Error(e) if e.starts_with("WRONGTYPE")
+        ));
+        // The reconnect replays id 0: it was never applied, so it must run.
+        assert_eq!(
+            write(&state, &store, &dedup("fresh", 0, set("first"))).await,
+            Value::SimpleString("OK".into())
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // The same after a crash (refusal from the AOF) and after a checkpoint
+    // (refusal from the sidecar).
+    for checkpoint in [false, true] {
+        let dir = scratch(if checkpoint {
+            "refusal_id_zero_sidecar"
+        } else {
+            "refusal_id_zero_aof"
+        });
+        {
+            let state = durable_state(&dir).await;
+            let store = KeyValueStore::new();
+            store.execute(set("text"));
+            assert!(matches!(
+                write(
+                    &state,
+                    &store,
+                    &dedup(
+                        "fresh",
+                        1,
+                        Command::HSet("text".into(), vec![("f".into(), b"v".to_vec())])
+                    )
+                )
+                .await,
+                Value::Error(_)
+            ));
+            if checkpoint {
+                state.save(&store).await.unwrap();
+            }
+        }
+        let (store, state) = recover(&dir).await;
+        assert_eq!(
+            write(&state, &store, &dedup("fresh", 0, set("first"))).await,
+            Value::SimpleString("OK".into()),
+            "checkpoint={checkpoint}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[tokio::test]
+async fn a_retry_that_succeeded_after_a_refusal_reads_as_applied_after_a_crash() {
+    // Live, the success forgets the refusal. Recovery merged every AOF mark
+    // first and every AOF refusal after, so the refusal came back and the
+    // replay of a write that *was* applied was answered with its old error.
+    let dir = scratch("refusal_then_success_crash");
+    {
+        let state = durable_state(&dir).await;
+        let store = KeyValueStore::new();
+        store.execute(Command::Set(
+            "n".into(),
+            b"abc".to_vec(),
+            Default::default(),
+        ));
+        let incr = dedup("c", 5, Command::IncrBy("n".into(), 1));
+        assert!(matches!(
+            write(&state, &store, &incr).await,
+            Value::Error(_)
+        ));
+        store.execute(Command::Del(vec!["n".into()]));
+        // Retried while still above the mark: runs and succeeds.
+        assert_eq!(write(&state, &store, &incr).await, Value::Integer(1));
+        assert_eq!(write(&state, &store, &incr).await, dup());
+    }
+    let (store, state) = recover(&dir).await;
+    assert_eq!(get(&store, "n"), bulk("1"));
+    assert_eq!(
+        write(
+            &state,
+            &store,
+            &dedup("c", 5, Command::IncrBy("n".into(), 1))
+        )
+        .await,
+        dup(),
+        "applied before the crash, so applied after it"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_write_refused_twice_then_applied_reads_as_applied_after_a_crash() {
+    // Each refusal of the same write leaves its own AOF record, and the
+    // success that follows clears all of them live. Recovery must cancel
+    // every one, not only the latest.
+    let dir = scratch("refused_twice_then_success_crash");
+    {
+        let state = durable_state(&dir).await;
+        let store = KeyValueStore::new();
+        store.execute(Command::Set(
+            "n".into(),
+            b"abc".to_vec(),
+            Default::default(),
+        ));
+        let incr = dedup("c", 5, Command::IncrBy("n".into(), 1));
+        for _ in 0..2 {
+            assert!(matches!(
+                write(&state, &store, &incr).await,
+                Value::Error(_)
+            ));
+        }
+        store.execute(Command::Del(vec!["n".into()]));
+        assert_eq!(write(&state, &store, &incr).await, Value::Integer(1));
+    }
+    let (store, state) = recover(&dir).await;
+    assert_eq!(get(&store, "n"), bulk("1"));
+    assert_eq!(
+        write(
+            &state,
+            &store,
+            &dedup("c", 5, Command::IncrBy("n".into(), 1))
+        )
+        .await,
+        dup(),
+        "applied before the crash, so applied after it"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_torn_aof_tail_does_not_poison_the_next_restart() {
+    // Startup skipped the torn record but left its bytes in place, and the
+    // AOF is opened for append — so every later write landed behind the
+    // fragment, and the *next* restart refused to start ("AOF corrupted").
+    let dir = scratch("torn_tail_twice");
+    {
+        let state = durable_state(&dir).await;
+        let store = KeyValueStore::new();
+        write(
+            &state,
+            &store,
+            &dedup("c", 1, Command::IncrBy("n".into(), 2)),
+        )
+        .await;
+        write(
+            &state,
+            &store,
+            &dedup("c", 2, Command::IncrBy("n".into(), 3)),
+        )
+        .await;
+    }
+    let path = dir.join("append.aof");
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &bytes[..bytes.len() - 3]).unwrap();
+
+    // First restart: the torn write is dropped, and the retry is logged.
+    {
+        let (store, state) = recover(&dir).await;
+        assert_eq!(get(&store, "n"), bulk("2"));
+        assert_eq!(
+            write(
+                &state,
+                &store,
+                &dedup("c", 2, Command::IncrBy("n".into(), 3))
+            )
+            .await,
+            Value::Integer(5)
+        );
+    }
+    // Second restart: everything since the first is still there.
+    let (store, state) = recover(&dir).await;
+    assert_eq!(get(&store, "n"), bulk("5"));
+    assert_eq!(
+        write(
+            &state,
+            &store,
+            &dedup("c", 2, Command::IncrBy("n".into(), 3))
+        )
+        .await,
+        dup()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_remembered_refusal_keeps_a_bounded_error() {
+    // An out-of-scope refusal echoes the key, which may be 512 KB: 64 of them
+    // per client id, under any number of ids, held outside maxmemory and
+    // rewritten into the sidecar at every checkpoint while writes are blocked.
+    let dir = scratch("refusal_error_bound");
+    let state = durable_state(&dir).await;
+    let reason = format!(
+        "NOSCOPE key '{}' is outside this connection's sync scopes",
+        "é".repeat(256 * 1024)
+    );
+    state.remember_dedup_refusal("c", 1, &reason);
+    let kept = state.dedup.lock().unwrap()["c"].refused[0].1.clone();
+    assert!(kept.len() <= DEDUP_REFUSAL_ERROR_BYTES, "{}", kept.len());
+    assert!(kept.starts_with("NOSCOPE key 'éé"), "keeps the class");
+    assert!(!core_engine::resp::is_transient_refusal(&kept));
+    // A short error is kept verbatim.
+    state.remember_dedup_refusal("c", 2, "WRONGTYPE nope");
+    assert_eq!(
+        state.dedup.lock().unwrap()["c"].refused[1].1,
+        "WRONGTYPE nope"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn an_out_of_scope_keyspace_wide_dedup_write_is_remembered_below_the_mark() {
+    let secret = "s3cret";
+    let srv = spawn_ws_server_cfg(Some(secret.to_string())).await;
+    let token = mint_sync_token(secret, "cart:*");
+    let mut c = WsClient::connect(srv.tcp_addr).await;
+    c.cmd(&["SYNC", "TOKEN", &token]).await;
+    assert!(matches!(
+        c.cmd(&dedup_args("phone", "1", &["FLUSHDB"])).await,
+        Value::Error(e) if e.starts_with("NOSCOPE")
+    ));
+    assert_eq!(
+        c.cmd(&dedup_args("phone", "2", &["SET", "cart:1", "x"]))
+            .await,
+        Value::SimpleString("OK".into())
+    );
+    // Both replies lost: the replay of the refused write is refused again,
+    // not answered `+DUP` and retired as applied.
+    let mut again = WsClient::connect(srv.tcp_addr).await;
+    again.cmd(&["SYNC", "TOKEN", &token]).await;
+    assert!(matches!(
+        again.cmd(&dedup_args("phone", "1", &["FLUSHDB"])).await,
+        Value::Error(e) if e.starts_with("NOSCOPE")
+    ));
+}
+
+#[tokio::test]
+async fn a_connection_without_a_sync_token_cannot_read_dedup_marks() {
+    // Strict mode: the token is the authorization. Answering replays before
+    // a token was presented let any anonymous socket that knew a client id
+    // read its mark and its remembered refusals — which echo key names from
+    // another tenant's scope.
+    let secret = "s3cret";
+    let srv = spawn_ws_server_cfg(Some(secret.to_string())).await;
+    let mut owner = WsClient::connect(srv.tcp_addr).await;
+    owner
+        .cmd(&["SYNC", "TOKEN", &mint_sync_token(secret, "cart:*")])
+        .await;
+    owner
+        .cmd(&dedup_args("victim", "1", &["SET", "secret:plan", "x"]))
+        .await;
+    owner
+        .cmd(&dedup_args("victim", "2", &["SET", "cart:1", "x"]))
+        .await;
+
+    let mut anon = WsClient::connect(srv.tcp_addr).await;
+    for id in ["1", "2"] {
+        let reply = anon
+            .cmd(&dedup_args("victim", id, &["SET", "x", "y"]))
+            .await;
+        assert!(
+            matches!(&reply, Value::Error(e) if e.contains("send SYNC TOKEN")),
+            "id {id}: {reply:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_out_of_scope_refusal_is_recorded_under_the_write_barrier() {
+    // A checkpoint blocks writes while it writes the sidecars and the
+    // snapshot and truncates the AOF. A refusal recorded outside that barrier
+    // could miss the sidecar and land in the AOF just before the truncate —
+    // lost from both, so after a crash its replay read as applied.
+    let secret = "s3cret";
+    let srv = spawn_ws_server_cfg(Some(secret.to_string())).await;
+    let mut c = WsClient::connect(srv.tcp_addr).await;
+    c.cmd(&["SYNC", "TOKEN", &mint_sync_token(secret, "cart:*")])
+        .await;
+    let checkpoint = srv.state.replicas.lock_all_writes().await;
+    let req =
+        "*6\r\n$5\r\nDEDUP\r\n$5\r\nphone\r\n$1\r\n1\r\n$3\r\nSET\r\n$7\r\nadmin:1\r\n$1\r\nx\r\n";
+    c.ws.send(Message::Text(req.into())).await.unwrap();
+    assert_eq!(
+        c.recv_any(300).await,
+        None,
+        "the refusal waits for the checkpoint"
+    );
+    drop(checkpoint);
+    let reply = c.recv_any(2_000).await.expect("the refusal");
+    assert!(reply.starts_with("-NOSCOPE"), "{reply}");
+}

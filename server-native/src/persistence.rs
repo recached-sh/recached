@@ -399,6 +399,15 @@ pub(crate) async fn replay_aof_recovering(
 
     let mut replay_start = 0usize;
     let mut offset = 0;
+    // Refusals in file order, and where each (client, id)'s sit: a later mark
+    // for the same write — a refused write retried above the mark that then
+    // succeeded — cancels all of them, as `commit_dedup` does live. A write
+    // refused on each of several attempts leaves one record per attempt.
+    // Merged after the marks, an uncancelled one would be answered on replay
+    // of a write that was applied.
+    let mut refusals: Vec<Option<(String, u64, String)>> = Vec::new();
+    let mut refusal_at: HashMap<(String, u64), Vec<usize>> = HashMap::new();
+    let mut torn_at = None;
     while offset < bytes.len() {
         match Value::parse(&bytes[offset..]) {
             Ok((value, consumed)) => {
@@ -408,16 +417,28 @@ pub(crate) async fn replay_aof_recovering(
                 }
                 match dedup_record(&value) {
                     Some(DedupRecord::Mark(client, id)) => {
+                        for at in refusal_at.remove(&(client.clone(), id)).unwrap_or_default() {
+                            if let Some(slot) = refusals.get_mut(at) {
+                                *slot = None;
+                            }
+                        }
                         let hwm = recovered.marks.entry(client).or_default();
                         *hwm = (*hwm).max(id);
                     }
                     Some(DedupRecord::Refused(client, id, error)) => {
-                        recovered.refusals.push((client, id, error));
+                        refusal_at
+                            .entry((client.clone(), id))
+                            .or_default()
+                            .push(refusals.len());
+                        refusals.push(Some((client, id, error)));
                     }
                     None => {}
                 }
             }
-            Err(e) if e.is_incomplete() => break,
+            Err(e) if e.is_incomplete() => {
+                torn_at = Some(offset);
+                break;
+            }
             Err(e) => {
                 return Err(std::io::Error::new(
                     ErrorKind::InvalidData,
@@ -426,6 +447,7 @@ pub(crate) async fn replay_aof_recovering(
             }
         }
     }
+    recovered.refusals = refusals.into_iter().flatten().collect();
 
     let mut replayed = 0usize;
     let mut ephemeral = ReplayEphemeral::default();
@@ -490,6 +512,20 @@ pub(crate) async fn replay_aof_recovering(
     ephemeral.discard_abandoned(store)?;
     if replayed > 0 {
         info!("AOF replayed: {} commands ← {:?}", replayed, path);
+    }
+    // The torn record is cut off, not just skipped. The AOF is appended to
+    // from here on, so leaving the fragment in place put every later write
+    // behind it, and the next startup refused the file as corrupted. The
+    // fragment never completed, so no write it held was acknowledged.
+    if let Some(valid) = torn_at {
+        let file = tokio::fs::OpenOptions::new().write(true).open(path).await?;
+        file.set_len(valid as u64).await?;
+        file.sync_all().await?;
+        warn!(
+            "Truncated an incomplete AOF tail of {} byte(s) at offset {}",
+            bytes.len().saturating_sub(valid),
+            valid
+        );
     }
     Ok((replayed, recovered))
 }

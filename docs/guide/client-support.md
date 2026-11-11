@@ -11,8 +11,8 @@ The server exposes a broader command surface than the client SDKs:
 | Backend over RESP | Server package `recached`, binary `recached-server` | Reads run on the server | Snapshot and optional AOF | RESP pub/sub and key notifications | Cache server release candidate |
 | Browser | `recached-edge` | WebAssembly memory | Optional IndexedDB WAL and outbox | `onKeyChange`, `onPatternChange`, `onMutation` | Sync layer beta |
 | React / Vue in a browser | `@recached/react` / `@recached/vue` | Through `recached-edge` | Same as browser client | Hooks / composables | Browser adapters |
-| Android | `dev.recached:recached-android` | Native Rust memory through UniFFI | SQLite local data and outbox | Kotlin `Flow` and `StateFlow` | 0.1.0 preview on Maven Central |
-| iOS / macOS | Swift package `Recached` | Native Rust memory through UniFFI | SQLite local data and outbox | `AsyncStream`, `ObservableKey`, `ObservedKey` | 0.1.0 preview via SwiftPM |
+| Android | `dev.recached:recached-android` | Native Rust memory through UniFFI | SQLite local data and outbox | Kotlin `Flow` and `StateFlow` | 0.1.1 preview on Maven Central |
+| iOS / macOS | Swift package `Recached` | Native Rust memory through UniFFI | SQLite local data and outbox | `AsyncStream`, `ObservableKey`, `ObservedKey` | 0.1.1 preview via SwiftPM |
 | Rust service | `recached-embed` | Native process memory | In-memory store and outbox | `subscribe` pub/sub receiver | Git dependency; unpublished crate |
 
 The native SDKs run Rust directly, without WebAssembly or a WebView. Android supports API 24+ on `arm64-v8a`, `armeabi-v7a`, and `x86_64`. Swift supports iOS 15+ and macOS 12+; `ObservedKey` needs iOS 17+ or macOS 14+.
@@ -112,6 +112,32 @@ Other limits affect delivery:
 - `set` and whole-document JSON writes resolve by arrival order at the server. Counter deltas add; JSON merge patches preserve fields they do not touch. A write that loses the race is overwritten, with no conflict signal. This is not a general CRDT conflict-resolution model.
 
 Open one mobile instance per database file. Keep its identity and database out of device backups: copying it to another device can make the server treat that device's writes as duplicates. Android's context-based open uses `noBackupFilesDir`; Swift's `open(named:)` excludes its Application Support directory from backups.
+
+## Version compatibility
+
+0.4 and 0.5 clients and servers interoperate, but a 0.5 client gets its full write guarantees only from a 0.5 server. The pairs below are tested on every change by `scripts/compat-matrix.sh` (the embedded and mobile live suites of each version against each server, replication in both directions, and AOF upgrade and downgrade).
+
+| SDK release | Core | Server it needs for every guarantee |
+|---|---|---|
+| `recached-edge`, `@recached/react`, `@recached/vue` 0.5.x | 0.5 | 0.5 |
+| Kotlin `recached-android` 0.1.1, Swift `Recached` 0.1.1 | 0.5.0 | 0.5 |
+| Kotlin and Swift 0.1.0 | 0.4.0 | 0.4 or 0.5 |
+| `recached-embed` (git) | as checked out | same version |
+
+| Client | Server | Result |
+|---|---|---|
+| 0.5 | 0.5 | Full behaviour |
+| 0.4 | 0.5 | Works as against a 0.4 server; the server keeps 0.4 behaviour for a client that sends no 0.5 opt-ins |
+| 0.5 | 0.4 | Connects, syncs and reaches `Ready`; see below for what is missing |
+
+**A 0.5 client against a 0.4 server.** The 0.4 server refuses `CLIENT PUSHFRAMES ON` and `CLIENT DEDUPBARRIER ON`. The client handles the refusals correctly — each consumes its own reply, nothing reconnects, the status still reaches `Ready` — but nothing in the status reports that these guarantees are missing:
+
+- **Deferred-write ordering.** A write the server defers can be overtaken by a later pipelined write; its replay is then answered `+DUP` and retired as applied though it never ran.
+- **Remembered refusals.** A permanently refused write whose reply was lost is answered `+DUP` on replay, so the application never hears of the refusal.
+- **Push framing.** An array reply shaped like a `keychange` (for example `RPOP list 3`) can still be mistaken for a change, as in 0.4.
+- **Binary values and writes after `subscribe()`** are refused by the 0.4 server, and reported as refused writes.
+
+Upgrade servers before clients, and do not point 0.5 clients at a 0.4 server for longer than a rollout.
 
 ## Start with your runtime
 

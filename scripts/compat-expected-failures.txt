@@ -1,0 +1,7 @@
+# Live-suite failures scripts/compat-matrix.sh accepts, one per line:
+#
+#   <client> <server> <suite> <test name>   # why it is expected
+#
+# client/server are `old` (OLD_REF, default v0.4.0) or `new` (this checkout);
+# suite is `embed` or `mobile`. Every entry must name a documented limitation
+# of the mixed-version pair. Anything else failing is a compatibility bug.

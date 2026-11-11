@@ -32,8 +32,8 @@ Runtimes do not share identical APIs or guarantees. Persistence, write durabilit
 | Application | Client | Local persistence | Status | Getting started |
 |---|---|---|---|---|
 | Browser | `recached-edge` (WebAssembly), React and Vue adapters | Optional IndexedDB WAL and outbox | Sync layer beta | [Browser](https://recached.dev/browser/getting-started) |
-| Android | Kotlin `recached-android`, `Flow` observers | SQLite data and outbox | 0.1.0 preview, Maven Central | [Android preview](https://recached.dev/android/getting-started) |
-| iOS / macOS | Swift `Recached`, `AsyncStream` and SwiftUI models | SQLite data and outbox | 0.1.0 preview, SwiftPM | [Apple preview](https://recached.dev/ios/getting-started) |
+| Android | Kotlin `recached-android`, `Flow` observers | SQLite data and outbox | 0.1.1 preview, Maven Central | [Android preview](https://recached.dev/android/getting-started) |
+| iOS / macOS | Swift `Recached`, `AsyncStream` and SwiftUI models | SQLite data and outbox | 0.1.1 preview, SwiftPM | [Apple preview](https://recached.dev/ios/getting-started) |
 | Rust service | `recached-embed` | In-memory store and outbox | Git dependency, unpublished | [Rust](https://recached.dev/rust/getting-started) |
 
 See [client support and limits](https://recached.dev/guide/client-support) for differences between adapters. React Native, Flutter, and a WASI build for edge runtimes are [planned](https://recached.dev/roadmap), not implemented.
@@ -84,12 +84,12 @@ cargo add --git https://github.com/recached-sh/recached.git recached-embed
 
 ```kotlin
 // Android (Maven Central)
-implementation("dev.recached:recached-android:0.1.0")
+implementation("dev.recached:recached-android:0.1.1")
 ```
 
 ```swift
 // iOS / macOS (SwiftPM)
-.package(url: "https://github.com/recached-sh/recached-swift", from: "0.1.0")
+.package(url: "https://github.com/recached-sh/recached-swift", from: "0.1.1")
 ```
 
 Android needs API 24+; Swift supports iOS 15+ and macOS 12+. See the [Android](https://recached.dev/android/getting-started#install) and [iOS and macOS](https://recached.dev/ios/getting-started#install) guides.
@@ -251,7 +251,7 @@ Being honest about where things stand:
 
 - **The cache server is a release candidate for cache workloads.** It includes persistence, ordered primary/replica replication, TLS, hardened parsers, metrics, and load/chaos tests. It has not completed broad production validation or an independent security audit. Treat it as a cache, not a system of record.
 - **The shared sync layer (browser, mobile, and Rust clients) is beta.** Its invariants are [specified](https://recached.dev/server/protocol) and tested end-to-end. Read [Sync Scopes](https://recached.dev/server/sync-scopes) before exposing multi-tenant data.
-- **The Kotlin and Swift SDKs are 0.1.0 previews**, published to Maven Central and SwiftPM on the native core of v0.4.0. They implement local reads, SQLite persistence, queued writes, reconnect recovery, and reactive observers; their APIs may change before 1.0. Deduplicated replay is bounded by server checkpoint and dedup retention; see [client limits](https://recached.dev/guide/client-support#write-durability-and-replay).
+- **The Kotlin and Swift SDKs are 0.1.1 previews**, published to Maven Central and SwiftPM on the native core of v0.5.0. They implement local reads, SQLite persistence, queued writes, reconnect recovery, and reactive observers; their APIs may change before 1.0. Deduplicated replay is bounded by server checkpoint and dedup retention; see [client limits](https://recached.dev/guide/client-support#write-durability-and-replay).
 - **The embedded Rust client (`recached-embed`) is brand new and unpublished** — it works end-to-end against a live server and is covered by a live test suite, but it has no production miles and is not on crates.io.
 
 The road to 1.0 is hardening, not features. Bug reports from production-like use are the most valuable contribution right now.
