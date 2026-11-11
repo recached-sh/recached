@@ -470,7 +470,10 @@ impl RecachedClient {
     /// retire the queued write its reply acknowledges or refuses for good.
     ///
     /// An `Err` means the frame was applied in memory but could not be saved;
-    /// the next snapshot from the server repairs the saved copy.
+    /// the next snapshot from the server repairs the saved copy. A status
+    /// change the frame made is then reported by the next
+    /// [`take_status_change`](Self::take_status_change) or
+    /// [`FrameOutcome::status`].
     pub fn frame_received(&self, frame: Vec<u8>) -> Result<FrameOutcome, RecachedError> {
         let mut inner = self.lock();
         let connected = inner.sink.is_some();
@@ -511,8 +514,11 @@ impl RecachedClient {
         } else {
             Ok(())
         };
-        let status = inner.sync.take_status_change().map(Into::into);
+        // An `Err` cannot carry the status, so leave a change this frame made
+        // pending for the next report rather than consuming it here: taken
+        // and then dropped with the error, it would never reach observers.
         saved?;
+        let status = inner.sync.take_status_change().map(Into::into);
         Ok(FrameOutcome {
             changed_keys,
             reconnect,
@@ -559,6 +565,19 @@ impl RecachedClient {
             .iter()
             .filter_map(|key| self.store.snapshot_key(key))
             .collect();
+        // Under `evict_oldest_when_full` a full outbox evicts its oldest row
+        // to admit this write. Keep a copy, so a failed commit can put it back.
+        let evictee = if inner.sync.overflow_policy() == OverflowPolicy::EvictOldest
+            && inner.sync.outbox_len() >= inner.sync.max_pending()
+        {
+            inner
+                .sync
+                .outbox_rows()
+                .next()
+                .map(|(id, frame)| (id, frame.to_vec()))
+        } else {
+            None
+        };
         let reply = self.store.execute(cmd);
         if let Value::Error(reason) = reply {
             return Err(RecachedError::Command { reason });
@@ -576,10 +595,12 @@ impl RecachedClient {
             Some((queued.id, &queued.frame)),
             queued.dropped.as_slice(),
         ) {
-            // Under `evict_oldest_when_full` the evicted row is gone from
-            // memory but, the transaction having rolled back, still on disk:
-            // it replays after the next restart rather than being lost.
             inner.sync.cancel_enqueued(queued.id);
+            if let (Some(dropped), Some((id, evicted))) = (queued.dropped, evictee)
+                && dropped == id
+            {
+                inner.unevict(id, evicted);
+            }
             self.restore_keys(&keys, before);
             return Err(e);
         }
@@ -607,6 +628,22 @@ impl Inner {
         if let (Some(frame), Some(sink)) = (frame, &self.sink) {
             sink.send(frame);
         }
+    }
+
+    /// Put back the row a write evicted when that write's commit failed. The
+    /// rolled-back transaction left it on disk, so only memory lost it — and
+    /// left out of memory it would not replay until the next open, behind
+    /// this session's later writes, whose higher wire ids would have the
+    /// server skip it as a duplicate: a write reported `Ok` silently lost by
+    /// a different write's failure.
+    ///
+    /// It returns to the front under its original id, matching its disk row,
+    /// so order holds in memory and across a restart, and an acknowledgment
+    /// retires both. Unsent here: if it was sent before it was evicted, the
+    /// reply to that send still arrives in its slot; otherwise the next
+    /// connection replays it first.
+    fn unevict(&mut self, id: u64, frame: Vec<u8>) {
+        self.sync.reinstate_evicted(id, frame);
     }
 }
 

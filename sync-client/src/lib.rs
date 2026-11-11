@@ -1061,6 +1061,25 @@ impl SyncClient {
         true
     }
 
+    /// Put back the row a [`try_enqueue_write`](Self::try_enqueue_write)
+    /// evicted, after the adapter failed to store that write and withdrew it
+    /// with [`cancel_enqueued`](Self::cancel_enqueued).
+    ///
+    /// The row returns to the front under its original id, so it keeps its
+    /// place both here and in durable storage (whose transaction rolled back
+    /// with the row still in it). If it was sent before it was evicted, its
+    /// reply retires it as normal. Returns `false`, changing nothing, unless
+    /// `id` is older than every queued row and not already queued.
+    pub fn reinstate_evicted(&mut self, id: u64, frame: Vec<u8>) -> bool {
+        if self.outbox.front().is_some_and(|(oldest, _)| *oldest <= id) {
+            return false;
+        }
+        self.sent_then_dropped.remove(&id);
+        self.counters.evicted_writes = self.counters.evicted_writes.saturating_sub(1);
+        self.outbox.push_front((id, frame));
+        true
+    }
+
     /// Send a row queued with `connected = false`, now that it is safely
     /// stored: records its reply slot and returns its frame, or `None` when
     /// the socket is closed or being abandoned (the next open replays it).
