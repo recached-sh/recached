@@ -69,9 +69,11 @@ A live query requests current state for its pattern. A fresh `qstate` replaces m
 
 ## Compact the WAL
 
-Compaction runs during hydration when the WAL contains more than 1,000 entries. It serializes the restored store into snapshot commands and replaces the records it read in one IndexedDB transaction, keeping records another tab appended meanwhile. It leaves the outbox untouched.
+Compaction runs during hydration when the WAL contains more than 1,000 entries. It serializes the restored store into snapshot commands and replaces the records it read in one IndexedDB transaction, keeping records another tab appended meanwhile. The snapshot takes the place of the records it replaces, so a write another tab commits during the compaction still replays after it. It leaves the outbox untouched. A tab closed mid-compaction aborts the transaction and leaves the old log intact.
 
-Compaction does not run during a session, so a long-lived tab's WAL grows with its writes and with server changes until the next load.
+A compaction that fails — most often because the WAL has filled the storage quota — does not fail startup: the store is already hydrated, the old log stays, and the failure reaches `flush()` and the console. Compaction is retried on the next load.
+
+Compaction does not run during a session, so a long-lived tab's WAL grows with its writes and with server changes until the next load. Every local write appends one record; every server change to a synchronized key appends that key's **entire** current value. Measured in Chrome, a live-queried hash of 10 fields grew the WAL by about 0.5 KB per update, and one of 1,000 fields by about 48 KB per update. For large collections that change often, set `persistSyncedState: false` (the server re-sends them on reconnect) or reload long-lived tabs periodically.
 
 ## Expiry
 

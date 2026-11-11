@@ -4,9 +4,40 @@ All notable changes to Recached are documented here.
 
 ## [Unreleased] — 0.5.1 sync stabilization
 
-### Fixed
-- The 0.5.0 changelog shipped with unresolved merge-conflict markers in its heading
+### Fixed — server
+- A write with wire id 0 — a client's first — could be answered `+DUP` and lost: a remembered refusal created the client's duplicate-suppression entry claiming id 0 was applied
+- An incomplete record at the end of the AOF (a crash mid-append) is truncated at startup instead of skipped; left in place, every later write was appended behind it and the next restart refused the file as corrupted
+- After a crash, a write that was refused and then applied on a retry is answered `+DUP`, not with its old refusal
+- In strict mode, a WebSocket that has not presented a sync token no longer reads the duplicate-suppression state: it could probe another client's high-water mark and read its remembered refusals, which echo key names
+- A `DEDUP`-wrapped keyspace-wide write refused for scope is remembered, so a replay after a lost reply is refused again instead of answered `+DUP`
+- A remembered refusal stores at most 512 bytes of its error (an echoed key could be 512 KB, held outside `maxmemory` and rewritten at every checkpoint); the live reply is unchanged
+- A scope refusal is recorded under the same write guards as a write, so a checkpoint cannot miss it
+- `.dedup-refusals` is loaded even when `.dedup` is missing
+
+### Fixed — clients
+- Mobile: under `evictOldestWhenFull`, a write whose SQLite commit failed no longer silently loses the older write it evicted
+- Mobile: a status change made by a frame whose save failed is still reported
+- Mobile, browser: a sync token refreshed and accepted mid-session clears the earlier `ScopeRefused`; the status read `Degraded` until a reconnect
+- Mobile: the per-pattern subscription change list no longer grows on every reconnect when the app never reads it
+- Under the evict-oldest policy, the late reply to an evicted write that was already sent is no longer reported as a refusal, nor does it abandon the socket
+- Browser: a write another tab committed while this tab compacted a large IndexedDB WAL could be reverted on the next load; the compaction snapshot now keeps its place in the log
+- Browser: after the system clock stepped back, a new write could replay before older records and lose to them on reload
+- Browser: a failed WAL compaction (typically a full quota) no longer makes `createCache` reject on every load; it is reported through `flush()`
+- Browser: a reconnect timer pending when `connect()` was called opened a second socket and orphaned the first; replacing a live socket no longer throws from its dropped handlers
+
+### Documentation and release
+- The 0.5.0 upgrade notes said client fixes other than binary writes and writes after `subscribe()` work against a 0.4 server. Deferred-write ordering, remembered refusals and push framing need a 0.5 server, and their absence is not reported; see [version compatibility](https://recached.dev/guide/client-support#version-compatibility)
+- The 0.5.0 changelog shipped with unresolved merge-conflict markers in its heading; the release gate now refuses them and matches "unreleased" case-insensitively
 - The Homebrew formula carried placeholder checksums for v0.5.0; it now has the published binaries' SHA-256 sums
+
+### Added — CI and tests
+- Browser end-to-end scenarios (real Chromium, IndexedDB and server) run in CI
+- A cross-version matrix (`scripts/compat-matrix.sh`): v0.4.0 and this version's client suites against each server, replication both ways, AOF upgrade and downgrade
+- The Kotlin and Swift SDKs are built and tested against each change's core
+- `server-native/tests/sync_bench.rs`: replay, hydration and restart-recovery latency and server memory, comparable across builds
+
+### Upgrade notes
+- No format changes from 0.5.0: snapshots, the AOF and both sidecars are compatible in both directions
 
 ## [0.5.0] (2026-10-25) — synchronization reliability
 
