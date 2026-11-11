@@ -184,7 +184,7 @@ A refused write does not advance the client's `DEDUP` high-water mark. Two cases
 
 ### Write-path ordering
 
-For a `DEDUP` write the server, in order: authenticates the connection; answers a replay from its mark (`+DUP` or the remembered refusal) — before the scope check in strict mode, so a write applied under an earlier token reads as applied under a narrower one; checks scope; takes the key-order guards; executes; appends the frame to the AOF (inside its envelope, see below) and fans it out to replicas, watchers and sync connections; commits the mark in memory; and only then replies. A crash before the AOF append loses the write and its mark together; after it, both survive within the AOF's fsync policy.
+For a `DEDUP` write the server, in order: authenticates the connection; answers a replay from its mark (`+DUP` or the remembered refusal) — before the scope check in strict mode, once a token is in force, so a write applied under an earlier token reads as applied under a narrower one (a strict-mode socket that has presented no token never reads the dedup state: it is answered the transient `NOSCOPE send SYNC TOKEN`); checks scope; takes the key-order guards; executes; appends the frame to the AOF (inside its envelope, see below) and fans it out to replicas, watchers and sync connections; commits the mark in memory; and only then replies. A crash before the AOF append loses the write and its mark together; after it, both survive within the AOF's fsync policy.
 
 ## Session establishment
 
@@ -288,4 +288,4 @@ The HMAC is computed over the base64url payload *text*. Expiry is validated when
   snapshot or command with the wrong framing.
 - **Client IndexedDB schema**: bumps create missing object stores idempotently; existing stores are never dropped in an upgrade. 0.5 keys rows per session (`[t, session, seq]` in `wal`, `[session, id]` in `outbox`); numeric keys written earlier sort first and replay first.
 - **AOF**: a 0.5 AOF contains `DEDUP`, `RECACHED-DEDUP` and `RECACHED-DEDUP-REFUSED` records, which a 0.4 server refuses to replay. Run `SAVE` (which truncates the AOF) before downgrading. A 0.5 server replays any earlier AOF.
-- **Opt-ins**: `CLIENT PUSHFRAMES` and `CLIENT DEDUPBARRIER` are refused by servers before 0.5, which leaves a 0.5 client on the 0.4 behaviour for that connection.
+- **Opt-ins**: `CLIENT PUSHFRAMES` and `CLIENT DEDUPBARRIER` are refused by servers before 0.5 (`-ERR Unknown subcommand…`), which leaves a 0.5 client on the 0.4 behaviour for that connection: deferred writes can be overtaken, a refused write whose reply was lost reads as applied, and keychange-shaped replies are ambiguous. The client does not report the difference. See [version compatibility](/guide/client-support#version-compatibility).

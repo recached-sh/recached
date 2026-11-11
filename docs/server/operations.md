@@ -253,4 +253,12 @@ cannot replay (`DEDUP`-wrapped writes, `RECACHED-DEDUP`, `RECACHED-DEDUP-REFUSED
 run `SAVE` on 0.5 first — it truncates the AOF — then start 0.4. Replicas keep receiving bare
 mutations, so a mixed-version primary and replica still replicate; a promoted replica has no
 duplicate-suppression marks for the writes it replicated. Upgrade the server before or together with
-the browser SDK: writes after `subscribe()` and binary writes reach only a 0.5 server.
+the browser SDK: writes after `subscribe()` and binary writes reach only a 0.5 server, and against a
+0.4 server a 0.5 client silently lacks deferred-write ordering and remembered refusals — see
+[version compatibility](/guide/client-support#version-compatibility). A 0.4 server given a 0.5 AOF
+without the `SAVE` refuses to start rather than skip the records it cannot read.
+
+**0.5.0 → 0.5.1.** No format changes: snapshots, the AOF and both dedup sidecars are read and
+written as by 0.5.0, so either version can follow the other. On startup 0.5.1 truncates an
+incomplete record at the end of the AOF (left by a crash mid-append) instead of only skipping it;
+0.5.0 left it in place, which made the following restart fail.
