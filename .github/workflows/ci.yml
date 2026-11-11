@@ -512,18 +512,27 @@ jobs:
       - name: Swift — stage this core
         run: downstream/swift/scripts/build-engine.sh "$GITHUB_WORKSPACE"
 
-      # The SDK commits its generated bindings; a difference here means the
-      # core changed its UniFFI surface and the SDK must regenerate on its
-      # next pin bump. Reported, not failed: the compile below is the gate.
-      - name: Swift — generated bindings vs the committed ones
+      # The SDK commits its generated bindings, and released SDKs ship them.
+      # UniFFI checks each API checksum and the contract version when the
+      # native library loads, so a change to either means bindings generated
+      # from the previous core refuse to load this one — a released SDK cannot
+      # take this core as a drop-in. That fails here. Any other difference
+      # (doc comments) is reported: the SDK regenerates on its next pin bump.
+      # A doc comment on an exported method is hashed into its checksum, which
+      # is how v0.5.1 nearly broke this with a comment edit.
+      - name: Swift — released bindings still load this core
         working-directory: downstream/swift
         run: |
           if git diff --quiet -- Sources/RecachedCore; then
             echo "generated bindings are identical to the SDK's committed ones"
-          else
-            echo "::notice::recached-swift's committed bindings differ from this core's"
-            git diff --stat -- Sources/RecachedCore
+            exit 0
           fi
+          git diff --stat -- Sources/RecachedCore
+          if git diff -U0 -- Sources/RecachedCore | grep -E '^[-+].*(checksum_|contract_version)'; then
+            echo "::error::this core changes a UniFFI checksum or the contract version: SDK releases built on the previous core cannot load it"
+            exit 1
+          fi
+          echo "::notice::recached-swift's committed bindings differ from this core's in documentation only"
 
       - name: Swift — unit and live tests (Linux)
         working-directory: downstream/swift
