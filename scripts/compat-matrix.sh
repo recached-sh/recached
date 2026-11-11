@@ -50,13 +50,25 @@ say() { printf '\n== %s\n' "$*"; }
 
 # ── builds ───────────────────────────────────────────────────────────────────
 
-if [ ! -d "$OLD_DIR" ]; then
+# The old ref must be a real worktree at OLD_REF. A CI cache can restore
+# $OLD_DIR/target without the checkout around it; building in that directory
+# would then find no Cargo.toml, walk up, and build *this* checkout as "old".
+# Keep the restored build output, and put the checkout back around it.
+old_commit="$(git -C "$ROOT" rev-parse "$OLD_REF^{commit}")"
+if [ ! -f "$OLD_DIR/.git" ] || [ "$(git -C "$OLD_DIR" rev-parse HEAD 2>/dev/null)" != "$old_commit" ]; then
   say "worktree $OLD_REF -> $OLD_DIR"
+  saved="$COMPAT_DIR/.target-$OLD_REF"
+  rm -rf "$saved"
+  if [ -d "$OLD_DIR/target" ]; then mv "$OLD_DIR/target" "$saved"; fi
+  rm -rf "$OLD_DIR"
+  git -C "$ROOT" worktree prune
   git -C "$ROOT" worktree add --detach "$OLD_DIR" "$OLD_REF" >/dev/null
+  if [ -d "$saved" ]; then mv "$saved" "$OLD_DIR/target"; fi
 fi
 
 build() {
   local dir="$1"
+  [ -f "$dir/Cargo.toml" ] || { echo "compat-matrix: $dir is not a checkout" >&2; exit 2; }
   say "build $(git -C "$dir" describe --tags --always --dirty)"
   (cd "$dir" &&
     cargo build --locked -q -p recached --bin recached-server &&
@@ -66,6 +78,15 @@ build "$OLD_DIR"
 build "$ROOT"
 
 server_bin() { if [ "$1" = old ]; then echo "$OLD_DIR/target/debug/recached-server"; else echo "$ROOT/target/debug/recached-server"; fi; }
+
+# Never compare a build with itself.
+old_version="$("$(server_bin old)" --version)"
+new_version="$("$(server_bin new)" --version)"
+if [ "$old_version" != "recached-server ${OLD_REF#v}" ] || [ "$old_version" = "$new_version" ]; then
+  echo "compat-matrix: expected old=recached-server ${OLD_REF#v}, got old='$old_version' new='$new_version'" >&2
+  exit 2
+fi
+say "old: $old_version, new: $new_version"
 src_dir() { if [ "$1" = old ]; then echo "$OLD_DIR"; else echo "$ROOT"; fi; }
 
 # start_server <version> <name> <tcp> <ws> [VAR=value...]: starts it in its own
