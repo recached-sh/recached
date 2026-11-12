@@ -1568,3 +1568,25 @@ fn an_already_elapsed_expiry_removes_the_key() {
 fn s(text: &str) -> String {
     text.to_string()
 }
+
+#[test]
+fn a_pushed_copy_is_replayed_against_the_local_store() {
+    // 0.6 servers propagate COPY verbatim (like SINTERSTORE). A client holding
+    // the source applies it and reports the destination changed; the other
+    // 0.6 writes arrive as primitives (DEL, PEXPIREAT, RENAME, ZREM) that
+    // were already replayable.
+    let mut c = client();
+    c.store()
+        .execute(Command::HSet("src".into(), vec![("f".into(), "v".into())]));
+    let frame = b">4\r\n$4\r\nCOPY\r\n$3\r\nsrc\r\n$3\r\ndst\r\n$7\r\nREPLACE\r\n";
+    assert_eq!(c.handle_frame(frame), applied(&["dst"]));
+    assert_eq!(
+        c.store().execute(Command::HGet("dst".into(), "f".into())),
+        bulk("v")
+    );
+    assert!(is_replayable_mutation(&Command::Copy(
+        "a".into(),
+        "b".into(),
+        true
+    )));
+}

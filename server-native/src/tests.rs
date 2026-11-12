@@ -2993,6 +2993,29 @@ fn all_commands() -> Vec<(Command, Expect)> {
             Expect::Keys(&["k", "d"]),
         ),
         (Command::Type("k".into()), Expect::Keys(&["k"])),
+        // ── 0.6 commands ──
+        (Command::GetDel("k".into()), Expect::Keys(&["k"])),
+        (Command::GetEx("k".into(), None), Expect::Keys(&["k"])),
+        (
+            Command::GetEx("k".into(), Some(GetExOption::Ex(5))),
+            Expect::Keys(&["k"]),
+        ),
+        (Command::ExpireTime("k".into()), Expect::Keys(&["k"])),
+        (Command::PExpireTime("k".into()), Expect::Keys(&["k"])),
+        (
+            Command::RenameNx("k".into(), "d".into()),
+            Expect::Keys(&["k", "d"]),
+        ),
+        (
+            Command::Copy("k".into(), "d".into(), false),
+            Expect::Keys(&["k", "d"]),
+        ),
+        (
+            Command::HStrLen("k".into(), "f".into()),
+            Expect::Keys(&["k"]),
+        ),
+        (Command::ZPopMin("k".into(), None), Expect::Keys(&["k"])),
+        (Command::ZPopMax("k".into(), Some(2)), Expect::Keys(&["k"])),
         (
             Command::HSet("k".into(), vec![("f".into(), "v".into())]),
             Expect::Keys(&["k"]),
@@ -6654,5 +6677,6 @@ mod sweep_notification {
 
 mod sync_reliability;
 
+mod commands_v06;
 mod multitenant;
 mod replication_dedup;

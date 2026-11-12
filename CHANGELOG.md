@@ -17,6 +17,11 @@ All notable changes to Recached are documented here.
 - **A promoted replica no longer re-runs a client's retried write that it had already applied.** Replication now carries each write's `DEDUP` identity in the same frame as the write, no-op and refused outcomes as their own records, and the duplicate-suppression table with a full synchronization. Before, replicas received bare mutations, so after a failover a retried `INCR` or `APPEND` whose reply was lost ran twice
 - Capability-negotiated inside the `RCP1` handshake: a 0.6 primary refuses a replica that cannot read the new frames instead of streaming them; a 0.6 replica follows a 0.5 primary in the old format and says so. `RECACHED_REPL_DEDUP=off` keeps the 0.5 stream
 
+### Added — Redis commands
+- `GETDEL`, `GETEX`, `EXPIRETIME`, `PEXPIRETIME`, `RENAMENX`, `COPY`, `HSTRLEN`, `ZPOPMIN`, `ZPOPMAX` — each persisted, replicated, synchronised to browser and mobile clients, scope-checked per key, and listed in `COMMAND INFO`. Writes propagate as primitives every existing consumer replays (`DEL`, `PEXPIREAT`, `PERSIST`, `RENAME`, `ZREM`); `COPY` replays verbatim
+- A Redis differential test compares every reply, errors included, against a digest-pinned `redis:7.2.5` in CI. Deviations are documented: `COPY … DB n` for `n ≠ 0` is refused (one database), and RESP3 score replies keep the RESP2 shape
+- `LMOVE`/`RPOPLPUSH` deferred: they need cross-key atomicity the multi-threaded store does not provide
+
 ### Added
 - `RECACHED_REPL_DEDUP` (default `on`)
 - `RECACHED_SECURITY=multitenant`: a fail-closed profile that refuses to start without a ≥ 32-byte `RECACHED_SYNC_SECRET`, `RECACHED_ALLOWED_ORIGINS`, `RECACHED_PASSWORD` and a memory or key cap, and that requires tokens to carry an expiry (at most `RECACHED_SYNC_MAX_TOKEN_TTL`, 24 h by default) and a `sub` claim

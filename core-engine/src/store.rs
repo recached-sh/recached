@@ -1,4 +1,4 @@
-use crate::cmd::{Command, SetCondition, SetExpiry, ZAddOptions};
+use crate::cmd::{Command, GetExOption, SetCondition, SetExpiry, ZAddOptions};
 use crate::resp::Value;
 use dashmap::DashMap;
 // Aliased: this module has its own `Entry` (the stored value + TTL + recency).
@@ -2660,6 +2660,55 @@ impl KeyValueStore {
         Ok(())
     }
 
+    /// `EXPIRETIME` / `PEXPIRETIME`: -2 for no key, -1 for no expiry,
+    /// otherwise the absolute deadline — floored to seconds, as Redis does.
+    fn expire_time(&self, key: &str, millis: bool) -> Value {
+        let now = now_ms();
+        match self.data.get(key) {
+            None => Value::Integer(-2),
+            Some(e) if e.is_expired(now) => Value::Integer(-2),
+            Some(e) => match e.expires_at_ms {
+                None => Value::Integer(-1),
+                Some(at) => {
+                    let at = if millis { at } else { at / 1000 };
+                    Value::Integer(i64::try_from(at).unwrap_or(i64::MAX))
+                }
+            },
+        }
+    }
+
+    /// `ZPOPMIN` / `ZPOPMAX`: remove up to `count` (default 1) members from
+    /// the low or high end and return `[member, score, …]` — the RESP2 shape,
+    /// which Recached uses for every score reply.
+    fn zpop(&self, key: &str, count: Option<u64>, highest: bool) -> Value {
+        let now = now_ms();
+        match self.data.get_mut(key) {
+            None => Value::Array(Some(vec![])),
+            Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
+            Some(mut e) => match &mut e.value {
+                EntryValue::ZSet(z) => {
+                    // `take` bounds the work by the set, not by the requested
+                    // count, which may be any u64.
+                    let n = usize::try_from(count.unwrap_or(1)).unwrap_or(usize::MAX);
+                    let owned = |(m, s): (&str, f64)| (m.to_string(), s);
+                    let popped: Vec<(String, f64)> = if highest {
+                        z.iter_asc().rev().take(n).map(owned).collect()
+                    } else {
+                        z.iter_asc().take(n).map(owned).collect()
+                    };
+                    let mut reply = Vec::with_capacity(popped.len().saturating_mul(2));
+                    for (member, score) in popped {
+                        z.remove(&member);
+                        reply.push(Value::BulkString(Some(member.into_bytes())));
+                        reply.push(Value::BulkString(Some(format_score(score).into_bytes())));
+                    }
+                    Value::Array(Some(reply))
+                }
+                _ => Value::Error(WRONGTYPE.to_string()),
+            },
+        }
+    }
+
     fn execute_inner(&self, cmd: Command) -> Value {
         match cmd {
             // Ephemeral keys are ordinary strings to the engine — their lifetime
@@ -2975,6 +3024,69 @@ impl KeyValueStore {
             Command::ExpireAt(key, ts) => set_expiry(&self.data, key, ts.saturating_mul(1000)),
             Command::PExpireAt(key, ts) => set_expiry(&self.data, key, ts),
 
+            Command::GetDel(key) => {
+                let now = now_ms();
+                // One guard for the read and the delete, as in GETSET: two
+                // callers must not both read the value both believe they took.
+                match self.data.entry(key) {
+                    DashEntry::Vacant(_) => Value::BulkString(None),
+                    DashEntry::Occupied(occupied) => {
+                        if occupied.get().is_expired(now) {
+                            return Value::BulkString(None);
+                        }
+                        match &occupied.get().value {
+                            EntryValue::Str(_) => {}
+                            _ => return Value::Error(WRONGTYPE.to_string()),
+                        }
+                        match occupied.remove().value {
+                            EntryValue::Str(v) => Value::BulkString(Some(v.into_bytes())),
+                            _ => Value::BulkString(None),
+                        }
+                    }
+                }
+            }
+
+            Command::GetEx(key, option) => {
+                let now = now_ms();
+                let DashEntry::Occupied(mut occupied) = self.data.entry(key) else {
+                    return Value::BulkString(None);
+                };
+                if occupied.get().is_expired(now) {
+                    return Value::BulkString(None);
+                }
+                let value = match &occupied.get().value {
+                    EntryValue::Str(v) => Value::BulkString(Some(v.clone().into_bytes())),
+                    _ => return Value::Error(WRONGTYPE.to_string()),
+                };
+                occupied.get().touch(now);
+                let deadline = match option {
+                    None => return value,
+                    Some(GetExOption::Persist) => None,
+                    Some(GetExOption::Ex(secs)) => Some(secs.saturating_mul(1000).checked_add(now)),
+                    Some(GetExOption::Px(ms)) => Some(ms.checked_add(now)),
+                    Some(GetExOption::ExAt(secs)) => Some(secs.checked_mul(1000)),
+                    Some(GetExOption::PxAt(ms)) => Some(Some(ms)),
+                };
+                match deadline {
+                    None => occupied.get_mut().expires_at_ms = None,
+                    Some(None) => {
+                        return Value::Error(
+                            "ERR invalid expire time in 'getex' command".to_string(),
+                        );
+                    }
+                    // A deadline already past deletes the key, as Redis does;
+                    // the value read before it is still the reply.
+                    Some(Some(at)) if at <= now => {
+                        occupied.remove();
+                    }
+                    Some(Some(at)) => occupied.get_mut().expires_at_ms = Some(at),
+                }
+                value
+            }
+
+            Command::ExpireTime(key) => self.expire_time(&key, false),
+            Command::PExpireTime(key) => self.expire_time(&key, true),
+
             Command::Ttl(key) => {
                 let now = now_ms();
                 match self.data.get(&key) {
@@ -3149,6 +3261,57 @@ impl KeyValueStore {
                 }
             }
 
+            // Two keys: atomic against other writes to either, because every
+            // write takes the store's per-key ordering for the keys
+            // `mutation_scope` names — and RENAMENX names both. A reader can
+            // still observe the instant between removal and insertion, as with
+            // RENAME; see the concurrency model in the command reference.
+            Command::RenameNx(src, dst) => {
+                let now = now_ms();
+                let source_live = self.data.get(&src).is_some_and(|e| !e.is_expired(now));
+                if !source_live {
+                    return Value::Error("ERR no such key".to_string());
+                }
+                if src == dst || self.data.get(&dst).is_some_and(|e| !e.is_expired(now)) {
+                    return Value::Integer(0);
+                }
+                match self.data.remove(&src) {
+                    Some((_, entry)) if !entry.is_expired(now) => {
+                        self.data.insert(dst, entry);
+                        Value::Integer(1)
+                    }
+                    _ => Value::Error("ERR no such key".to_string()),
+                }
+            }
+
+            Command::Copy(src, dst, replace) => {
+                let now = now_ms();
+                // Cloned under a shared guard, released before the
+                // destination is written: holding a guard on one shard while
+                // taking another can deadlock against a writer doing the
+                // reverse, or against itself when both keys share a shard.
+                let copy = match self.data.get(&src) {
+                    Some(e) if !e.is_expired(now) => {
+                        let mut copy = e.value().clone();
+                        copy.last_access_ms = AtomicU64::new(now);
+                        copy
+                    }
+                    _ => return Value::Integer(0),
+                };
+                match self.data.entry(dst) {
+                    DashEntry::Occupied(mut occupied) => {
+                        if !replace && !occupied.get().is_expired(now) {
+                            return Value::Integer(0);
+                        }
+                        occupied.insert(copy);
+                    }
+                    DashEntry::Vacant(vacant) => {
+                        vacant.insert(copy);
+                    }
+                }
+                Value::Integer(1)
+            }
+
             Command::Type(key) => {
                 let now = now_ms();
                 match self.data.get(&key) {
@@ -3190,6 +3353,21 @@ impl KeyValueStore {
                     h.insert(field, val.into());
                 }
                 Value::Integer(new_count as i64)
+            }
+
+            Command::HStrLen(key, field) => {
+                let now = now_ms();
+                match self.data.get(&key) {
+                    None => Value::Integer(0),
+                    Some(e) if e.is_expired(now) => Value::Integer(0),
+                    Some(e) => match &e.value {
+                        EntryValue::Hash(h) => {
+                            e.touch(now);
+                            Value::Integer(h.get(&field).map_or(0, |v| v.len() as i64))
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
             }
 
             Command::HGet(key, field) => {
@@ -4199,6 +4377,9 @@ impl KeyValueStore {
                 }
             }
 
+            Command::ZPopMin(key, count) => self.zpop(&key, count, false),
+            Command::ZPopMax(key, count) => self.zpop(&key, count, true),
+
             Command::ZRem(key, members) => {
                 let now = now_ms();
                 match self.data.get_mut(&key) {
@@ -4600,8 +4781,17 @@ fn mutation_scope(cmd: &Command) -> MutationScope {
         | Command::RlSet(key, _, _)
         | Command::RlCheck(key, _)
         | Command::JSet(key, _, _)
-        | Command::JMerge(key, _) => one(key),
+        | Command::JMerge(key, _)
+        | Command::GetDel(key)
+        | Command::GetEx(key, Some(_))
+        | Command::ZPopMin(key, _)
+        | Command::ZPopMax(key, _) => one(key),
         Command::Del(keys) | Command::Unlink(keys) => MutationScope::Keys(keys.clone()),
+        // Both keys: the existence checks and the move must not interleave
+        // with another write to either.
+        Command::RenameNx(source, destination) | Command::Copy(source, destination, _) => {
+            MutationScope::Keys(vec![source.clone(), destination.clone()])
+        }
         Command::MSet(pairs) => {
             MutationScope::Keys(pairs.iter().map(|(key, _)| key.clone()).collect())
         }
@@ -4656,6 +4846,7 @@ fn creating_keys(cmd: &Command) -> SmallVec<[&str; 4]> {
         | Command::JSet(key, _, _)
         | Command::JMerge(key, _)
         | Command::SMove(_, key, _)
+        | Command::Copy(_, key, _)
         | Command::SInterStore(key, _)
         | Command::SUnionStore(key, _)
         | Command::SDiffStore(key, _) => keys.push(key.as_str()),
@@ -4715,8 +4906,8 @@ fn growth_bound(cmd: &Command) -> Option<usize> {
         // Base charge plus at most one new bucket per check.
         Command::RlSet(k, _, _) | Command::RlCheck(k, _) => new(k) + 32,
         // A rename moves an entry: only the key's own length can grow.
-        Command::Rename(_, dst) => dst.len(),
-        Command::Del(_) | Command::Unlink(_) => 0,
+        Command::Rename(_, dst) | Command::RenameNx(_, dst) => dst.len(),
+        Command::Del(_) | Command::Unlink(_) | Command::GetDel(_) | Command::GetEx(..) => 0,
         Command::Expire(..)
         | Command::PExpire(..)
         | Command::ExpireAt(..)
@@ -4730,7 +4921,10 @@ fn growth_bound(cmd: &Command) -> Option<usize> {
         | Command::LTrim(k, _, _)
         | Command::SRem(k, _)
         | Command::SPop(k, _)
-        | Command::ZRem(k, _) => new(k),
+        | Command::ZRem(k, _)
+        | Command::ZPopMin(k, _)
+        | Command::ZPopMax(k, _) => new(k),
+        // COPY's growth is the source's size, which is data — no bound.
         _ => return None,
     };
     Some(bound)
@@ -4810,7 +5004,10 @@ fn write_cost(cmd: &Command) -> usize {
             dst.len() + OVERHEAD
         }
         // Moves the value rather than adding one; the new key is the only growth.
-        Command::Rename(_, dst) => dst.len(),
+        Command::Rename(_, dst) | Command::RenameNx(_, dst) => dst.len(),
+        // Duplicates a value of unknown size; charge the key and let the
+        // sweep measure the rest, as for the STORE family.
+        Command::Copy(_, dst, _) => dst.len() + OVERHEAD,
 
         // ── Everything else cannot grow the keyspace ──────────────────────
         // Deletions, expiry changes, pops and trims only shrink it; reads and
@@ -4825,6 +5022,13 @@ fn write_cost(cmd: &Command) -> usize {
         | Command::Config(_)
         | Command::CommandQuery(_)
         | Command::Get(_)
+        | Command::GetDel(_)
+        | Command::GetEx(..)
+        | Command::ExpireTime(_)
+        | Command::PExpireTime(_)
+        | Command::HStrLen(..)
+        | Command::ZPopMin(..)
+        | Command::ZPopMax(..)
         | Command::Del(_)
         | Command::Unlink(_)
         | Command::Strlen(_)
@@ -11312,3 +11516,6 @@ mod write_outcome_tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod v06_command_tests;

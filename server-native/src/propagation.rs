@@ -59,6 +59,14 @@ pub(crate) fn is_write_command(cmd: &Command) -> bool {
             | Command::RlCheck(..)
             | Command::JSet(..)
             | Command::JMerge(..)
+            // Redis flags GETEX `write` even without an option, so a replica
+            // refuses it either way and scope requires write for it.
+            | Command::GetDel(..)
+            | Command::GetEx(..)
+            | Command::RenameNx(..)
+            | Command::Copy(..)
+            | Command::ZPopMin(..)
+            | Command::ZPopMax(..)
     )
 }
 
@@ -118,10 +126,17 @@ pub(crate) fn primary_keys(cmd: &Command) -> Vec<String> {
         // key's ordering domain rather than in none.
         | Command::RlCheck(k, _)
         | Command::JSet(k, _, _)
-        | Command::JMerge(k, _) => vec![k.clone()],
+        | Command::JMerge(k, _)
+        | Command::GetDel(k)
+        | Command::GetEx(k, _)
+        | Command::ZPopMin(k, _)
+        | Command::ZPopMax(k, _) => vec![k.clone()],
+        // COPY writes only its destination; the source is read, and is in its
+        // ordering domain through `ordering_keys`.
+        Command::Copy(_, dst, _) => vec![dst.clone()],
         Command::Del(keys) | Command::Unlink(keys) => keys.clone(),
         Command::MSet(pairs) => pairs.iter().map(|(k, _)| k.clone()).collect(),
-        Command::Rename(src, dst) | Command::SMove(src, dst, _) => {
+        Command::Rename(src, dst) | Command::RenameNx(src, dst) | Command::SMove(src, dst, _) => {
             vec![src.clone(), dst.clone()]
         }
         _ => vec![],
@@ -148,6 +163,7 @@ pub(crate) fn ordering_keys(cmd: &Command) -> Option<Vec<String>> {
             keys.extend(sources.iter().cloned());
             Some(keys)
         }
+        Command::Copy(src, dst, _) => Some(vec![dst.clone(), src.clone()]),
         _ => Some(primary_keys(cmd)),
     }
 }
@@ -241,6 +257,17 @@ fn reconcile_ephemeral_state(
         }
         Command::Rename(source, destination) if matches!(response, Value::SimpleString(_)) => {
             state.forget_ephemeral_keys([source.as_str(), destination.as_str()]);
+        }
+        Command::RenameNx(source, destination) if matches!(response, Value::Integer(1)) => {
+            state.forget_ephemeral_keys([source.as_str(), destination.as_str()]);
+        }
+        // The value left the key, or the key now belongs to whoever wrote its
+        // copy; either way no connection's close should delete it.
+        Command::GetDel(key) if matches!(response, Value::BulkString(Some(_))) => {
+            state.forget_ephemeral_keys(std::iter::once(key.as_str()));
+        }
+        Command::Copy(_, destination, _) if matches!(response, Value::Integer(1)) => {
+            state.forget_ephemeral_keys(std::iter::once(destination.as_str()));
         }
         Command::SInterStore(destination, _)
         | Command::SUnionStore(destination, _)
@@ -1143,6 +1170,62 @@ pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Opt
             _ => None,
         },
         Command::FlushDb => Some(resp_push(&[b"FLUSHDB"])),
+
+        // ── 0.6 commands, propagated as primitives every consumer already
+        // replays (replicas, AOF, and 0.5 browser and mobile clients) ─────
+        Command::GetDel(k) => match response {
+            Value::BulkString(Some(_)) => Some(resp_push(&[b"DEL", k.as_bytes()])),
+            _ => None,
+        },
+        Command::GetEx(k, Some(option)) => {
+            if !matches!(response, Value::BulkString(Some(_))) {
+                return None;
+            }
+            let deadline = match option {
+                GetExOption::Persist => {
+                    return Some(resp_push(&[b"PERSIST", k.as_bytes()]));
+                }
+                GetExOption::Ex(secs) => secs.saturating_mul(1000).saturating_add(now_ms),
+                GetExOption::Px(ms) => ms.saturating_add(now_ms),
+                GetExOption::ExAt(secs) => secs.saturating_mul(1000),
+                GetExOption::PxAt(ms) => *ms,
+            };
+            if deadline <= now_ms {
+                // The store deleted it; say so rather than ship a past
+                // deadline for each consumer to interpret.
+                Some(resp_push(&[b"DEL", k.as_bytes()]))
+            } else {
+                let at = deadline.to_string();
+                Some(resp_push(&[b"PEXPIREAT", k.as_bytes(), at.as_bytes()]))
+            }
+        }
+        Command::RenameNx(src, dst) => match response {
+            Value::Integer(1) => Some(resp_push(&[b"RENAME", src.as_bytes(), dst.as_bytes()])),
+            _ => None,
+        },
+        // Replayed verbatim, like the STORE family: deterministic against the
+        // same prior state, which ordering guarantees. REPLACE always, so a
+        // consumer that somehow holds the destination converges on the copy.
+        Command::Copy(src, dst, _) => match response {
+            Value::Integer(1) => Some(resp_push(&[
+                b"COPY",
+                src.as_bytes(),
+                dst.as_bytes(),
+                b"REPLACE",
+            ])),
+            _ => None,
+        },
+        Command::ZPopMin(k, _) | Command::ZPopMax(k, _) => match response {
+            Value::Array(Some(items)) if !items.is_empty() => {
+                let mut parts: Vec<&[u8]> = vec![b"ZREM", k.as_bytes()];
+                parts.extend(items.iter().step_by(2).filter_map(|item| match item {
+                    Value::BulkString(Some(member)) => Some(member.as_slice()),
+                    _ => None,
+                }));
+                Some(resp_push(&parts))
+            }
+            _ => None,
+        },
         Command::Rename(src, dst) => match response {
             Value::Error(_) => None,
             _ => Some(resp_push(&[b"RENAME", src.as_bytes(), dst.as_bytes()])),
