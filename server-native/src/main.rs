@@ -652,7 +652,32 @@ async fn run(
 
     let is_replica_start = replicaof.is_some();
     let replicas: ReplRegistry = ReplHub::new();
+    // DEDUP-aware replication: on unless turned off. With it on, every replica
+    // of this node must be 0.6 or later — older ones are refused at the
+    // handshake rather than sent frames they cannot read.
+    let repl_dedup = match std::env::var("RECACHED_REPL_DEDUP").ok() {
+        None => true,
+        Some(raw) => match parse_env_bool("RECACHED_REPL_DEDUP", &raw) {
+            Ok(on) => on,
+            Err(msg) => {
+                error!("{msg}");
+                std::process::exit(1);
+            }
+        },
+    };
+    replicas.configure_dedup(repl_dedup);
     if repl_listen {
+        if repl_dedup {
+            info!(
+                "Replication carries DEDUP state: a promoted replica answers retried writes it \
+                 already applied with +DUP. Replicas must run 0.6 or later."
+            );
+        } else {
+            warn!(
+                "RECACHED_REPL_DEDUP=off: replicas receive writes without their DEDUP identities, \
+                 so a promoted replica may run a client's retried write a second time."
+            );
+        }
         replicas.configure_backlog(repl_backlog_bytes);
         replicas.configure_queue_bytes(repl_queue_bytes);
         info!(
@@ -752,7 +777,7 @@ async fn run(
     // decision the operator makes, not a port that appears by default.
     if repl_listen {
         let store_r = Arc::clone(&store);
-        let snap_r = Arc::clone(&snap_cfg);
+        let snap_r = Arc::clone(&state);
         let reg_r = Arc::clone(&replicas);
         let pwd_r = repl_password.clone().map(Arc::new);
         let cap_r = repl_channel_capacity;

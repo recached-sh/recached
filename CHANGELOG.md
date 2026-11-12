@@ -13,13 +13,19 @@ All notable changes to Recached are documented here.
 - **The sync fan-out fails closed.** A mutation that names no keys reaches a scoped connection only when it is keyspace-wide (`FLUSHDB`); before, any write missing from the key extractor would have been pushed to every tenant. `RLCHECK` was such a write — it is never broadcast, so nothing leaked — and is now listed
 - Five refused `SYNC TOKEN`s close the socket, as five refused passwords do
 
+### Reliability — replication
+- **A promoted replica no longer re-runs a client's retried write that it had already applied.** Replication now carries each write's `DEDUP` identity in the same frame as the write, no-op and refused outcomes as their own records, and the duplicate-suppression table with a full synchronization. Before, replicas received bare mutations, so after a failover a retried `INCR` or `APPEND` whose reply was lost ran twice
+- Capability-negotiated inside the `RCP1` handshake: a 0.6 primary refuses a replica that cannot read the new frames instead of streaming them; a 0.6 replica follows a 0.5 primary in the old format and says so. `RECACHED_REPL_DEDUP=off` keeps the 0.5 stream
+
 ### Added
+- `RECACHED_REPL_DEDUP` (default `on`)
 - `RECACHED_SECURITY=multitenant`: a fail-closed profile that refuses to start without a ≥ 32-byte `RECACHED_SYNC_SECRET`, `RECACHED_ALLOWED_ORIGINS`, `RECACHED_PASSWORD` and a memory or key cap, and that requires tokens to carry an expiry (at most `RECACHED_SYNC_MAX_TOKEN_TTL`, 24 h by default) and a `sub` claim
 - Token claims segment: `entries|expiry|sub=<id>;aud=<id>`. `RECACHED_SYNC_AUDIENCE` requires a matching `aud`; `RECACHED_SYNC_REQUIRE_SUB` requires `sub`
 - `RECACHED_WS_AUTH=token`: a valid sync token is the WebSocket credential, so browsers never hold `RECACHED_PASSWORD` (which unlocks the unscoped RESP port). The default, `password`, is unchanged
 - `RECACHED_SYNC_PUBSUB=open` restores unscoped pub/sub for a transition
 
 ### Changed — upgrade notes
+- **Replication: upgrade replicas before the primary.** A 0.6 primary refuses 0.5 replicas unless it runs with `RECACHED_REPL_DEDUP=off`
 - **Breaking for strict deployments that use pub/sub from browsers:** add `chr=`/`chrw=` grants to tokens before upgrading, or set `RECACHED_SYNC_PUBSUB=open` for the transition
 - A token carrying claims is refused by a 0.5 server (fail-closed); mint the two-segment form until every server is on 0.6
 - Applications should renew tokens before they expire (`syncToken(newToken)`); a socket that outlives its token is now closed

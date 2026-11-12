@@ -531,14 +531,14 @@ pub(crate) async fn replay_aof_recovering(
 }
 
 /// The dedup information an AOF record carries.
-enum DedupRecord {
+pub(crate) enum DedupRecord {
     /// `DEDUP <client> <id> <write…>` or `RECACHED-DEDUP <client> <id>`.
     Mark(String, u64),
     /// `RECACHED-DEDUP-REFUSED <client> <id> <error>`.
     Refused(String, u64, String),
 }
 
-fn dedup_record(value: &Value) -> Option<DedupRecord> {
+pub(crate) fn dedup_record(value: &Value) -> Option<DedupRecord> {
     let items = match value {
         Value::Push(items) | Value::Array(Some(items)) => items,
         _ => return None,
@@ -562,7 +562,7 @@ fn dedup_record(value: &Value) -> Option<DedupRecord> {
     }
 }
 
-fn is_dedup_mark_only(value: &Value) -> bool {
+pub(crate) fn is_dedup_mark_only(value: &Value) -> bool {
     matches!(
         value,
         Value::Push(items) | Value::Array(Some(items))

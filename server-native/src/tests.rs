@@ -1458,7 +1458,7 @@ async fn integration_replica_receives_write() {
     tokio::spawn(async move {
         while let Ok((socket, _)) = repl_listener.accept().await {
             let s = Arc::clone(&primary_store);
-            let sc = Arc::clone(&snap_cfg);
+            let sc = ServerState::for_tests(Arc::clone(&snap_cfg), Arc::clone(&reg), false);
             let r = Arc::clone(&reg);
             tokio::spawn(handle_replica(
                 socket,
@@ -1705,6 +1705,8 @@ async fn replication_lag_counts_unacknowledged_frames() {
     // far behind. Lag must report them.
     let store = Arc::new(KeyValueStore::new());
     let registry: ReplRegistry = ReplHub::new();
+    // This replica is hand-written to the 0.5 handshake.
+    registry.configure_dedup(false);
     let snap_cfg = Arc::new(SnapshotConfig {
         path: tmp_path("lag_snap.rdb"),
         last_save: AtomicI64::new(0),
@@ -1716,7 +1718,7 @@ async fn replication_lag_counts_unacknowledged_frames() {
     {
         let (s, sc, r) = (
             Arc::clone(&store),
-            Arc::clone(&snap_cfg),
+            ServerState::for_tests(Arc::clone(&snap_cfg), Arc::clone(&registry), false),
             Arc::clone(&registry),
         );
         tokio::spawn(async move {
@@ -6653,3 +6655,4 @@ mod sweep_notification {
 mod sync_reliability;
 
 mod multitenant;
+mod replication_dedup;
