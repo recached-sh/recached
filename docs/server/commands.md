@@ -43,6 +43,7 @@ cross-key atomicity the multi-threaded store does not provide (`SMOVE` documents
 | Command | Description |
 |---|---|
 | `PING [message]` | Returns `PONG`, or echoes `message` if provided. Used to test connectivity and measure latency. |
+| `ECHO message` | Returns `message` byte for byte; binary-safe. `redis-cli --pipe` ends every mass insert with one. *(0.6)* |
 | `AUTH password` | Authenticates the connection. Required on the first command if `RECACHED_PASSWORD` is set. 5 consecutive failures close the connection. |
 | `HELLO [protover]` | Reports server info and negotiates the protocol version. `3` switches the connection to RESP3, `2` back to RESP2, no argument reports without changing. Unsupported versions return `-NOPROTO` and leave the connection unchanged. Requires authentication. See [Wire Protocol](/server/protocol#protocol-version-tcp). |
 | `INFO [section ...]` | Reports server statistics as a text blob, in Redis's `# Section` / `field:value` format. No arguments returns the default sections; naming sections returns only those, in the order given. `all`, `everything`, and `default` are accepted as aliases for the default set. Unknown section names return nothing rather than an error. Requires authentication. See [INFO](#info) below. |

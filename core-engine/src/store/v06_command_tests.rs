@@ -540,3 +540,21 @@ fn concurrent_zpop_never_hands_out_a_member_twice() {
     assert_eq!(popped.len(), 2_000);
     assert_eq!(unique.len(), 2_000);
 }
+
+#[test]
+fn echo_returns_binary_messages_byte_for_byte() {
+    // `redis-cli --pipe` ends a mass insert with ECHO and 20 random bytes,
+    // and waits for them to come back; refusing non-UTF-8 here broke it.
+    let raw: Vec<u8> = (200u8..220).collect();
+    let cmd = Command::from_value(Value::Array(Some(vec![
+        bulk("ECHO"),
+        Value::BulkString(Some(raw.clone())),
+    ])))
+    .unwrap();
+    assert_eq!(
+        KeyValueStore::new().execute(cmd),
+        Value::BulkString(Some(raw))
+    );
+    assert!(parse(&["ECHO"]).is_err());
+    assert!(parse(&["ECHO", "a", "b"]).is_err());
+}

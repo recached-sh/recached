@@ -2726,6 +2726,7 @@ impl KeyValueStore {
                 Some(m) => Value::BulkString(Some(m.into_bytes())),
                 None => Value::SimpleString("PONG".to_string()),
             },
+            Command::Echo(msg) => Value::BulkString(Some(msg)),
             Command::Auth(_) => Value::Error(
                 "ERR AUTH is handled by the connection layer, not the store".to_string(),
             ),
@@ -5014,6 +5015,7 @@ fn write_cost(cmd: &Command) -> usize {
         // connection-level commands do not touch it at all. Listed rather than
         // collapsed into `_` so a new variant has to be classified.
         Command::Ping(_)
+        | Command::Echo(_)
         | Command::Auth(_)
         | Command::Hello(_)
         | Command::Info(_)

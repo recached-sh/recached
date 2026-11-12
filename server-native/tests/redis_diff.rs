@@ -240,6 +240,11 @@ fn cases() -> Vec<(&'static str, Vec<Vec<&'static str>>)> {
             ],
         ),
         (
+            // `redis-cli --pipe` terminates every mass insert with ECHO.
+            "echo",
+            vec![c("ECHO hello"), c("ECHO"), c("ECHO a b")],
+        ),
+        (
             "zpop",
             vec![
                 c("ZADD z 1 a 1 b 2 c 3 d"),

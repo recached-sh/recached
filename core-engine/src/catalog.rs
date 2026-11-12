@@ -160,6 +160,16 @@ pub const CATALOG: &[CommandSpec] = &[
         "Abandons the transaction queue.",
     ),
     spec(
+        "echo",
+        2,
+        &["fast"],
+        0,
+        0,
+        0,
+        "core",
+        "Returns the given string.",
+    ),
+    spec(
         "exec",
         1,
         &["noscript", "loading", "stale", "skip_slowlog"],

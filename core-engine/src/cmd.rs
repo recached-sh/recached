@@ -104,6 +104,9 @@ pub struct ScanArgs {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Ping(Option<String>),
+    /// `ECHO message` — the message back, byte for byte. `redis-cli --pipe`
+    /// ends every mass insert with one carrying 20 random bytes.
+    Echo(Vec<u8>),
     Auth(String),
     /// `HELLO [protover]` — protocol negotiation. Connection-level like AUTH:
     /// the store never sees it, because the answer depends on the connection.
@@ -410,6 +413,10 @@ impl Command {
                             None
                         };
                         Ok(Command::Ping(msg))
+                    }
+                    "ECHO" => {
+                        need_exact!(2);
+                        Ok(Command::Echo(take_bytes(&mut arr[1]).unwrap_or_default()))
                     }
                     "AUTH" => {
                         need!(2);
@@ -1587,6 +1594,8 @@ fn is_payload_index(cmd_name: &str, i: usize) -> bool {
         "LSET" | "LREM" => i == 3,
         // channel message
         "PUBLISH" => i == 2,
+        // message
+        "ECHO" => i == 1,
         // key v1 v2 …
         "LPUSH" | "RPUSH" | "LPUSHX" | "RPUSHX" => i >= 2,
         // key f1 v1 f2 v2 … — values are the odd positions from 3

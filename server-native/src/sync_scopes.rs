@@ -636,6 +636,7 @@ pub(crate) enum CommandScope {
 pub(crate) fn command_scope(cmd: &Command) -> CommandScope {
     match cmd {
         Command::Ping(_)
+        | Command::Echo(_)
         | Command::Auth(_)
         | Command::Hello(_)
         | Command::Multi

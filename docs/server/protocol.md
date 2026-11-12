@@ -65,6 +65,13 @@ frames on a RESP3 connection and plain arrays (`*`) on a RESP2 one.** RESP2 has 
 sending `>` to a RESP2 client is unparseable — before 0.2.2 the server did exactly that, which broke
 standard Redis clients that subscribed without negotiating.
 
+Between commands, empty lines are ignored, as Redis's inline protocol ignores them
+(`redis-cli --pipe` sends one). Any other malformed frame is answered
+`-ERR Protocol error: …` and the connection is **closed**, as in Redis: the server cannot know
+where the next command starts, and answering one error for a buffer of pipelined commands left
+the client matching every later reply to the wrong request. Before 0.6 the server cleared its
+buffer and carried on, silently dropping those commands.
+
 `HELLO` requires authentication when a password is set; the pre-auth reply is `-NOAUTH` and carries
 no server details.
 

@@ -159,6 +159,7 @@ pub(crate) fn client_list_lines() -> String {
 pub(crate) fn command_name(cmd: &Command) -> &'static str {
     match cmd {
         Command::Ping(_) => "ping",
+        Command::Echo(_) => "echo",
         Command::Auth(_) => "auth",
         Command::Hello(_) => "hello",
         Command::Info(_) => "info",
