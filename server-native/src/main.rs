@@ -275,23 +275,6 @@ async fn run(
         warn!("Authentication DISABLED. Set RECACHED_PASSWORD to enable.");
     }
 
-    // ── sync scoping ──────────────────────────────────────────────────────
-    let sync_secret: Arc<Option<String>> = Arc::new(
-        std::env::var("RECACHED_SYNC_SECRET")
-            .ok()
-            .filter(|s| !s.is_empty()),
-    );
-    if sync_secret.is_some() {
-        info!(
-            "Sync scoping ENABLED (strict): WebSocket clients receive no pushes and no key access until they present 'SYNC TOKEN <token>'."
-        );
-    } else {
-        warn!(
-            "Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port {} to untrusted clients.",
-            ws_port
-        );
-    }
-
     // ── IP allowlist ──────────────────────────────────────────────────────
     let allowed_ips: Option<Arc<Vec<IpAddr>>> = match std::env::var("RECACHED_ALLOW_IPS").ok() {
         None => None,
@@ -356,6 +339,47 @@ async fn run(
         Err(std::env::VarError::NotPresent) => None,
         Err(error) => return Err(error.into()),
     };
+
+    // ── sync scoping ──────────────────────────────────────────────────────
+    // Resolved after the settings the multitenant profile checks, so every
+    // unsafe one is reported together.
+    let facts = DeploymentFacts {
+        resp_password: global_password.is_some(),
+        allowed_origins: allowed_origins.is_some(),
+        memory_cap: max_memory_bytes.is_some() || max_keys.is_some(),
+    };
+    let (sync_policy, security_profile) =
+        match resolve_sync_policy(&|var| std::env::var(var).ok(), &facts) {
+            Ok(resolved) => resolved,
+            Err(msg) => {
+                error!("{msg}");
+                std::process::exit(1);
+            }
+        };
+    if security_profile == SecurityProfile::Multitenant {
+        info!(
+            "Security profile: multitenant — tokens must carry an expiry (max {}s) and a subject; \
+             the sync token is the WebSocket credential; channels need chr=/chrw= grants.",
+            sync_policy.max_ttl_secs.unwrap_or_default()
+        );
+    }
+    if sync_policy.is_strict() {
+        info!(
+            "Sync scoping ENABLED (strict): WebSocket clients receive no pushes and no key access until they present 'SYNC TOKEN <token>'."
+        );
+        if sync_policy.pubsub == PubSubPolicy::Open {
+            warn!(
+                "RECACHED_SYNC_PUBSUB=open: every WebSocket client may subscribe to and publish on \
+                 every channel, whatever its token grants."
+            );
+        }
+    } else {
+        warn!(
+            "Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port {} to untrusted clients.",
+            ws_port
+        );
+    }
+    let sync_policy: Arc<SyncPolicy> = Arc::new(sync_policy);
 
     let eviction_raw = std::env::var("RECACHED_EVICTION").unwrap_or_default();
     let eviction_policy = match eviction_raw.to_lowercase().as_str() {
@@ -1024,7 +1048,7 @@ async fn run(
                         let wr = Arc::clone(&watch_registry);
                         let tls = Arc::clone(&tls_acceptor);
                         let sc = Arc::clone(&state);
-                        let ss = Arc::clone(&sync_secret);
+                        let ss = Arc::clone(&sync_policy);
                         let ao = Arc::clone(&allowed_origins);
                         let id = next_conn_id();
                         tokio::spawn(async move {

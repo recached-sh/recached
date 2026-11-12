@@ -85,6 +85,14 @@ pub(crate) fn ws_max_frame_bytes() -> usize {
 /// The client resynchronises by reconnecting; see `handle_ws`.
 pub(crate) const WS_CLOSE_SYNC_GAP: u16 = 4001;
 
+/// Close code sent when the sync token scoping a connection expires without
+/// being renewed by a fresh `SYNC TOKEN`.
+pub(crate) const WS_CLOSE_TOKEN_EXPIRED: u16 = 4002;
+
+/// Close code sent after a `SYNC TOKEN` that revoked something the connection
+/// held (a live query, watch or channel subscription) or changed its subject.
+pub(crate) const WS_CLOSE_SCOPE_CHANGED: u16 = 4003;
+
 pub(crate) const BROADCAST_CHANNEL_CAPACITY: usize = 512;
 
 pub(crate) const DEFAULT_MAX_CONNECTIONS: usize = 1024;
@@ -455,6 +463,307 @@ pub(crate) fn parse_save_conditions(s: &str) -> Result<Vec<SaveCondition>, Strin
 }
 
 // ── Replication server (primary side) ────────────────────────────────────────
+
+// ── Sync authorization policy ───────────────────────────────────────────────
+
+/// Shortest `RECACHED_SYNC_SECRET` the multitenant profile accepts. An HMAC
+/// key shorter than its 32-byte output gives up strength for nothing.
+pub(crate) const MIN_SYNC_SECRET_BYTES: usize = 32;
+
+/// Default ceiling on a token's lifetime under the multitenant profile.
+pub(crate) const DEFAULT_MULTITENANT_MAX_TOKEN_TTL_SECS: u64 = 24 * 60 * 60;
+
+/// Facts about the rest of the configuration that the multitenant profile
+/// checks, gathered by `main` once each has been parsed.
+#[derive(Debug, Default)]
+pub(crate) struct DeploymentFacts {
+    pub(crate) resp_password: bool,
+    pub(crate) allowed_origins: bool,
+    pub(crate) memory_cap: bool,
+}
+
+/// `RECACHED_SECURITY=multitenant`, or the default profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SecurityProfile {
+    Default,
+    Multitenant,
+}
+
+/// Resolve the sync policy from environment lookups, refusing anything
+/// misspelled or — under the multitenant profile — unsafe to serve untrusted
+/// clients with. `env` returns a variable's value, or `None` when unset.
+///
+/// Every violation is reported at once, so an operator fixes the
+/// configuration in one pass instead of one restart per mistake.
+pub(crate) fn resolve_sync_policy(
+    env: &dyn Fn(&str) -> Option<String>,
+    facts: &DeploymentFacts,
+) -> Result<(SyncPolicy, SecurityProfile), String> {
+    let profile = match env("RECACHED_SECURITY").as_deref().map(str::trim) {
+        None | Some("") | Some("default") => SecurityProfile::Default,
+        Some("multitenant") => SecurityProfile::Multitenant,
+        Some(other) => {
+            return Err(format!(
+                "RECACHED_SECURITY: '{other}' is not a profile — expected 'multitenant' or 'default'."
+            ));
+        }
+    };
+    let multitenant = profile == SecurityProfile::Multitenant;
+    let mut problems: Vec<String> = Vec::new();
+
+    let secret = env("RECACHED_SYNC_SECRET").filter(|s| !s.is_empty());
+
+    let pubsub = match env("RECACHED_SYNC_PUBSUB").as_deref().map(str::trim) {
+        None | Some("") | Some("scoped") => PubSubPolicy::Scoped,
+        Some("open") => PubSubPolicy::Open,
+        Some(other) => {
+            return Err(format!(
+                "RECACHED_SYNC_PUBSUB: '{other}' is not a mode — expected 'scoped' or 'open'."
+            ));
+        }
+    };
+
+    let token_auth = match env("RECACHED_WS_AUTH").as_deref().map(str::trim) {
+        None | Some("") => multitenant,
+        Some("token") => true,
+        Some("password") => false,
+        Some(other) => {
+            return Err(format!(
+                "RECACHED_WS_AUTH: '{other}' is not a mode — expected 'token' or 'password'."
+            ));
+        }
+    };
+
+    let require_subject = match env("RECACHED_SYNC_REQUIRE_SUB") {
+        None => multitenant,
+        Some(raw) => parse_env_bool("RECACHED_SYNC_REQUIRE_SUB", &raw)?,
+    };
+
+    let max_ttl_secs = match env("RECACHED_SYNC_MAX_TOKEN_TTL").as_deref().map(str::trim) {
+        None | Some("") => multitenant.then_some(DEFAULT_MULTITENANT_MAX_TOKEN_TTL_SECS),
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(0) | Err(_) => {
+                return Err(format!(
+                    "RECACHED_SYNC_MAX_TOKEN_TTL: '{raw}' is not a positive number of seconds."
+                ));
+            }
+            Ok(n) => Some(n),
+        },
+    };
+
+    let audience = match env("RECACHED_SYNC_AUDIENCE") {
+        None => None,
+        Some(raw) if raw.trim().is_empty() => None,
+        Some(raw) => {
+            let raw = raw.trim().to_string();
+            if !raw
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._:@/+-".contains(&b))
+                || raw.len() > 128
+            {
+                return Err(format!(
+                    "RECACHED_SYNC_AUDIENCE: '{raw}' may only contain letters, digits and ._:@/+- \
+                     (at most 128)."
+                ));
+            }
+            Some(raw)
+        }
+    };
+
+    if multitenant {
+        match &secret {
+            None => problems.push(
+                "RECACHED_SYNC_SECRET is unset: every WebSocket client would read and write the \
+                 whole keyspace."
+                    .to_string(),
+            ),
+            Some(s) if s.len() < MIN_SYNC_SECRET_BYTES => problems.push(format!(
+                "RECACHED_SYNC_SECRET is {} bytes; use at least {MIN_SYNC_SECRET_BYTES} \
+                 (e.g. `openssl rand -base64 32`).",
+                s.len()
+            )),
+            Some(_) => {}
+        }
+        if !facts.allowed_origins {
+            problems.push(
+                "RECACHED_ALLOWED_ORIGINS is unset: any page a user visits could open the sync \
+                 socket in their browser."
+                    .to_string(),
+            );
+        }
+        if !facts.resp_password {
+            problems.push(
+                "RECACHED_PASSWORD is unset: the RESP port would serve the whole keyspace, \
+                 unscoped, to anyone who can reach it."
+                    .to_string(),
+            );
+        }
+        if !facts.memory_cap {
+            problems.push(
+                "Neither RECACHED_MAX_MEMORY nor RECACHED_MAX_KEYS is set: untrusted clients \
+                 could grow the keyspace until the host runs out of memory."
+                    .to_string(),
+            );
+        }
+        if pubsub == PubSubPolicy::Open {
+            problems.push(
+                "RECACHED_SYNC_PUBSUB=open lets every WebSocket client subscribe to and publish \
+                 on every channel; grant channels in tokens with chr=/chrw= instead."
+                    .to_string(),
+            );
+        }
+        if !token_auth {
+            problems.push(
+                "RECACHED_WS_AUTH=password makes browsers hold RECACHED_PASSWORD, which unlocks \
+                 the unscoped RESP port; use RECACHED_WS_AUTH=token."
+                    .to_string(),
+            );
+        }
+        if !require_subject {
+            problems.push(
+                "RECACHED_SYNC_REQUIRE_SUB=false: tokens without a subject share one DEDUP \
+                 namespace across principals."
+                    .to_string(),
+            );
+        }
+    }
+    if !problems.is_empty() {
+        return Err(format!(
+            "RECACHED_SECURITY=multitenant refuses this configuration:\n  - {}",
+            problems.join("\n  - ")
+        ));
+    }
+
+    let policy = SyncPolicy {
+        secret,
+        pubsub,
+        token_auth,
+        require_expiry: multitenant,
+        require_subject,
+        max_ttl_secs,
+        audience,
+    };
+    Ok((policy, profile))
+}
+
+#[cfg(test)]
+mod sync_policy_tests {
+    use super::*;
+
+    fn env_of(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |var| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == var)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    const SECRET: &str = "0123456789abcdef0123456789abcdef";
+
+    fn safe_facts() -> DeploymentFacts {
+        DeploymentFacts {
+            resp_password: true,
+            allowed_origins: true,
+            memory_cap: true,
+        }
+    }
+
+    #[test]
+    fn the_default_profile_keeps_the_open_behaviour() {
+        let (policy, profile) =
+            resolve_sync_policy(&env_of(&[]), &DeploymentFacts::default()).unwrap();
+        assert_eq!(profile, SecurityProfile::Default);
+        assert!(!policy.is_strict());
+        assert!(!policy.token_auth && !policy.require_expiry && !policy.require_subject);
+    }
+
+    #[test]
+    fn strict_mode_scopes_pubsub_unless_explicitly_opened() {
+        let env = |v: &str| (v == "RECACHED_SYNC_SECRET").then(|| "s".to_string());
+        let (policy, _) = resolve_sync_policy(&env, &DeploymentFacts::default()).unwrap();
+        assert!(policy.scopes_pubsub());
+        let env = |v: &str| match v {
+            "RECACHED_SYNC_SECRET" => Some("s".to_string()),
+            "RECACHED_SYNC_PUBSUB" => Some("open".to_string()),
+            _ => None,
+        };
+        let (policy, _) = resolve_sync_policy(&env, &DeploymentFacts::default()).unwrap();
+        assert!(!policy.scopes_pubsub());
+    }
+
+    #[test]
+    fn multitenant_refuses_every_unsafe_setting_at_once() {
+        let err = resolve_sync_policy(
+            &env_of(&[
+                ("RECACHED_SECURITY", "multitenant"),
+                ("RECACHED_SYNC_SECRET", "short"),
+                ("RECACHED_SYNC_PUBSUB", "open"),
+                ("RECACHED_WS_AUTH", "password"),
+                ("RECACHED_SYNC_REQUIRE_SUB", "false"),
+            ]),
+            &DeploymentFacts::default(),
+        )
+        .unwrap_err();
+        for needle in [
+            "RECACHED_SYNC_SECRET is 5 bytes",
+            "RECACHED_ALLOWED_ORIGINS",
+            "RECACHED_PASSWORD",
+            "RECACHED_MAX_MEMORY",
+            "RECACHED_SYNC_PUBSUB=open",
+            "RECACHED_WS_AUTH=password",
+            "RECACHED_SYNC_REQUIRE_SUB=false",
+        ] {
+            assert!(err.contains(needle), "missing {needle:?} in:\n{err}");
+        }
+    }
+
+    #[test]
+    fn multitenant_refuses_a_missing_secret() {
+        let err = resolve_sync_policy(
+            &env_of(&[("RECACHED_SECURITY", "multitenant")]),
+            &safe_facts(),
+        )
+        .unwrap_err();
+        assert!(err.contains("RECACHED_SYNC_SECRET is unset"), "{err}");
+    }
+
+    #[test]
+    fn a_complete_multitenant_configuration_starts_with_safe_defaults() {
+        let env = |v: &str| match v {
+            "RECACHED_SECURITY" => Some("multitenant".to_string()),
+            "RECACHED_SYNC_SECRET" => Some(SECRET.to_string()),
+            _ => None,
+        };
+        let (policy, profile) = resolve_sync_policy(&env, &safe_facts()).unwrap();
+        assert_eq!(profile, SecurityProfile::Multitenant);
+        assert!(policy.is_strict() && policy.scopes_pubsub());
+        assert!(policy.token_auth && policy.require_expiry && policy.require_subject);
+        assert_eq!(
+            policy.max_ttl_secs,
+            Some(DEFAULT_MULTITENANT_MAX_TOKEN_TTL_SECS)
+        );
+    }
+
+    #[test]
+    fn misspelled_modes_refuse_startup() {
+        for (var, value) in [
+            ("RECACHED_SECURITY", "multi-tenant"),
+            ("RECACHED_SYNC_PUBSUB", "scope"),
+            ("RECACHED_WS_AUTH", "tokens"),
+            ("RECACHED_SYNC_MAX_TOKEN_TTL", "0"),
+            ("RECACHED_SYNC_MAX_TOKEN_TTL", "1h"),
+            ("RECACHED_SYNC_AUDIENCE", "has space"),
+            ("RECACHED_SYNC_REQUIRE_SUB", "yes please"),
+        ] {
+            let env = move |v: &str| (v == var).then(|| value.to_string());
+            assert!(
+                resolve_sync_policy(&env, &DeploymentFacts::default()).is_err(),
+                "{var}={value} was accepted"
+            );
+        }
+    }
+}
 
 #[cfg(test)]
 // SAFETY: every `set_var`/`remove_var` below is serialised by this

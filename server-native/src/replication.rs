@@ -1047,18 +1047,14 @@ async fn apply_repl_frame(
     };
     let cmd = Command::from_value(normalised)
         .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
-    let keys = primary_keys(&cmd);
+    let push = SyncPush::for_command(0, &cmd, primary_keys(&cmd), bytes.to_vec());
     if let Value::Error(error) = store.execute(cmd) {
         return Err(std::io::Error::new(
             ErrorKind::InvalidData,
             format!("replicated command failed: {error}"),
         ));
     }
-    let _ = tx.send(Arc::new(SyncPush {
-        origin: 0,
-        keys,
-        resp: bytes.to_vec(),
-    }));
+    let _ = tx.send(Arc::new(push));
     state.on_write(bytes).await;
     Ok(())
 }

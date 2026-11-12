@@ -2,6 +2,28 @@
 
 All notable changes to Recached are documented here.
 
+## [Unreleased] — 0.6.0
+
+### Security — multi-tenant sync
+- **Token expiry is enforced on live connections.** A WebSocket whose sync token expires is closed with code `4002` unless it presented a fresh `SYNC TOKEN` first; before, expiry was checked only when a token was presented and a connection kept its scopes, and its pushes, for its lifetime
+- **A replacement token can no longer leave a connection holding the old scope.** Presenting a token that does not cover a held live query, watched key or channel subscription — or that names a different subject — answers the `SYNC TOKEN`, then closes the socket with code `4003`. Before, a user switching from tenant A to tenant B kept receiving tenant A's keychanges, values included
+- **`EXEC` re-checks queued commands against the token in force.** A command queued under one token could be executed after swapping to another
+- **Pub/sub is scoped on strict connections.** Channels need `chr=` (subscribe) or `chrw=` (subscribe and publish) grants in the token; before, any strict-mode socket — including one that never presented a token — could subscribe to any channel, `PSUBSCRIBE *`, and publish anywhere
+- **`DEDUP` state is namespaced by the token's `sub` claim.** Client ids are client-chosen; a second principal reusing one could read the first's remembered refusals (which name keys) or raise its mark so its writes were answered `+DUP` and dropped. Client ids starting with `~` are now reserved on strict connections
+- **The sync fan-out fails closed.** A mutation that names no keys reaches a scoped connection only when it is keyspace-wide (`FLUSHDB`); before, any write missing from the key extractor would have been pushed to every tenant. `RLCHECK` was such a write — it is never broadcast, so nothing leaked — and is now listed
+- Five refused `SYNC TOKEN`s close the socket, as five refused passwords do
+
+### Added
+- `RECACHED_SECURITY=multitenant`: a fail-closed profile that refuses to start without a ≥ 32-byte `RECACHED_SYNC_SECRET`, `RECACHED_ALLOWED_ORIGINS`, `RECACHED_PASSWORD` and a memory or key cap, and that requires tokens to carry an expiry (at most `RECACHED_SYNC_MAX_TOKEN_TTL`, 24 h by default) and a `sub` claim
+- Token claims segment: `entries|expiry|sub=<id>;aud=<id>`. `RECACHED_SYNC_AUDIENCE` requires a matching `aud`; `RECACHED_SYNC_REQUIRE_SUB` requires `sub`
+- `RECACHED_WS_AUTH=token`: a valid sync token is the WebSocket credential, so browsers never hold `RECACHED_PASSWORD` (which unlocks the unscoped RESP port). The default, `password`, is unchanged
+- `RECACHED_SYNC_PUBSUB=open` restores unscoped pub/sub for a transition
+
+### Changed — upgrade notes
+- **Breaking for strict deployments that use pub/sub from browsers:** add `chr=`/`chrw=` grants to tokens before upgrading, or set `RECACHED_SYNC_PUBSUB=open` for the transition
+- A token carrying claims is refused by a 0.5 server (fail-closed); mint the two-segment form until every server is on 0.6
+- Applications should renew tokens before they expire (`syncToken(newToken)`); a socket that outlives its token is now closed
+
 ## [0.5.1] (2026-11-11) — sync stabilization
 
 ### Fixed — server
