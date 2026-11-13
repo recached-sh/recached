@@ -887,7 +887,15 @@ async fn apply_write_effects_identified(
     }
     // Read once, after the early-out above, so a standalone server with nothing
     // listening still pays no clock read per write.
-    let Some(msg) = broadcast_for(cmd, response, now_unix_ms()) else {
+    // Still under the write's key guards, so this is the deadline the write
+    // set, not one a later write replaced.
+    let exact_deadline = relative_expiry_key(cmd).and_then(|key| {
+        match store.execute(Command::PExpireTime(key.to_string())) {
+            Value::Integer(at) if at > 0 => u64::try_from(at).ok(),
+            _ => None,
+        }
+    });
+    let Some(msg) = broadcast_for_at(cmd, response, now_unix_ms(), exact_deadline) else {
         // A DEDUP write that changed nothing still has an outcome to keep, or
         // a crash would let its retry run where the first try did not.
         // Refusals are recorded by the caller.
@@ -991,7 +999,45 @@ fn set_applied(opts: &SetOptions, response: &Value) -> bool {
 /// same clock, and re-reading it would cost a lookup per write and still race
 /// another thread overwriting the key. This is also what Redis does — it
 /// rewrites relative expiries to absolute ones at propagation time.
+/// [`broadcast_for_at`] without a stored deadline: tests drive it with a fixed clock.
+#[cfg(test)]
 pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Option<Vec<u8>> {
+    broadcast_for_at(cmd, response, now_ms, None)
+}
+
+/// The key whose deadline a write sets *relative* to the clock — `EX`/`PX`
+/// on `SET` and `GETEX`, `SETEX`, `PSETEX`, `EXPIRE`, `PEXPIRE` — if any.
+pub(crate) fn relative_expiry_key(cmd: &Command) -> Option<&str> {
+    match cmd {
+        Command::Dedup(_, _, inner) => relative_expiry_key(inner),
+        Command::Set(k, _, opts)
+            if matches!(opts.expiry, Some(SetExpiry::Ex(_)) | Some(SetExpiry::Px(_))) =>
+        {
+            Some(k)
+        }
+        Command::SetEx(k, _, _)
+        | Command::PSetEx(k, _, _)
+        | Command::Expire(k, _)
+        | Command::PExpire(k, _)
+        | Command::GetEx(k, Some(GetExOption::Ex(_) | GetExOption::Px(_))) => Some(k),
+        _ => None,
+    }
+}
+
+/// [`broadcast_for`], given the deadline the store actually set.
+///
+/// A relative expiry used to be re-derived here from a second clock reading,
+/// taken after the store's own: the AOF, every replica and every browser peer
+/// could hold a deadline a millisecond or two later than the primary's. With
+/// `exact_deadline` (read back while the write's key guard is still held) they
+/// get the primary's, to the millisecond.
+pub(crate) fn broadcast_for_at(
+    cmd: &Command,
+    response: &Value,
+    now_ms: u64,
+    exact_deadline: Option<u64>,
+) -> Option<Vec<u8>> {
+    let at = |computed: u64| exact_deadline.unwrap_or(computed);
     // An error reply means the store refused the write (WRONGTYPE, OOM, a
     // key-cap refusal, an overflow) and left the keyspace as it was. Emitting
     // it anyway would make every replica and AOF replay run a command that
@@ -1023,7 +1069,7 @@ pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Opt
                 None => Some(resp_push(&[b"SET", k.as_bytes(), v.as_slice()])),
                 // Relative → absolute: see the note on `broadcast_for`.
                 Some(SetExpiry::Ex(s)) => {
-                    let pxat = now_ms.saturating_add(s.saturating_mul(1000)).to_string();
+                    let pxat = at(now_ms.saturating_add(s.saturating_mul(1000))).to_string();
                     Some(resp_push(&[
                         b"SET",
                         k.as_bytes(),
@@ -1033,7 +1079,7 @@ pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Opt
                     ]))
                 }
                 Some(SetExpiry::Px(ms)) => {
-                    let pxat = now_ms.saturating_add(*ms).to_string();
+                    let pxat = at(now_ms.saturating_add(*ms)).to_string();
                     Some(resp_push(&[
                         b"SET",
                         k.as_bytes(),
@@ -1088,7 +1134,7 @@ pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Opt
             _ => None,
         },
         Command::SetEx(k, secs, v) => {
-            let pxat = now_ms.saturating_add(secs.saturating_mul(1000)).to_string();
+            let pxat = at(now_ms.saturating_add(secs.saturating_mul(1000))).to_string();
             Some(resp_push(&[
                 b"SET",
                 k.as_bytes(),
@@ -1098,7 +1144,7 @@ pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Opt
             ]))
         }
         Command::PSetEx(k, ms, v) => {
-            let pxat = now_ms.saturating_add(*ms).to_string();
+            let pxat = at(now_ms.saturating_add(*ms)).to_string();
             Some(resp_push(&[
                 b"SET",
                 k.as_bytes(),
@@ -1139,14 +1185,14 @@ pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Opt
         // Relative → absolute: see the note on `broadcast_for`.
         Command::Expire(k, secs) => match response {
             Value::Integer(1) => {
-                let ts = now_ms.saturating_add(secs.saturating_mul(1000)).to_string();
+                let ts = at(now_ms.saturating_add(secs.saturating_mul(1000))).to_string();
                 Some(resp_push(&[b"PEXPIREAT", k.as_bytes(), ts.as_bytes()]))
             }
             _ => None,
         },
         Command::PExpire(k, ms) => match response {
             Value::Integer(1) => {
-                let ts = now_ms.saturating_add(*ms).to_string();
+                let ts = at(now_ms.saturating_add(*ms)).to_string();
                 Some(resp_push(&[b"PEXPIREAT", k.as_bytes(), ts.as_bytes()]))
             }
             _ => None,
@@ -1185,8 +1231,8 @@ pub(crate) fn broadcast_for(cmd: &Command, response: &Value, now_ms: u64) -> Opt
                 GetExOption::Persist => {
                     return Some(resp_push(&[b"PERSIST", k.as_bytes()]));
                 }
-                GetExOption::Ex(secs) => secs.saturating_mul(1000).saturating_add(now_ms),
-                GetExOption::Px(ms) => ms.saturating_add(now_ms),
+                GetExOption::Ex(secs) => at(secs.saturating_mul(1000).saturating_add(now_ms)),
+                GetExOption::Px(ms) => at(ms.saturating_add(now_ms)),
                 GetExOption::ExAt(secs) => secs.saturating_mul(1000),
                 GetExOption::PxAt(ms) => *ms,
             };

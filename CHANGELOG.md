@@ -22,6 +22,7 @@ All notable changes to Recached are documented here.
 - `scripts/bench-redis-valkey.sh`, `scripts/bench-summarize.py`, `scripts/bench-memory-aggregate.py`: reproducible Recached/Redis/Valkey (or build-vs-build) comparison of throughput, latency percentiles, server CPU per million requests and RSS per key, with recorded conditions
 
 ### Fixed — RESP port
+- **Replicas, the AOF and browser peers get the primary's exact expiry deadline.** A relative expiry (`SET … EX/PX`, `SETEX`, `PSETEX`, `EXPIRE`, `PEXPIRE`, `GETEX … EX/PX`) was propagated as a deadline recomputed from a second clock reading taken after the store's, so about 3% of such writes reached replicas a millisecond or more later than the primary held them. The propagated deadline is now read back from the store under the write's key guard
 - **`redis-cli --pipe` works.** It ends a mass insert with an empty line and `ECHO <20 random bytes>`; Recached answered the empty line with a protocol error and refused `ECHO` (unknown, and its binary argument), so the tool never saw its marker and timed out. Empty lines between commands are now ignored, as in Redis
 - **A protocol error closes the connection**, as in Redis. Before, the server answered one error, discarded the rest of its read buffer and carried on, so commands pipelined behind a malformed frame were silently dropped and the client matched every later reply to the wrong request
 
