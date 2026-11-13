@@ -2191,7 +2191,7 @@ async fn ws_closes_a_client_whose_mutation_stream_developed_a_gap() {
             ps,
             wr,
             st,
-            Arc::new(None),
+            Arc::new(SyncPolicy::open()),
             Arc::new(None),
             "test".to_string(),
         )
@@ -2210,6 +2210,7 @@ async fn ws_closes_a_client_whose_mutation_stream_developed_a_gap() {
             origin: 999,
             keys: vec!["k".to_string()],
             resp: payload.clone(),
+            keyspace_wide: false,
         }));
         tokio::task::yield_now().await;
     }
@@ -2235,6 +2236,19 @@ async fn ws_closes_a_client_whose_mutation_stream_developed_a_gap() {
 async fn spawn_ws_server_full(
     sync_secret: Option<String>,
     allowed_origins: Option<Vec<String>>,
+) -> TestServer {
+    let policy = match sync_secret {
+        Some(secret) => SyncPolicy::strict(&secret),
+        None => SyncPolicy::open(),
+    };
+    spawn_ws_server_policy(policy, allowed_origins, None).await
+}
+
+/// A WebSocket server under an explicit sync policy and optional password.
+pub(super) async fn spawn_ws_server_policy(
+    policy: SyncPolicy,
+    allowed_origins: Option<Vec<String>>,
+    password: Option<&str>,
 ) -> TestServer {
     let store = Arc::new(KeyValueStore::new());
     let (tx, _rx) = broadcast::channel::<SyncMsg>(256);
@@ -2264,15 +2278,16 @@ async fn spawn_ws_server_full(
     let addr = listener.local_addr().unwrap();
     let store2 = Arc::clone(&store);
     let state2 = Arc::clone(&state);
-    let secret = Arc::new(sync_secret);
+    let secret = Arc::new(policy);
     let origins = Arc::new(allowed_origins);
+    let pass = Arc::new(password.map(str::to_string));
 
     let task = tokio::spawn(async move {
         loop {
             let Ok((socket, _)) = listener.accept().await else {
                 return;
             };
-            let (s, t, ps, wr, st, ss, ao) = (
+            let (s, t, ps, wr, st, ss, ao, pw) = (
                 Arc::clone(&store2),
                 tx.clone(),
                 Arc::clone(&pubsub),
@@ -2280,6 +2295,7 @@ async fn spawn_ws_server_full(
                 Arc::clone(&state2),
                 Arc::clone(&secret),
                 Arc::clone(&origins),
+                Arc::clone(&pass),
             );
             let id = next_conn_id();
             let peer = socket
@@ -2287,7 +2303,7 @@ async fn spawn_ws_server_full(
                 .map(|a| a.to_string())
                 .unwrap_or_default();
             tokio::spawn(async move {
-                handle_ws(socket, s, t, Arc::new(None), id, ps, wr, st, ss, ao, peer).await;
+                handle_ws(socket, s, t, pw, id, ps, wr, st, ss, ao, peer).await;
             });
         }
     });
@@ -6635,3 +6651,5 @@ mod sweep_notification {
 }
 
 mod sync_reliability;
+
+mod multitenant;

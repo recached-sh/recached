@@ -85,7 +85,24 @@ multi-byte UTF-8 character spans several positions.
 - Keyspace-wide and administrative commands (`KEYS`, `SCAN`, `DBSIZE`, `FLUSHDB`, `SAVE`, `BGSAVE`, `REPLICAOF`) are refused entirely on scoped connections.
 - Literal `SYNC <pattern>` is rejected — patterns must come from a signed token.
 
-`PING`, `AUTH`, `MULTI`/`EXEC`/`DISCARD`, and pub/sub commands are always available. Note that pub/sub **channels** are not keys and are not scoped — don't put per-user secrets on broadcast channels.
+`PING`, `AUTH`, `HELLO`, `QUIT`, `MULTI`/`EXEC`/`DISCARD` and the connection's own `CLIENT` settings are always available. Pub/sub is scoped too, by channel grants — see [Pub/Sub channels](#pub-sub-channels).
+
+## Pub/Sub channels
+
+Since 0.6, a strict connection may only `SUBSCRIBE`, `PSUBSCRIBE` or `PUBLISH` on channels its token grants. Channel grants are a separate namespace from key grants:
+
+| Entry | Grants |
+|---|---|
+| `chr=announcements` | Subscribe to `announcements`. Publishing is refused. |
+| `chrw=room:42:*` | Subscribe to, and publish on, any channel beginning `room:42:`. |
+
+`PSUBSCRIBE` patterns must sit *inside* a grant, the same containment rule live queries use: `chr=tenant:a:*` admits `PSUBSCRIBE tenant:a:alerts:*` but refuses `PSUBSCRIBE tenant:*` and `PSUBSCRIBE *`. Before a token is presented every channel command is refused with the transient `NOSCOPE send SYNC TOKEN…`.
+
+A public broadcast channel is one you grant to everyone, explicitly: put `chr=announcements` in every token. To keep the pre-0.6 behaviour, where channels were outside the scope system, set `RECACHED_SYNC_PUBSUB=open` — the multitenant profile refuses that setting.
+
+::: warning Upgrading from 0.5
+A strict-mode deployment whose browsers use pub/sub must add channel grants to its tokens before upgrading, or set `RECACHED_SYNC_PUBSUB=open` for the transition. Without either, subscribes and publishes are refused with `NOSCOPE`.
+:::
 
 ## Scope tokens
 
@@ -95,14 +112,29 @@ A token is minted by your application backend — the only party that knows whic
 base64url(payload) + "." + base64url(hmac_sha256(secret, base64url(payload)))
 ```
 
-The payload is comma-separated patterns, with an optional `|<unix-expiry-seconds>` suffix. Minting in Node.js:
+The payload is comma-separated scope entries, then an optional expiry, then optional claims:
+
+```
+entries [ "|" unix-expiry-seconds [ "|" claims ] ]
+claims  = sub=<id> [ ";" aud=<id> ]
+```
+
+- **Entries** are `r=`/`rw=` key grants, `chr=`/`chrw=` channel grants, or a bare pattern (read-write key grant).
+- **`sub`** (subject) names the principal — usually your user id. It namespaces [`DEDUP` state](#dedup-and-subjects). Required when `RECACHED_SYNC_REQUIRE_SUB` is on, which the multitenant profile turns on.
+- **`aud`** (audience) must equal `RECACHED_SYNC_AUDIENCE` when that is set.
+- Claim values are 1–128 characters of letters, digits and `._:@/+-`. An unknown or repeated claim makes the token invalid — the server does not ignore a restriction it does not understand.
+- The expiry may be empty when claims follow (`rw=cart:*||sub=42`), unless the server requires expiry.
+
+A 0.5 server refuses a token with a claims segment (it reads `expiry|claims` as a malformed expiry), so mint the two-segment form until every server is on 0.6.
+
+Minting in Node.js:
 
 ```js
 import crypto from 'node:crypto';
 
-function mintSyncToken(secret, entries, expiresInSecs = 3600) {
+function mintSyncToken(secret, entries, subject, expiresInSecs = 3600) {
   const expiry = Math.floor(Date.now() / 1000) + expiresInSecs;
-  const payload = Buffer.from(`${entries.join(',')}|${expiry}`)
+  const payload = Buffer.from(`${entries.join(',')}|${expiry}|sub=${subject}`)
     .toString('base64url');
   const sig = crypto.createHmac('sha256', secret)
     .update(payload)
@@ -115,7 +147,8 @@ const token = mintSyncToken(process.env.RECACHED_SYNC_SECRET, [
   `rw=cart:${userId}:*`,   // the user's own cart — theirs to change
   `rw=profile:${userId}`,
   'r=catalog:*',           // shared read model — followed, never written
-]);
+  'chr=announcements',     // a broadcast channel — subscribe only
+], userId);
 // → include the token in the page payload / session API response
 ```
 
@@ -131,9 +164,27 @@ and receives the granted entries as confirmation, each in the `r=`/`rw=` notatio
 reply can be fed straight back into `SYNC`. From that moment it receives pushes for — and can
 operate on — exactly those keys, at exactly that access.
 
-::: warning Expiry is checked at presentation time
-The token's expiry is validated when `SYNC TOKEN` is presented, not continuously. An established connection keeps its scopes for its lifetime. Short-lived tokens bound the window in which a leaked token is usable — they do not cut off live connections.
-:::
+## Expiry and renewal
+
+Since 0.6 a token's expiry binds the **connection**, not just the moment it was presented. When the token in force expires, the server closes the socket with close code **4002** (`sync token expired`). Live queries, watches and channel subscriptions stop with it, and nothing more is pushed.
+
+To keep a connection, present a fresh token before the old one expires — `SYNC TOKEN <new>` on the open socket (`cache.syncToken(newToken)` in the SDKs). The new token's expiry replaces the old one's.
+
+A client that reconnects with an expired token is refused (`ERR invalid sync token: token expired`). Its queued writes meet the transient `NOSCOPE send SYNC TOKEN…` refusal, so they stay queued and replay once the application supplies a fresh token; they are not dropped.
+
+Expiry is a lifetime, not revocation. Recached keeps no list of revoked tokens: a token stays usable until it expires, or until `RECACHED_SYNC_SECRET` is changed and the server restarted, which invalidates every token. Keep lifetimes short — the multitenant profile caps them at `RECACHED_SYNC_MAX_TOKEN_TTL` (24 hours by default).
+
+### Changing scopes on an open connection
+
+`SYNC TOKEN` may replace the token in force — a user switching tenants, or a refreshed token with different grants. If the new token **does not cover everything the connection holds** — a live query, a watched key, a channel subscription — or names a **different subject**, the server answers the `SYNC TOKEN` and then closes the socket with close code **4003** (`sync scopes changed`). The client reconnects under the new token and re-subscribes, and anything the new token does not grant is refused there, visibly, instead of continuing to deliver the old scope's data.
+
+A transaction is checked again at `EXEC`. A command queued under one token that the token now in force does not permit discards the whole transaction with `EXECABORT`.
+
+## DEDUP and subjects {#dedup-and-subjects}
+
+`DEDUP` client ids are chosen by clients. On a strict connection whose token carries a `sub` claim, the server records a client's duplicate-suppression state under the pair *(subject, client id)*. Another principal who learns or reuses that client id gets an unrelated mark. They cannot read its remembered refusals, which name keys, and cannot advance its mark to have its writes answered `+DUP`. The same subject maps to the same state across reconnects and renewed tokens, so a write whose reply was lost still reads as applied under a new token.
+
+Client ids beginning with `~` are reserved for the server's namespaced form and are refused on strict connections. Without a `sub` claim, client ids are global, as before 0.6, and must be unguessable.
 
 ## Server setup
 
@@ -144,7 +195,7 @@ RECACHED_BIND="0.0.0.0" \
 recached-server
 ```
 
-Use both secrets: `RECACHED_PASSWORD` gates who may connect at all; `RECACHED_SYNC_SECRET` gates what each connection may see. For browser deployments the WS port is public by definition — strict mode is the difference between "any visitor sees the whole keyspace" and "each visitor sees their own keys".
+`RECACHED_PASSWORD` protects the RESP port, which is unscoped: any client holding it can run any command. **Do not ship it to browsers.** Set `RECACHED_WS_AUTH=token` so a valid sync token is the WebSocket credential on its own (the multitenant profile does this). With the default `RECACHED_WS_AUTH=password`, a WebSocket connection must also `AUTH` with the RESP password, which is compatible with 0.5 but puts an all-access secret in every browser. For browser deployments the WS port is public by definition — strict mode is the difference between "any visitor sees the whole keyspace" and "each visitor sees their own keys".
 
 ## Interaction with transactions and WATCH
 

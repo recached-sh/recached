@@ -164,6 +164,17 @@ its pattern — which is what makes reconciliation correct. Server-side, the clo
 `recached_sync_lag_disconnects_total`; a non-zero rate means clients are being fed faster than they
 can drain, not that anything is corrupt.
 
+### Close codes
+
+| Code | Reason | Client action |
+|---|---|---|
+| `4001` | `sync stream gap; reconnect to resynchronise` | Reconnect; snapshots are authoritative |
+| `4002` | `sync token expired; present a fresh token` | Obtain a fresh token, then reconnect |
+| `4003` | `sync scopes changed; reconnect to resynchronise` | Reconnect under the token last sent; re-subscribe. Sent after the reply to a `SYNC TOKEN` that revoked a held live query, watch or channel subscription, or changed the subject |
+
+All three are in the private 4000–4999 range. A 0.5 client treats any close as a reason to
+reconnect, which is the correct response to each.
+
 Expiry deletion is eventual. Without `CLIENT EXPIRY ON` a local copy does not expire on its own clock, and the bounded sweep may take multiple ticks to reach a key in a large volatile keyspace. With it, the local copy expires on the client's clock from the time to live it received, which can be off from the server's by the frame's transit time.
 
 ## The ordering invariant (acknowledgment correlation)
@@ -212,7 +223,7 @@ Store writes that must not double-apply on replay are wrapped:
 DEDUP <client-id> <wire-id> <command> <args…>
 ```
 
-- `client-id`: 1–64 chars, stable per client, **unguessable** (a guessable id lets another authenticated client poison your high-water mark); browsers use `crypto.randomUUID()`
+- `client-id`: 1–64 chars, stable per client, **unguessable** (a guessable id lets another authenticated client poison your high-water mark); browsers use `crypto.randomUUID()`. On a strict connection whose token carries `sub`, the server records the id as `~` + 40 hex digits of SHA-256(`"recached-dedup-ns-v1\0" ‖ sub ‖ "\0" ‖ client-id`), so ids are per subject; the AOF and replication carry that form. Ids beginning with `~` are refused from clients on strict connections.
 - `wire-id`: `(session-epoch << 32) | write-counter` — strictly increasing across a client identity's lifetime. Native clients persist one identity and bump its epoch per open; when the epoch is exhausted they take a new identity rather than reuse one. Browsers take a fresh identity per page load, because tabs share one IndexedDB and must not share a mark. A client refuses a write rather than wrap the 32-bit counter within an epoch.
 - Server behavior: per `client-id`, ids at or below the high-water mark reply `+DUP` and do **not** execute — or, for a remembered permanent refusal, reply its original error. A higher id is committed only after its wrapped write succeeds. When the map exceeds 10,000 clients, duplicate checks sweep marks idle for at least 24 hours.
 - `+DUP` is a normal reply — it acknowledges and retires the write.
@@ -256,10 +267,14 @@ guarantee. Use application-level idempotency when duplicates are unacceptable.
 
 ```
 base64url(payload) "." base64url(hmac_sha256(secret, base64url(payload)))
-payload = "pattern1,pattern2[|unix-expiry-seconds]"
+payload = entries [ "|" expiry [ "|" claims ] ]
+entries = entry *( "," entry )        ; r=P  rw=P  chr=P  chrw=P  or bare P (= rw=P)
+expiry  = unix-seconds / ""           ; "" only when claims follow
+claims  = claim *( ";" claim )        ; sub=ID  aud=ID
+ID      = 1*128( ALPHA / DIGIT / "." / "_" / ":" / "@" / "/" / "+" / "-" )
 ```
 
-The HMAC is computed over the base64url payload *text*. Expiry is validated when the token is presented.
+The HMAC is computed over the base64url payload *text*. A token is valid while `now < expiry`. Unknown and repeated claims invalidate the token. Expiry is checked when the token is presented **and enforced for the life of the connection** (close code `4002`).
 
 ## Limits
 
@@ -287,5 +302,6 @@ The HMAC is computed over the base64url payload *text*. Expiry is validated when
 - **Replication**: the `RCP1` marker is mandatory; incompatible peers fail instead of interpreting a
   snapshot or command with the wrong framing.
 - **Client IndexedDB schema**: bumps create missing object stores idempotently; existing stores are never dropped in an upgrade. 0.5 keys rows per session (`[t, session, seq]` in `wal`, `[session, id]` in `outbox`); numeric keys written earlier sort first and replay first.
+- **Tokens**: a 0.6 token with a claims segment is refused by a 0.5 server (malformed expiry), and channel entries (`chr=`) are read there as key patterns that match nothing — both fail closed. A 0.5 token verifies unchanged on 0.6.
 - **AOF**: a 0.5 AOF contains `DEDUP`, `RECACHED-DEDUP` and `RECACHED-DEDUP-REFUSED` records, which a 0.4 server refuses to replay. Run `SAVE` (which truncates the AOF) before downgrading. A 0.5 server replays any earlier AOF.
 - **Opt-ins**: `CLIENT PUSHFRAMES` and `CLIENT DEDUPBARRIER` are refused by servers before 0.5 (`-ERR Unknown subcommand…`), which leaves a 0.5 client on the 0.4 behaviour for that connection: deferred writes can be overtaken, a refused write whose reply was lost reads as applied, and keychange-shaped replies are ambiguous. The client does not report the difference. See [version compatibility](/guide/client-support#version-compatibility).

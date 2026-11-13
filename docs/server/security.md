@@ -9,6 +9,42 @@ With no `RECACHED_PASSWORD`, anyone who can reach port 6379 can read every key, 
 run `FLUSHDB`. This is the single most common way self-hosted caches get compromised.
 :::
 
+## Multitenant profile {#multitenant-profile}
+
+If browsers or apps belonging to **different users or tenants** connect to the sync port, start the
+server with:
+
+```bash
+RECACHED_SECURITY=multitenant
+```
+
+This is the fail-closed configuration. The server **refuses to start**, listing every problem at
+once, unless:
+
+- `RECACHED_SYNC_SECRET` is set and at least 32 bytes long;
+- `RECACHED_ALLOWED_ORIGINS` is set;
+- `RECACHED_PASSWORD` is set, so the unscoped RESP port is authenticated;
+- `RECACHED_MAX_MEMORY` or `RECACHED_MAX_KEYS` is set, so untrusted clients cannot grow the
+  keyspace without bound;
+- pub/sub is scoped (`RECACHED_SYNC_PUBSUB` is not `open`).
+
+It also changes how tokens are judged:
+
+| | Default (strict) | `multitenant` |
+|---|---|---|
+| Token must carry an expiry | no | **yes** |
+| Longest token lifetime | unlimited | 24 h (`RECACHED_SYNC_MAX_TOKEN_TTL`) |
+| Token must carry `sub` | no | **yes** (namespaces `DEDUP` state) |
+| WebSocket credential | `AUTH <password>` if a password is set | **the sync token** (`RECACHED_WS_AUTH=token`) |
+| Channels | need `chr=`/`chrw=` grants | need `chr=`/`chrw=` grants |
+
+The default profile is unchanged for local development: no secret, no password, every WebSocket
+client sees every mutation, with startup warnings.
+
+What the profile does **not** do: it does not add ACLs to the RESP port, which stays all-or-nothing
+for backends; it does not revoke a token before it expires; and it does not require TLS, because
+TLS is often terminated at a proxy — enable it if traffic crosses a network you do not control.
+
 ## Minimum production checklist
 
 - [ ] **Set `RECACHED_PASSWORD`** to a long random secret.
@@ -19,6 +55,8 @@ run `FLUSHDB`. This is the single most common way self-hosted caches get comprom
       need `RECACHED_REPL_TLS_CA` — see [Replication](#replication).
 - [ ] **Firewall the metrics port** — it has no authentication of its own, and
       `RECACHED_ALLOW_IPS` does not apply to it.
+- [ ] **Set `RECACHED_SECURITY=multitenant`** if different users or tenants share the sync port. It
+      refuses to start until the items below that apply to them are in place.
 - [ ] **Set `RECACHED_SYNC_SECRET`** before any browser connects to a multi-tenant deployment.
 - [ ] **Set `RECACHED_ALLOWED_ORIGINS`** to the origins your application is served from, so that
       other pages in a user's browser cannot open the sync socket.
@@ -148,6 +186,12 @@ secret must never reach the browser:
 4. The browser passes it to `createCache({ connect: { syncToken } })`.
 
 If a token leaks, it grants its scopes until it expires — scope narrowly and keep lifetimes short.
+Since 0.6 expiry also ends **live connections**: the server closes a socket whose token has expired
+unless it presented a fresh one first. See
+[Expiry and renewal](/server/sync-scopes#expiry-and-renewal).
+
+Do not give browsers `RECACHED_PASSWORD`: it unlocks the RESP port, which is not scoped. Set
+`RECACHED_WS_AUTH=token` so the sync token alone admits a WebSocket connection.
 
 ## Replication
 
@@ -268,7 +312,11 @@ What Recached defends against today:
 
 - Unauthenticated access (password, constant-time comparison)
 - Network eavesdropping on every port except metrics (TLS on RESP, WebSocket and replication)
-- Browser clients reading data they should not (sync scopes, signed tokens)
+- Browser clients reading data they should not (sync scopes, signed tokens) — through direct
+  commands, mutation pushes, live-query snapshots and keychanges, WATCH notifications, pub/sub
+  channels, transactions, and `DEDUP` replay
+- A connection outliving its token (expiry closes it), or keeping a scope its replacement token
+  revoked (the socket is closed and re-established under the new token)
 - Cross-origin WebSocket hijacking (`RECACHED_ALLOWED_ORIGINS`)
 - Brute-force password guessing (connection dropped after 5 failures; replication auth throttled
   per source address)
@@ -283,6 +331,9 @@ What it does **not** defend against, and you should not assume:
 
 - **No per-command ACLs.** Unlike Redis 6+ ACLs, authentication is all-or-nothing on the RESP port —
   any authenticated client can run any command. Scoping exists only on the WebSocket sync path.
+  Keep the RESP port on a private network and its password on your backends.
+- **No token revocation.** A token is valid until it expires. Changing `RECACHED_SYNC_SECRET` and
+  restarting invalidates every token at once; there is no way to revoke one.
 - **No audit log.** There is no record of who read or wrote what.
 - **Replication is plaintext by default.** It can be encrypted and authenticated end to end
   (`RECACHED_REPL_TLS_CA`), but a replica configured without it connects in the clear. See

@@ -96,6 +96,10 @@ pub(crate) fn forwards_push(
         return false;
     }
     let visible = match sync_scopes {
+        // A keyless push is visible to a scope only when it is declared
+        // keyspace-wide: otherwise a write missing from `primary_keys` would
+        // reach every tenant.
+        Some(_) if push.keys.is_empty() && !push.keyspace_wide => false,
         Some(scopes) => scopes_match(scopes, &push.keys),
         None => !strict,
     };
@@ -1023,7 +1027,7 @@ pub(crate) async fn handle_ws<S>(
     pubsub: SharedPubSub,
     watch_registry: WatchRegistry,
     state: Arc<ServerState>,
-    sync_secret: Arc<Option<String>>,
+    sync_policy: Arc<SyncPolicy>,
     allowed_origins: Arc<Option<Vec<String>>>,
     peer: String,
 ) where
@@ -1050,8 +1054,18 @@ pub(crate) async fn handle_ws<S>(
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
     let mut rx = tx.subscribe();
-    let mut is_authenticated = password.is_none();
+    // Strict mode (RECACHED_SYNC_SECRET set): no pushes and no key commands
+    // until a signed token is presented. Without a secret, scopes are an
+    // opt-in bandwidth filter (legacy fan-out of everything when None).
+    let strict = sync_policy.is_strict();
+    // With `RECACHED_WS_AUTH=token` the token is the credential: the socket
+    // needs no RESP password, so that password never has to reach a browser.
+    // Everything that reads or writes data still waits for the token.
+    let token_is_auth = strict && sync_policy.token_auth;
+    let mut is_authenticated = password.is_none() || token_is_auth;
     let mut auth_failures: u32 = 0;
+    // Refused `SYNC TOKEN`s on this socket; the same limit as passwords.
+    let mut token_failures: u32 = 0;
     let mut multi_queue: Option<Vec<Command>> = None;
     // Set when a command inside the open MULTI could not be queued. `EXEC` then
     // refuses the whole transaction — see `EXECABORT`.
@@ -1068,12 +1082,16 @@ pub(crate) async fn handle_ws<S>(
     let deltas = Arc::new(AtomicBool::new(false));
     let (watch_subscriber, mut watch_rx) =
         notification_channel(conn_id, overflow_tx.clone(), Arc::clone(&deltas));
-    // Sync scopes for this connection. `strict` (RECACHED_SYNC_SECRET set)
-    // means: no pushes and no key commands until a signed token is presented.
-    // Without a secret, scopes are an opt-in bandwidth filter (legacy fan-out
-    // of everything when None).
-    let strict = sync_secret.is_some();
+    // Sync scopes for this connection, and what else the token in force says:
+    // which channels it may use, when it stops being valid, and whose it is.
     let mut sync_scopes: Option<Vec<Grant>> = None;
+    let mut channel_grants: Vec<Grant> = Vec::new();
+    let mut scope_expires_at: Option<u64> = None;
+    let mut scope_subject: Option<String> = None;
+    // Fires when the token in force expires. Re-armed by every accepted token;
+    // idle (the arm is disabled) while no token with an expiry is in force.
+    let token_expiry = tokio::time::sleep(Duration::from_secs(365 * 24 * 60 * 60));
+    tokio::pin!(token_expiry);
     // Live-query subscriptions (QSUB). Keychange notifications for matching
     // keys arrive on their own channel so they never dirty WATCH transactions.
     let mut qsub_patterns: HashSet<String> = HashSet::new();
@@ -1100,6 +1118,21 @@ pub(crate) async fn handle_ws<S>(
             if ws_sender.send(msg).await.is_err() {
                 break;
             }
+        }};
+    }
+
+    // Close the socket with a sync-protocol close code. The client reconnects
+    // and re-establishes its session — token, live queries, outbox — from
+    // scratch, which is how every state change here that a client cannot see
+    // in place is resolved.
+    macro_rules! ws_close {
+        ($code:expr, $reason:expr) => {{
+            let _ = ws_sender
+                .send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Library($code),
+                    reason: $reason.into(),
+                })))
+                .await;
         }};
     }
 
@@ -1176,12 +1209,16 @@ pub(crate) async fn handle_ws<S>(
                                 continue;
                             }
                         };
-                        // The identity of a DEDUP-wrapped write, for the
-                        // refusal bookkeeping below.
-                        let dedup_id: Option<(String, u64)> = match &cmd {
-                            Command::Dedup(client, id, _) => Some((client.clone(), *id)),
-                            _ => None,
-                        };
+                        // A token that has run out scopes nothing. The timer
+                        // arm below closes the socket at the deadline; this
+                        // catches a command that wins the race with it.
+                        if let Some(exp) = scope_expires_at
+                            && unix_now_secs() >= exp
+                        {
+                            record_scope_denial("token_expired");
+                            ws_close!(WS_CLOSE_TOKEN_EXPIRED, "sync token expired; present a fresh token");
+                            break 'outer;
+                        }
 
                         // AUTH
                         if let Command::Auth(ref pwd) = cmd {
@@ -1207,7 +1244,10 @@ pub(crate) async fn handle_ws<S>(
                                 other => process_hello(
                                     other,
                                     &mut ws_protover,
-                                    is_authenticated,
+                                    // Under token auth the socket is open to
+                                    // anyone, so server details wait for a
+                                    // token, as they wait for AUTH otherwise.
+                                    is_authenticated && (!token_is_auth || sync_scopes.is_some()),
                                     state.is_replica(),
                                 ),
                             };
@@ -1225,6 +1265,36 @@ pub(crate) async fn handle_ws<S>(
                             ws_send!(&resp);
                             continue;
                         }
+
+                        // ── DEDUP identity ────────────────────────────────────
+                        // On a strict connection a client id is only unique
+                        // within the token's subject: the server records it
+                        // under a per-subject namespace, so no other principal
+                        // can read or advance this client's marks. Ids in the
+                        // namespaced form are the server's, not a client's.
+                        let cmd = match cmd {
+                            Command::Dedup(client, id, inner) if strict => {
+                                if reserved_dedup_client(&client) {
+                                    ws_send!(b"-ERR DEDUP client ids beginning with '~' are reserved\r\n");
+                                    continue;
+                                }
+                                match &scope_subject {
+                                    Some(subject) => Command::Dedup(
+                                        namespaced_dedup_client(subject, &client),
+                                        id,
+                                        inner,
+                                    ),
+                                    None => Command::Dedup(client, id, inner),
+                                }
+                            }
+                            other => other,
+                        };
+                        // The identity of a DEDUP-wrapped write, for the
+                        // refusal bookkeeping below.
+                        let dedup_id: Option<(String, u64)> = match &cmd {
+                            Command::Dedup(client, id, _) => Some((client.clone(), *id)),
+                            _ => None,
+                        };
 
                         // ── Replayed writes ───────────────────────────────────
                         // A DEDUP write seen before is answered from its mark
@@ -1260,8 +1330,72 @@ pub(crate) async fn handle_ws<S>(
 
                         // ── Sync scoping ──────────────────────────────────────
                         if let Command::Sync(ref args) = cmd {
-                            let resp = handle_sync_command(args, (*sync_secret).as_deref(), &mut sync_scopes, conn_id);
-                            ws_send!(&resp);
+                            let current = sync_scopes
+                                .as_deref()
+                                .map(|grants| (grants, channel_grants.as_slice()));
+                            match handle_sync_command(args, &sync_policy, current, conn_id, unix_now_secs()) {
+                                SyncOutcome::Unchanged(resp) => ws_send!(&resp),
+                                SyncOutcome::Refused(resp) => {
+                                    token_failures = token_failures.saturating_add(1);
+                                    ws_send!(&resp);
+                                    if token_failures >= MAX_AUTH_FAILURES {
+                                        break 'outer;
+                                    }
+                                }
+                                SyncOutcome::Scoped { reply, token } => {
+                                    token_failures = 0;
+                                    // A token replacing another must not leave
+                                    // the connection holding what the new one
+                                    // does not grant: a live query, a watch or
+                                    // a channel subscription would keep
+                                    // delivering the old scope's data. Nor may
+                                    // one principal's session continue as
+                                    // another's. The client cannot be told
+                                    // which subscriptions died in place, so it
+                                    // is answered and then disconnected; its
+                                    // reconnect presents the new token and
+                                    // re-subscribes, and anything no longer
+                                    // granted is refused there, visibly.
+                                    let revokes = strict
+                                        && sync_scopes.is_some()
+                                        && (scope_subject != token.subject
+                                            || !token_covers_held(
+                                                &token,
+                                                &qsub_patterns,
+                                                &watched_keys,
+                                                &subscribed_channels,
+                                                &subscribed_patterns,
+                                                sync_policy.scopes_pubsub(),
+                                            ));
+                                    scope_expires_at = token.expires_at;
+                                    scope_subject = token.subject;
+                                    channel_grants = token.channels;
+                                    sync_scopes = Some(token.grants);
+                                    if let Some(exp) = scope_expires_at {
+                                        let remaining_ms = exp
+                                            .saturating_mul(1000)
+                                            .saturating_sub(unix_now_millis());
+                                        // The expiry is token input. `Instant +
+                                        // Duration` panics on overflow; a u64 of
+                                        // milliseconds fits the i64-second clock
+                                        // on Linux and macOS, so this is defence
+                                        // for narrower platforms. A deadline too
+                                        // far away to represent never fires.
+                                        match tokio::time::Instant::now()
+                                            .checked_add(Duration::from_millis(remaining_ms))
+                                        {
+                                            Some(deadline) => token_expiry.as_mut().reset(deadline),
+                                            None => scope_expires_at = None,
+                                        }
+                                    }
+                                    ws_send!(&reply);
+                                    if revokes {
+                                        record_scope_denial("scope_narrowed");
+                                        ws_close!(WS_CLOSE_SCOPE_CHANGED, "sync scopes changed; reconnect to resynchronise");
+                                        break 'outer;
+                                    }
+                                }
+                            }
                             continue;
                         }
                         // Token-scoped mode: check every command against this
@@ -1269,7 +1403,18 @@ pub(crate) async fn handle_ws<S>(
                         // commands about to be queued inside MULTI).
                         if strict {
                             match command_scope(&cmd) {
-                                CommandScope::KeyLess => {}
+                                CommandScope::KeyLess => {
+                                    if sync_policy.scopes_pubsub()
+                                        && let Some(denial) = channel_denial(
+                                            &cmd,
+                                            sync_scopes.is_some(),
+                                            &channel_grants,
+                                        )
+                                    {
+                                        ws_send!(&denial);
+                                        continue;
+                                    }
+                                }
                                 CommandScope::Admin => {
                                     record_scope_denial("admin");
                                     const REASON: &str = "NOSCOPE keyspace-wide and administrative commands are not available on scoped WebSocket connections";
@@ -1423,6 +1568,27 @@ pub(crate) async fn handle_ws<S>(
                                                 )
                                                 .serialize()
                                             );
+                                            continue;
+                                        }
+                                        // Each command was scope-checked when it was
+                                        // queued, under the token then in force. Check
+                                        // again: a transaction is not a way to carry
+                                        // one token's access past its replacement.
+                                        if strict
+                                            && !queue.iter().all(|q| {
+                                                command_permitted(
+                                                    q,
+                                                    sync_scopes.as_deref(),
+                                                    &channel_grants,
+                                                    sync_policy.scopes_pubsub(),
+                                                )
+                                            })
+                                        {
+                                            unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
+                                            while watch_rx.try_recv().is_ok() {}
+                                            watch_dirty = false;
+                                            record_scope_denial("exec_rechecked");
+                                            ws_send!(b"-EXECABORT Transaction discarded because a queued command is outside this connection's current sync scopes.\r\n");
                                             continue;
                                         }
                                         // Match the TCP path: reserve queued write keys and
@@ -1893,6 +2059,17 @@ pub(crate) async fn handle_ws<S>(
                     }
                     None => break,
                 }
+            }
+
+            _ = &mut token_expiry, if scope_expires_at.is_some() => {
+                // The token's lifetime is the connection's: renewing it is a
+                // `SYNC TOKEN` before this fires. Closing — rather than
+                // silently dropping scopes — makes the client reconnect, and
+                // its writes meanwhile meet the transient `send SYNC TOKEN`
+                // refusal, so they stay queued instead of being dropped.
+                record_scope_denial("token_expired");
+                ws_close!(WS_CLOSE_TOKEN_EXPIRED, "sync token expired; present a fresh token");
+                break;
             }
 
             result = rx.recv() => {

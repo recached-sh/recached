@@ -113,6 +113,10 @@ pub(crate) fn primary_keys(cmd: &Command) -> Vec<String> {
         | Command::ZRem(k, _)
         | Command::ZIncrBy(k, _, _)
         | Command::RlSet(k, _, _)
+        // RLCHECK records the attempt in its key. It is never broadcast (see
+        // `broadcast_for`), but it is a write, and listing it keeps it in its
+        // key's ordering domain rather than in none.
+        | Command::RlCheck(k, _)
         | Command::JSet(k, _, _)
         | Command::JMerge(k, _) => vec![k.clone()],
         Command::Del(keys) | Command::Unlink(keys) => keys.clone(),
@@ -884,11 +888,12 @@ async fn apply_write_effects_identified(
         }
     }
     if has_ws {
-        let _ = tx.send(Arc::new(SyncPush {
+        let _ = tx.send(Arc::new(SyncPush::for_command(
             origin,
-            keys: primary_keys(cmd),
-            resp: msg,
-        }));
+            cmd,
+            primary_keys(cmd),
+            msg,
+        )));
     }
 }
 
