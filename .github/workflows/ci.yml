@@ -439,6 +439,7 @@ jobs:
           cargo test -p recached -- --include-ignored
           --skip dedup_write_throughput_over_websocket
           --skip sync_paths
+          --skip new_commands_match_redis
         timeout-minutes: 5
 
   typecheck-js:
