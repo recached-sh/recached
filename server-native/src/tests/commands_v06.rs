@@ -193,3 +193,74 @@ async fn a_replica_refuses_the_new_writes() {
     assert_eq!(c.cmd(&["EXPIRETIME", "k"]).await, int(-2));
     assert_eq!(c.cmd(&["HSTRLEN", "k", "f"]).await, int(0));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relative_expiry_reaches_replicas_to_the_millisecond() {
+    // The propagated deadline was re-derived from a second clock reading taken
+    // after the store's, so a replica (and the AOF, and browser peers) could
+    // hold a deadline a millisecond or two later than the primary's. Any one
+    // write rarely straddles a millisecond; hundreds of every relative form do.
+    let primary = node(false, true).await;
+    let replica = node(true, true).await;
+    follow(&replica, serve_replicas(&primary).await);
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    let mut p = WsClient::connect(primary.ws).await;
+    let mut keys = Vec::new();
+    for i in 0..120 {
+        let (a, b, c, d, e) = (
+            format!("set:{i}"),
+            format!("setex:{i}"),
+            format!("expire:{i}"),
+            format!("getex:{i}"),
+            format!("pexpire:{i}"),
+        );
+        p.cmd(&["SET", &a, "v", "PX", "900000"]).await;
+        p.cmd(&["SETEX", &b, "900", "v"]).await;
+        p.cmd(&["SET", &c, "v"]).await;
+        p.cmd(&["EXPIRE", &c, "900"]).await;
+        p.cmd(&["SET", &d, "v"]).await;
+        p.cmd(&["GETEX", &d, "PX", "900000"]).await;
+        p.cmd(&["SET", &e, "v"]).await;
+        p.cmd(&["PEXPIRE", &e, "900000"]).await;
+        keys.extend([a, b, c, d, e]);
+    }
+    caught_up(&mut p, &replica, "expiries").await;
+    let drifted: Vec<_> = keys
+        .iter()
+        .filter_map(|k| {
+            let want = primary.store.execute(Command::PExpireTime(k.clone()));
+            let got = replica.store.execute(Command::PExpireTime(k.clone()));
+            (want != got).then(|| format!("{k}: primary {want:?} replica {got:?}"))
+        })
+        .collect();
+    assert!(
+        drifted.is_empty(),
+        "{} deadlines drifted:\n{}",
+        drifted.len(),
+        drifted.join("\n")
+    );
+}
+
+#[test]
+fn the_exact_deadline_overrides_the_recomputed_one() {
+    let frame = broadcast_for_at(
+        &Command::Expire("k".into(), 5),
+        &Value::Integer(1),
+        1_000_000,
+        Some(1_004_999),
+    )
+    .unwrap();
+    assert!(String::from_utf8_lossy(&frame).contains("1004999"));
+    assert_eq!(
+        relative_expiry_key(&Command::Set(
+            "k".into(),
+            "v".into(),
+            SetOptions {
+                expiry: Some(SetExpiry::Exat(5)),
+                ..Default::default()
+            }
+        )),
+        None,
+        "absolute expiries need no read-back"
+    );
+}

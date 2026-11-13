@@ -1,0 +1,4 @@
+server,single_worker,persistence,kind,keys,value_size,dbsize,rss_idle_kb,rss_loaded_kb,rss_after_overwrite_kb,rss_after_flush_kb
+redis,1,none,string,1000000,32,1000000,4584,132204,138948,28912
+redis,1,none,hash,1000000,32,1000000,4592,211604,211620,31188
+redis,1,none,ttl,1000000,32,1000000,4580,181212,185120,46092
