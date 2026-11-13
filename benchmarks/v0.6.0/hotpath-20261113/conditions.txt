@@ -1,0 +1,6 @@
+date_utc: 2026-11-13T13:49:49Z
+cpu: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz
+os: 15.8.1 x86_64
+pre: da7fc95  sha256 984f3bcfcb4a6653
+opt: perf branch (uncommitted at run time)  sha256 82f7bfa65da0ebfc
+order: ABBA ABBA (pre opt opt pre pre opt opt pre)

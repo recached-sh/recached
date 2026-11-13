@@ -103,6 +103,43 @@ Recached reports a logical key/value estimate through `INFO used_memory` and the
 
 For host sizing, measure RSS of the server process against a known `DBSIZE`, using a fresh process per data shape. Use enough keys that the delta dwarfs the baseline, repeat the run, and report medians — short runs contain lazy initialisation and allocator noise. Do not turn one result into a universal "times more memory" claim.
 
+### Memory per key, v0.6
+
+v0.6 removed most of Recached's per-key overhead. Every key had been copied into four separate
+`String`s (six with a TTL) — the map's own plus three secondary indexes — and each entry was 72
+bytes. Now the indexes share one allocation per key, the index used only by `allkeys-*` eviction
+exists only under those policies, overwrites skip the index entirely, and an entry is 56 bytes.
+
+Measured with [`scripts/bench-redis-valkey.sh`](https://github.com/recached-sh/recached/blob/main/scripts/bench-redis-valkey.sh)
+(`SKIP_THROUGHPUT=1`), fresh process per data shape, median of three runs; RSS growth divided by
+`DBSIZE`. One host: Intel i5-8259U, 8 GB, macOS 15.8, jemalloc defaults.
+
+| Shape | v0.5.1 | v0.6 |
+|---|---:|---:|
+| 1M keys, 32-byte values | 532 B/key | 373 B/key |
+| 1M keys with a TTL, 32-byte values | 637 B/key | 427 B/key |
+| 100k keys, 1 KiB values | 1,398 B/key | 1,255 B/key |
+
+RSS left behind after `FLUSHDB` of 100k 1 KiB keys fell from 99% to 38% of what loading had added.
+These are Recached-only numbers on one host; re-measure on yours.
+
+### The comparison harness
+
+`scripts/bench-redis-valkey.sh` runs identical RESP workloads against Recached, Redis and Valkey —
+or two Recached builds — and records throughput and latency percentiles (`redis-benchmark --csv`),
+server CPU-seconds per million requests (from the kernel, comparable across threading models), and
+RSS at load, after an overwrite pass and after `FLUSHDB`. Every run writes `conditions.txt` with
+CPU, OS, versions, binary checksums and load average. `SINGLE=1` holds every server to one
+execution worker; `PIN=1` pins server and load generator on Linux. Summarise with
+`scripts/bench-summarize.py` (throughput, latency, CPU) and `scripts/bench-memory-aggregate.py`
+(memory medians across repetitions).
+
+Two traps it is built around: `redis-benchmark` times a run to roughly a quarter of a second, so
+fewer than ~2M pipelined requests produce quantised rates (100,000 requests reads as exactly
+199,601 or 133,156 rps) — use `REQUESTS` large enough that a run lasts many seconds; and RSS
+measured after another workload is that workload's leftovers, which is why each memory scenario
+starts a fresh process.
+
 ## Interpreting results
 
 - Compare medians across repeated runs, not one best result.

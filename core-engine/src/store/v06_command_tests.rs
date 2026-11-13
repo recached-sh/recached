@@ -558,3 +558,33 @@ fn echo_returns_binary_messages_byte_for_byte() {
     assert!(parse(&["ECHO"]).is_err());
     assert!(parse(&["ECHO", "a", "b"]).is_err());
 }
+
+#[test]
+fn per_entry_layout_does_not_regrow() {
+    // Every key in the store pays for these bytes. v0.5.1 had Entry = 72 and
+    // Blob = 40; v0.6 measured the cost at 1M keys and shrank both (Deadline
+    // instead of Option<u64>, smallvec's `union` layout). Growing them again
+    // should be a decision, not an accident.
+    use std::mem::size_of;
+    assert_eq!(size_of::<Blob>(), 32, "Blob");
+    assert_eq!(size_of::<Deadline>(), 8, "Deadline");
+    assert!(
+        size_of::<Entry>() <= 56,
+        "Entry is {} bytes",
+        size_of::<Entry>()
+    );
+}
+
+#[test]
+fn a_zero_deadline_is_stored_as_already_past() {
+    assert_eq!(Deadline::at(0).get(), Some(1));
+    assert_eq!(Deadline::from(None).get(), None);
+    assert_eq!(
+        Deadline::from(Some(1_700_000_000_000)).get(),
+        Some(1_700_000_000_000)
+    );
+    let s = KeyValueStore::new();
+    set(&s, "k", "v");
+    s.execute(Command::PExpireAt("k".into(), 0));
+    assert_eq!(s.execute(Command::Exists(vec!["k".into()])), int(0));
+}

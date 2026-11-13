@@ -970,7 +970,9 @@ impl FromIterator<Blob> for CompactList {
 enum EntryValue {
     Str(Blob),
     Hash(Box<CompactHash>),
-    List(CompactList),
+    // Boxed like the other collections: inline, its 40 bytes made every
+    // string key's entry 8 bytes larger (measured, v0.6).
+    List(Box<CompactList>),
     // IndexSet rather than HashSet: SPOP / SRANDMEMBER need O(1) access to a
     // random member by index, which a hash table cannot provide.
     Set(Box<CompactSet>),
@@ -978,7 +980,8 @@ enum EntryValue {
     // and `EntryValue` is stored inline in every entry, so leaving it unboxed
     // makes every string key pay for the largest collection variant.
     ZSet(Box<ZSetInner>),
-    RateLimiter(RateLimiterInner),
+    // 48 bytes inline — the largest variant, for the rarest type.
+    RateLimiter(Box<RateLimiterInner>),
     Json(serde_json::Value),
 }
 
@@ -1281,18 +1284,48 @@ impl RateLimiterInner {
 
 struct Entry {
     value: EntryValue,
-    expires_at_ms: Option<u64>,
+    deadline: Deadline,
     /// Last time this entry was read or written, in ms. Drives LRU eviction.
     /// Atomic so reads can refresh recency while holding only a shared
     /// (DashMap read-lock) reference — no writer lock on the GET path.
     last_access_ms: AtomicU64,
 }
 
+/// An entry's expiry in unix milliseconds, or none.
+///
+/// `Option<u64>` is 16 bytes, because `u64` has no spare bit pattern for
+/// `None`; `Option<NonZeroU64>` uses zero and is 8. Zero is not a meaningful
+/// deadline — it lies in 1970, as does 1 — so a requested deadline of 0 is
+/// stored as 1: both are long past, and the entry reads as expired either way.
+/// Eight bytes per entry, on every key in the store.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Deadline(Option<std::num::NonZeroU64>);
+
+impl Deadline {
+    const NONE: Deadline = Deadline(None);
+
+    fn at(ms: u64) -> Self {
+        Deadline(Some(
+            std::num::NonZeroU64::new(ms).unwrap_or(std::num::NonZeroU64::MIN),
+        ))
+    }
+
+    fn get(self) -> Option<u64> {
+        self.0.map(std::num::NonZeroU64::get)
+    }
+}
+
+impl From<Option<u64>> for Deadline {
+    fn from(ms: Option<u64>) -> Self {
+        ms.map_or(Deadline::NONE, Deadline::at)
+    }
+}
+
 impl Clone for Entry {
     fn clone(&self) -> Self {
         Self {
             value: self.value.clone(),
-            expires_at_ms: self.expires_at_ms,
+            deadline: self.deadline,
             last_access_ms: AtomicU64::new(self.last_access_ms.load(Ordering::Relaxed)),
         }
     }
@@ -1302,7 +1335,7 @@ impl Entry {
     fn new_str(value: impl Into<Blob>) -> Self {
         Self {
             value: EntryValue::Str(value.into()),
-            expires_at_ms: None,
+            deadline: Deadline::NONE,
             last_access_ms: AtomicU64::new(now_ms()),
         }
     }
@@ -1310,13 +1343,13 @@ impl Entry {
     fn new_str_ex(value: impl Into<Blob>, expires_at_ms: u64) -> Self {
         Self {
             value: EntryValue::Str(value.into()),
-            expires_at_ms: Some(expires_at_ms),
+            deadline: Deadline::at(expires_at_ms),
             last_access_ms: AtomicU64::new(now_ms()),
         }
     }
 
     fn is_expired(&self, now: u64) -> bool {
-        self.expires_at_ms.is_some_and(|exp| now >= exp)
+        self.deadline.get().is_some_and(|exp| now >= exp)
     }
 
     /// Mark this entry as just-used so LRU eviction treats it as recent.
@@ -1462,14 +1495,14 @@ macro_rules! typed_entry {
     ($guard:ident, $inner:ident, $data:expr, $key:expr, $now:expr, $variant:path, $default:expr) => {
         let mut $guard = $data.entry($key).or_insert_with(|| Entry {
             value: $variant($default),
-            expires_at_ms: None,
+            deadline: Deadline::NONE,
             last_access_ms: AtomicU64::new($now),
         });
         // A freshly inserted entry carries no TTL, so this only fires for a key
         // that was already present and has aged out.
         if $guard.is_expired($now) {
             $guard.value = $variant($default);
-            $guard.expires_at_ms = None;
+            $guard.deadline = Deadline::NONE;
         }
         let $variant($inner) = &mut $guard.value else {
             return Value::Error(WRONGTYPE.to_string());
@@ -1531,24 +1564,23 @@ pub struct SnapshotEntry {
     pub expires_at_ms: Option<u64>,
 }
 
+/// Keys in a dense vector, for O(1) random sampling, with each key's position
+/// for O(1) removal. Keys are `Arc<str>` shared with the rest of [`KeyIndex`]:
+/// one allocation per key, however many structures hold it.
 #[derive(Default)]
 struct DenseKeys {
-    keys: Vec<String>,
-    positions: HashMap<String, usize>,
+    keys: Vec<Arc<str>>,
+    positions: HashMap<Arc<str>, usize>,
 }
 
 impl DenseKeys {
-    fn contains(&self, key: &str) -> bool {
-        self.positions.contains_key(key)
-    }
-
-    fn insert(&mut self, key: &str) {
-        if self.positions.contains_key(key) {
+    fn insert(&mut self, key: &Arc<str>) {
+        if self.positions.contains_key(&**key) {
             return;
         }
         let pos = self.keys.len();
-        self.keys.push(key.to_string());
-        self.positions.insert(key.to_string(), pos);
+        self.keys.push(Arc::clone(key));
+        self.positions.insert(Arc::clone(key), pos);
     }
 
     fn remove(&mut self, key: &str) {
@@ -1557,57 +1589,84 @@ impl DenseKeys {
         };
         self.keys.swap_remove(pos);
         if let Some(moved) = self.keys.get(pos) {
-            self.positions.insert(moved.clone(), pos);
+            self.positions.insert(Arc::clone(moved), pos);
         }
     }
 }
 
-#[derive(Default)]
+/// Secondary indexes over the keyspace.
+///
+/// Every key used to be copied into each structure as its own `String`: four
+/// heap copies of a plain key (the map's own, `ordered`, and `all`'s vector and
+/// position map) and six of one with a TTL. Measured at 1M small keys that was
+/// ~500 bytes of RSS per key against Redis's ~126 (v0.6 benchmark). Now:
+///
+///   * one `Arc<str>` per key, shared by every structure that holds it;
+///   * `all` exists only when an `allkeys-*` eviction policy can sample it —
+///     its only reader. Key counts come from `ordered`, which holds the same
+///     set;
+///   * writes that leave a key present with unchanged TTL-ness — overwrites,
+///     the common case — do not touch the index at all (see
+///     `execute_reporting`), so `all`'s hash map is no longer needed as a
+///     cheap "already indexed?" check on every write.
 struct KeyIndex {
-    ordered: BTreeSet<String>,
+    ordered: BTreeSet<Arc<str>>,
+    /// Maintained only when `track_all`.
     all: DenseKeys,
     volatile: DenseKeys,
+    track_all: bool,
 }
 
 impl KeyIndex {
-    /// Bring the index into line with a key's current state.
-    ///
-    /// Called on **every** write, so the overwhelmingly common case — a write
-    /// to a key that is already indexed and whose TTL-ness has not changed —
-    /// has to cost as little as possible. It used to cost the most: the
-    /// unconditional `ordered.insert(key.to_string())` allocated a `String`
-    /// and walked a `BTreeSet<String>`, comparing strings at every level, only
-    /// to discover the key was already there. Together with the rest of this
-    /// function that was ~25-30% of a single-threaded `SET`, and because it
-    /// all runs under one store-wide lock it cost proportionally more as
-    /// worker threads were added.
-    ///
-    /// `ordered` and `all` are maintained in lockstep and always hold exactly
-    /// the same key set, so one hash lookup in `all` decides whether either
-    /// needs touching at all. That is the invariant this relies on; keep the
-    /// two in step in any future edit.
+    fn new(track_all: bool) -> Self {
+        KeyIndex {
+            ordered: BTreeSet::new(),
+            all: DenseKeys::default(),
+            volatile: DenseKeys::default(),
+            track_all,
+        }
+    }
+
+    /// Bring the index into line with a key's current state: `None` if the
+    /// key is absent, otherwise whether it has a TTL.
     fn sync(&mut self, key: &str, live_ttl: Option<bool>) {
         match live_ttl {
             None => {
-                if self.all.contains(key) {
-                    self.ordered.remove(key);
+                if self.ordered.remove(key) && self.track_all {
                     self.all.remove(key);
                 }
                 self.volatile.remove(key);
             }
             Some(has_ttl) => {
-                if !self.all.contains(key) {
-                    self.ordered.insert(key.to_string());
-                    self.all.insert(key);
-                }
+                let shared = match self.ordered.get(key) {
+                    Some(existing) => Arc::clone(existing),
+                    None => {
+                        let fresh: Arc<str> = Arc::from(key);
+                        self.ordered.insert(Arc::clone(&fresh));
+                        if self.track_all {
+                            self.all.insert(&fresh);
+                        }
+                        fresh
+                    }
+                };
                 if has_ttl {
-                    self.volatile.insert(key);
+                    self.volatile.insert(&shared);
                 } else {
                     self.volatile.remove(key);
                 }
             }
         }
     }
+}
+
+/// Whether eviction may sample the whole keyspace, which is what `all` is
+/// for. Decided by the policy alone: it is fixed at construction, and an
+/// `allkeys-*` policy is chosen precisely to evict from every key.
+fn tracks_all_keys(policy: EvictionPolicy) -> bool {
+    matches!(
+        policy,
+        EvictionPolicy::AllKeysLru | EvictionPolicy::AllKeysRandom
+    )
 }
 
 #[derive(Clone)]
@@ -1702,7 +1761,7 @@ impl KeyValueStore {
             eviction_sample: 10,
             evicted: Arc::new(AtomicU64::new(0)),
             memory_bytes: Arc::new(AtomicUsize::new(0)),
-            index: Arc::new(std::sync::Mutex::new(KeyIndex::default())),
+            index: Arc::new(std::sync::Mutex::new(KeyIndex::new(false))),
             scan_cursors: Arc::new(std::sync::Mutex::new(HashMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
@@ -1721,7 +1780,7 @@ impl KeyValueStore {
             eviction_sample: 10,
             evicted: Arc::new(AtomicU64::new(0)),
             memory_bytes: Arc::new(AtomicUsize::new(0)),
-            index: Arc::new(std::sync::Mutex::new(KeyIndex::default())),
+            index: Arc::new(std::sync::Mutex::new(KeyIndex::new(false))),
             scan_cursors: Arc::new(std::sync::Mutex::new(HashMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
@@ -1744,7 +1803,9 @@ impl KeyValueStore {
             eviction_sample: 10,
             evicted: Arc::new(AtomicU64::new(0)),
             memory_bytes: Arc::new(AtomicUsize::new(0)),
-            index: Arc::new(std::sync::Mutex::new(KeyIndex::default())),
+            index: Arc::new(std::sync::Mutex::new(KeyIndex::new(tracks_all_keys(
+                eviction_policy,
+            )))),
             scan_cursors: Arc::new(std::sync::Mutex::new(HashMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
@@ -1777,6 +1838,17 @@ impl KeyValueStore {
     /// allocator RSS.
     pub fn approximate_memory_bytes(&self) -> usize {
         self.memory_bytes.load(Ordering::Relaxed)
+    }
+
+    /// `entry_memory` and the key's index state — present, and whether with a
+    /// TTL — from one lookup.
+    fn entry_state(&self, key: &str) -> (usize, Option<bool>) {
+        self.data.get(key).map_or((0, None), |entry| {
+            (
+                entry_size(key, entry.value()),
+                Some(entry.value().deadline.get().is_some()),
+            )
+        })
     }
 
     fn entry_memory(&self, key: &str) -> usize {
@@ -1844,6 +1916,10 @@ impl KeyValueStore {
             .collect()
     }
 
+    fn fresh_index(&self) -> KeyIndex {
+        KeyIndex::new(tracks_all_keys(self.eviction_policy))
+    }
+
     fn sync_key_metadata(&self, key: &str) {
         // Keep expired physical entries in the TTL index until the sweeper
         // removes them. A very short TTL can elapse between mutation and this
@@ -1852,7 +1928,7 @@ impl KeyValueStore {
         let live_ttl = self
             .data
             .get(key)
-            .map(|entry| entry.expires_at_ms.is_some());
+            .map(|entry| entry.deadline.get().is_some());
         self.index
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1861,13 +1937,13 @@ impl KeyValueStore {
 
     fn rebuild_metadata(&self) {
         let now = now_ms();
-        let mut index = KeyIndex::default();
+        let mut index = self.fresh_index();
         let mut memory = 0usize;
         for entry in self.data.iter() {
             if entry.value().is_expired(now) {
                 continue;
             }
-            index.sync(entry.key(), Some(entry.value().expires_at_ms.is_some()));
+            index.sync(entry.key(), Some(entry.value().deadline.get().is_some()));
             memory = memory.saturating_add(entry_size(entry.key(), entry.value()));
         }
         *self
@@ -1982,7 +2058,7 @@ impl KeyValueStore {
             Some(e) if e.is_expired(now) => (Value::BulkString(None), None),
             Some(e) => (
                 Self::encode_current_value(&e.value),
-                e.expires_at_ms.map(|exp| exp - now),
+                e.deadline.get().map(|exp| exp - now),
             ),
         }
     }
@@ -2030,7 +2106,7 @@ impl KeyValueStore {
                 (
                     e.key().clone(),
                     Self::encode_current_value(&e.value),
-                    e.expires_at_ms.map(|exp| exp - now),
+                    e.deadline.get().map(|exp| exp - now),
                 )
             })
             .collect()
@@ -2063,7 +2139,9 @@ impl KeyValueStore {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .volatile
             .keys
-            .clone();
+            .iter()
+            .map(|key| key.to_string())
+            .collect();
         self.remove_expired_candidates(keys)
     }
 
@@ -2086,7 +2164,7 @@ impl KeyValueStore {
             let start = self.expiry_cursor.fetch_add(limit, Ordering::Relaxed) % len;
             let take = limit.min(len);
             (0..take)
-                .map(|offset| index.volatile.keys[(start + offset) % len].clone())
+                .map(|offset| index.volatile.keys[(start + offset) % len].to_string())
                 .collect()
         };
         self.remove_expired_candidates(keys)
@@ -2148,8 +2226,7 @@ impl KeyValueStore {
         self.index
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .all
-            .keys
+            .ordered
             .len()
     }
 
@@ -2161,7 +2238,7 @@ impl KeyValueStore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         KeyspaceSample {
-            keys: index.all.keys.len(),
+            keys: index.ordered.len(),
             volatile_keys: index.volatile.keys.len(),
             memory_bytes: self.approximate_memory_bytes(),
         }
@@ -2188,7 +2265,7 @@ impl KeyValueStore {
         }
         positions
             .into_iter()
-            .map(|position| source[position].clone())
+            .map(|position| source[position].to_string())
             .collect()
     }
 
@@ -2258,7 +2335,7 @@ impl KeyValueStore {
                     EvictionPolicy::AllKeysLru | EvictionPolicy::VolatileLru => {
                         entry.last_access_ms.load(Ordering::Relaxed)
                     }
-                    EvictionPolicy::VolatileTtl => entry.expires_at_ms?,
+                    EvictionPolicy::VolatileTtl => entry.deadline.get()?,
                     EvictionPolicy::NoEviction => return None,
                 };
                 Some((key, weight))
@@ -2362,7 +2439,7 @@ impl KeyValueStore {
         SnapshotEntry {
             key: key.to_string(),
             value,
-            expires_at_ms: e.expires_at_ms,
+            expires_at_ms: e.deadline.get(),
         }
     }
 
@@ -2382,7 +2459,7 @@ impl KeyValueStore {
             let value = match e.value {
                 SnapshotValue::Str(s) => EntryValue::Str(s),
                 SnapshotValue::Hash(m) => EntryValue::Hash(Box::new(CompactHash::from_map(m))),
-                SnapshotValue::List(l) => EntryValue::List(l.into_iter().collect()),
+                SnapshotValue::List(l) => EntryValue::List(Box::new(l.into_iter().collect())),
                 SnapshotValue::Set(s) => EntryValue::Set(Box::new(s.into_iter().collect())),
                 SnapshotValue::ZSet(pairs) => {
                     EntryValue::ZSet(Box::new(ZSetInner::from_pairs(pairs)))
@@ -2393,11 +2470,11 @@ impl KeyValueStore {
                     events,
                 } => {
                     let _ = events; // older snapshots carried attempt timestamps
-                    EntryValue::RateLimiter(RateLimiterInner {
+                    EntryValue::RateLimiter(Box::new(RateLimiterInner {
                         limit,
                         window_ms,
                         buckets: VecDeque::new(),
-                    })
+                    }))
                 }
                 SnapshotValue::Json(s) => {
                     EntryValue::Json(serde_json::from_str(&s).unwrap_or(serde_json::Value::Null))
@@ -2412,7 +2489,7 @@ impl KeyValueStore {
                 e.key,
                 Entry {
                     value,
-                    expires_at_ms: e.expires_at_ms,
+                    deadline: e.expires_at_ms.into(),
                     last_access_ms: AtomicU64::new(now),
                 },
             );
@@ -2431,7 +2508,7 @@ impl KeyValueStore {
         *self
             .index
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = KeyIndex::default();
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.fresh_index();
         self.restore_ordered(entries);
     }
 
@@ -2503,7 +2580,11 @@ impl KeyValueStore {
                         })
                         .collect::<Vec<_>>()
                 });
-                let before = keys.iter().map(|key| self.entry_memory(key)).sum();
+                // Size and index state in the one lookup accounting already
+                // paid for: whether the key was present, and with a TTL.
+                let before_states: SmallVec<[(usize, Option<bool>); 4]> =
+                    keys.iter().map(|key| self.entry_state(key)).collect();
+                let before = before_states.iter().map(|(size, _)| size).sum();
                 let out = self.execute_inner(cmd);
                 // One lookup per key, not two. Reading the post-write size and
                 // reading the key's TTL state both need the same entry, and
@@ -2540,7 +2621,7 @@ impl KeyValueStore {
                         }
                         Some(entry) => {
                             after = after.saturating_add(entry_size(key, entry.value()));
-                            Some(entry.value().expires_at_ms.is_some())
+                            Some(entry.value().deadline.get().is_some())
                         }
                         None => None,
                     });
@@ -2552,12 +2633,26 @@ impl KeyValueStore {
                         .remove_if(key, |_, entry| entry.value.is_empty_collection());
                 }
                 {
-                    let mut index = self
-                        .index
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    for (key, live_ttl) in keys.iter().zip(ttl_states) {
-                        index.sync(key, live_ttl);
+                    // A key present before and after with unchanged TTL-ness —
+                    // an overwrite, the common write — is already indexed
+                    // correctly, so the store-wide index lock is not taken for
+                    // it at all. Anything else (created, removed, TTL gained or
+                    // lost, or absent both times, which re-asserts absence)
+                    // is synced.
+                    let mut index = None;
+                    for ((key, live_ttl), (_, was)) in
+                        keys.iter().zip(ttl_states).zip(before_states)
+                    {
+                        if was.is_some() && was == live_ttl {
+                            continue;
+                        }
+                        index
+                            .get_or_insert_with(|| {
+                                self.index
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            })
+                            .sync(key, live_ttl);
                     }
                 }
                 self.adjust_memory(before, after);
@@ -2667,7 +2762,7 @@ impl KeyValueStore {
         match self.data.get(key) {
             None => Value::Integer(-2),
             Some(e) if e.is_expired(now) => Value::Integer(-2),
-            Some(e) => match e.expires_at_ms {
+            Some(e) => match e.deadline.get() {
                 None => Value::Integer(-1),
                 Some(at) => {
                     let at = if millis { at } else { at / 1000 };
@@ -2787,7 +2882,7 @@ impl KeyValueStore {
                 match self.data.entry(key) {
                     DashEntry::Occupied(mut occupied) => {
                         let live = !occupied.get().is_expired(now);
-                        let existing_ttl = live.then_some(occupied.get().expires_at_ms).flatten();
+                        let existing_ttl = live.then_some(occupied.get().deadline.get()).flatten();
                         if opts.get && live && !matches!(occupied.get().value, EntryValue::Str(_)) {
                             return Value::Error(WRONGTYPE.to_string());
                         }
@@ -2816,7 +2911,7 @@ impl KeyValueStore {
                         // shard's exclusive guard, only to drop the copy.
                         let replaced = occupied.insert(Entry {
                             value: EntryValue::Str(val.into()),
-                            expires_at_ms,
+                            deadline: expires_at_ms.into(),
                             last_access_ms: AtomicU64::new(now),
                         });
                         // Free the old value outside the shard guard.
@@ -2842,7 +2937,7 @@ impl KeyValueStore {
                         };
                         vacant.insert(Entry {
                             value: EntryValue::Str(val.into()),
-                            expires_at_ms,
+                            deadline: expires_at_ms.into(),
                             last_access_ms: AtomicU64::new(now),
                         });
                         if opts.get {
@@ -3069,7 +3164,7 @@ impl KeyValueStore {
                     Some(GetExOption::PxAt(ms)) => Some(Some(ms)),
                 };
                 match deadline {
-                    None => occupied.get_mut().expires_at_ms = None,
+                    None => occupied.get_mut().deadline = Deadline::NONE,
                     Some(None) => {
                         return Value::Error(
                             "ERR invalid expire time in 'getex' command".to_string(),
@@ -3080,7 +3175,7 @@ impl KeyValueStore {
                     Some(Some(at)) if at <= now => {
                         occupied.remove();
                     }
-                    Some(Some(at)) => occupied.get_mut().expires_at_ms = Some(at),
+                    Some(Some(at)) => occupied.get_mut().deadline = Deadline::at(at),
                 }
                 value
             }
@@ -3093,7 +3188,7 @@ impl KeyValueStore {
                 match self.data.get(&key) {
                     None => Value::Integer(-2),
                     Some(e) if e.is_expired(now) => Value::Integer(-2),
-                    Some(e) => match e.expires_at_ms {
+                    Some(e) => match e.deadline.get() {
                         None => Value::Integer(-1),
                         // Rounded to nearest, not truncated, matching Redis.
                         // Truncating meant `SET k v EX 100` followed
@@ -3114,7 +3209,7 @@ impl KeyValueStore {
                 match self.data.get(&key) {
                     None => Value::Integer(-2),
                     Some(e) if e.is_expired(now) => Value::Integer(-2),
-                    Some(e) => match e.expires_at_ms {
+                    Some(e) => match e.deadline.get() {
                         None => Value::Integer(-1),
                         Some(exp) => Value::Integer(exp.saturating_sub(now) as i64),
                     },
@@ -3124,8 +3219,8 @@ impl KeyValueStore {
             Command::Persist(key) => {
                 let now = now_ms();
                 match self.data.get_mut(&key) {
-                    Some(mut e) if !e.is_expired(now) && e.expires_at_ms.is_some() => {
-                        e.expires_at_ms = None;
+                    Some(mut e) if !e.is_expired(now) && e.deadline.get().is_some() => {
+                        e.deadline = Deadline::NONE;
                         Value::Integer(1)
                     }
                     Some(e) if !e.is_expired(now) => Value::Integer(0),
@@ -3189,18 +3284,18 @@ impl KeyValueStore {
                     match last_key {
                         Some(ref key) => index
                             .ordered
-                            .range::<String, _>((
-                                std::ops::Bound::Excluded(key),
+                            .range::<str, _>((
+                                std::ops::Bound::Excluded(key.as_str()),
                                 std::ops::Bound::Unbounded,
                             ))
                             .take(batch.saturating_add(1))
-                            .cloned()
+                            .map(|key| key.to_string())
                             .collect(),
                         None => index
                             .ordered
                             .iter()
                             .take(batch.saturating_add(1))
-                            .cloned()
+                            .map(|key| key.to_string())
                             .collect(),
                     }
                 };
@@ -3245,6 +3340,10 @@ impl KeyValueStore {
 
             Command::FlushDb => {
                 self.data.clear();
+                // `clear` keeps every shard's table at its high-water
+                // capacity: a store that once held a million keys kept tens
+                // of MiB of empty buckets after FLUSHDB. Give them back.
+                self.data.shrink_to_fit();
                 Value::SimpleString("OK".to_string())
             }
 
@@ -3593,7 +3692,7 @@ impl KeyValueStore {
                     key,
                     now,
                     EntryValue::List,
-                    CompactList::new()
+                    Box::new(CompactList::new())
                 );
                 for v in vals {
                     list.push_front(v.into());
@@ -3610,7 +3709,7 @@ impl KeyValueStore {
                     key,
                     now,
                     EntryValue::List,
-                    CompactList::new()
+                    Box::new(CompactList::new())
                 );
                 for v in vals {
                     list.push_back(v.into());
@@ -3999,7 +4098,7 @@ impl KeyValueStore {
                     dst,
                     Entry {
                         value: EntryValue::Set(Box::new(CompactSet::from_index_set(result))),
-                        expires_at_ms: None,
+                        deadline: Deadline::NONE,
                         last_access_ms: AtomicU64::new(now_ms()),
                     },
                 );
@@ -4027,7 +4126,7 @@ impl KeyValueStore {
                     dst,
                     Entry {
                         value: EntryValue::Set(Box::new(CompactSet::from_index_set(result))),
-                        expires_at_ms: None,
+                        deadline: Deadline::NONE,
                         last_access_ms: AtomicU64::new(now_ms()),
                     },
                 );
@@ -4055,7 +4154,7 @@ impl KeyValueStore {
                     dst,
                     Entry {
                         value: EntryValue::Set(Box::new(CompactSet::from_index_set(result))),
-                        expires_at_ms: None,
+                        deadline: Deadline::NONE,
                         last_access_ms: AtomicU64::new(now_ms()),
                     },
                 );
@@ -4226,12 +4325,12 @@ impl KeyValueStore {
                 // reply still claimed a successful move.
                 let mut dst_entry = self.data.entry(dst).or_insert_with(|| Entry {
                     value: EntryValue::Set(Box::new(CompactSet::new())),
-                    expires_at_ms: None,
+                    deadline: Deadline::NONE,
                     last_access_ms: AtomicU64::new(now),
                 });
                 if dst_entry.is_expired(now) {
                     dst_entry.value = EntryValue::Set(Box::new(CompactSet::new()));
-                    dst_entry.expires_at_ms = None;
+                    dst_entry.deadline = Deadline::NONE;
                 }
                 if let EntryValue::Set(s) = &mut dst_entry.value {
                     s.insert(member);
@@ -4493,7 +4592,7 @@ impl KeyValueStore {
                         }
                         v.insert(Entry {
                             value: EntryValue::Json(serde_json::Value::Null),
-                            expires_at_ms: None,
+                            deadline: Deadline::NONE,
                             last_access_ms: AtomicU64::new(now),
                         })
                     }
@@ -4515,7 +4614,7 @@ impl KeyValueStore {
                         }
                         if e.is_expired(now) {
                             e.value = EntryValue::Json(serde_json::Value::Null);
-                            e.expires_at_ms = None;
+                            e.deadline = Deadline::NONE;
                         }
                         o.into_ref()
                     }
@@ -4605,7 +4704,7 @@ impl KeyValueStore {
                     key,
                     now,
                     EntryValue::RateLimiter,
-                    RateLimiterInner::new(limit, window_ms)
+                    Box::new(RateLimiterInner::new(limit, window_ms))
                 );
                 // Reconfigure in place; recorded attempts are kept so a live
                 // limiter is not reset by a config change.
@@ -4613,7 +4712,7 @@ impl KeyValueStore {
                 rl.window_ms = window_ms;
                 // Explicitly configured limiters persist until DEL/EXPIRE, unlike
                 // limiters auto-created by inline RLCHECK config.
-                entry.expires_at_ms = None;
+                entry.deadline = Deadline::NONE;
                 Value::SimpleString("OK".to_string())
             }
 
@@ -4637,8 +4736,10 @@ impl KeyValueStore {
                         )));
                     };
                     Ok(Entry {
-                        value: EntryValue::RateLimiter(RateLimiterInner::new(limit, window_ms)),
-                        expires_at_ms: Some(now.saturating_add(window_ms)),
+                        value: EntryValue::RateLimiter(Box::new(RateLimiterInner::new(
+                            limit, window_ms,
+                        ))),
+                        deadline: Deadline::at(now.saturating_add(window_ms)),
                         last_access_ms: AtomicU64::new(now),
                     })
                 };
@@ -4673,8 +4774,8 @@ impl KeyValueStore {
                 }
                 let (allowed, remaining, retry_after_ms) = rl.check(now);
                 let window_ms = rl.window_ms;
-                if entry.expires_at_ms.is_some() {
-                    entry.expires_at_ms = Some(now.saturating_add(window_ms));
+                if entry.deadline.get().is_some() {
+                    entry.deadline = Deadline::at(now.saturating_add(window_ms));
                 }
                 // Both fit by construction for parsed commands (limit and
                 // window are bounded there); clamp for direct callers.
@@ -5166,7 +5267,7 @@ fn set_expiry(data: &DashMap<String, Entry>, key: String, ts_ms: u64) -> Value {
         None => Value::Integer(0),
         Some(e) if e.is_expired(now) => Value::Integer(0),
         Some(mut e) => {
-            e.expires_at_ms = Some(ts_ms);
+            e.deadline = Deadline::at(ts_ms);
             Value::Integer(1)
         }
     }
@@ -10690,7 +10791,17 @@ mod storage_regression_tests {
     /// that mutates the index and check it directly.
     #[test]
     fn the_ordered_and_dense_key_indexes_never_diverge() {
-        let store = KeyValueStore::new();
+        // Both index shapes: the default (no `all`), and an allkeys eviction
+        // policy, where `all` is kept.
+        for store in [
+            KeyValueStore::new(),
+            KeyValueStore::with_config(None, None, EvictionPolicy::AllKeysLru),
+        ] {
+            index_invariants_hold_under_a_mixed_workload(store);
+        }
+    }
+
+    fn index_invariants_hold_under_a_mixed_workload(store: KeyValueStore) {
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
         let mut next = move || {
             state ^= state >> 12;
@@ -10703,20 +10814,27 @@ mod storage_regression_tests {
         let check = |label: &str| {
             let index = store.index.lock().unwrap_or_else(|e| e.into_inner());
             let ordered: std::collections::BTreeSet<&str> =
-                index.ordered.iter().map(String::as_str).collect();
+                index.ordered.iter().map(|k| &**k).collect();
             let dense: std::collections::BTreeSet<&str> =
-                index.all.keys.iter().map(String::as_str).collect();
-            assert_eq!(
-                ordered,
-                dense,
-                "ordered and all diverged after {label}: only-in-ordered {:?}, only-in-all {:?}",
-                ordered.difference(&dense).collect::<Vec<_>>(),
-                dense.difference(&ordered).collect::<Vec<_>>()
-            );
+                index.all.keys.iter().map(|k| &**k).collect();
+            if index.track_all {
+                assert_eq!(
+                    ordered,
+                    dense,
+                    "ordered and all diverged after {label}: only-in-ordered {:?}, only-in-all {:?}",
+                    ordered.difference(&dense).collect::<Vec<_>>(),
+                    dense.difference(&ordered).collect::<Vec<_>>()
+                );
+            } else {
+                assert!(
+                    dense.is_empty(),
+                    "all is maintained without an allkeys policy"
+                );
+            }
             // Every volatile key must still be a live key.
             for key in &index.volatile.keys {
                 assert!(
-                    dense.contains(key.as_str()),
+                    ordered.contains(&**key),
                     "volatile holds {key}, which is not in the key set, after {label}"
                 );
             }

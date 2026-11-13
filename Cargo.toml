@@ -27,7 +27,10 @@ sync-client = { path = "sync-client" }
 dashmap        = "6"
 indexmap       = "2"
 rand           = { version = "0.9", features = ["thread_rng"] }
-smallvec       = "1"
+# `union`: a SmallVec's inline buffer and its heap pointer share storage
+# instead of sitting behind an enum tag. `Blob` (every string value, hash field
+# value and list element) drops from 40 to 32 bytes, and with it every entry.
+smallvec       = { version = "1", features = ["union"] }
 
 # async runtime
 tokio          = { version = "1",     features = ["full"] }

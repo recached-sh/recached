@@ -1,0 +1,64 @@
+## run 1 pre load { 13.41 88.21 100.64 }
+pre  SET overwrite (existing)     min  1900.9 ns/op   median  2006.8 ns/op
+pre  SET new keys                 min  3939.2 ns/op   median  4274.3 ns/op
+pre  GET hit                      min   808.8 ns/op   median  1012.9 ns/op
+pre  INCR                         min  1782.6 ns/op   median  2025.9 ns/op
+pre  SET+PEXPIRE (volatile)       min  1814.9 ns/op   median  1850.8 ns/op
+pre  DEL then SET (churn)         min  6890.5 ns/op   median  7159.9 ns/op
+pre  HSET field overwrite         min  2595.4 ns/op   median  3138.0 ns/op
+## run 2 opt load { 7.04 43.58 77.82 }
+opt  SET overwrite (existing)     min  1538.8 ns/op   median  1673.1 ns/op
+opt  SET new keys                 min  3359.3 ns/op   median  3861.6 ns/op
+opt  GET hit                      min   838.3 ns/op   median   932.1 ns/op
+opt  INCR                         min  1626.4 ns/op   median  1847.1 ns/op
+opt  SET+PEXPIRE (volatile)       min  1437.0 ns/op   median  1536.3 ns/op
+opt  DEL then SET (churn)         min  5274.0 ns/op   median  5502.8 ns/op
+opt  HSET field overwrite         min  2054.7 ns/op   median  2081.6 ns/op
+## run 3 opt load { 4.43 26.12 63.80 }
+opt  SET overwrite (existing)     min  1458.3 ns/op   median  1477.6 ns/op
+opt  SET new keys                 min  3186.7 ns/op   median  3278.1 ns/op
+opt  GET hit                      min   805.4 ns/op   median   839.9 ns/op
+opt  INCR                         min  1510.8 ns/op   median  1575.3 ns/op
+opt  SET+PEXPIRE (volatile)       min  1417.1 ns/op   median  1462.0 ns/op
+opt  DEL then SET (churn)         min  5655.6 ns/op   median  5783.6 ns/op
+opt  HSET field overwrite         min  2179.0 ns/op   median  2194.2 ns/op
+## run 4 pre load { 4.49 16.68 53.02 }
+pre  SET overwrite (existing)     min  1825.2 ns/op   median  1943.2 ns/op
+pre  SET new keys                 min  3420.9 ns/op   median  3555.8 ns/op
+pre  GET hit                      min   774.8 ns/op   median   782.7 ns/op
+pre  INCR                         min  1720.4 ns/op   median  1727.3 ns/op
+pre  SET+PEXPIRE (volatile)       min  1677.3 ns/op   median  1883.0 ns/op
+pre  DEL then SET (churn)         min  6586.4 ns/op   median  7107.1 ns/op
+pre  HSET field overwrite         min  2480.0 ns/op   median  2823.2 ns/op
+## run 5 pre load { 5.49 10.84 42.35 }
+pre  SET overwrite (existing)     min  1727.9 ns/op   median  1770.2 ns/op
+pre  SET new keys                 min  3446.2 ns/op   median  3470.3 ns/op
+pre  GET hit                      min   777.2 ns/op   median   791.9 ns/op
+pre  INCR                         min  1717.1 ns/op   median  1731.6 ns/op
+pre  SET+PEXPIRE (volatile)       min  1653.7 ns/op   median  1660.6 ns/op
+pre  DEL then SET (churn)         min  6141.9 ns/op   median  6223.5 ns/op
+pre  HSET field overwrite         min  2326.6 ns/op   median  2382.8 ns/op
+## run 6 opt load { 4.32 7.39 34.41 }
+opt  SET overwrite (existing)     min  1507.6 ns/op   median  1667.8 ns/op
+opt  SET new keys                 min  3206.5 ns/op   median  3252.2 ns/op
+opt  GET hit                      min   778.9 ns/op   median   786.9 ns/op
+opt  INCR                         min  1498.3 ns/op   median  1596.4 ns/op
+opt  SET+PEXPIRE (volatile)       min  1347.1 ns/op   median  1568.3 ns/op
+opt  DEL then SET (churn)         min  5925.4 ns/op   median  6173.4 ns/op
+opt  HSET field overwrite         min  2301.6 ns/op   median  2384.3 ns/op
+## run 7 opt load { 4.52 6.00 28.53 }
+opt  SET overwrite (existing)     min  1650.0 ns/op   median  1838.4 ns/op
+opt  SET new keys                 min  3269.7 ns/op   median  3876.7 ns/op
+opt  GET hit                      min   844.5 ns/op   median   904.2 ns/op
+opt  INCR                         min  1617.5 ns/op   median  1760.5 ns/op
+opt  SET+PEXPIRE (volatile)       min  1307.2 ns/op   median  1401.4 ns/op
+opt  DEL then SET (churn)         min  5273.1 ns/op   median  5796.4 ns/op
+opt  HSET field overwrite         min  2044.4 ns/op   median  2061.1 ns/op
+## run 8 pre load { 4.23 5.15 23.87 }
+pre  SET overwrite (existing)     min  1738.1 ns/op   median  1761.9 ns/op
+pre  SET new keys                 min  3393.7 ns/op   median  3450.7 ns/op
+pre  GET hit                      min   858.1 ns/op   median   898.0 ns/op
+pre  INCR                         min  1939.2 ns/op   median  2017.2 ns/op
+pre  SET+PEXPIRE (volatile)       min  1758.6 ns/op   median  1913.0 ns/op
+pre  DEL then SET (churn)         min  6273.2 ns/op   median  7232.9 ns/op
+pre  HSET field overwrite         min  2369.3 ns/op   median  2389.2 ns/op

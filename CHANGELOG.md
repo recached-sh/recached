@@ -13,6 +13,14 @@ All notable changes to Recached are documented here.
 - **The sync fan-out fails closed.** A mutation that names no keys reaches a scoped connection only when it is keyspace-wide (`FLUSHDB`); before, any write missing from the key extractor would have been pushed to every tenant. `RLCHECK` was such a write — it is never broadcast, so nothing leaked — and is now listed
 - Five refused `SYNC TOKEN`s close the socket, as five refused passwords do
 
+### Performance — memory
+- **About a third less memory per small key.** Every key was copied into four `String`s (six with a TTL): the map's own and three secondary indexes. The indexes now share one allocation per key; the all-keys index, read only by `allkeys-*` eviction sampling, is kept only under those policies; and a write that leaves a key present with unchanged TTL-ness no longer touches the index (or takes its store-wide lock). Entries shrank from 72 to 56 bytes (8-byte expiry, `smallvec`'s `union` layout, list and rate-limiter values boxed like the other collections). Measured at 1M keys with 32-byte values: 532 → 373 bytes/key of RSS; with a TTL 637 → 427; 100k × 1 KiB: 1,398 → 1,255. Median of 3 runs on one host
+- The same change makes writes cheaper in the engine: an overwrite no longer takes the store-wide index lock. In-process `execute` cost (best of 4 interleaved runs × 9 × 1M ops, `core-engine/examples/hotpath.rs`): `SET` overwrite −16%, `INCR` −13%, `SET` + `PEXPIRE` −21%, delete-and-recreate −14%, `HSET` −12%, new keys −6%; `GET` unchanged. Engine only — networked throughput was not measurable on the test host
+- `FLUSHDB` returns the keyspace's table capacity instead of keeping it at the high-water mark: RSS retained after flushing 100k × 1 KiB keys fell from 99% to 38%
+
+### Added — benchmarking
+- `scripts/bench-redis-valkey.sh`, `scripts/bench-summarize.py`, `scripts/bench-memory-aggregate.py`: reproducible Recached/Redis/Valkey (or build-vs-build) comparison of throughput, latency percentiles, server CPU per million requests and RSS per key, with recorded conditions
+
 ### Fixed — RESP port
 - **`redis-cli --pipe` works.** It ends a mass insert with an empty line and `ECHO <20 random bytes>`; Recached answered the empty line with a protocol error and refused `ECHO` (unknown, and its binary argument), so the tool never saw its marker and timed out. Empty lines between commands are now ignored, as in Redis
 - **A protocol error closes the connection**, as in Redis. Before, the server answered one error, discarded the rest of its read buffer and carried on, so commands pipelined behind a malformed frame were silently dropped and the client matched every later reply to the wrong request

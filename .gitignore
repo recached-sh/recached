@@ -51,6 +51,9 @@ scripts/*
 !scripts/benchmark.sh
 !scripts/bench-docker.sh
 !scripts/bench-scaling.sh
+!scripts/bench-redis-valkey.sh
+!scripts/bench-summarize.py
+!scripts/bench-memory-aggregate.py
 !scripts/update-formula-checksums.sh
 !scripts/update-deps.sh
 !scripts/compat-matrix.sh

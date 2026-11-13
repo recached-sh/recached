@@ -1,0 +1,23 @@
+date_utc: 2026-11-12T14:58:20Z
+host_os: Darwin 24.6.0 x86_64
+cpu: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz
+logical_cpus: 8
+physical_cpus: 4
+memory_bytes: 8589934592
+governor: n/a (macOS)
+numa: n/a (macOS)
+load_average_at_start: 11.86 10.20 7.46
+pinning: none
+network: loopback (127.0.0.1)
+bench_tool: redis-benchmark 7.2.5
+bench_threads: 2
+profile: quick reps=1 single_worker=1 workers=4 persistence=none
+requests_per_run: 100000
+server.redis.binary: /usr/local/bin/redis-server
+server.redis.sha256: b51743379253eb5db686b8d5f1c912ed5aab980af5c1351a99ac88f227804e10
+server.redis.version: Redis server v=7.2.5 sha=00000000:0 malloc=libc bits=64 build=bd81cd1340e80580
+recached_commit: da7fc954bdbf70a3f15a158493b4f687fe9d0579 (dirty)
+rustc: rustc 1.98.0 (88d9e12ae 2026-08-18)
+recached_build: release profile from Cargo.toml (opt-level=3, lto=thin, codegen-units=1, overflow-checks=true); allocator jemalloc
+# WARNING: not Linux — no CPU pinning, no governor control; treat results as indicative.
+rss_idle_kb_at_start.redis: 4624

@@ -1,0 +1,4 @@
+server,single_worker,persistence,kind,keys,value_size,dbsize,rss_idle_kb,rss_loaded_kb,rss_after_overwrite_kb,rss_after_flush_kb
+valkey,1,none,string,1000000,32,1000000,5048,102776,108256,46604
+valkey,1,none,hash,1000000,32,1000000,5028,217404,217516,46092
+valkey,1,none,ttl,1000000,32,1000000,5076,157336,162880,79876

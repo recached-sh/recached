@@ -1,0 +1,4 @@
+server,single_worker,persistence,kind,keys,value_size,dbsize,rss_idle_kb,rss_loaded_kb,rss_after_overwrite_kb,rss_after_flush_kb
+recached,1,none,string,100000,1024,100000,4040,126560,126592,49556
+recached,1,none,hash,100000,1024,100000,4080,377108,399032,125100
+recached,1,none,ttl,100000,1024,100000,4080,132428,132440,122028
