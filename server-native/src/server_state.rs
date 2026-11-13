@@ -357,6 +357,29 @@ async fn write_atomically<T: serde::Serialize>(
 }
 
 impl ServerState {
+    /// A state with no AOF, for tests that only need the shared tables.
+    #[cfg(test)]
+    pub(crate) fn for_tests(
+        snap: Arc<SnapshotConfig>,
+        replicas: ReplRegistry,
+        is_replica: bool,
+    ) -> Arc<Self> {
+        Arc::new(ServerState {
+            snap,
+            aof: None,
+            replicas,
+            is_replica: AtomicBool::new(is_replica),
+            dedup: std::sync::Mutex::new(HashMap::new()),
+            ephemeral: std::sync::Mutex::new(HashMap::new()),
+            ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+            dedup_dirty: std::sync::atomic::AtomicBool::new(false),
+            dedup_order: tokio::sync::Mutex::new(()),
+            save_lock: tokio::sync::Mutex::new(()),
+            persistence_healthy: AtomicBool::new(true),
+            persistence_failures: AtomicU64::new(0),
+        })
+    }
+
     pub(crate) fn is_replica(&self) -> bool {
         self.is_replica.load(Ordering::Relaxed)
     }
@@ -514,22 +537,25 @@ impl ServerState {
     /// between checkpoints bring back the write without its mark: the
     /// client's retry of an `INCR` whose reply was lost then ran it twice.
     ///
-    /// Replicas still get the bare mutation. An older replica refuses a
-    /// DEDUP frame as a failed command and drops the link, and there is no
-    /// handshake to ask; so a promoted replica holds no marks for replicated
-    /// writes, which the documentation states.
+    /// Replicas get the same envelope when DEDUP replication is on (the 0.6
+    /// default; every replica then negotiated it at the handshake), so a
+    /// promoted replica answers a retry of a write it applied with `+DUP`.
+    /// One frame carries both, so a replica can never hold the write without
+    /// its mark. With it off they get the bare mutation, as before 0.6.
     pub(crate) async fn on_write_identified(&self, resp: &[u8], dedup: Option<(&str, u64)>) {
+        let wrapped = dedup.map(|(client, id)| dedup_wrap(client, id, resp));
         if let Some(aof) = &self.aof {
-            let result = match dedup {
-                Some((client, id)) => aof.append(&dedup_wrap(client, id, resp)).await,
-                None => aof.append(resp).await,
-            };
+            let result = aof.append(wrapped.as_deref().unwrap_or(resp)).await;
             if let Err(e) = result {
                 self.record_persistence_failure("aof_append", &e);
             }
         }
         if self.replicas.is_enabled() {
-            self.replicas.fan_out(resp.to_vec()).await;
+            let frame = match wrapped {
+                Some(envelope) if self.replicas.streams_dedup() => envelope,
+                _ => resp.to_vec(),
+            };
+            self.replicas.fan_out(frame).await;
         }
     }
 
@@ -537,15 +563,72 @@ impl ServerState {
     /// (`HDEL` of a missing field), or a permanent refusal — in the AOF, so
     /// it survives a crash before the next checkpoint like an applied one.
     pub(crate) async fn log_dedup_outcome(&self, client: &str, id: u64, refusal: Option<&str>) {
-        if let Some(aof) = &self.aof {
-            let frame = match refusal {
-                None => dedup_mark_frame(client, id),
-                Some(error) => dedup_refusal_frame(client, id, bounded_refusal(error)),
-            };
-            if let Err(e) = aof.append(&frame).await {
-                self.record_persistence_failure("aof_append", &e);
-            }
+        let replicate = self.replicas.is_enabled() && self.replicas.streams_dedup();
+        if self.aof.is_none() && !replicate {
+            return;
         }
+        let frame = match refusal {
+            None => dedup_mark_frame(client, id),
+            Some(error) => dedup_refusal_frame(client, id, bounded_refusal(error)),
+        };
+        if let Some(aof) = &self.aof
+            && let Err(e) = aof.append(&frame).await
+        {
+            self.record_persistence_failure("aof_append", &e);
+        }
+        // An outcome that changed no data still has to reach a replica, or a
+        // promoted one would run the retry the primary answered `+DUP` — or
+        // answer `+DUP` to a write the primary refused.
+        if replicate {
+            self.replicas.fan_out(frame).await;
+        }
+    }
+
+    /// The duplicate-suppression table, for a full replica synchronization.
+    pub(crate) fn dedup_table(&self) -> Vec<DedupTableEntry> {
+        let map = self
+            .dedup
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.iter()
+            .map(|(client, mark)| {
+                (
+                    client.clone(),
+                    mark.hwm,
+                    mark.refused.iter().cloned().collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// Replace the duplicate-suppression table with a primary's, after a full
+    /// synchronization replaced the data. Marks this replica held for an
+    /// earlier primary describe writes that no longer exist here.
+    pub(crate) fn replace_dedup_table(&self, table: Vec<DedupTableEntry>) {
+        let now = now_ms();
+        let mut map = self
+            .dedup
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.clear();
+        for (client, hwm, refused) in table {
+            let refused: VecDeque<(u64, String)> = refused
+                .into_iter()
+                .rev()
+                .take(DEDUP_REFUSALS_PER_CLIENT)
+                .rev()
+                .map(|(id, error)| (id, bounded_refusal(&error).to_string()))
+                .collect();
+            map.insert(
+                client,
+                DedupMark {
+                    hwm,
+                    seen: now,
+                    refused,
+                },
+            );
+        }
+        self.dedup_dirty.store(true, Ordering::Release);
     }
 
     /// Path of the dedup sidecar, alongside the snapshot.

@@ -64,9 +64,67 @@ pub(crate) struct ReplHub {
     /// snapshots. Conflicting writes hold their guards until propagation has
     /// completed; independent keys remain concurrent.
     write_order: Vec<tokio::sync::Mutex<()>>,
+    /// Stream DEDUP identities with the writes they belong to
+    /// (`RECACHED_REPL_DEDUP`, on by default). Fixed at startup: every
+    /// replica of this primary must then accept them, see [`REPL_CAP_DEDUP`].
+    dedup: AtomicBool,
+    /// On a replica: whether the primary it follows streams DEDUP identities.
+    /// False while following a pre-0.6 primary, or one with
+    /// `RECACHED_REPL_DEDUP=off` — a promoted replica then holds no marks.
+    pub(crate) upstream_dedup: AtomicBool,
 }
 
 const WRITE_ORDER_STRIPES: usize = 256;
+
+/// Capability a 0.6 primary advertises after its run id (`<run-id>;caps=…`)
+/// and a 0.6 replica accepts after the run id it requests
+/// (`<run-id>;accept=…`): replication frames carry DEDUP identities —
+/// `DEDUP <client> <id> <write…>` envelopes, mark-only `RECACHED-DEDUP` and
+/// `RECACHED-DEDUP-REFUSED` records, the AOF's own formats — and a full
+/// synchronization sends the duplicate-suppression table with the snapshot.
+///
+/// Carried inside the run-id strings because that is the one field both
+/// directions of a 0.5 handshake treat as opaque: a 0.5 replica stores the
+/// advertised string and echoes it back unchanged (which carries no
+/// `accept`), and a 0.6 replica adds `accept` only when the primary offered
+/// the capability, so a 0.5 primary never sees it.
+pub(crate) const REPL_CAP_DEDUP: &str = "dedup1";
+
+/// Mode byte: full synchronization followed by the DEDUP table.
+const SYNC_MODE_FULL_DEDUP: u8 = b'D';
+/// Mode byte: the primary refuses this replica; a length-prefixed reason
+/// follows. A 0.5 replica reads it as an invalid mode and retries.
+const SYNC_MODE_REFUSED: u8 = b'E';
+
+/// A run id string as sent in the handshake: the id, then `;key=value`
+/// parameters.
+pub(crate) struct HandshakeId<'a> {
+    pub(crate) run_id: &'a str,
+    params: &'a str,
+}
+
+impl<'a> HandshakeId<'a> {
+    pub(crate) fn parse(raw: &'a str) -> Self {
+        match raw.split_once(';') {
+            Some((run_id, params)) => HandshakeId { run_id, params },
+            None => HandshakeId {
+                run_id: raw,
+                params: "",
+            },
+        }
+    }
+
+    pub(crate) fn has(&self, key: &str, value: &str) -> bool {
+        self.params.split(';').any(|p| {
+            p.split_once('=')
+                .is_some_and(|(k, v)| k == key && v.split(',').any(|item| item == value))
+        })
+    }
+}
+
+/// One client's duplicate-suppression state as a full synchronization sends
+/// it: `(client, high-water mark, [(refused id, error)])`.
+pub(crate) type DedupTableEntry = (String, Option<u64>, Vec<(u64, String)>);
 
 impl ReplHub {
     /// Deepest send queue across connected replicas, in frames.
@@ -190,7 +248,27 @@ impl ReplHub {
             write_order: (0..WRITE_ORDER_STRIPES)
                 .map(|_| tokio::sync::Mutex::new(()))
                 .collect(),
+            dedup: AtomicBool::new(true),
+            upstream_dedup: AtomicBool::new(false),
         })
+    }
+
+    pub(crate) fn configure_dedup(&self, on: bool) {
+        self.dedup.store(on, Ordering::Release);
+    }
+
+    /// Whether replication frames from this node carry DEDUP identities.
+    pub(crate) fn streams_dedup(&self) -> bool {
+        self.dedup.load(Ordering::Acquire)
+    }
+
+    /// The run id string this primary advertises.
+    fn advertised_id(&self) -> String {
+        if self.streams_dedup() {
+            format!("{};caps={REPL_CAP_DEDUP}", self.run_id)
+        } else {
+            self.run_id.clone()
+        }
     }
 
     fn stripe_for(key: &str) -> usize {
@@ -414,7 +492,7 @@ pub(crate) async fn run_repl_server(
     bind_host: String,
     port: u16,
     store: Arc<KeyValueStore>,
-    snap_cfg: Arc<SnapshotConfig>,
+    dedup_source: Arc<ServerState>,
     replicas: ReplRegistry,
     repl_password: Option<Arc<String>>,
     repl_channel_capacity: usize,
@@ -464,7 +542,7 @@ pub(crate) async fn run_repl_server(
                 };
                 info!("Replica connected from {}", addr);
                 let store = Arc::clone(&store);
-                let snap_cfg = Arc::clone(&snap_cfg);
+                let dedup_source = Arc::clone(&dedup_source);
                 let replicas = Arc::clone(&replicas);
                 let pwd = repl_password.clone();
                 let thr = Arc::clone(&throttle);
@@ -481,7 +559,7 @@ pub(crate) async fn run_repl_server(
                                 handle_replica(
                                     stream,
                                     store,
-                                    snap_cfg,
+                                    dedup_source,
                                     replicas,
                                     pwd,
                                     repl_channel_capacity,
@@ -510,7 +588,7 @@ pub(crate) async fn run_repl_server(
                         handle_replica(
                             socket,
                             store,
-                            snap_cfg,
+                            dedup_source,
                             replicas,
                             pwd,
                             repl_channel_capacity,
@@ -533,7 +611,7 @@ pub(crate) async fn run_repl_server(
 pub(crate) async fn handle_replica<S>(
     mut socket: S,
     store: Arc<KeyValueStore>,
-    _snap_cfg: Arc<SnapshotConfig>,
+    dedup_source: Arc<ServerState>,
     replicas: ReplRegistry,
     repl_password: Option<Arc<String>>,
     repl_channel_capacity: usize,
@@ -580,13 +658,14 @@ where
     // Versioned resume handshake. A replica identifies the primary run and
     // last offset it applied; an empty run id requests a full synchronization.
     socket.write_all(REPL_MAGIC).await?;
-    let run_id = replicas.run_id.as_bytes();
+    let advertised = replicas.advertised_id();
+    let advertised = advertised.as_bytes();
     socket
-        .write_all(&(run_id.len() as u16).to_le_bytes())
+        .write_all(&(advertised.len() as u16).to_le_bytes())
         .await?;
-    socket.write_all(run_id).await?;
+    socket.write_all(advertised).await?;
     socket.flush().await?;
-    let (requested_run_id, requested_offset) =
+    let (requested_raw, requested_offset) =
         tokio::time::timeout(handshake_timeout(), read_resume_request(&mut socket))
             .await
             .map_err(|_| {
@@ -595,6 +674,32 @@ where
                     "replication resume handshake timed out",
                 )
             })??;
+
+    let requested = HandshakeId::parse(&requested_raw);
+    let requested_run_id = requested.run_id.to_string();
+    let with_dedup = requested.has("accept", REPL_CAP_DEDUP);
+    if replicas.streams_dedup() && !with_dedup {
+        // A replica that cannot read DEDUP identities would fail on the first
+        // envelope frame — or, worse, a future frame could be misread. Refuse
+        // it up front, with a reason a 0.6 replica logs; a 0.5 replica reports
+        // an invalid synchronization mode and retries with backoff.
+        let reason = "this primary replicates DEDUP state (RECACHED_REPL_DEDUP=on) and the replica \
+                      does not support it: upgrade the replica to 0.6, or set \
+                      RECACHED_REPL_DEDUP=off on the primary";
+        error!("Refusing replica {peer_ip}: {reason}");
+        counter!("recached_replication_refusals_total", "reason" => "dedup_unsupported")
+            .increment(1);
+        socket.write_all(&[SYNC_MODE_REFUSED]).await?;
+        socket
+            .write_all(&(reason.len() as u16).to_le_bytes())
+            .await?;
+        socket.write_all(reason.as_bytes()).await?;
+        socket.flush().await?;
+        return Err(std::io::Error::new(
+            ErrorKind::Unsupported,
+            "replica does not accept DEDUP replication",
+        ));
+    }
 
     // Establish one exact snapshot/log boundary. Holding every write-order
     // stripe ensures no mutation can commit between channel registration and
@@ -610,6 +715,17 @@ where
     let snapshot = if missing.is_none() {
         Some(
             rmp_serde::to_vec(&store.snapshot())
+                .map_err(|e| std::io::Error::other(e.to_string()))?,
+        )
+    } else {
+        None
+    };
+    // Captured under the same barrier as the snapshot: every write it holds
+    // committed its mark before releasing its guards, and none can commit one
+    // until the barrier drops, so data and marks describe one instant.
+    let dedup_table = if snapshot.is_some() && with_dedup {
+        Some(
+            rmp_serde::to_vec(&dedup_source.dedup_table())
                 .map_err(|e| std::io::Error::other(e.to_string()))?,
         )
     } else {
@@ -639,9 +755,12 @@ where
     }
     drop(write_barrier);
 
-    socket
-        .write_all(&[if snapshot.is_some() { b'F' } else { b'P' }])
-        .await?;
+    let mode = match (&snapshot, &dedup_table) {
+        (Some(_), Some(_)) => SYNC_MODE_FULL_DEDUP,
+        (Some(_), None) => b'F',
+        (None, _) => b'P',
+    };
+    socket.write_all(&[mode]).await?;
     socket.write_all(&current_offset.to_le_bytes()).await?;
     if let Some(snapshot) = snapshot {
         counter!("recached_replication_syncs_total", "type" => "full").increment(1);
@@ -653,6 +772,16 @@ where
         })?;
         socket.write_all(&len.to_le_bytes()).await?;
         socket.write_all(&snapshot).await?;
+        if let Some(table) = dedup_table {
+            let len = u32::try_from(table.len()).map_err(|_| {
+                std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    "DEDUP table exceeds replication frame limit",
+                )
+            })?;
+            socket.write_all(&len.to_le_bytes()).await?;
+            socket.write_all(&table).await?;
+        }
     } else if let Some(missing) = missing {
         counter!("recached_replication_syncs_total", "type" => "partial").increment(1);
         let count = u32::try_from(missing.len()).map_err(|_| {
@@ -909,46 +1038,88 @@ where
     }
     let mut primary_run_id = vec![0u8; run_len];
     socket.read_exact(&mut primary_run_id).await?;
-    let primary_run_id = String::from_utf8(primary_run_id)
+    let primary_advertised = String::from_utf8(primary_run_id)
         .map_err(|_| std::io::Error::new(ErrorKind::InvalidData, "invalid primary run id"))?;
+    let advertised = HandshakeId::parse(&primary_advertised);
+    let primary_run_id = advertised.run_id.to_string();
+    // Accept DEDUP replication whenever the primary offers it, whatever this
+    // node's own setting: that governs what it sends its own replicas.
+    let with_dedup = advertised.has("caps", REPL_CAP_DEDUP);
 
-    let requested_run_id = if resume.run_id == primary_run_id {
+    let resume_id = if resume.run_id == primary_run_id {
         resume.run_id.as_str()
     } else {
         ""
     };
+    let requested = if with_dedup {
+        format!("{resume_id};accept={REPL_CAP_DEDUP}")
+    } else {
+        resume_id.to_string()
+    };
     socket
-        .write_all(&(requested_run_id.len() as u16).to_le_bytes())
+        .write_all(&(requested.len() as u16).to_le_bytes())
         .await?;
-    socket.write_all(requested_run_id.as_bytes()).await?;
+    socket.write_all(requested.as_bytes()).await?;
     socket.write_all(&resume.offset.to_le_bytes()).await?;
     socket.flush().await?;
 
     let mut mode = [0u8; 1];
     socket.read_exact(&mut mode).await?;
+    if mode[0] == SYNC_MODE_REFUSED {
+        let mut len = [0u8; 2];
+        socket.read_exact(&mut len).await?;
+        let mut reason = vec![0u8; usize::from(u16::from_le_bytes(len))];
+        socket.read_exact(&mut reason).await?;
+        return Err(std::io::Error::new(
+            ErrorKind::Unsupported,
+            format!(
+                "primary refused this replica: {}",
+                String::from_utf8_lossy(&reason)
+            ),
+        ));
+    }
+    if !with_dedup {
+        warn!(
+            "Replica: the primary does not replicate DEDUP state (it predates 0.6, or has \
+             RECACHED_REPL_DEDUP=off). If this replica is promoted, a client's retried write may run \
+             a second time."
+        );
+    }
+    state
+        .replicas
+        .upstream_dedup
+        .store(with_dedup, Ordering::Release);
     let mut boundary = [0u8; 8];
     socket.read_exact(&mut boundary).await?;
     let boundary = u64::from_le_bytes(boundary);
 
-    if mode[0] == b'F' {
+    if mode[0] == b'F' || (mode[0] == SYNC_MODE_FULL_DEDUP && with_dedup) {
         // Receive and atomically install a full snapshot.
-        let mut len_buf = [0u8; 4];
-        socket.read_exact(&mut len_buf).await?;
-        let snap_len = u32::from_le_bytes(len_buf) as usize;
-        if snap_len > MAX_REPL_FRAME_BYTES {
-            return Err(std::io::Error::new(
-                ErrorKind::InvalidData,
-                format!("snapshot frame too large ({snap_len} > {MAX_REPL_FRAME_BYTES} bytes)"),
-            ));
-        }
-        let mut snap_bytes = vec![0u8; snap_len];
-        socket.read_exact(&mut snap_bytes).await?;
-
+        let snap_bytes = read_sized_payload(socket, "snapshot").await?;
         let entries = rmp_serde::from_slice::<Vec<SnapshotEntry>>(&snap_bytes)
             .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
+        // Read the DEDUP table before installing anything, so a link that
+        // drops between the two leaves this replica's old state whole rather
+        // than new data with old marks.
+        let table = if mode[0] == SYNC_MODE_FULL_DEDUP {
+            let bytes = read_sized_payload(socket, "DEDUP table").await?;
+            Some(
+                rmp_serde::from_slice::<Vec<DedupTableEntry>>(&bytes)
+                    .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e.to_string()))?,
+            )
+        } else {
+            None
+        };
         let count = entries.len();
         store.replace(entries);
-        info!("Replica: full snapshot loaded ({} entries)", count);
+        match table {
+            Some(table) => {
+                let clients = table.len();
+                state.replace_dedup_table(table);
+                info!("Replica: full snapshot loaded ({count} entries, {clients} DEDUP client(s))");
+            }
+            None => info!("Replica: full snapshot loaded ({} entries)", count),
+        }
     } else if mode[0] == b'P' {
         let mut count = [0u8; 4];
         socket.read_exact(&mut count).await?;
@@ -1007,6 +1178,25 @@ where
     }
 }
 
+/// A `u32`-length-prefixed payload of at most [`MAX_REPL_FRAME_BYTES`].
+async fn read_sized_payload<S>(socket: &mut S, what: &str) -> std::io::Result<Vec<u8>>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut len_buf = [0u8; 4];
+    socket.read_exact(&mut len_buf).await?;
+    let len = usize::try_from(u32::from_le_bytes(len_buf)).unwrap_or(usize::MAX);
+    if len > MAX_REPL_FRAME_BYTES {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("{what} frame too large ({len} > {MAX_REPL_FRAME_BYTES} bytes)"),
+        ));
+    }
+    let mut bytes = vec![0u8; len];
+    socket.read_exact(&mut bytes).await?;
+    Ok(bytes)
+}
+
 async fn read_repl_frame<S>(socket: &mut S) -> std::io::Result<(u64, Vec<u8>)>
 where
     S: AsyncRead + Unpin,
@@ -1041,6 +1231,25 @@ async fn apply_repl_frame(
             "replication frame contains trailing bytes",
         ));
     }
+    // DEDUP identities, when the primary streams them: the AOF's own record
+    // formats, applied the way AOF replay applies them, and passed on the way
+    // a primary passes on its own writes.
+    match dedup_record(&value) {
+        Some(DedupRecord::Refused(client, id, error)) => {
+            state.remember_dedup_refusal(&client, id, &error);
+            state.log_dedup_outcome(&client, id, Some(&error)).await;
+            return Ok(());
+        }
+        Some(DedupRecord::Mark(client, id)) if is_dedup_mark_only(&value) => {
+            state.commit_dedup(&client, id);
+            state.log_dedup_outcome(&client, id, None).await;
+            return Ok(());
+        }
+        Some(DedupRecord::Mark(client, id)) => {
+            return apply_dedup_envelope(store, state, tx, value, &client, id).await;
+        }
+        None => {}
+    }
     let normalised = match value {
         Value::Push(inner) => Value::Array(Some(inner)),
         other => other,
@@ -1062,6 +1271,57 @@ async fn apply_repl_frame(
 // ── security helpers ─────────────────────────────────────────────────────────
 
 /// Constant-time byte slice equality to prevent timing-based password leaks.
+/// Apply a replicated `DEDUP <client> <id> <write…>` envelope: run the write,
+/// then commit its mark, as the primary did.
+///
+/// Browser peers of this replica are pushed the bare write — the envelope
+/// names another client's id, which is neither theirs to see nor a frame
+/// they understand. The AOF and any replicas of this node get it through
+/// `on_write_identified`, wrapped or not by this node's own setting.
+async fn apply_dedup_envelope(
+    store: &KeyValueStore,
+    state: &ServerState,
+    tx: &broadcast::Sender<SyncMsg>,
+    value: Value,
+    client: &str,
+    id: u64,
+) -> std::io::Result<()> {
+    let items = match value {
+        Value::Push(items) | Value::Array(Some(items)) => items,
+        _ => {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "DEDUP envelope is not an array",
+            ));
+        }
+    };
+    let inner: Vec<&[u8]> = items
+        .iter()
+        .skip(3)
+        .map(|item| match item {
+            Value::BulkString(Some(bytes)) => Ok(bytes.as_slice()),
+            _ => Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "DEDUP envelope holds a non-bulk element",
+            )),
+        })
+        .collect::<std::io::Result<_>>()?;
+    let bare = resp_push(&inner);
+    let cmd = Command::from_value(Value::Array(Some(items.into_iter().skip(3).collect())))
+        .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
+    let push = SyncPush::for_command(0, &cmd, primary_keys(&cmd), bare.clone());
+    if let Value::Error(error) = store.execute(cmd) {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("replicated command failed: {error}"),
+        ));
+    }
+    state.commit_dedup(client, id);
+    let _ = tx.send(Arc::new(push));
+    state.on_write_identified(&bare, Some((client, id))).await;
+    Ok(())
+}
+
 pub(crate) fn ct_eq_bytes(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -1179,6 +1439,9 @@ mod write_order_tests {
     async fn retained_offset_negotiates_a_partial_sync() {
         let store = Arc::new(KeyValueStore::new());
         let hub = ReplHub::new();
+        // The 0.5 wire format, which a primary with DEDUP replication off
+        // still speaks unchanged.
+        hub.configure_dedup(false);
         hub.configure_backlog(1024);
         hub.fan_out(b"one".to_vec()).await;
         hub.fan_out(b"two".to_vec()).await;
@@ -1192,11 +1455,15 @@ mod write_order_tests {
             let _ = handle_replica(
                 socket,
                 server_store,
-                Arc::new(SnapshotConfig {
-                    path: PathBuf::from("unused.rdb"),
-                    last_save: AtomicI64::new(0),
-                    checkpoint_id: AtomicU64::new(0),
-                }),
+                ServerState::for_tests(
+                    Arc::new(SnapshotConfig {
+                        path: PathBuf::from("unused.rdb"),
+                        last_save: AtomicI64::new(0),
+                        checkpoint_id: AtomicU64::new(0),
+                    }),
+                    Arc::clone(&server_hub),
+                    false,
+                ),
                 server_hub,
                 None,
                 16,

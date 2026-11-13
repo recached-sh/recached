@@ -19,8 +19,40 @@ monotonic 64-bit offset, and acknowledgments report the last applied offset.
 
 The per-replica stream is bounded by both `RECACHED_REPL_BUFFER` frames and
 `RECACHED_REPL_BUFFER_BYTES`. Overflow disconnects only the lagging replica; reconnect then attempts
-partial resynchronization. Protocol versions other than `RCP1` are rejected, so primary and replica
-server versions should be upgraded together.
+partial resynchronization. Protocol versions other than `RCP1` are rejected.
+
+#### DEDUP-aware replication (0.6)
+
+Capabilities ride inside the run-id strings, which a 0.5 peer treats as opaque:
+
+| Step | 0.6 primary, `RECACHED_REPL_DEDUP=on` (default) | 0.6 replica |
+|---|---|---|
+| Hello | sends `<run-id>;caps=dedup1` | — |
+| Resume request | — | sends `<resume-run-id>;accept=dedup1` when the primary offered `dedup1`, else the 0.5 request |
+| Mode | `D` (full sync + DEDUP table), `P`, or `E` (refused) | — |
+
+With the capability, every replication frame is one of the AOF's own records: a bare write, a
+`DEDUP <client> <id> <write…>` envelope (the write and its mark in **one** frame, so a replica can
+never hold one without the other), a mark-only `RECACHED-DEDUP <client> <id>`, or a
+`RECACHED-DEDUP-REFUSED <client> <id> <error>`. A `D` synchronization sends the snapshot, then the
+duplicate-suppression table — `u32` length + MessagePack `[(client, hwm|nil, [(id, error)])]` — both
+captured under one write barrier. A replica reads both before installing either. Partial
+resynchronization replays the backlog, which holds the same records.
+
+A replica pushes its own WebSocket peers the bare write, never the envelope, and records the
+envelope in its own AOF.
+
+Compatibility:
+
+| Primary | Replica | Result |
+|---|---|---|
+| 0.6, dedup on | 0.6 | DEDUP state replicated |
+| 0.6, dedup on | 0.5 | **refused** at the handshake with mode `E`; the replica logs an invalid mode and retries. The primary logs why |
+| 0.6, dedup off | 0.5 or 0.6 | the 0.5 stream: writes without marks |
+| 0.5 | 0.6 | the 0.5 stream; the replica warns that a promotion may re-run retried writes |
+
+**Upgrade replicas first, then the primary.** Upgrading the primary first leaves 0.5 replicas
+refused until they are upgraded, or until the primary runs with `RECACHED_REPL_DEDUP=off`.
 
 ### Protocol version (TCP)
 
@@ -257,8 +289,20 @@ What `DEDUP` therefore guarantees:
 | Server restarted, AOF on, write within the fsync window | is not run again |
 | Server restarted, write lost by the persistence policy (no AOF, or the unsynced `everysec` tail) | is run once — or, snapshot-only with a crash inside a checkpoint, answered as applied though lost |
 | Client idle for 24 h while the server tracks over 10,000 clients | may run again: its mark was swept |
-| Replica promoted to primary | may run again: replication carries bare mutations, not marks, so older replicas can read the stream |
+| Replica promoted to primary, write had reached it (0.6, dedup replication on) | is not run again — the mark arrived in the same frame as the write |
+| Replica promoted to primary, write had **not** reached it | is run once: the write and its mark were lost together |
+| Replica promoted, primary older than 0.6 or `RECACHED_REPL_DEDUP=off` | may run again: the replica holds the write but not its mark |
 | Permanently refused, reply lost, a later write accepted | is refused again while among the client's last 64 refusals; beyond that, answered `+DUP` |
+
+Three states are worth telling apart. A write is **acknowledged** when its
+reply is sent: the primary has applied it, appended it to the AOF under the
+fsync policy, and queued it for replicas. It is **replicated** once a replica
+has applied it — `INFO replication` reports how far each replica has
+acknowledged. It is **durable** once fsynced under `RECACHED_AOF_SYNC`. An
+acknowledged write can be lost by a promotion before it is replicated; a
+retry of it then runs once, which is correct, because nothing ran it before.
+Recached does not wait for replicas before replying, and does not promote
+replicas on its own.
 
 It is duplicate suppression with documented limits, not an exactly-once
 guarantee. Use application-level idempotency when duplicates are unacceptable.
@@ -300,7 +344,8 @@ The HMAC is computed over the base64url payload *text*. A token is valid while `
 - **Tagged frames**: new server-initiated Array frames must carry a new first-element tag (like `keychange` / `qstate`); clients ignore unknown tags. Untagged Arrays are replies by definition.
 - **New commands** never change the one-reply-per-command invariant.
 - **Replication**: the `RCP1` marker is mandatory; incompatible peers fail instead of interpreting a
-  snapshot or command with the wrong framing.
+  snapshot or command with the wrong framing. DEDUP frames are only sent to a replica that accepted
+  `dedup1`; see [DEDUP-aware replication](#dedup-aware-replication-0-6).
 - **Client IndexedDB schema**: bumps create missing object stores idempotently; existing stores are never dropped in an upgrade. 0.5 keys rows per session (`[t, session, seq]` in `wal`, `[session, id]` in `outbox`); numeric keys written earlier sort first and replay first.
 - **Tokens**: a 0.6 token with a claims segment is refused by a 0.5 server (malformed expiry), and channel entries (`chr=`) are read there as key patterns that match nothing — both fail closed. A 0.5 token verifies unchanged on 0.6.
 - **AOF**: a 0.5 AOF contains `DEDUP`, `RECACHED-DEDUP` and `RECACHED-DEDUP-REFUSED` records, which a 0.4 server refuses to replay. Run `SAVE` (which truncates the AOF) before downgrading. A 0.5 server replays any earlier AOF.
