@@ -53,7 +53,7 @@ fn is_noscope(v: &Value) -> bool {
 impl WsClient {
     /// Read frames for up to `ms` until the server closes the socket, and
     /// return the close code it sent. `None` if it stayed open.
-    async fn recv_close(&mut self, ms: u64) -> Option<u16> {
+    pub(super) async fn recv_close(&mut self, ms: u64) -> Option<u16> {
         let fut = async {
             loop {
                 match self.ws.next().await {
@@ -70,7 +70,7 @@ impl WsClient {
     }
 
     /// Every text frame received within `ms`, concatenated.
-    async fn drain_text(&mut self, ms: u64) -> String {
+    pub(super) async fn drain_text(&mut self, ms: u64) -> String {
         let mut out = String::new();
         while let Some(frame) = self.recv_any(ms).await {
             out.push_str(&frame);

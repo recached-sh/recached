@@ -1894,6 +1894,10 @@ pub fn is_replayable_mutation(cmd: &Command) -> bool {
             | Command::ZIncrBy(_, _, _)
             | Command::JSet(_, _, _)
             | Command::JMerge(_, _)
+            // 0.6 servers propagate COPY verbatim. The other 0.6 writes
+            // (GETDEL, GETEX, RENAMENX, ZPOPMIN/MAX) arrive as DEL, PEXPIREAT,
+            // PERSIST, RENAME and ZREM, which every client already replays.
+            | Command::Copy(_, _, _)
     )
 }
 
@@ -1938,7 +1942,8 @@ pub fn mutation_keys(cmd: &Command, store: &KeyValueStore) -> Vec<String> {
         | Command::ZRem(k, _)
         | Command::ZIncrBy(k, _, _)
         | Command::JSet(k, _, _)
-        | Command::JMerge(k, _) => vec![k.clone()],
+        | Command::JMerge(k, _)
+        | Command::Copy(_, k, _) => vec![k.clone()],
         Command::Del(keys) | Command::Unlink(keys) => keys.clone(),
         Command::MSet(pairs) => pairs.iter().map(|(k, _)| k.clone()).collect(),
         Command::Rename(from, to) | Command::SMove(from, to, _) => {

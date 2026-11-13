@@ -636,6 +636,7 @@ pub(crate) enum CommandScope {
 pub(crate) fn command_scope(cmd: &Command) -> CommandScope {
     match cmd {
         Command::Ping(_)
+        | Command::Echo(_)
         | Command::Auth(_)
         | Command::Hello(_)
         | Command::Multi
@@ -736,7 +737,10 @@ pub(crate) fn command_scope(cmd: &Command) -> CommandScope {
         | Command::ZRevRank(k, _)
         | Command::ZCard(k)
         | Command::ZCount(k, _, _)
-        | Command::JGet(k, _) => CommandScope::Keys(vec![(k.clone(), Access::Read)]),
+        | Command::JGet(k, _)
+        | Command::ExpireTime(k)
+        | Command::PExpireTime(k)
+        | Command::HStrLen(k, _) => CommandScope::Keys(vec![(k.clone(), Access::Read)]),
 
         // ── Single-key writes ───────────────────────────────────────────
         // Read-modify-write commands (INCR, APPEND, GETSET, RLCHECK) are
@@ -783,7 +787,13 @@ pub(crate) fn command_scope(cmd: &Command) -> CommandScope {
         | Command::RlSet(k, _, _)
         | Command::RlCheck(k, _)
         | Command::JSet(k, _, _)
-        | Command::JMerge(k, _) => CommandScope::Keys(vec![(k.clone(), Access::Write)]),
+        | Command::JMerge(k, _)
+        | Command::GetDel(k)
+        // Write even without an option, as Redis's ACL categories have it
+        // (`@write`): a read-only grant reads with GET.
+        | Command::GetEx(k, _)
+        | Command::ZPopMin(k, _)
+        | Command::ZPopMax(k, _) => CommandScope::Keys(vec![(k.clone(), Access::Write)]),
 
         // ── Multi-key reads ─────────────────────────────────────────────
         // WATCH and UNWATCH observe a key's changes, which is read access.
@@ -806,7 +816,13 @@ pub(crate) fn command_scope(cmd: &Command) -> CommandScope {
         }
         // RENAME destroys the source; SMOVE removes the member from it. Both
         // ends are writes.
-        Command::Rename(src, dst) | Command::SMove(src, dst, _) => CommandScope::Keys(vec![
+        // COPY reads its source and writes its destination: `r=` on the
+        // source is enough, as for the STORE family.
+        Command::Copy(src, dst, _) => CommandScope::Keys(vec![
+            (src.clone(), Access::Read),
+            (dst.clone(), Access::Write),
+        ]),
+        Command::Rename(src, dst) | Command::RenameNx(src, dst) | Command::SMove(src, dst, _) => CommandScope::Keys(vec![
             (src.clone(), Access::Write),
             (dst.clone(), Access::Write),
         ]),

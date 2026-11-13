@@ -13,9 +13,19 @@ All notable changes to Recached are documented here.
 - **The sync fan-out fails closed.** A mutation that names no keys reaches a scoped connection only when it is keyspace-wide (`FLUSHDB`); before, any write missing from the key extractor would have been pushed to every tenant. `RLCHECK` was such a write — it is never broadcast, so nothing leaked — and is now listed
 - Five refused `SYNC TOKEN`s close the socket, as five refused passwords do
 
+### Fixed — RESP port
+- **`redis-cli --pipe` works.** It ends a mass insert with an empty line and `ECHO <20 random bytes>`; Recached answered the empty line with a protocol error and refused `ECHO` (unknown, and its binary argument), so the tool never saw its marker and timed out. Empty lines between commands are now ignored, as in Redis
+- **A protocol error closes the connection**, as in Redis. Before, the server answered one error, discarded the rest of its read buffer and carried on, so commands pipelined behind a malformed frame were silently dropped and the client matched every later reply to the wrong request
+
 ### Reliability — replication
 - **A promoted replica no longer re-runs a client's retried write that it had already applied.** Replication now carries each write's `DEDUP` identity in the same frame as the write, no-op and refused outcomes as their own records, and the duplicate-suppression table with a full synchronization. Before, replicas received bare mutations, so after a failover a retried `INCR` or `APPEND` whose reply was lost ran twice
 - Capability-negotiated inside the `RCP1` handshake: a 0.6 primary refuses a replica that cannot read the new frames instead of streaming them; a 0.6 replica follows a 0.5 primary in the old format and says so. `RECACHED_REPL_DEDUP=off` keeps the 0.5 stream
+
+### Added — Redis commands
+- `GETDEL`, `GETEX`, `EXPIRETIME`, `PEXPIRETIME`, `RENAMENX`, `COPY`, `HSTRLEN`, `ZPOPMIN`, `ZPOPMAX` — each persisted, replicated, synchronised to browser and mobile clients, scope-checked per key, and listed in `COMMAND INFO`. Writes propagate as primitives every existing consumer replays (`DEL`, `PEXPIREAT`, `PERSIST`, `RENAME`, `ZREM`); `COPY` replays verbatim
+- A Redis differential test compares every reply, errors included, against a digest-pinned `redis:7.2.5` in CI. Deviations are documented: `COPY … DB n` for `n ≠ 0` is refused (one database), and RESP3 score replies keep the RESP2 shape
+- `ECHO`, binary-safe
+- `LMOVE`/`RPOPLPUSH` deferred: they need cross-key atomicity the multi-threaded store does not provide
 
 ### Added
 - `RECACHED_REPL_DEDUP` (default `on`)

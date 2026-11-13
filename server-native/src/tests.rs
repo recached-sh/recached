@@ -2935,6 +2935,7 @@ enum Expect {
 fn all_commands() -> Vec<(Command, Expect)> {
     vec![
         (Command::Ping(None), Expect::KeyLess),
+        (Command::Echo(b"hi".to_vec()), Expect::KeyLess),
         (Command::Auth("pw".into()), Expect::KeyLess),
         (
             Command::Set("k".into(), "v".into(), SetOptions::default()),
@@ -2993,6 +2994,29 @@ fn all_commands() -> Vec<(Command, Expect)> {
             Expect::Keys(&["k", "d"]),
         ),
         (Command::Type("k".into()), Expect::Keys(&["k"])),
+        // ── 0.6 commands ──
+        (Command::GetDel("k".into()), Expect::Keys(&["k"])),
+        (Command::GetEx("k".into(), None), Expect::Keys(&["k"])),
+        (
+            Command::GetEx("k".into(), Some(GetExOption::Ex(5))),
+            Expect::Keys(&["k"]),
+        ),
+        (Command::ExpireTime("k".into()), Expect::Keys(&["k"])),
+        (Command::PExpireTime("k".into()), Expect::Keys(&["k"])),
+        (
+            Command::RenameNx("k".into(), "d".into()),
+            Expect::Keys(&["k", "d"]),
+        ),
+        (
+            Command::Copy("k".into(), "d".into(), false),
+            Expect::Keys(&["k", "d"]),
+        ),
+        (
+            Command::HStrLen("k".into(), "f".into()),
+            Expect::Keys(&["k"]),
+        ),
+        (Command::ZPopMin("k".into(), None), Expect::Keys(&["k"])),
+        (Command::ZPopMax("k".into(), Some(2)), Expect::Keys(&["k"])),
         (
             Command::HSet("k".into(), vec![("f".into(), "v".into())]),
             Expect::Keys(&["k"]),
@@ -6654,5 +6678,52 @@ mod sweep_notification {
 
 mod sync_reliability;
 
+mod commands_v06;
 mod multitenant;
 mod replication_dedup;
+
+#[tokio::test]
+async fn empty_lines_between_commands_are_ignored_like_redis() {
+    // `redis-cli --pipe` writes CRLF before its closing `ECHO <20 bytes>`.
+    // Recached answered the empty line with a protocol error and cleared its
+    // buffer, so the tool saw one reply too many and the commands pipelined
+    // behind the blank line were never run.
+    let srv = spawn_server().await;
+    let mut s = TcpStream::connect(srv.tcp_addr).await.unwrap();
+    s.write_all(b"*1\r\n$4\r\nPING\r\n\r\n\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\nb\r\n\r")
+        .await
+        .unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    // The lone CR's LF arrives in a second read.
+    s.write_all(b"\n*2\r\n$4\r\nECHO\r\n$2\r\n\xff\xfe\r\n")
+        .await
+        .unwrap();
+    let want: &[u8] = b"+PONG\r\n+OK\r\n$2\r\n\xff\xfe\r\n";
+    let mut got = vec![0u8; want.len()];
+    tokio::time::timeout(tokio::time::Duration::from_secs(2), s.read_exact(&mut got))
+        .await
+        .expect("replies did not arrive")
+        .unwrap();
+    assert_eq!(got, want, "{:?}", String::from_utf8_lossy(&got));
+}
+
+#[tokio::test]
+async fn a_protocol_error_closes_the_connection_instead_of_desynchronising_it() {
+    // Recached used to answer one error, discard the rest of the read buffer
+    // and keep going — so a client that had pipelined commands behind the bad
+    // frame got one reply instead of many and matched every later reply to
+    // the wrong request. Redis closes the connection; so does Recached now.
+    let srv = spawn_server().await;
+    let mut s = TcpStream::connect(srv.tcp_addr).await.unwrap();
+    s.write_all(b"*1\r\n$4\r\nPING\r\n*x\r\n*1\r\n$4\r\nPING\r\n")
+        .await
+        .unwrap();
+    let mut out = Vec::new();
+    tokio::time::timeout(tokio::time::Duration::from_secs(2), s.read_to_end(&mut out))
+        .await
+        .expect("connection was not closed")
+        .unwrap();
+    let text = String::from_utf8_lossy(&out);
+    assert!(text.starts_with("+PONG\r\n-ERR Protocol error"), "{text}");
+    assert_eq!(text.matches("PONG").count(), 1, "{text}");
+}

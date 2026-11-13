@@ -39,6 +39,20 @@ pub enum SetExpiry {
     KeepTtl,
 }
 
+/// The expiry change a `GETEX` makes, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GetExOption {
+    /// Relative, seconds.
+    Ex(u64),
+    /// Relative, milliseconds.
+    Px(u64),
+    /// Absolute, unix seconds.
+    ExAt(u64),
+    /// Absolute, unix milliseconds.
+    PxAt(u64),
+    Persist,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SetCondition {
     Nx,
@@ -90,6 +104,9 @@ pub struct ScanArgs {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Ping(Option<String>),
+    /// `ECHO message` — the message back, byte for byte. `redis-cli --pipe`
+    /// ends every mass insert with one carrying 20 random bytes.
+    Echo(Vec<u8>),
     Auth(String),
     /// `HELLO [protover]` — protocol negotiation. Connection-level like AUTH:
     /// the store never sees it, because the answer depends on the connection.
@@ -146,6 +163,11 @@ pub enum Command {
     /// window of a large value must not cost the whole value.
     GetRange(String, i64, i64),
     GetSet(String, Vec<u8>),
+    /// `GETDEL key` — the value, and the key deleted with it.
+    GetDel(String),
+    /// `GETEX key [EX s | PX ms | EXAT ts | PXAT ms | PERSIST]` — the value,
+    /// and with an option, the key's expiry changed. Without one it is a read.
+    GetEx(String, Option<GetExOption>),
     MGet(Vec<String>),
     MSet(Vec<(String, Vec<u8>)>),
     SetNx(String, Vec<u8>),
@@ -162,6 +184,10 @@ pub enum Command {
     PExpireAt(String, u64),
     Ttl(String),
     PTtl(String),
+    /// `EXPIRETIME key` — absolute expiry, unix seconds; -1 none, -2 no key.
+    ExpireTime(String),
+    /// `PEXPIRETIME key` — absolute expiry, unix milliseconds.
+    PExpireTime(String),
     Persist(String),
     // ── Keys ─────────────────────────────────────────────────────────────────
     Exists(Vec<String>),
@@ -170,6 +196,12 @@ pub enum Command {
     DbSize,
     FlushDb,
     Rename(String, String),
+    /// `RENAMENX source destination` — rename only if the destination does
+    /// not exist.
+    RenameNx(String, String),
+    /// `COPY source destination [DB 0] [REPLACE]` — copy value and expiry.
+    /// `DB` other than 0 is refused: Recached has one database.
+    Copy(String, String, bool),
     Type(String),
     /// `MEMORY USAGE key [SAMPLES n]` — approximate bytes held by one key.
     /// A key read, and scoped like one: it reports on a key's contents, so a
@@ -178,6 +210,8 @@ pub enum Command {
     // ── Hash ─────────────────────────────────────────────────────────────────
     HSet(String, Vec<(String, Vec<u8>)>),
     HGet(String, String),
+    /// `HSTRLEN key field` — byte length of one field's value.
+    HStrLen(String, String),
     HGetAll(String),
     HDel(String, Vec<String>),
     HKeys(String),
@@ -233,6 +267,10 @@ pub enum Command {
     ZMScore(String, Vec<String>),
     ZRank(String, String),
     ZRevRank(String, String),
+    /// `ZPOPMIN key [count]` — remove and return the lowest-scored members.
+    ZPopMin(String, Option<u64>),
+    /// `ZPOPMAX key [count]` — remove and return the highest-scored members.
+    ZPopMax(String, Option<u64>),
     ZRem(String, Vec<String>),
     ZCard(String),
     ZIncrBy(String, f64, String),
@@ -353,6 +391,19 @@ impl Command {
                     };
                 }
 
+                // Fixed-arity commands: Redis refuses extra arguments with the
+                // same message as missing ones.
+                macro_rules! need_exact {
+                    ($n:expr) => {
+                        if arr.len() != $n {
+                            return Err(format!(
+                                "ERR wrong number of arguments for '{}' command",
+                                cmd_name.to_lowercase()
+                            ));
+                        }
+                    };
+                }
+
                 match cmd_name.as_str() {
                     // ── Core ─────────────────────────────────────────────────
                     "PING" => {
@@ -362,6 +413,10 @@ impl Command {
                             None
                         };
                         Ok(Command::Ping(msg))
+                    }
+                    "ECHO" => {
+                        need_exact!(2);
+                        Ok(Command::Echo(take_bytes(&mut arr[1]).unwrap_or_default()))
                     }
                     "AUTH" => {
                         need!(2);
@@ -569,6 +624,15 @@ impl Command {
                         let val = take_bytes(&mut arr[2]).unwrap_or_default();
                         Ok(Command::GetSet(key, val))
                     }
+                    "GETDEL" => {
+                        need_exact!(2);
+                        Ok(Command::GetDel(extract_key(&arr[1])?))
+                    }
+                    "GETEX" => {
+                        need!(2);
+                        let key = extract_key(&arr[1])?;
+                        Ok(Command::GetEx(key, parse_getex_option(&arr[2..])?))
+                    }
                     "MGET" => {
                         need!(2);
                         Ok(Command::MGet(extract_keys(&arr[1..])?))
@@ -699,6 +763,14 @@ impl Command {
                         need!(2);
                         Ok(Command::PTtl(extract_string(&arr[1]).unwrap_or_default()))
                     }
+                    "EXPIRETIME" => {
+                        need_exact!(2);
+                        Ok(Command::ExpireTime(extract_key(&arr[1])?))
+                    }
+                    "PEXPIRETIME" => {
+                        need_exact!(2);
+                        Ok(Command::PExpireTime(extract_key(&arr[1])?))
+                    }
                     "PERSIST" => {
                         need!(2);
                         Ok(Command::Persist(
@@ -730,6 +802,25 @@ impl Command {
                             extract_string(&arr[1]).unwrap_or_default(),
                             extract_string(&arr[2]).unwrap_or_default(),
                         ))
+                    }
+                    "RENAMENX" => {
+                        need_exact!(3);
+                        Ok(Command::RenameNx(
+                            extract_key(&arr[1])?,
+                            extract_key(&arr[2])?,
+                        ))
+                    }
+                    "COPY" => {
+                        need!(3);
+                        let src = extract_key(&arr[1])?;
+                        let dst = extract_key(&arr[2])?;
+                        let replace = parse_copy_options(&arr[3..])?;
+                        if src == dst {
+                            return Err(
+                                "ERR source and destination objects are the same".to_string()
+                            );
+                        }
+                        Ok(Command::Copy(src, dst, replace))
                     }
                     "TYPE" => {
                         need!(2);
@@ -853,6 +944,13 @@ impl Command {
                             })
                             .collect();
                         Ok(Command::HSet(key, pairs))
+                    }
+                    "HSTRLEN" => {
+                        need_exact!(3);
+                        Ok(Command::HStrLen(
+                            extract_key(&arr[1])?,
+                            extract_string(&arr[2]).unwrap_or_default(),
+                        ))
                     }
                     "HGET" => {
                         need!(3);
@@ -1279,6 +1377,31 @@ impl Command {
                             extract_string(&arr[2]).unwrap_or_default(),
                         ))
                     }
+                    "ZPOPMIN" | "ZPOPMAX" => {
+                        need!(2);
+                        if arr.len() > 3 {
+                            return Err("ERR syntax error".to_string());
+                        }
+                        let key = extract_key(&arr[1])?;
+                        // Redis answers a non-numeric count with the range
+                        // error too, not "not an integer" (measured, 7.2.5).
+                        let count = match arr.get(2) {
+                            Some(v) => Some(
+                                extract_int(v)
+                                    .ok()
+                                    .and_then(|n| u64::try_from(n).ok())
+                                    .ok_or_else(|| {
+                                        "ERR value is out of range, must be positive".to_string()
+                                    })?,
+                            ),
+                            None => None,
+                        };
+                        Ok(if cmd_name == "ZPOPMIN" {
+                            Command::ZPopMin(key, count)
+                        } else {
+                            Command::ZPopMax(key, count)
+                        })
+                    }
                     "ZREM" => {
                         need!(3);
                         let key = extract_key(&arr[1])?;
@@ -1471,6 +1594,8 @@ fn is_payload_index(cmd_name: &str, i: usize) -> bool {
         "LSET" | "LREM" => i == 3,
         // channel message
         "PUBLISH" => i == 2,
+        // message
+        "ECHO" => i == 1,
         // key v1 v2 …
         "LPUSH" | "RPUSH" | "LPUSHX" | "RPUSHX" => i >= 2,
         // key f1 v1 f2 v2 … — values are the odd positions from 3
@@ -1555,6 +1680,80 @@ fn extract_int(val: &Value) -> Result<i64, String> {
 fn extract_count(val: &Value) -> Result<u64, String> {
     let n = extract_int(val)?;
     u64::try_from(n).map_err(|_| "ERR value is out of range, must be positive".to_string())
+}
+
+/// `GETEX`'s options: at most one of `EX`/`PX`/`EXAT`/`PXAT`/`PERSIST`.
+///
+/// Matches Redis 7.2.5 (measured): any repeated or unknown option, or a
+/// missing value, is `ERR syntax error`; a non-numeric value is the integer
+/// error; zero, a negative, or a seconds value that would overflow when
+/// converted to milliseconds is `ERR invalid expire time in 'getex' command`.
+fn parse_getex_option(args: &[Value]) -> Result<Option<GetExOption>, String> {
+    let syntax = || "ERR syntax error".to_string();
+    let invalid = || "ERR invalid expire time in 'getex' command".to_string();
+    let Some(first) = args.first() else {
+        return Ok(None);
+    };
+    let name = extract_string(first)
+        .ok_or_else(syntax)?
+        .to_ascii_uppercase();
+    if name == "PERSIST" {
+        return if args.len() == 1 {
+            Ok(Some(GetExOption::Persist))
+        } else {
+            Err(syntax())
+        };
+    }
+    if args.len() != 2 {
+        return Err(syntax());
+    }
+    let ctor: fn(u64) -> GetExOption = match name.as_str() {
+        "EX" => GetExOption::Ex,
+        "PX" => GetExOption::Px,
+        "EXAT" => GetExOption::ExAt,
+        "PXAT" => GetExOption::PxAt,
+        _ => return Err(syntax()),
+    };
+    let n = extract_int(&args[1])?;
+    let n = u64::try_from(n)
+        .ok()
+        .filter(|&n| n > 0)
+        .ok_or_else(invalid)?;
+    if matches!(name.as_str(), "EX" | "EXAT")
+        && n.checked_mul(1000).is_none_or(|ms| ms > i64::MAX as u64)
+    {
+        return Err(invalid());
+    }
+    Ok(Some(ctor(n)))
+}
+
+/// `COPY`'s options: `REPLACE`, and `DB n`, accepted only for database 0 —
+/// the one Recached has. Redis would copy into another database; reporting
+/// success here without one would be a lie, so anything else is refused with
+/// Redis's own out-of-range error.
+fn parse_copy_options(args: &[Value]) -> Result<bool, String> {
+    let mut replace = false;
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        let opt = extract_string(arg)
+            .ok_or_else(|| "ERR syntax error".to_string())?
+            .to_ascii_uppercase();
+        match opt.as_str() {
+            "REPLACE" => replace = true,
+            "DB" => {
+                let db = args
+                    .get(i + 1)
+                    .ok_or_else(|| "ERR syntax error".to_string())?;
+                i += 1;
+                if extract_int(db)? != 0 {
+                    return Err("ERR DB index is out of range".to_string());
+                }
+            }
+            _ => return Err("ERR syntax error".to_string()),
+        }
+        i += 1;
+    }
+    Ok(replace)
 }
 
 /// A float argument. `NaN` is refused like any other non-number: it would

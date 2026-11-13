@@ -159,6 +159,7 @@ pub(crate) fn client_list_lines() -> String {
 pub(crate) fn command_name(cmd: &Command) -> &'static str {
     match cmd {
         Command::Ping(_) => "ping",
+        Command::Echo(_) => "echo",
         Command::Auth(_) => "auth",
         Command::Hello(_) => "hello",
         Command::Info(_) => "info",
@@ -180,6 +181,15 @@ pub(crate) fn command_name(cmd: &Command) -> &'static str {
         Command::Strlen(_) => "strlen",
         Command::GetRange(_, _, _) => "getrange",
         Command::GetSet(_, _) => "getset",
+        Command::GetDel(_) => "getdel",
+        Command::GetEx(..) => "getex",
+        Command::ExpireTime(_) => "expiretime",
+        Command::PExpireTime(_) => "pexpiretime",
+        Command::RenameNx(..) => "renamenx",
+        Command::Copy(..) => "copy",
+        Command::HStrLen(..) => "hstrlen",
+        Command::ZPopMin(..) => "zpopmin",
+        Command::ZPopMax(..) => "zpopmax",
         Command::MGet(_) => "mget",
         Command::MSet(_) => "mset",
         Command::SetNx(_, _) => "setnx",

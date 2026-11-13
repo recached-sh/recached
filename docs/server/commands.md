@@ -22,11 +22,28 @@ If correctness depends on values read before a transaction, `WATCH` those keys a
 
 ---
 
+## Redis compatibility of the 0.6 additions
+
+`GETDEL`, `GETEX`, `EXPIRETIME`, `PEXPIRETIME`, `RENAMENX`, `COPY`, `HSTRLEN`, `ZPOPMIN` and
+`ZPOPMAX` are checked reply-for-reply against a pinned Redis 7.2.5 in CI
+(`server-native/tests/redis_diff.rs`), including their error messages. Known differences:
+
+- **`COPY … DB n`** with `n ≠ 0` is refused: there is no other database to copy into.
+- **RESP3 score replies** (`ZPOPMIN`/`ZPOPMAX`, like `ZRANGE … WITHSCORES`) keep the RESP2 shape —
+  a flat array of member and score strings — where Redis 7 returns doubles and, with a count,
+  nested pairs.
+- **Cross-key atomicity**: `RENAMENX` and `COPY` are atomic against writes to the keys they touch,
+  but not against readers of both keys, as described under [Concurrency model](#concurrency-model).
+
+`LMOVE` and `RPOPLPUSH` were considered and deferred: an atomic move between two lists needs the
+cross-key atomicity the multi-threaded store does not provide (`SMOVE` documents the same gap).
+
 ## Core
 
 | Command | Description |
 |---|---|
 | `PING [message]` | Returns `PONG`, or echoes `message` if provided. Used to test connectivity and measure latency. |
+| `ECHO message` | Returns `message` byte for byte; binary-safe. `redis-cli --pipe` ends every mass insert with one. *(0.6)* |
 | `AUTH password` | Authenticates the connection. Required on the first command if `RECACHED_PASSWORD` is set. 5 consecutive failures close the connection. |
 | `HELLO [protover]` | Reports server info and negotiates the protocol version. `3` switches the connection to RESP3, `2` back to RESP2, no argument reports without changing. Unsupported versions return `-NOPROTO` and leave the connection unchanged. Requires authentication. See [Wire Protocol](/server/protocol#protocol-version-tcp). |
 | `INFO [section ...]` | Reports server statistics as a text blob, in Redis's `# Section` / `field:value` format. No arguments returns the default sections; naming sections returns only those, in the order given. `all`, `everything`, and `default` are accepted as aliases for the default set. Unknown section names return nothing rather than an error. Requires authentication. See [INFO](#info) below. |
@@ -167,6 +184,8 @@ The most common data type. Values are always stored as byte strings; numeric ope
 | `SET key value [EX seconds] [PX ms] [EXAT timestamp] [PXAT ms-timestamp] [NX\|XX] [KEEPTTL] [GET]` | Set a key to a string value. `EX`/`PX`/`EXAT`/`PXAT` set expiry. `NX` only sets if key does not exist. `XX` only sets if key exists. `KEEPTTL` preserves the existing TTL. `GET` returns the old value before overwriting. |
 | `GET key` | Returns the value of a key, or nil if the key does not exist or has expired. |
 | `GETSET key value` | Sets the key to a new value and returns the old value atomically — the read and the write happen under one lock, so two concurrent callers can never be handed the same old value. Deprecated in Redis 6.2 — prefer `SET key value GET`. |
+| `GETDEL key` | Returns the string value and deletes the key, under one lock: concurrent callers never both receive the value. Nil if the key does not exist; `WRONGTYPE` (key kept) if it is not a string. Propagated as `DEL`. *(0.6)* |
+| `GETEX key [EX s \| PX ms \| EXAT ts \| PXAT ms \| PERSIST]` | Returns the string value and, with an option, changes the key's expiry. A deadline already in the past deletes the key after reading it. Classified as a write even without an option, as in Redis: replicas refuse it and sync scopes require write — use `GET` to read. Propagated as `PEXPIREAT` (absolute), `PERSIST` or `DEL`. *(0.6)* |
 | `MGET key [key ...]` | Returns the values of multiple keys. Keys that do not exist return nil. |
 | `MSET key value [key value ...]` | Sets multiple keys to their respective values in one command. Applied key by key — see [Concurrency model](#concurrency-model): a concurrent reader can observe some keys updated and others not. |
 | `ESET key value` | **Ephemeral set.** Stores a string like `SET`, but the key's lifetime is bound to the connection that wrote it. Every connection that writes the key *holds* it, and the key is deleted — and the deletion pushed to live queries — when the **last** holder closes, so a second browser tab keeps presence alive when the first closes, whichever order they close in. Intended for presence, cursors, and "who is online"; use `SET` for anything that should outlive a connection. |
@@ -194,6 +213,8 @@ The most common data type. Values are always stored as byte strings; numeric ope
 | `PEXPIREAT key ms-unix-timestamp` | Set an absolute expiry time as a Unix timestamp in milliseconds. |
 | `TTL key` | Returns the remaining time-to-live of a key in seconds. Returns -2 if the key does not exist, -1 if the key has no expiry. |
 | `PTTL key` | Returns the remaining TTL in milliseconds. |
+| `EXPIRETIME key` | Absolute expiry as a Unix timestamp in seconds (floored). `-1` if the key has no expiry, `-2` if it does not exist. *(0.6)* |
+| `PEXPIRETIME key` | Absolute expiry as a Unix timestamp in milliseconds. *(0.6)* |
 | `PERSIST key` | Removes the TTL from a key, making it persistent. Returns 1 if the TTL was removed, 0 if the key has no expiry or does not exist. |
 
 ---
@@ -207,6 +228,8 @@ The most common data type. Values are always stored as byte strings; numeric ope
 | `EXISTS key [key ...]` | Returns the number of keys that exist among the provided arguments. A key listed multiple times counts multiple times. |
 | `TYPE key` | Returns the type of the value stored at key: `string`, `hash`, `list`, `set`, `zset`, `ratelimit`, or `none` if the key does not exist. |
 | `RENAME key newkey` | Renames a key. Returns an error if the source key does not exist. Overwrites `newkey` if it already exists. |
+| `RENAMENX key newkey` | Renames only if `newkey` does not exist: `1` renamed, `0` not. Errors if `key` does not exist. The value keeps its expiry. Atomic against other writes to either key; like `RENAME`, a concurrent *reader* can observe the instant the value is under neither name (see [Concurrency model](#concurrency-model)). *(0.6)* |
+| `COPY source destination [DB 0] [REPLACE]` | Copies a value of any type, with its expiry, to `destination`: `1` copied, `0` if `source` is missing or `destination` exists without `REPLACE`. `DB` is accepted only as `0` — Recached has one database, and any other index is refused with `ERR DB index is out of range` rather than reported as copied. Counts against `RECACHED_MAX_KEYS`/`RECACHED_MAX_MEMORY`. Sync scopes need read on `source`, write on `destination`. Propagated verbatim, like the `*STORE` commands. *(0.6)* |
 | `KEYS pattern` | Returns all keys matching the glob pattern. `*` matches any sequence of bytes, `?` matches exactly one byte. **Character classes (`[abc]`) are not supported** — brackets match literally. Patterns are capped at 1,024 bytes. Warning: `KEYS *` on a large store is slow — prefer `SCAN`. |
 | `SCAN cursor [MATCH pattern] [COUNT count]` | Iterates a maintained ordered key index. Each call examines at most `COUNT` keys (default 10), so work and reply size are bounded independently of total key count. `MATCH` may make a page shorter than `COUNT`. Start with `0` and continue until the returned cursor is `0`. Abandoned cursors are capped at 4,096 sessions. Concurrent changes may be missed or returned twice. |
 | `DBSIZE` | Returns the maintained stored-key count in O(1) time. Reads still treat an expired key as missing immediately, but `DBSIZE` may include its physical entry until the bounded active-expiry task removes it. |
@@ -244,6 +267,7 @@ A hash is a map of field-value pairs stored under a single key. Use hashes to st
 |---|---|
 | `HSET key field value [field value ...]` | Sets one or more fields in a hash. Creates the hash if it does not exist. Returns the number of fields that were added (not updated). |
 | `HGET key field` | Returns the value of a specific field. Returns nil if the field or hash does not exist. |
+| `HSTRLEN key field` | Byte length of a field's value; `0` if the field or key does not exist. *(0.6)* |
 | `HGETALL key` | Returns all field-value pairs of a hash as a flat array: field1, value1, field2, value2, ... |
 | `HDEL key field [field ...]` | Deletes one or more fields from a hash. Returns the number of fields removed. |
 | `HMGET key field [field ...]` | Returns the values of multiple fields. Non-existent fields return nil. |
@@ -322,6 +346,8 @@ An ordered collection where each member has a numeric score. Members are unique;
 |---|---|
 | `ZADD key [NX\|XX] [GT\|LT] [CH] [INCR] score member [score member ...]` | Adds members with scores. `NX`: only add, never update. `XX`: only update, never add. `GT`/`LT`: only update an existing member when the new score is greater/less. `CH`: count changed elements (updated + added) instead of just added. `INCR`: add the score to the existing score instead of replacing it; the conditions apply to the result, and a write they abort returns nil. `NaN` is refused as a score. |
 | `ZREM key member [member ...]` | Removes members from the sorted set. Returns the number of members removed. |
+| `ZPOPMIN key [count]` | Removes and returns up to `count` (default 1) lowest-scored members as `[member, score, …]`, ties in member order. Deletes the key when emptied. A negative or non-numeric count is refused. Propagated as `ZREM`. *(0.6)* |
+| `ZPOPMAX key [count]` | As `ZPOPMIN`, from the highest scores. *(0.6)* |
 | `ZINCRBY key increment member` | Adds `increment` to the score of `member`. Creates the member with score `increment` if it does not exist. |
 | `ZRANGE key start stop [WITHSCORES]` | Returns members between rank `start` and `stop` (0-based, ascending). Add `WITHSCORES` to include scores. |
 | `ZREVRANGE key start stop [WITHSCORES]` | Same as `ZRANGE`, but returns members in descending score order. |

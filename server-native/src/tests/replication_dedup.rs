@@ -9,15 +9,15 @@
 
 use super::*;
 
-struct Node {
-    store: Arc<KeyValueStore>,
-    state: Arc<ServerState>,
-    tx: broadcast::Sender<SyncMsg>,
-    ws: std::net::SocketAddr,
+pub(super) struct Node {
+    pub(super) store: Arc<KeyValueStore>,
+    pub(super) state: Arc<ServerState>,
+    pub(super) tx: broadcast::Sender<SyncMsg>,
+    pub(super) ws: std::net::SocketAddr,
 }
 
 /// A node with its own store, state and WebSocket listener (open sync mode).
-async fn node(is_replica: bool, dedup: bool) -> Node {
+pub(super) async fn node(is_replica: bool, dedup: bool) -> Node {
     let hub = ReplHub::new();
     hub.configure_dedup(dedup);
     // A primary only fans out once replication is enabled.
@@ -74,7 +74,7 @@ async fn node(is_replica: bool, dedup: bool) -> Node {
 }
 
 /// Serve replicas from `primary`; returns the replication address.
-async fn serve_replicas(primary: &Node) -> std::net::SocketAddr {
+pub(super) async fn serve_replicas(primary: &Node) -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (store, state) = (Arc::clone(&primary.store), Arc::clone(&primary.state));
@@ -123,7 +123,7 @@ async fn follow_for(
 }
 
 /// Follow in the background for the rest of the test.
-fn follow(replica: &Node, primary_addr: std::net::SocketAddr) {
+pub(super) fn follow(replica: &Node, primary_addr: std::net::SocketAddr) {
     let (store, state, tx) = (
         Arc::clone(&replica.store),
         Arc::clone(&replica.state),
@@ -136,7 +136,7 @@ fn follow(replica: &Node, primary_addr: std::net::SocketAddr) {
     });
 }
 
-async fn wait_for(store: &KeyValueStore, key: &str, want: Value) {
+pub(super) async fn wait_for(store: &KeyValueStore, key: &str, want: Value) {
     for _ in 0..200 {
         if store.execute(Command::Get(key.into())) == want {
             return;
@@ -151,7 +151,7 @@ async fn wait_for(store: &KeyValueStore, key: &str, want: Value) {
 
 /// The replica has applied every frame the primary has sent: a sentinel
 /// written last has arrived.
-async fn caught_up(primary: &mut WsClient, replica: &Node, tag: &str) {
+pub(super) async fn caught_up(primary: &mut WsClient, replica: &Node, tag: &str) {
     primary.cmd(&["SET", "sentinel", tag]).await;
     wait_for(&replica.store, "sentinel", bulk(tag)).await;
 }

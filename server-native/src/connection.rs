@@ -349,6 +349,28 @@ pub(crate) async fn handle_tcp<S>(
                             continue 'outer;
                         }
                         'parse: loop {
+                            // An empty line between commands is nothing, as
+                            // in Redis's inline protocol — and `redis-cli
+                            // --pipe` sends one before its closing ECHO.
+                            // Answering it with a protocol error put one reply
+                            // too many on the wire, so the tool never matched
+                            // its marker, and the buffer clear below discarded
+                            // the commands pipelined after it.
+                            loop {
+                                match buf.get(read_pos..) {
+                                    Some([b'\r', b'\n', ..]) => read_pos += 2,
+                                    Some([b'\n', ..]) => read_pos += 1,
+                                    // A lone CR may be the first half of an
+                                    // empty line split across two reads.
+                                    Some([b'\r']) => {
+                                        need = 2;
+                                        buf.drain(..read_pos);
+                                        read_pos = 0;
+                                        break 'parse;
+                                    }
+                                    _ => break,
+                                }
+                            }
                             // Completeness is decided by the non-allocating
                             // measure. `Value::parse` restarts from the first
                             // byte every call, so asking *it* whether a frame
@@ -369,12 +391,17 @@ pub(crate) async fn handle_tcp<S>(
                                     break 'parse;
                                 }
                                 Err(e) => {
-                                    warn!("TCP protocol error: {}", e);
-                                    let _ = writer.write_all(b"-ERR Protocol error\r\n").await;
-                                    buf.clear();
-                                    read_pos = 0;
-                                    need = 0;
-                                    break 'parse;
+                                    // Close, as Redis does. Carrying on after
+                                    // clearing the buffer answered one error
+                                    // for however many pipelined commands it
+                                    // held, so every later reply was matched
+                                    // to the wrong request by the client.
+                                    warn!("TCP protocol error: {}; closing the connection", e);
+                                    let _ = writer
+                                        .write_all(format!("-ERR Protocol error: {e}\r\n").as_bytes())
+                                        .await;
+                                    let _ = writer.flush().await;
+                                    break 'outer;
                                 }
                             }
                             match Value::parse(&buf[read_pos..]) {
@@ -878,12 +905,17 @@ pub(crate) async fn handle_tcp<S>(
                                     break 'parse;
                                 }
                                 Err(e) => {
-                                    warn!("TCP protocol error: {}", e);
-                                    let _ = writer.write_all(b"-ERR Protocol error\r\n").await;
-                                    buf.clear();
-                                    read_pos = 0;
-                                    need = 0;
-                                    break 'parse;
+                                    // Close, as Redis does. Carrying on after
+                                    // clearing the buffer answered one error
+                                    // for however many pipelined commands it
+                                    // held, so every later reply was matched
+                                    // to the wrong request by the client.
+                                    warn!("TCP protocol error: {}; closing the connection", e);
+                                    let _ = writer
+                                        .write_all(format!("-ERR Protocol error: {e}\r\n").as_bytes())
+                                        .await;
+                                    let _ = writer.flush().await;
+                                    break 'outer;
                                 }
                             }
                         }
