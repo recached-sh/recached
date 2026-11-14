@@ -1,0 +1,4 @@
+date_utc: 2026-11-14T14:48:28Z
+host_load_at_start: 4.56 7.80 10.13
+vm: Docker Desktop kernel 7.0.12-linuxkit, 8 vCPU, 4101242880 B
+trees: base=42e5ca8+harness, nospin=6h with STRIPE_SPINS=0, 6h=working tree

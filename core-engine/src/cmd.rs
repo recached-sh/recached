@@ -1518,7 +1518,7 @@ impl Command {
 
 const MAX_KEY_BYTES: usize = 512 * 1024; // 512 KB
 
-fn validate_key(key: &str) -> Result<(), String> {
+pub(crate) fn validate_key(key: &str) -> Result<(), String> {
     if key.is_empty() {
         return Err("ERR key cannot be empty".to_string());
     }

@@ -1,0 +1,25 @@
+date_utc: 2026-11-14T15:48:08Z
+host: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz, 8 logical CPUs, macOS 15.8.1
+host_load_at_start: 3.65 5.84 6.91
+vm: Docker Desktop kernel 7.0.12-linuxkit, 8 vCPU, 4101246976 B
+args: REPS=1 SERVERS=6g 6h redis valkey MODES=single multi TEST_TIME=8 CELLS=set-p1 get-p1 lat-fixed set-p16 get-p16 mix-gauss-p16 hot-incr-p16 hot-hset-p16 CMD_CELLS=incr-p16 hset-p16 hget-p16 mset-p16 mget-p16
+branch: perf/v0.6-request-path-optimization eafd080 (+ working tree)
+a58c3c4c318ebb64547b8e8553d319d94f6a882700a9bbcf477d2dfe3724aee4  recached-server-6g
+4ab3d0900b79c67c44c71e569ef431c4a55b62d9ede7a8836ec8f748e98e891e  recached-server-6h
+8ebe0ecf925485bc1860df1ad0f6779f8ec76deec93af50f88c3d8a75dfb0d04  recached-server-base
+d8bd953bf16431aa1bd0db1f55e7502eb9478ce0af0c4b8858f77297bfd0f22e  recached-server-nospin
+5efb59a2eb68e6f342c6e5cd37f6c6af678978c7199cdb8b32dbc6f1a978e22d  recached-server-v051
+Linux 10d470396543 7.0.12-linuxkit #1 SMP PREEMPT_DYNAMIC Fri Aug 14 16:31:37 UTC 2026 x86_64 GNU/Linux
+8
+model name	: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz
+               total        used        free      shared  buff/cache   available
+Mem:            3911         517        3189           0         409        3394
+Swap:           1023           0        1023
+Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=a3d9d57f5c794f12
+Valkey server v=9.1.0 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=645e670ae38ffd26
+memtier_benchmark 2.1.4
+/bins/recached-server-6g: recached-server 0.5.1
+/bins/recached-server-6h: recached-server 0.5.1
+/bins/recached-server-base: recached-server 0.5.1
+/bins/recached-server-nospin: recached-server 0.5.1
+/bins/recached-server-v051: recached-server 0.5.1

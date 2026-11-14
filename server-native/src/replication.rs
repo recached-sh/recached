@@ -64,6 +64,9 @@ pub(crate) struct ReplHub {
     /// snapshots. Conflicting writes hold their guards until propagation has
     /// completed; independent keys remain concurrent.
     write_order: Vec<tokio::sync::Mutex<()>>,
+    /// Lets a write nothing observes skip `write_order`; closed by every
+    /// other taker of those stripes. See [`UnorderedGate`].
+    pub(crate) unordered: UnorderedGate,
     /// Stream DEDUP identities with the writes they belong to
     /// (`RECACHED_REPL_DEDUP`, on by default). Fixed at startup: every
     /// replica of this primary must then accept them, see [`REPL_CAP_DEDUP`].
@@ -75,6 +78,144 @@ pub(crate) struct ReplHub {
 }
 
 const WRITE_ORDER_STRIPES: usize = 256;
+
+/// In-flight counters for [`UnorderedGate`], one per cache line so writers on
+/// different workers do not contend on one counter.
+const UNORDERED_SLOTS: usize = 16;
+
+#[repr(align(128))]
+struct PaddedCount(AtomicUsize);
+
+/// The fast path for a write whose order nothing can observe.
+///
+/// The replication-order stripes exist so that conflicting writes reach the
+/// AOF, replicas, WATCH and browser pushes in the order they reached the
+/// store, and so that a barrier (snapshot, replica attach, active expiry,
+/// QSUB's initial state, EXEC, ephemeral release) sees no write half done. A
+/// write on a server with no AOF, no replication stream, no WebSocket
+/// receiver, no WATCH, no ephemeral claim and no capacity limit has nothing
+/// to order — but it took a fair async mutex anyway, and on a hot key with
+/// several workers every release handed the lock to a task parked on another
+/// core: a lock convoy that made four workers slower than one.
+///
+/// Such a write may instead *enter* the gate and run with no stripe. The
+/// handshake that keeps that sound is the store-buffer (Dekker) pattern, all
+/// `SeqCst`:
+///
+/// - a writer increments its slot's in-flight count, then reads `closed`;
+///   only if it reads 0 does it go on to check for consumers and run;
+/// - a closer increments `closed`, then waits until every slot reads 0.
+///
+/// In the single total order of those operations either the writer's
+/// increment comes first — the closer then sees it and waits for the write to
+/// finish — or the closer's comes first and the writer sees `closed != 0` and
+/// takes the ordered path. A consumer is therefore always registered either
+/// under a closed gate or under a barrier that closed it, and a write either
+/// finishes before the registration completes or sees the consumer.
+pub(crate) struct UnorderedGate {
+    closed: AtomicUsize,
+    in_flight: [PaddedCount; UNORDERED_SLOTS],
+    /// WebSocket push receivers registered through
+    /// [`ReplHub::subscribe_pushes`] — the only way the server subscribes.
+    /// Read by every unordered write instead of
+    /// `broadcast::Sender::receiver_count`, which takes the channel's mutex.
+    push_receivers: AtomicUsize,
+}
+
+/// A registered push receiver; unregisters on drop.
+pub(crate) struct PushReceiver {
+    hub: ReplRegistry,
+}
+
+impl Drop for PushReceiver {
+    fn drop(&mut self) {
+        self.hub
+            .unordered
+            .push_receivers
+            .fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// One write's passage through an open [`UnorderedGate`]. Held only across
+/// synchronous code; dropping it marks the write finished.
+pub(crate) struct UnorderedPass<'a> {
+    count: &'a AtomicUsize,
+}
+
+impl Drop for UnorderedPass<'_> {
+    fn drop(&mut self) {
+        // Release: a closer that reads this decrement also sees the write.
+        self.count.fetch_sub(1, Ordering::Release);
+    }
+}
+
+/// Keeps an [`UnorderedGate`] closed; reopens it on drop.
+pub(crate) struct GateClosed<'a> {
+    gate: &'a UnorderedGate,
+}
+
+impl Drop for GateClosed<'_> {
+    fn drop(&mut self) {
+        self.gate.closed.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl UnorderedGate {
+    fn new() -> UnorderedGate {
+        UnorderedGate {
+            closed: AtomicUsize::new(0),
+            in_flight: std::array::from_fn(|_| PaddedCount(AtomicUsize::new(0))),
+            push_receivers: AtomicUsize::new(0),
+        }
+    }
+
+    /// Whether any WebSocket connection is receiving write pushes. Checked
+    /// by an unordered write only after it entered the gate.
+    pub(crate) fn has_push_receivers(&self) -> bool {
+        self.push_receivers.load(Ordering::SeqCst) != 0
+    }
+
+    /// Enter the fast path, or `None` while anything holds the gate closed.
+    ///
+    /// The caller must check for consumers *after* this returns `Some`, and
+    /// must not await while holding the pass.
+    pub(crate) fn try_enter(&self) -> Option<UnorderedPass<'_>> {
+        thread_local! {
+            static SLOT: usize = {
+                static NEXT: AtomicUsize = AtomicUsize::new(0);
+                NEXT.fetch_add(1, Ordering::Relaxed) % UNORDERED_SLOTS
+            };
+        }
+        let slot = SLOT.with(|slot| *slot);
+        let count = &self.in_flight[slot].0;
+        count.fetch_add(1, Ordering::SeqCst);
+        if self.closed.load(Ordering::SeqCst) != 0 {
+            count.fetch_sub(1, Ordering::Release);
+            return None;
+        }
+        Some(UnorderedPass { count })
+    }
+
+    /// Close the fast path and wait for every write already on it to finish.
+    ///
+    /// Those writes are synchronous and hold nothing a closer holds, so the
+    /// wait is bounded by one command's execution.
+    pub(crate) async fn close(&self) -> GateClosed<'_> {
+        self.closed.fetch_add(1, Ordering::SeqCst);
+        let closed = GateClosed { gate: self };
+        for slot in &self.in_flight {
+            while slot.0.load(Ordering::SeqCst) != 0 {
+                tokio::task::yield_now().await;
+            }
+        }
+        closed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst) != 0
+    }
+}
 
 /// Capability a 0.6 primary advertises after its run id (`<run-id>;caps=…`)
 /// and a 0.6 replica accepts after the run id it requests
@@ -248,6 +389,7 @@ impl ReplHub {
             write_order: (0..WRITE_ORDER_STRIPES)
                 .map(|_| tokio::sync::Mutex::new(()))
                 .collect(),
+            unordered: UnorderedGate::new(),
             dedup: AtomicBool::new(true),
             upstream_dedup: AtomicBool::new(false),
         })
@@ -277,13 +419,48 @@ impl ReplHub {
         hasher.finish() as usize % WRITE_ORDER_STRIPES
     }
 
+    /// Subscribe to write pushes as a consumer: with the unordered path
+    /// closed, so every write either completed before the subscription or
+    /// sees the receiver (see [`UnorderedGate`]). The count is raised before
+    /// the gate reopens and lowered when the returned guard drops.
+    pub(crate) async fn subscribe_pushes(
+        self: &Arc<Self>,
+        tx: &broadcast::Sender<SyncMsg>,
+    ) -> (broadcast::Receiver<SyncMsg>, PushReceiver) {
+        let _closed = self.unordered.close().await;
+        let rx = tx.subscribe();
+        self.unordered.push_receivers.fetch_add(1, Ordering::SeqCst);
+        (
+            rx,
+            PushReceiver {
+                hub: Arc::clone(self),
+            },
+        )
+    }
+
+    /// The stripes for one ordinary write on the ordered path. The only
+    /// stripe taker that leaves [`UnorderedGate`] open: a write on this path
+    /// either has consumers (so no write is unordered) or conflicts only with
+    /// unordered writes that nothing observes the order of. The store's own
+    /// write-order stripes still serialize the two in the keyspace.
+    pub(crate) async fn lock_write<'a>(&'a self, command: &Command) -> OrderGuards<'a> {
+        self.lock_stripes(
+            std::slice::from_ref(command),
+            std::iter::empty::<&str>(),
+            None,
+        )
+        .await
+    }
+
     /// Lock every ordering stripe touched by the supplied commands. Guards are
     /// acquired in numeric order, which also makes multi-key writes deadlock
     /// free. A global command such as FLUSHDB locks every stripe.
-    pub(crate) async fn lock_commands<'a>(
-        &'a self,
-        commands: &[Command],
-    ) -> Vec<tokio::sync::MutexGuard<'a, ()>> {
+    ///
+    /// Closes [`UnorderedGate`] for as long as the guards are held, like every
+    /// stripe taker other than [`lock_write`](Self::lock_write): EXEC's
+    /// isolation, ephemeral release and claims, and DEDUP refusals must not
+    /// overlap a write that took no stripe.
+    pub(crate) async fn lock_commands<'a>(&'a self, commands: &[Command]) -> OrderGuards<'a> {
         self.lock_commands_and_keys(commands, std::iter::empty::<&str>())
             .await
     }
@@ -296,17 +473,33 @@ impl ReplHub {
         &'a self,
         commands: &[Command],
         extra_keys: I,
-    ) -> Vec<tokio::sync::MutexGuard<'a, ()>>
+    ) -> OrderGuards<'a>
     where
         I: IntoIterator<Item = &'k str>,
     {
-        let mut stripes = Vec::new();
+        let closed = self.unordered.close().await;
+        self.lock_stripes(commands, extra_keys, Some(closed)).await
+    }
+
+    async fn lock_stripes<'a, 'k, I>(
+        &'a self,
+        commands: &[Command],
+        extra_keys: I,
+        closed: Option<GateClosed<'a>>,
+    ) -> OrderGuards<'a>
+    where
+        I: IntoIterator<Item = &'k str>,
+    {
+        // Inline for the one or two stripes nearly every write takes: the
+        // stripe list and the guard list each cost an allocation per write
+        // when they were `Vec`s.
+        let mut stripes: SmallVec<[usize; 4]> = SmallVec::new();
         let mut lock_all = false;
         for command in commands {
             if !is_write_command(command) {
                 continue;
             }
-            match ordering_keys(command) {
+            match ordering_key_refs(command) {
                 None => {
                     lock_all = true;
                     break;
@@ -315,26 +508,42 @@ impl ReplHub {
             }
         }
         if lock_all {
-            stripes = (0..WRITE_ORDER_STRIPES).collect();
-        } else {
-            stripes.extend(extra_keys.into_iter().map(Self::stripe_for));
-            stripes.sort_unstable();
-            stripes.dedup();
+            let closed = match closed {
+                Some(closed) => closed,
+                None => self.unordered.close().await,
+            };
+            return self.lock_every_stripe(closed).await;
         }
+        stripes.extend(extra_keys.into_iter().map(Self::stripe_for));
+        stripes.sort_unstable();
+        stripes.dedup();
 
-        let mut guards = Vec::with_capacity(stripes.len());
+        let mut guards = SmallVec::with_capacity(stripes.len());
         for stripe in stripes {
             guards.push(self.write_order[stripe].lock().await);
         }
-        guards
+        OrderGuards {
+            _stripes: guards,
+            _closed: closed,
+        }
     }
 
-    pub(crate) async fn lock_all_writes(&self) -> Vec<tokio::sync::MutexGuard<'_, ()>> {
-        let mut guards = Vec::with_capacity(WRITE_ORDER_STRIPES);
+    /// The all-write barrier: every stripe, with [`UnorderedGate`] closed and
+    /// drained first so no unordered write is in flight under it either.
+    pub(crate) async fn lock_all_writes(&self) -> OrderGuards<'_> {
+        let closed = self.unordered.close().await;
+        self.lock_every_stripe(closed).await
+    }
+
+    async fn lock_every_stripe<'a>(&'a self, closed: GateClosed<'a>) -> OrderGuards<'a> {
+        let mut guards = SmallVec::with_capacity(WRITE_ORDER_STRIPES);
         for lock in &self.write_order {
             guards.push(lock.lock().await);
         }
-        guards
+        OrderGuards {
+            _stripes: guards,
+            _closed: Some(closed),
+        }
     }
 
     pub(crate) fn configure_backlog(&self, bytes: usize) {
@@ -388,6 +597,13 @@ pub(crate) type ReplRegistry = Arc<ReplHub>;
 /// snapshot if necessary. The primary write path is never blocked.
 pub(crate) const DEFAULT_REPL_CHANNEL_CAPACITY: usize = 4096;
 pub(crate) const DEFAULT_REPL_QUEUE_BYTES: usize = 8 * 1024 * 1024;
+/// Replication-order guards held by one write or barrier; released on drop,
+/// stripes first, then the gate reopens.
+pub(crate) struct OrderGuards<'a> {
+    _stripes: SmallVec<[tokio::sync::MutexGuard<'a, ()>; 2]>,
+    _closed: Option<GateClosed<'a>>,
+}
+
 pub(crate) const DEFAULT_REPL_BACKLOG_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const REPL_MAGIC: &[u8; 4] = b"RCP1";
 

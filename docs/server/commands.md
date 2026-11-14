@@ -13,6 +13,8 @@ Recached schedules independent commands across worker threads over a sharded key
 - **`WATCH` compare-and-swap is sound.** `EXEC` reserves both its write keys and watched keys before checking invalidation, so a writer cannot land between the check and execution.
 - **Values are not torn.** A reader sees a value before or after an individual mutation, never a partial value.
 
+On a server with nothing that records write order — no AOF, no replication, no WebSocket client, no `WATCH` or live query, no `ESET`/`EADD` presence and no memory or key cap — an ordinary write skips the propagation barrier, because there is nothing to propagate; the keyspace's own per-key ordering still applies, and the guarantees above are unchanged. The first such consumer to appear (or a snapshot, `EXEC`, or replica attach) waits for writes already in flight and switches every later write back to the barrier.
+
 **What it does not guarantee**
 
 - **Readers do not join the writer barriers.** Commands such as `MSET` and `SMOVE` update their keys one at a time. A concurrent reader can observe an intermediate cross-key state even though another writer cannot interleave on those keys.

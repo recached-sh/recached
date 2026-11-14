@@ -76,8 +76,20 @@ pub(crate) fn is_write_command(cmd: &Command) -> bool {
 /// Used together with `broadcast_for()` — only call this when `broadcast_for`
 /// already confirmed a mutation occurred.
 pub(crate) fn primary_keys(cmd: &Command) -> Vec<String> {
+    primary_key_refs(cmd)
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Keys borrowed from a command, inline for the usual one or two.
+pub(crate) type KeyRefs<'a> = SmallVec<[&'a str; 2]>;
+
+/// [`primary_keys`] without copying them: the ordering path only hashes the
+/// keys, and cloning each into a `Vec<String>` cost two allocations per write.
+pub(crate) fn primary_key_refs(cmd: &Command) -> KeyRefs<'_> {
     if let Command::Dedup(_, _, inner) = cmd {
-        return primary_keys(inner);
+        return primary_key_refs(inner);
     }
     match cmd {
         Command::ESet(k, _)
@@ -130,16 +142,16 @@ pub(crate) fn primary_keys(cmd: &Command) -> Vec<String> {
         | Command::GetDel(k)
         | Command::GetEx(k, _)
         | Command::ZPopMin(k, _)
-        | Command::ZPopMax(k, _) => vec![k.clone()],
+        | Command::ZPopMax(k, _) => smallvec::smallvec![k.as_str()],
         // COPY writes only its destination; the source is read, and is in its
         // ordering domain through `ordering_keys`.
-        Command::Copy(_, dst, _) => vec![dst.clone()],
-        Command::Del(keys) | Command::Unlink(keys) => keys.clone(),
-        Command::MSet(pairs) => pairs.iter().map(|(k, _)| k.clone()).collect(),
+        Command::Copy(_, dst, _) => smallvec::smallvec![dst.as_str()],
+        Command::Del(keys) | Command::Unlink(keys) => keys.iter().map(String::as_str).collect(),
+        Command::MSet(pairs) => pairs.iter().map(|(k, _)| k.as_str()).collect(),
         Command::Rename(src, dst) | Command::RenameNx(src, dst) | Command::SMove(src, dst, _) => {
-            vec![src.clone(), dst.clone()]
+            smallvec::smallvec![src.as_str(), dst.as_str()]
         }
-        _ => vec![],
+        _ => KeyRefs::new(),
     }
 }
 
@@ -150,21 +162,25 @@ pub(crate) fn primary_keys(cmd: &Command) -> Vec<String> {
 /// in the same ordering domain as that destination. `FLUSHDB` is represented
 /// by `None` because it conflicts with every key.
 pub(crate) fn ordering_keys(cmd: &Command) -> Option<Vec<String>> {
+    ordering_key_refs(cmd).map(|keys| keys.into_iter().map(str::to_owned).collect())
+}
+
+/// [`ordering_keys`], borrowed. What the replication stripes are chosen from.
+pub(crate) fn ordering_key_refs(cmd: &Command) -> Option<KeyRefs<'_>> {
     if let Command::Dedup(_, _, inner) = cmd {
-        return ordering_keys(inner);
+        return ordering_key_refs(inner);
     }
     match cmd {
         Command::FlushDb => None,
         Command::SInterStore(dst, sources)
         | Command::SUnionStore(dst, sources)
-        | Command::SDiffStore(dst, sources) => {
-            let mut keys = Vec::with_capacity(sources.len() + 1);
-            keys.push(dst.clone());
-            keys.extend(sources.iter().cloned());
-            Some(keys)
-        }
-        Command::Copy(src, dst, _) => Some(vec![dst.clone(), src.clone()]),
-        _ => Some(primary_keys(cmd)),
+        | Command::SDiffStore(dst, sources) => Some(
+            std::iter::once(dst.as_str())
+                .chain(sources.iter().map(String::as_str))
+                .collect(),
+        ),
+        Command::Copy(src, dst, _) => Some(smallvec::smallvec![dst.as_str(), src.as_str()]),
+        _ => Some(primary_key_refs(cmd)),
     }
 }
 
@@ -319,7 +335,9 @@ async fn execute_locked_write_identified(
     store: &KeyValueStore,
 ) -> Value {
     let claimable_members = claimable_eadd_members(cmd, state, store);
-    let (response, evicted) = execute_and_record_with_evictions(store, cmd.clone());
+    // By reference: the command is needed again below, and cloning it so the
+    // store could consume the copy cost a key and a value per write.
+    let (response, evicted) = execute_and_record_ref(store, cmd);
     apply_write_effects_identified(
         cmd,
         &response,
@@ -372,16 +390,27 @@ pub(crate) async fn execute_ordered_write(
         return dedup_replay_reply(replay);
     }
 
+    if dedup.is_none()
+        && let Some(response) = try_execute_unordered(effective, state, watch_registry, store)
+    {
+        return response;
+    }
+
     // Capacity eviction may choose any key, so capped stores already serialize
     // their core writes and reserve every propagation ordering domain here.
     // Uncapped stores retain per-key concurrency.
     let _guards = if store.has_capacity_limits() {
         state.replicas.lock_all_writes().await
-    } else {
+    } else if matches!(effective, Command::ESet(..) | Command::EAdd(..)) {
+        // A claim turns on `ephemeral_in_use`, which every unordered write
+        // checks; closing the gate while claiming means none is in flight
+        // when it does. See `UnorderedGate`.
         state
             .replicas
             .lock_commands(std::slice::from_ref(effective))
             .await
+    } else {
+        state.replicas.lock_write(effective).await
     };
     let response =
         execute_locked_write_identified(effective, dedup, tx, origin, state, watch_registry, store)
@@ -393,6 +422,93 @@ pub(crate) async fn execute_ordered_write(
         }
     }
     response
+}
+
+/// Run a write with no replication-order stripe when nothing can observe the
+/// order it commits in, or `None` when it must take the ordered path.
+///
+/// Nothing observes it when the server has no AOF, no replication stream or
+/// backlog, no WebSocket receiver, no WATCH or live query, no ephemeral claim
+/// and no capacity limit — a plain cache, which is how most deployments and
+/// every Redis comparison run. Its effects are then the store mutation alone,
+/// which the store's own write-order stripes and shard locks keep atomic and
+/// per-key ordered. DEDUP writes and ESET/EADD always take the ordered path:
+/// they record state of their own that barriers capture.
+///
+/// Soundness rests on [`UnorderedGate`]: the consumer checks happen *after*
+/// entering the gate, and every consumer is registered with the gate closed
+/// (WebSocket subscription, TCP WATCH) or under a barrier that closes it
+/// (replica attach, QSUB, snapshot, EXEC, ephemeral claims and release). So
+/// a write either sees the consumer or finishes before the registration does.
+/// The pass is held only across synchronous code.
+pub(crate) fn try_execute_unordered(
+    cmd: &Command,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+) -> Option<Value> {
+    if store.has_capacity_limits()
+        || matches!(
+            cmd,
+            Command::Dedup(..) | Command::ESet(..) | Command::EAdd(..)
+        )
+    {
+        return None;
+    }
+    let _pass = state.replicas.unordered.try_enter()?;
+    // `has_push_receivers`, not `tx.receiver_count()`: the latter locks the
+    // broadcast channel's tail mutex — a process-wide lock on every write.
+    if state.replicas.unordered.has_push_receivers()
+        || state.needs_write_log()
+        || !watch_registry.is_empty()
+        || state.ephemeral_in_use.load(Ordering::Acquire)
+    {
+        return None;
+    }
+    #[cfg(test)]
+    unordered_pause::pause(cmd);
+    let (response, evicted) = execute_and_record_ref(store, cmd);
+    // An uncapped store never evicts; nothing to propagate either way.
+    debug_assert!(evicted.is_empty(), "uncapped store evicted {evicted:?}");
+    Some(response)
+}
+
+/// Test-only fault injection: stall an unordered write on one key between
+/// passing the gate and touching the store, so a test can land a consumer
+/// registration or a barrier exactly inside that window.
+#[cfg(test)]
+pub(crate) mod unordered_pause {
+    use super::*;
+
+    static PAUSE: std::sync::Mutex<Option<(String, std::time::Duration)>> =
+        std::sync::Mutex::new(None);
+    /// Checked before the mutex, so an unarmed hook costs one relaxed load:
+    /// the request-path benchmark runs in test builds, and a process-wide
+    /// lock per write here would contend exactly like the locks it measures.
+    static ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// Stall unordered writes to `key` for `pause` until [`clear`].
+    pub(crate) fn set(key: &str, pause: std::time::Duration) {
+        *PAUSE.lock().unwrap_or_else(|p| p.into_inner()) = Some((key.to_string(), pause));
+        ARMED.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn clear() {
+        ARMED.store(false, Ordering::SeqCst);
+        *PAUSE.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+
+    pub(super) fn pause(cmd: &Command) {
+        if !ARMED.load(Ordering::Relaxed) {
+            return;
+        }
+        let armed = PAUSE.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if let Some((key, pause)) = armed
+            && primary_key_refs(cmd).contains(&key.as_str())
+        {
+            std::thread::sleep(pause);
+        }
+    }
 }
 
 /// The reply to a DEDUP write seen before.

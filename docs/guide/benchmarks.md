@@ -39,6 +39,17 @@ The first three tests spread writes over 100,000 keys (`-r 100000`) and scale wi
 
 Neither half is the "real" number. Which one describes your deployment depends entirely on whether your writes are spread across keys or concentrated on a few hot ones. If you have one hot key, adding cores will not help it, and this table shows roughly what it costs.
 
+**v0.6 changes the single-key half.** Two causes of that drop were removed: every write took a fair async lock for replication ordering even when nothing (no AOF, replica, browser client, `WATCH` or presence key) could observe the order, and the store's per-key lock slept on contention instead of spinning through a hold of a few hundred nanoseconds. Measured with memtier against one key, 48 connections, pipeline 16, in a Docker Desktop Linux VM on a laptop (median of 5 runs, indicative — re-measure on your hardware):
+
+| One hot key | 1 thread | 4 threads |
+|---|---:|---:|
+| `INCR`, v0.6 before the fix | 178,573 | 104,229 |
+| `INCR`, v0.6 | 261,378 | 709,740 |
+| `HSET`, v0.6 before the fix | 181,071 | 88,904 |
+| `HSET`, v0.6 | 222,424 | 514,925 |
+
+Only the store mutation of that key is serialized; decoding, dispatch and replies still run in parallel, which is why more workers now help. A server with persistence, replication or browser clients keeps the ordering lock (it is what orders those consumers), so its hot keys gain the spin but not the rest. Raw data: [`benchmarks/v0.6.0/6h-linux`](https://github.com/recached-sh/recached/tree/main/benchmarks/v0.6.0/6h-linux).
+
 `GET` also stops improving between two and four threads. At 1.7M requests/s the load generator has only two cores to the server's four, so that plateau is the harness, not the server.
 
 ### Latency, unpipelined

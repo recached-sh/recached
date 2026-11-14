@@ -1146,6 +1146,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "sha2",
+ "smallvec",
  "socket2 0.5.10",
  "tikv-jemallocator",
  "tokio",
