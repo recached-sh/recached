@@ -625,7 +625,16 @@ impl CompactHash {
                     old
                 }
             }
-            CompactHashRepr::Table(fields) => fields.insert(key, value),
+            // Replace in place when the field exists. `HashMap::insert`
+            // reserves room for one more entry *before* it looks the key up,
+            // so overwriting a field of a full table doubled it: a 3-field
+            // hash (4 buckets, full) grew to 8 buckets on its first
+            // overwrite, +228 live bytes per hash (measured: 1M small hashes
+            // went from 732 to 960 B/key of live heap after one HSET pass).
+            CompactHashRepr::Table(fields) => match fields.get_mut(key.as_str()) {
+                Some(slot) => Some(std::mem::replace(slot, value)),
+                None => fields.insert(key, value),
+            },
         };
         match &old {
             // Overwrite: the field name is already counted, only the value moved.
@@ -11013,6 +11022,41 @@ mod storage_regression_tests {
         assert!(matches!(set.repr, CompactSetRepr::Inline(_)));
         set.insert("spill".into());
         assert!(matches!(set.repr, CompactSetRepr::Table(_)));
+    }
+    /// Regression: overwriting a field of a full table must not grow it.
+    /// `HashMap::insert` reserves before it finds an existing key, which made
+    /// every small hash's table double on its first `HSET` overwrite.
+    #[test]
+    fn overwriting_fields_does_not_grow_a_full_table() {
+        let mut hash = CompactHash::new();
+        for i in 0..=INLINE_HASH_FIELDS {
+            hash.insert(format!("f{i}"), Blob::from("v"));
+        }
+        let CompactHashRepr::Table(table) = &hash.repr else {
+            panic!(
+                "{} fields should have spilled to a table",
+                INLINE_HASH_FIELDS + 1
+            );
+        };
+        let capacity = table.capacity();
+        assert_eq!(table.len(), capacity, "precondition: the table is full");
+        for _ in 0..3 {
+            for i in 0..=INLINE_HASH_FIELDS {
+                assert!(hash.insert(format!("f{i}"), Blob::from("w")).is_some());
+            }
+        }
+        let CompactHashRepr::Table(table) = &hash.repr else {
+            panic!("still a table");
+        };
+        assert_eq!(table.capacity(), capacity, "overwrites grew the table");
+        assert_eq!(hash.len(), INLINE_HASH_FIELDS + 1);
+        assert_eq!(
+            hash.heap_bytes(),
+            (INLINE_HASH_FIELDS + 1) * ("f0".len() + 1)
+        );
+        // A genuinely new field still inserts.
+        assert!(hash.insert("new".into(), Blob::from("v")).is_none());
+        assert_eq!(hash.len(), INLINE_HASH_FIELDS + 2);
     }
 }
 

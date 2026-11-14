@@ -168,6 +168,21 @@ pub(crate) fn ordering_keys(cmd: &Command) -> Option<Vec<String>> {
     }
 }
 
+/// Every key a pushed frame names, for the sync fan-out filter.
+///
+/// A WebSocket push is the command's own frame, so a scoped socket may receive
+/// it only when it may read every key that frame mentions — not just the keys
+/// the write changes. `COPY src dst` and the `*STORE` commands write only their
+/// destination but name their sources: filtered by [`primary_keys`] alone, a
+/// socket scoped to the destination tenant was pushed the names of another
+/// tenant's keys (and a frame it could not apply, lacking the sources). Such a
+/// socket now receives no push for that write; its live queries and watches on
+/// the destination still get the value through their keychange. Empty for
+/// `FLUSHDB`, which the filter handles as keyspace-wide.
+pub(crate) fn push_keys(cmd: &Command) -> Vec<String> {
+    ordering_keys(cmd).unwrap_or_default()
+}
+
 fn claimable_eadd_members(
     cmd: &Command,
     state: &ServerState,
@@ -926,7 +941,7 @@ async fn apply_write_effects_identified(
         let _ = tx.send(Arc::new(SyncPush::for_command(
             origin,
             cmd,
-            primary_keys(cmd),
+            push_keys(cmd),
             msg,
         )));
     }

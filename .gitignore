@@ -57,6 +57,7 @@ scripts/*
 !scripts/update-formula-checksums.sh
 !scripts/update-deps.sh
 !scripts/compat-matrix.sh
+!scripts/compat-tokens.mjs
 !scripts/compat-expected-failures.txt
 
 # Cache snapshots / AOF written by a server started in the repo root

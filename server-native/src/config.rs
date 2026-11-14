@@ -3,6 +3,24 @@
 
 use crate::*;
 
+/// A password read from the environment. Set but empty counts as unset.
+///
+/// An empty password authenticates nothing. Taken as a password, it made
+/// `AUTH ""` unlock the port, while every check that a password is configured
+/// (the multitenant profile's, the public replication bind's) passed.
+/// `RECACHED_SYNC_SECRET` was already read this way.
+pub(crate) fn credential_from_env(var: &str, raw: Option<String>) -> Option<String> {
+    match raw {
+        Some(value) if value.is_empty() => {
+            warn!(
+                "{var} is set but empty; treating it as unset (an empty password authenticates nothing)."
+            );
+            None
+        }
+        other => other,
+    }
+}
+
 pub(crate) const TCP_READ_BUFFER_BYTES: usize = 16 * 1024; // 16 KB — matches Redis default
 
 pub(crate) const MAX_TCP_READ_BUFFER_BYTES: usize = 64 * 1024 * 1024; // 64 MB per connection

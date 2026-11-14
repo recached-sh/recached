@@ -12,11 +12,14 @@ All notable changes to Recached are documented here.
 - **`DEDUP` state is namespaced by the token's `sub` claim.** Client ids are client-chosen; a second principal reusing one could read the first's remembered refusals (which name keys) or raise its mark so its writes were answered `+DUP` and dropped. Client ids starting with `~` are now reserved on strict connections
 - **The sync fan-out fails closed.** A mutation that names no keys reaches a scoped connection only when it is keyspace-wide (`FLUSHDB`); before, any write missing from the key extractor would have been pushed to every tenant. `RLCHECK` was such a write — it is never broadcast, so nothing leaked — and is now listed
 - Five refused `SYNC TOKEN`s close the socket, as five refused passwords do
+- **A push names only keys its receiver may read.** `COPY src dst` and `SINTERSTORE`/`SUNIONSTORE`/`SDIFFSTORE` were pushed to every socket that could read the destination, but the frame names the sources too, so a socket scoped to the destination tenant learned another tenant's key names (and got a frame it could not apply). A multi-key push now reaches a scoped socket only when it may read every key the frame names; live queries and watches on the destination still receive the new value. The `*STORE` case predates 0.6
+- **An empty `RECACHED_PASSWORD` or `RECACHED_REPL_PASSWORD` is treated as unset.** It was a password that `AUTH ""` matched, while the multitenant profile and the public-replication-bind check both counted it as configured
 
 ### Performance — memory
 - **About a third less memory per small key.** Every key was copied into four `String`s (six with a TTL): the map's own and three secondary indexes. The indexes now share one allocation per key; the all-keys index, read only by `allkeys-*` eviction sampling, is kept only under those policies; and a write that leaves a key present with unchanged TTL-ness no longer touches the index (or takes its store-wide lock). Entries shrank from 72 to 56 bytes (8-byte expiry, `smallvec`'s `union` layout, list and rate-limiter values boxed like the other collections). Measured at 1M keys with 32-byte values: 532 → 373 bytes/key of RSS; with a TTL 637 → 427; 100k × 1 KiB: 1,398 → 1,255. Median of 3 runs on one host
 - The same change makes writes cheaper in the engine: an overwrite no longer takes the store-wide index lock. In-process `execute` cost (best of 4 interleaved runs × 9 × 1M ops, `core-engine/examples/hotpath.rs`): `SET` overwrite −16%, `INCR` −13%, `SET` + `PEXPIRE` −21%, delete-and-recreate −14%, `HSET` −12%, new keys −6%; `GET` unchanged. Engine only — networked throughput was not measurable on the test host
 - `FLUSHDB` returns the keyspace's table capacity instead of keeping it at the high-water mark: RSS retained after flushing 100k × 1 KiB keys fell from 99% to 38%
+- **Overwriting a field of a small hash no longer grows it.** `HashMap::insert` reserves room before it finds an existing key, so the first `HSET` overwrite of a hash whose field table was exactly full (3, 7, 14 … fields) doubled the table: +228 bytes of live heap per 3-field hash, which is why overwriting 1M small hashes appeared to double RSS. Measured with a counting allocator: 1M three-field hashes stay at 732 bytes/key of live heap across repeated overwrites, instead of rising to 960. Present since hashes became compact (0.3.4)
 
 ### Added — benchmarking
 - `scripts/bench-redis-valkey.sh`, `scripts/bench-summarize.py`, `scripts/bench-memory-aggregate.py`: reproducible Recached/Redis/Valkey (or build-vs-build) comparison of throughput, latency percentiles, server CPU per million requests and RSS per key, with recorded conditions
@@ -44,6 +47,7 @@ All notable changes to Recached are documented here.
 - `RECACHED_SYNC_PUBSUB=open` restores unscoped pub/sub for a transition
 
 ### Changed — upgrade notes
+- See [Upgrading to 0.6](https://recached.dev/server/upgrading-0.6) for the full procedure, including rollback
 - **Replication: upgrade replicas before the primary.** A 0.6 primary refuses 0.5 replicas unless it runs with `RECACHED_REPL_DEDUP=off`
 - **Breaking for strict deployments that use pub/sub from browsers:** add `chr=`/`chrw=` grants to tokens before upgrading, or set `RECACHED_SYNC_PUBSUB=open` for the transition
 - A token carrying claims is refused by a 0.5 server (fail-closed); mint the two-segment form until every server is on 0.6

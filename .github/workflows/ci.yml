@@ -373,9 +373,15 @@ jobs:
         run: cargo test --locked -p recached --test redis_diff -- --ignored --nocapture
 
   compat-matrix:
-    name: Cross-version compatibility (v0.4.0 <-> this checkout)
+    name: Cross-version compatibility (${{ matrix.old_ref }} <-> this checkout)
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # v0.5.1 is the release 0.6 upgrades from; v0.4.0 the oldest one
+        # still supported for mixed fleets.
+        old_ref: [v0.4.0, v0.5.1]
 
     steps:
       - name: Checkout repository
@@ -391,17 +397,24 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          shared-key: "recached-compat-cache"
+          shared-key: "recached-compat-cache-${{ matrix.old_ref }}"
           workspaces: |
             . -> target
-            target/compat/v0.4.0 -> target
+            target/compat/${{ matrix.old_ref }} -> target
 
       - name: Install redis-cli
         run: sudo apt-get update -q && sudo apt-get install -y -q redis-tools
 
+      - name: Install Node.js
+        # The token checks (scripts/compat-tokens.mjs) use Node 22's built-in
+        # WebSocket client.
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
       - name: Run the matrix
         env:
-          OLD_REF: v0.4.0
+          OLD_REF: ${{ matrix.old_ref }}
           COMPAT_LOG_DIR: ${{ runner.temp }}/compat-logs
         run: scripts/compat-matrix.sh
 
@@ -409,7 +422,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: compat-logs
+          name: compat-logs-${{ matrix.old_ref }}
           path: ${{ runner.temp }}/compat-logs
 
   integration-load-chaos:

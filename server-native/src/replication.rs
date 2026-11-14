@@ -1256,7 +1256,7 @@ async fn apply_repl_frame(
     };
     let cmd = Command::from_value(normalised)
         .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
-    let push = SyncPush::for_command(0, &cmd, primary_keys(&cmd), bytes.to_vec());
+    let push = SyncPush::for_command(0, &cmd, push_keys(&cmd), bytes.to_vec());
     if let Value::Error(error) = store.execute(cmd) {
         return Err(std::io::Error::new(
             ErrorKind::InvalidData,
@@ -1309,7 +1309,7 @@ async fn apply_dedup_envelope(
     let bare = resp_push(&inner);
     let cmd = Command::from_value(Value::Array(Some(items.into_iter().skip(3).collect())))
         .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
-    let push = SyncPush::for_command(0, &cmd, primary_keys(&cmd), bare.clone());
+    let push = SyncPush::for_command(0, &cmd, push_keys(&cmd), bare.clone());
     if let Value::Error(error) = store.execute(cmd) {
         return Err(std::io::Error::new(
             ErrorKind::InvalidData,

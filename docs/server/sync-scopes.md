@@ -17,6 +17,12 @@ WebSocket-only (the TCP port is for trusted backends and is unaffected).
 Patterns are the same globs `KEYS` uses: `*` matches any sequence of bytes and `?` matches exactly
 one byte — e.g. `cart:42:*`, `catalog:*`.
 
+A mutation push is the command's own frame, so a scoped connection receives it only when its
+grants cover **every key the frame names**: `MSET a b`, `RENAME src dst`, and also the *sources*
+of `COPY src dst` and `SUNIONSTORE dst src…`. A connection that may read the destination but not
+a source gets no raw push for that write. Its live queries and watches on the destination still
+receive the new value, as a keychange.
+
 ## Read-only and read-write grants
 
 Each scope entry carries the access it confers:

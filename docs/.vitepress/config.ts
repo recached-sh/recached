@@ -75,6 +75,7 @@ export default defineConfig({
             { text: 'Sync Scopes', link: '/server/sync-scopes' },
             { text: 'Security', link: '/server/security' },
             { text: 'Operations', link: '/server/operations' },
+            { text: 'Upgrading to 0.6', link: '/server/upgrading-0.6' },
             { text: 'Troubleshooting', link: '/server/troubleshooting' },
             { text: 'Wire Protocol', link: '/server/protocol' },
           ],
