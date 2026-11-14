@@ -9,6 +9,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::BuildHasher;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
@@ -1794,6 +1795,17 @@ impl DenseKeys {
         self.positions.insert(Arc::clone(key), pos);
     }
 
+    /// Shrink both structures when they are less than an eighth full.
+    fn reclaim(&mut self) -> bool {
+        let len = self.keys.len();
+        if !mostly_empty(len, self.keys.capacity().max(self.positions.capacity())) {
+            return false;
+        }
+        self.keys.shrink_to_fit();
+        self.positions.shrink_to_fit();
+        true
+    }
+
     fn remove(&mut self, key: &str) {
         let Some(pos) = self.positions.remove(key) else {
             return;
@@ -1871,6 +1883,13 @@ impl KeyIndex {
     }
 }
 
+/// Whether a table holding `len` entries in `slots` slots is worth rebuilding
+/// smaller: under an eighth full, and big enough to matter.
+fn mostly_empty(len: usize, slots: usize) -> bool {
+    const SMALLEST_WORTH_SHRINKING: usize = 1024;
+    slots >= SMALLEST_WORTH_SHRINKING && len.saturating_mul(8) < slots
+}
+
 /// Whether a write that left a key in state `after` (present, and whether
 /// with a TTL) from state `before` has to update the [`KeyIndex`]. A key
 /// present both times with unchanged TTL-ness — an overwrite, the common write
@@ -1928,6 +1947,8 @@ pub struct KeyValueStore {
     scan_cursors: Arc<std::sync::Mutex<HashMap<u64, String>>>,
     next_scan_cursor: Arc<AtomicU64>,
     expiry_cursor: Arc<AtomicUsize>,
+    /// Next keyspace shard [`Self::reclaim_capacity_step`] looks at.
+    reclaim_cursor: Arc<AtomicUsize>,
     /// Serializes capacity checks only when a key or memory cap is configured.
     capacity_gate: Arc<std::sync::Mutex<()>>,
     /// Per-key write ordering, striped by key hash. See [`Self::order_keys`].
@@ -2000,6 +2021,7 @@ impl KeyValueStore {
             scan_cursors: Arc::new(std::sync::Mutex::new(HashMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
+            reclaim_cursor: Arc::new(AtomicUsize::new(0)),
             capacity_gate: Arc::new(std::sync::Mutex::new(())),
             write_order: write_order_stripes(),
         }
@@ -2019,6 +2041,7 @@ impl KeyValueStore {
             scan_cursors: Arc::new(std::sync::Mutex::new(HashMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
+            reclaim_cursor: Arc::new(AtomicUsize::new(0)),
             capacity_gate: Arc::new(std::sync::Mutex::new(())),
             write_order: write_order_stripes(),
         }
@@ -2044,6 +2067,7 @@ impl KeyValueStore {
             scan_cursors: Arc::new(std::sync::Mutex::new(HashMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
+            reclaim_cursor: Arc::new(AtomicUsize::new(0)),
             capacity_gate: Arc::new(std::sync::Mutex::new(())),
             write_order: write_order_stripes(),
         }
@@ -2361,6 +2385,62 @@ impl KeyValueStore {
             .volatile
             .keys
             .len()
+    }
+
+    /// Give back table capacity that mass deletion left empty, one shard at a
+    /// time. Returns whether a table was shrunk.
+    ///
+    /// A hash table keeps its high-water capacity when entries are removed,
+    /// so deleting every key of a million left ~50 MiB of empty slots that
+    /// only `FLUSHDB` released (v0.6 hash-memory report). Redis shrinks a dict
+    /// below 10% fill from `serverCron`; this is the same idea, bounded for a
+    /// sharded map: each call looks at one shard (round-robin), and rebuilds
+    /// it only when it is less than an eighth full, so a call costs one read
+    /// lock when there is nothing to do. A rebuild holds that one shard's
+    /// write lock for O(its capacity); the other shards stay available.
+    /// Shrinking to the live count lands at 44-87% full, far from both
+    /// thresholds, so a steady keyspace never oscillates.
+    ///
+    /// The TTL and all-keys indexes are shrunk on the same rule.
+    pub fn reclaim_capacity_step(&self) -> bool {
+        let shards = self.data.shards();
+        let count = shards.len();
+        if count == 0 {
+            return false;
+        }
+        let at = self.reclaim_cursor.fetch_add(1, Ordering::Relaxed) % count;
+        let mut shrunk = false;
+        if let Some(shard) = shards.get(at) {
+            // Buckets, not `capacity()`: deletion can leave tombstones that
+            // shrink `capacity()` while every bucket is still allocated.
+            let sparse = {
+                let table = shard.read();
+                mostly_empty(table.len(), table.buckets())
+            };
+            if sparse {
+                let mut table = shard.write();
+                let len = table.len();
+                if mostly_empty(len, table.buckets()) {
+                    let hasher = self.data.hasher();
+                    // Must hash exactly as DashMap does — `build_hasher`,
+                    // `Hash::hash`, `finish` — or entries land in buckets
+                    // their lookups never probe. `hash_one` is that sequence.
+                    table.shrink_to(len, |(key, _)| hasher.hash_one(key));
+                    shrunk = true;
+                }
+            }
+        }
+        // The dense indexes behave the same way: their vectors and position
+        // maps keep the capacity of the largest TTL keyspace ever held.
+        if at == 0 {
+            let mut index = self
+                .index
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            shrunk |= index.volatile.reclaim();
+            shrunk |= index.all.reclaim();
+        }
+        shrunk
     }
 
     /// Drop every expired volatile entry. This full form is retained for

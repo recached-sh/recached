@@ -841,6 +841,10 @@ async fn run(
                 tokio::time::interval(tokio::time::Duration::from_secs(EVICTION_INTERVAL_SECS));
             loop {
                 interval.tick().await;
+                // One shard per tick: after a mass DEL the table's empty
+                // capacity is handed back over the next ~32 s, never in one
+                // pause. Changes no key, so it needs no write barrier.
+                store_sweep.reclaim_capacity_step();
                 let memory_over_limit = store_sweep
                     .max_memory_bytes()
                     .is_some_and(|limit| store_sweep.approximate_memory_bytes() > limit);

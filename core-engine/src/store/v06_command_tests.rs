@@ -702,3 +702,98 @@ fn append_moves_an_inline_value_to_the_heap_exactly_once() {
         EntryValue::Str(StrValue::Inline { .. })
     ));
 }
+
+/// Allocated slots across every shard: the memory, unlike `capacity()`, which
+/// deletion tombstones reduce while the buckets stay allocated.
+fn keyspace_buckets(s: &KeyValueStore) -> usize {
+    s.data
+        .shards()
+        .iter()
+        .map(|shard| shard.read().buckets())
+        .sum()
+}
+
+#[test]
+fn reclaimed_shards_still_find_every_key() {
+    // 6G: `reclaim_capacity_step` rebuilds shard tables through DashMap's raw
+    // shard API with its own hash closure. If that closure ever stopped
+    // hashing exactly as DashMap does, entries would sit in buckets lookups
+    // never probe — so check every surviving key, by every access path.
+    let s = KeyValueStore::new();
+    let total = 200_000;
+    for i in 0..total {
+        if i % 2 == 0 {
+            set(&s, &format!("k{i}"), "v");
+        } else {
+            s.execute(Command::SetEx(
+                format!("k{i}"),
+                3600,
+                format!("t{i}").into_bytes(),
+            ));
+        }
+    }
+    let loaded = keyspace_buckets(&s);
+    // Delete all but every 400th key: 500 survivors, half of them volatile.
+    let doomed: Vec<String> = (0..total)
+        .filter(|i| i % 400 != 0 && i % 400 != 1)
+        .map(|i| format!("k{i}"))
+        .collect();
+    s.execute(Command::Del(doomed));
+    assert_eq!(keyspace_buckets(&s), loaded, "DEL alone keeps every bucket");
+
+    let shards = s.data.shards().len();
+    let mut shrunk = 0;
+    for _ in 0..shards * 2 {
+        shrunk += usize::from(s.reclaim_capacity_step());
+    }
+    assert!(shrunk >= shards, "every sparse shard is rebuilt ({shrunk})");
+    assert!(
+        keyspace_buckets(&s) * 16 < loaded,
+        "{} of {loaded} buckets left after reclaiming",
+        keyspace_buckets(&s)
+    );
+    let index = s.index.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(index.volatile.keys.capacity() < 4 * 1024);
+    drop(index);
+
+    for i in (0..total).filter(|i| i % 400 == 0 || i % 400 == 1) {
+        let key = format!("k{i}");
+        let want = if i % 2 == 0 {
+            b"v".to_vec()
+        } else {
+            format!("t{i}").into_bytes()
+        };
+        assert_eq!(
+            s.execute(Command::Get(key.clone())),
+            Value::BulkString(Some(want)),
+            "{key} lost by the rebuild"
+        );
+        assert!(s.data.contains_key(key.as_str()));
+        assert!(s.data.get_mut(key.as_str()).is_some());
+    }
+    assert_eq!(s.key_count(), 1_000);
+    // Writes after the rebuild land where reads find them, and the reclaimed
+    // map grows again normally.
+    for i in 0..10_000 {
+        set(&s, &format!("again{i}"), "w");
+    }
+    for i in 0..10_000 {
+        assert_eq!(
+            s.execute(Command::Get(format!("again{i}"))),
+            Value::BulkString(Some(b"w".to_vec()))
+        );
+    }
+}
+
+#[test]
+fn reclaiming_leaves_a_well_filled_keyspace_alone() {
+    let s = KeyValueStore::new();
+    for i in 0..50_000 {
+        set(&s, &format!("k{i}"), "v");
+    }
+    let buckets = keyspace_buckets(&s);
+    for _ in 0..s.data.shards().len() * 2 {
+        assert!(!s.reclaim_capacity_step());
+    }
+    assert_eq!(keyspace_buckets(&s), buckets);
+}

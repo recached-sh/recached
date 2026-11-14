@@ -148,6 +148,7 @@ impl Task {
     fn maintain(&self) {
         self.store.sweep_expired();
         self.store.try_evict_for_memory();
+        self.store.reclaim_capacity_step();
     }
 
     pub(crate) async fn run(mut self, mut ops: mpsc::Receiver<Op>) {
