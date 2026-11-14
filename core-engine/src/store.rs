@@ -1,4 +1,4 @@
-use crate::cmd::{Command, GetExOption, SetCondition, SetExpiry, ZAddOptions};
+use crate::cmd::{Command, GetExOption, SetCondition, SetExpiry, SetOptions, ZAddOptions};
 use crate::resp::Value;
 use dashmap::DashMap;
 // Aliased: this module has its own `Entry` (the stored value + TTL + recency).
@@ -691,24 +691,31 @@ impl CompactHash {
     }
 
     /// Set `key` to `value`. Returns whether the field is new.
-    fn insert(&mut self, key: String, value: Vec<u8>) -> bool {
-        let (key_len, value_len) = (key.len(), value.len());
+    ///
+    /// Owned arguments are moved into a table; borrowed ones are copied.
+    /// Either way a packed hash copies the bytes into its buffer.
+    fn insert<F, V>(&mut self, key: F, value: V) -> bool
+    where
+        F: AsRef<str> + Into<String>,
+        V: AsRef<[u8]> + Into<Blob>,
+    {
+        let (key_len, value_len) = (key.as_ref().len(), value.as_ref().len());
         let previous_len = match &mut self.repr {
             CompactHashRepr::Packed { buf, fields } => {
-                match packed_find(buf, key.as_bytes()) {
-                    Some((_, _, old)) if value.len() <= PACKED_HASH_LEN => {
+                match packed_find(buf, key.as_ref().as_bytes()) {
+                    Some((_, _, old)) if value_len <= PACKED_HASH_LEN => {
                         // Overwrite in place: replace the value bytes and its
                         // length byte; the buffer is resized exactly.
                         let old_len = old.len();
-                        if let Ok(len_byte) = u8::try_from(value.len())
+                        if let Ok(len_byte) = u8::try_from(value_len)
                             && let Some(slot) =
                                 old.start.checked_sub(1).and_then(|i| buf.get_mut(i))
                         {
                             *slot = len_byte;
                             // Reserve exactly first, or `splice` grows the
                             // buffer by doubling and a shrink has to follow.
-                            buf.reserve_exact(value.len().saturating_sub(old_len));
-                            buf.splice(old, value);
+                            buf.reserve_exact(value_len.saturating_sub(old_len));
+                            buf.splice(old, value.as_ref().iter().copied());
                             if buf.capacity() > buf.len() {
                                 buf.shrink_to_fit();
                             }
@@ -718,8 +725,10 @@ impl CompactHash {
                     found => {
                         let new_field = found.is_none();
                         let count = (*fields as usize).saturating_add(usize::from(new_field));
-                        if count <= PACKED_HASH_FIELDS && packs(key.as_bytes(), &value) {
-                            packed_push(buf, key.as_bytes(), &value);
+                        if count <= PACKED_HASH_FIELDS
+                            && packs(key.as_ref().as_bytes(), value.as_ref())
+                        {
+                            packed_push(buf, key.as_ref().as_bytes(), value.as_ref());
                             *fields = fields.saturating_add(1);
                             None
                         } else {
@@ -736,7 +745,7 @@ impl CompactHash {
                                 }
                                 at = v.end;
                             }
-                            let old = table.insert(key, Blob::from(value)).map(|b| b.len());
+                            let old = table.insert(key.into(), value.into()).map(|b| b.len());
                             self.repr = CompactHashRepr::Table(table);
                             old
                         }
@@ -749,9 +758,9 @@ impl CompactHash {
             // hash (4 buckets, full) grew to 8 buckets on its first
             // overwrite, +228 live bytes per hash (measured: 1M small hashes
             // went from 732 to 960 B/key of live heap after one HSET pass).
-            CompactHashRepr::Table(fields) => match fields.get_mut(key.as_str()) {
-                Some(slot) => Some(std::mem::replace(slot, Blob::from(value)).len()),
-                None => fields.insert(key, Blob::from(value)).map(|b| b.len()),
+            CompactHashRepr::Table(fields) => match fields.get_mut(key.as_ref()) {
+                Some(slot) => Some(std::mem::replace(slot, value.into()).len()),
+                None => fields.insert(key.into(), value.into()).map(|b| b.len()),
             },
         };
         match previous_len {
@@ -1669,8 +1678,16 @@ impl Entry {
     }
 
     /// Mark this entry as just-used so LRU eviction treats it as recent.
+    /// Record a read for LRU and `OBJECT IDLETIME`.
+    ///
+    /// Stores only when the millisecond changed: an unconditional store made
+    /// every read *write* the entry's cache line, so a key read from several
+    /// workers bounced that line between their cores on every GET. The value
+    /// stored is the same either way.
     fn touch(&self, now: u64) {
-        self.last_access_ms.store(now, Ordering::Relaxed);
+        if self.last_access_ms.load(Ordering::Relaxed) != now {
+            self.last_access_ms.store(now, Ordering::Relaxed);
+        }
     }
 }
 
@@ -1796,8 +1813,8 @@ enum WriteSlot<'a> {
     Vacant(dashmap::mapref::entry::VacantEntry<'a, Key, Slot>),
 }
 
-/// [`DashMap::entry`] for a key the command owns as a `String`, without
-/// allocating a [`Key`] when the key already exists.
+/// [`DashMap::entry`] for a command's key — owned (`String`) or borrowed
+/// (`&str`) — without allocating a [`Key`] when the key already exists.
 ///
 /// `entry` needs the map's key type up front, and building an `Arc<str>` for
 /// every write — then dropping it, because the key was there — would cost an
@@ -1805,11 +1822,11 @@ enum WriteSlot<'a> {
 /// the write guard, as before; only a miss allocates the key and probes again.
 /// A key inserted by another writer between the two probes is seen by
 /// `entry` as occupied, so the result is exactly what `entry` alone returns.
-fn write_slot(data: &Keyspace, key: String) -> WriteSlot<'_> {
-    if let Some(existing) = data.get_mut(key.as_str()) {
+fn write_slot<K: AsRef<str> + Into<Key>>(data: &Keyspace, key: K) -> WriteSlot<'_> {
+    if let Some(existing) = data.get_mut(key.as_ref()) {
         return WriteSlot::Occupied(existing);
     }
-    match data.entry(Key::from(key)) {
+    match data.entry(key.into()) {
         DashEntry::Occupied(occupied) => WriteSlot::Occupied(occupied.into_ref()),
         DashEntry::Vacant(vacant) => WriteSlot::Vacant(vacant),
     }
@@ -2111,6 +2128,32 @@ fn write_order_stripe(key: &str) -> usize {
     (hash >> (64 - WRITE_ORDER_STRIPES.trailing_zeros())) as usize
 }
 
+/// `try_lock` attempts before a write-order stripe waits in the OS.
+///
+/// A stripe is held for one command's mutation and accounting — a few
+/// hundred nanoseconds — so on a key written from several workers the holder
+/// is almost always about to release it. Blocking straight away put every
+/// waiter to sleep and woke it again: on the 4-worker hot-key profile, threads
+/// spent most of their time in the kernel's mutex wait. A bounded spin first
+/// keeps the handoff in user space; past it the waiter blocks as before, so a
+/// long hold (FLUSHDB, restore) costs a waiter a few microseconds of spinning.
+const STRIPE_SPINS: u32 = 64;
+
+/// Take a write-order stripe, spinning briefly before blocking. Poisoning is
+/// recovered as everywhere else in the store: the stripe guards no data.
+fn lock_stripe(stripe: &std::sync::Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
+    for _ in 0..STRIPE_SPINS {
+        match stripe.try_lock() {
+            Ok(guard) => return guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => return poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
+        }
+    }
+    stripe
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Write-order stripes held by one write; released on drop.
 enum WriteOrder<'a> {
     One(#[allow(dead_code)] std::sync::MutexGuard<'a, ()>),
@@ -2250,6 +2293,12 @@ impl KeyValueStore {
     }
 
     fn adjust_memory(&self, before: usize, after: usize) {
+        // An overwrite that kept the size (most INCRs, a same-length SET)
+        // changes nothing; skipping the atomic keeps this store-wide counter's
+        // cache line from bouncing between workers on every write.
+        if after == before {
+            return;
+        }
         if after >= before {
             self.memory_bytes
                 .fetch_add(after.saturating_sub(before), Ordering::Relaxed);
@@ -2277,11 +2326,7 @@ impl KeyValueStore {
     /// Stripes are taken in ascending order, and always after the capacity
     /// gate, so two multi-key writers cannot deadlock.
     fn order_keys<K: AsRef<str>>(&self, keys: &[K]) -> WriteOrder<'_> {
-        let lock = |stripe: usize| {
-            self.write_order[stripe]
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-        };
+        let lock = |stripe: usize| lock_stripe(&self.write_order[stripe]);
         // Nearly every write names one key: skip the sort and the guard list.
         if let [key] = keys {
             return WriteOrder::One(lock(write_order_stripe(key.as_ref())));
@@ -2977,11 +3022,63 @@ impl KeyValueStore {
     /// Runs one command and returns the keys removed implicitly by capacity
     /// eviction. Server transports propagate these deletions as ordered DELs.
     pub fn execute_reporting(&self, cmd: Command) -> (Value, Vec<String>) {
-        let scope = mutation_scope(&cmd);
-        let mut evicted = Vec::new();
-        if matches!(scope, MutationScope::ReadOnly) {
-            return (self.execute_inner(cmd), evicted);
+        // The scope's keys borrow from `cmd`, which `execute_inner` consumes,
+        // so the owned path copies them first (inline, for one or two keys).
+        // `execute_reporting_ref` is the path that does not.
+        let scope = match mutation_scope(&cmd) {
+            MutationScope::ReadOnly => None,
+            MutationScope::All => Some(WriteScope::All),
+            MutationScope::Keys(keys) => Some(WriteScope::Keys(
+                keys.into_iter()
+                    .map(str::to_owned)
+                    .collect::<SmallVec<[String; 2]>>(),
+            )),
+        };
+        match scope {
+            None => (self.execute_inner(cmd), Vec::new()),
+            Some(scope) => self.run_write(scope, cmd, |store, cmd| store.execute_inner(cmd)),
         }
+    }
+
+    /// [`execute_reporting`](Self::execute_reporting) for a caller that still
+    /// needs the command afterwards — the server, which logs, replicates and
+    /// pushes it once it has run.
+    ///
+    /// That caller used to clone the command so the store could consume the
+    /// copy: a key and a value allocated and copied per write, and the store
+    /// then cloned the key again for its ordering scope. Here the common
+    /// writes (`SET`, `INCR`/`DECR`/`INCRBY`/`DECRBY`, `HSET`, `MSET`) run
+    /// straight from the borrowed command and the scope borrows its keys; any
+    /// other command is cloned exactly as before. Same results, same
+    /// accounting, same ordering — the two entry points share every line
+    /// except who owns the arguments.
+    pub fn execute_reporting_ref(&self, cmd: &Command) -> (Value, Vec<String>) {
+        let scope = match mutation_scope(cmd) {
+            MutationScope::ReadOnly => return (self.execute_inner(cmd.clone()), Vec::new()),
+            MutationScope::All => WriteScope::All,
+            MutationScope::Keys(keys) => WriteScope::Keys(keys),
+        };
+        self.run_write(scope, cmd, |store, cmd| {
+            store
+                .execute_inner_ref(cmd)
+                .unwrap_or_else(|| store.execute_inner(cmd.clone()))
+        })
+    }
+
+    /// Run a mutating command under its write-order stripes with size, index
+    /// and capacity accounting around it. `K` is whatever owns the scope's
+    /// keys and `C` whatever owns the command; `exec` consumes `C`.
+    fn run_write<K, C>(
+        &self,
+        scope: WriteScope<K>,
+        cmd: C,
+        exec: impl FnOnce(&Self, C) -> Value,
+    ) -> (Value, Vec<String>)
+    where
+        K: AsRef<str> + Ord,
+        C: std::borrow::Borrow<Command>,
+    {
+        let mut evicted = Vec::new();
 
         // Capacity checks and eviction choose across keys, so capped stores use
         // one short synchronous gate. Uncapped stores retain DashMap's normal
@@ -2993,24 +3090,28 @@ impl KeyValueStore {
         });
 
         let out = match scope {
-            MutationScope::ReadOnly => unreachable!(),
-            MutationScope::All => {
+            WriteScope::All => {
                 let _order = self.order_all();
-                let out = self.execute_inner(cmd);
+                let out = exec(self, cmd);
                 self.rebuild_metadata();
                 if self.max_memory_bytes.is_some() {
                     self.try_evict_for_memory_inner(&mut evicted);
                 }
                 out
             }
-            MutationScope::Keys(mut keys) => {
+            WriteScope::Keys(mut keys) => {
                 keys.sort_unstable();
                 keys.dedup();
                 let _order = self.order_keys(&keys);
-                if let Some(max) = self.max_keys
-                    && let Err(refused) = self.reserve_key_slots(&cmd, max, &keys, &mut evicted)
-                {
-                    return (refused, evicted);
+                if let Some(max) = self.max_keys {
+                    // Capped stores only: victim selection compares owned keys.
+                    let touched: Vec<String> =
+                        keys.iter().map(|key| key.as_ref().to_owned()).collect();
+                    if let Err(refused) =
+                        self.reserve_key_slots(cmd.borrow(), max, &touched, &mut evicted)
+                    {
+                        return (refused, evicted);
+                    }
                 }
                 let memory_before = self.approximate_memory_bytes();
                 // `NoEviction` is a refusal policy, not permission to exceed
@@ -3021,7 +3122,7 @@ impl KeyValueStore {
                 // pays for the copy: one whose worst-case growth is unknown,
                 // or does not fit in what is left.
                 let rollback = match (self.max_memory_bytes, self.eviction_policy) {
-                    (Some(limit), EvictionPolicy::NoEviction) => match growth_bound(&cmd) {
+                    (Some(limit), EvictionPolicy::NoEviction) => match growth_bound(cmd.borrow()) {
                         Some(bound) => memory_before.saturating_add(bound) > limit,
                         None => true,
                     },
@@ -3031,9 +3132,9 @@ impl KeyValueStore {
                     keys.iter()
                         .map(|key| {
                             (
-                                key.clone(),
+                                key.as_ref().to_owned(),
                                 self.data
-                                    .get(key.as_str())
+                                    .get(key.as_ref())
                                     .map(|entry| entry.value().clone()),
                             )
                         })
@@ -3041,10 +3142,12 @@ impl KeyValueStore {
                 });
                 // Size and index state in the one lookup accounting already
                 // paid for: whether the key was present, and with a TTL.
-                let before_states: SmallVec<[(usize, Option<bool>); 4]> =
-                    keys.iter().map(|key| self.entry_state(key)).collect();
+                let before_states: SmallVec<[(usize, Option<bool>); 4]> = keys
+                    .iter()
+                    .map(|key| self.entry_state(key.as_ref()))
+                    .collect();
                 let before = before_states.iter().map(|(size, _)| size).sum();
-                let out = self.execute_inner(cmd);
+                let out = exec(self, cmd);
                 // One lookup per key, not two. Reading the post-write size and
                 // reading the key's TTL state both need the same entry, and
                 // hash lookups are the largest single cost on the write path
@@ -3064,14 +3167,15 @@ impl KeyValueStore {
                 // bounce its cache line.
                 let mut ttl_states: SmallVec<[(Option<bool>, Option<Key>); 4]> =
                     SmallVec::with_capacity(keys.len());
-                let mut emptied: SmallVec<[&String; 2]> = SmallVec::new();
+                let mut emptied: SmallVec<[&str; 2]> = SmallVec::new();
                 for (key, (_, was)) in keys.iter().zip(&before_states) {
+                    let key = key.as_ref();
                     // Expired-but-unswept entries stay in the TTL index on
                     // purpose: dropping them here would make them unreachable
                     // to the bounded sweeper and suppress the expiry
                     // notification. So this asks whether the entry is present,
                     // not whether it is live — matching `sync_key_metadata`.
-                    ttl_states.push(match self.data.get(key.as_str()) {
+                    ttl_states.push(match self.data.get(key) {
                         // A collection the write left with no members is
                         // removed below, in this one place, rather than by
                         // each command: HDEL of the last field, the last pop,
@@ -3096,7 +3200,7 @@ impl KeyValueStore {
                 // refilling these between the check above and the removal.
                 for key in emptied {
                     self.data
-                        .remove_if(key.as_str(), |_, entry| entry.value.is_empty_collection());
+                        .remove_if(key, |_, entry| entry.value.is_empty_collection());
                 }
                 {
                     // A key present before and after with unchanged TTL-ness —
@@ -3118,7 +3222,7 @@ impl KeyValueStore {
                                     .lock()
                                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                             })
-                            .sync(key, live_ttl.zip(shared.as_ref()));
+                            .sync(key.as_ref(), live_ttl.zip(shared.as_ref()));
                     }
                 }
                 self.adjust_memory(before, after);
@@ -3141,10 +3245,10 @@ impl KeyValueStore {
                         // Undo only what this write did, under the stripes it
                         // still holds, rather than rebuilding all metadata
                         // with a walk of the whole keyspace.
-                        let restored = keys.iter().map(|key| self.entry_memory(key)).sum();
+                        let restored = keys.iter().map(|key| self.entry_memory(key.as_ref())).sum();
                         self.adjust_memory(after, restored);
                         for key in &keys {
-                            self.sync_key_metadata(key);
+                            self.sync_key_metadata(key.as_ref());
                         }
                         evicted.clear();
                         return (
@@ -3270,6 +3374,198 @@ impl KeyValueStore {
         }
     }
 
+    /// `SET`, for an owned or a borrowed command: `key` and `val` are moved
+    /// into the entry when owned and copied when borrowed.
+    fn set<K, V>(&self, key: K, val: V, opts: &SetOptions) -> Value
+    where
+        K: AsRef<str> + Into<Key>,
+        V: Into<StrValue>,
+    {
+        let now = now_ms();
+
+        let expiry = |existing_ttl: Option<u64>| -> Result<Option<u64>, Value> {
+            match &opts.expiry {
+                None => Ok(None),
+                Some(SetExpiry::Ex(seconds)) => {
+                    if *seconds > u64::MAX / 1000 {
+                        return Err(Value::Error("ERR TTL overflow".to_string()));
+                    }
+                    Ok(Some(now.saturating_add(seconds * 1000)))
+                }
+                Some(SetExpiry::Px(ms)) => Ok(Some(now.saturating_add(*ms))),
+                Some(SetExpiry::Exat(seconds)) => Ok(Some(seconds.saturating_mul(1000))),
+                Some(SetExpiry::Pxat(ms)) => Ok(Some(*ms)),
+                Some(SetExpiry::KeepTtl) => Ok(existing_ttl),
+            }
+        };
+
+        // The condition check, optional old-value read, and replacement
+        // all happen under one DashMap entry guard. Two concurrent NX
+        // writers can therefore never both succeed.
+        match write_slot(&self.data, key) {
+            WriteSlot::Occupied(mut occupied) => {
+                let live = !occupied.value().is_expired(now);
+                let existing_ttl = live.then_some(occupied.value().deadline.get()).flatten();
+                if opts.get && live && !matches!(occupied.value().value, EntryValue::Str(_)) {
+                    return Value::Error(WRONGTYPE.to_string());
+                }
+                let condition_met = match opts.condition {
+                    Some(SetCondition::Nx) => !live,
+                    Some(SetCondition::Xx) => live,
+                    None => true,
+                };
+                if !condition_met {
+                    // Only `NX` fails on a live key, so this is the one
+                    // path that copies the old value — and only for GET.
+                    return match &occupied.value().value {
+                        EntryValue::Str(value) if opts.get && live => {
+                            Value::BulkString(Some(value.as_slice().to_vec()))
+                        }
+                        _ => Value::BulkString(None),
+                    };
+                }
+                let expires_at_ms = match expiry(existing_ttl) {
+                    Ok(expiry) => expiry,
+                    Err(error) => return error,
+                };
+                // The replaced entry is moved out, not cloned: an
+                // ordinary overwrite used to copy the old value (8 MiB
+                // to replace an 8 MiB string with one byte) under the
+                // shard's exclusive guard, only to drop the copy.
+                // Replaced inside the existing box: an overwrite
+                // neither allocates nor frees a slot.
+                let replaced = std::mem::replace(
+                    &mut **occupied.value_mut(),
+                    Entry {
+                        value: EntryValue::Str(val.into()),
+                        deadline: expires_at_ms.into(),
+                        last_access_ms: AtomicU64::new(now),
+                    },
+                );
+                // Free the old value outside the shard guard.
+                drop(occupied);
+                if opts.get {
+                    match replaced.value {
+                        EntryValue::Str(value) if live => {
+                            Value::BulkString(Some(value.into_bytes()))
+                        }
+                        _ => Value::BulkString(None),
+                    }
+                } else {
+                    Value::SimpleString("OK".to_string())
+                }
+            }
+            WriteSlot::Vacant(vacant) => {
+                if matches!(opts.condition, Some(SetCondition::Xx)) {
+                    return Value::BulkString(None);
+                }
+                let expires_at_ms = match expiry(None) {
+                    Ok(expiry) => expiry,
+                    Err(error) => return error,
+                };
+                vacant.insert(Box::new(Entry {
+                    value: EntryValue::Str(val.into()),
+                    deadline: expires_at_ms.into(),
+                    last_access_ms: AtomicU64::new(now),
+                }));
+                if opts.get {
+                    Value::BulkString(None)
+                } else {
+                    Value::SimpleString("OK".to_string())
+                }
+            }
+        }
+    }
+
+    /// The by-reference executors behind
+    /// [`execute_reporting_ref`](Self::execute_reporting_ref): the same
+    /// primitives the owned arms of `execute_inner` call, given borrowed
+    /// arguments. `None` for a command without one, which the caller then
+    /// clones and runs owned.
+    fn execute_inner_ref(&self, cmd: &Command) -> Option<Value> {
+        Some(match cmd {
+            Command::Set(key, val, opts) => self.set(key.as_str(), val.as_slice(), opts),
+            Command::Incr(key) => incr_by(&self.data, key.as_str(), 1),
+            Command::Decr(key) => incr_by(&self.data, key.as_str(), -1),
+            Command::IncrBy(key, delta) => incr_by(&self.data, key.as_str(), *delta),
+            Command::DecrBy(key, delta) => match delta.checked_neg() {
+                Some(delta) => incr_by(&self.data, key.as_str(), delta),
+                None => Value::Error("ERR increment or decrement would overflow".to_string()),
+            },
+            Command::HSet(key, pairs) => self.hset(
+                key.as_str(),
+                pairs
+                    .iter()
+                    .map(|(field, val)| (field.as_str(), val.as_slice())),
+            ),
+            Command::MSet(pairs) => self.mset(
+                pairs
+                    .iter()
+                    .map(|(key, val)| (key.as_str(), val.as_slice())),
+            ),
+            _ => return None,
+        })
+    }
+
+    /// `HSET`, for owned or borrowed fields and values.
+    fn hset<K, F, V>(&self, key: K, pairs: impl Iterator<Item = (F, V)>) -> Value
+    where
+        K: AsRef<str> + Into<Key>,
+        F: AsRef<str> + Into<String>,
+        V: AsRef<[u8]> + Into<Blob>,
+    {
+        let now = now_ms();
+        typed_entry!(
+            entry,
+            h,
+            self.data,
+            key,
+            now,
+            EntryValue::Hash,
+            Box::new(CompactHash::new())
+        );
+        // Counted from the inserts themselves, so a field named twice
+        // in one command counts once — as in Redis. Checking
+        // presence for every pair first counted it twice.
+        let new_count = pairs
+            .map(|(field, val)| h.insert(field, val))
+            .filter(|&added| added)
+            .count();
+        Value::Integer(new_count as i64)
+    }
+
+    /// `MSET`, for owned or borrowed pairs.
+    ///
+    /// Each key is written in place when it exists, as `SET` does: the arm
+    /// this replaces inserted a fresh key and a fresh entry box for every pair,
+    /// so overwriting an existing key allocated twice and freed twice.
+    fn mset<K, V>(&self, pairs: impl Iterator<Item = (K, V)>) -> Value
+    where
+        K: AsRef<str> + Into<Key>,
+        V: Into<StrValue>,
+    {
+        let now = now_ms();
+        for (key, val) in pairs {
+            let entry = Entry {
+                value: EntryValue::Str(val.into()),
+                deadline: Deadline::NONE,
+                last_access_ms: AtomicU64::new(now),
+            };
+            match write_slot(&self.data, key) {
+                WriteSlot::Occupied(mut occupied) => {
+                    let replaced = std::mem::replace(&mut **occupied.value_mut(), entry);
+                    // Free the old value outside the shard guard.
+                    drop(occupied);
+                    drop(replaced);
+                }
+                WriteSlot::Vacant(vacant) => {
+                    vacant.insert(Box::new(entry));
+                }
+            }
+        }
+        Value::SimpleString("OK".to_string())
+    }
+
     fn execute_inner(&self, cmd: Command) -> Value {
         match cmd {
             // Ephemeral keys are ordinary strings to the engine — their lifetime
@@ -3323,104 +3619,7 @@ impl KeyValueStore {
             ),
 
             // ── Strings ───────────────────────────────────────────────────────
-            Command::Set(key, val, opts) => {
-                let now = now_ms();
-
-                let expiry = |existing_ttl: Option<u64>| -> Result<Option<u64>, Value> {
-                    match &opts.expiry {
-                        None => Ok(None),
-                        Some(SetExpiry::Ex(seconds)) => {
-                            if *seconds > u64::MAX / 1000 {
-                                return Err(Value::Error("ERR TTL overflow".to_string()));
-                            }
-                            Ok(Some(now.saturating_add(seconds * 1000)))
-                        }
-                        Some(SetExpiry::Px(ms)) => Ok(Some(now.saturating_add(*ms))),
-                        Some(SetExpiry::Exat(seconds)) => Ok(Some(seconds.saturating_mul(1000))),
-                        Some(SetExpiry::Pxat(ms)) => Ok(Some(*ms)),
-                        Some(SetExpiry::KeepTtl) => Ok(existing_ttl),
-                    }
-                };
-
-                // The condition check, optional old-value read, and replacement
-                // all happen under one DashMap entry guard. Two concurrent NX
-                // writers can therefore never both succeed.
-                match write_slot(&self.data, key) {
-                    WriteSlot::Occupied(mut occupied) => {
-                        let live = !occupied.value().is_expired(now);
-                        let existing_ttl =
-                            live.then_some(occupied.value().deadline.get()).flatten();
-                        if opts.get && live && !matches!(occupied.value().value, EntryValue::Str(_))
-                        {
-                            return Value::Error(WRONGTYPE.to_string());
-                        }
-                        let condition_met = match opts.condition {
-                            Some(SetCondition::Nx) => !live,
-                            Some(SetCondition::Xx) => live,
-                            None => true,
-                        };
-                        if !condition_met {
-                            // Only `NX` fails on a live key, so this is the one
-                            // path that copies the old value — and only for GET.
-                            return match &occupied.value().value {
-                                EntryValue::Str(value) if opts.get && live => {
-                                    Value::BulkString(Some(value.as_slice().to_vec()))
-                                }
-                                _ => Value::BulkString(None),
-                            };
-                        }
-                        let expires_at_ms = match expiry(existing_ttl) {
-                            Ok(expiry) => expiry,
-                            Err(error) => return error,
-                        };
-                        // The replaced entry is moved out, not cloned: an
-                        // ordinary overwrite used to copy the old value (8 MiB
-                        // to replace an 8 MiB string with one byte) under the
-                        // shard's exclusive guard, only to drop the copy.
-                        // Replaced inside the existing box: an overwrite
-                        // neither allocates nor frees a slot.
-                        let replaced = std::mem::replace(
-                            &mut **occupied.value_mut(),
-                            Entry {
-                                value: EntryValue::Str(val.into()),
-                                deadline: expires_at_ms.into(),
-                                last_access_ms: AtomicU64::new(now),
-                            },
-                        );
-                        // Free the old value outside the shard guard.
-                        drop(occupied);
-                        if opts.get {
-                            match replaced.value {
-                                EntryValue::Str(value) if live => {
-                                    Value::BulkString(Some(value.into_bytes()))
-                                }
-                                _ => Value::BulkString(None),
-                            }
-                        } else {
-                            Value::SimpleString("OK".to_string())
-                        }
-                    }
-                    WriteSlot::Vacant(vacant) => {
-                        if matches!(opts.condition, Some(SetCondition::Xx)) {
-                            return Value::BulkString(None);
-                        }
-                        let expires_at_ms = match expiry(None) {
-                            Ok(expiry) => expiry,
-                            Err(error) => return error,
-                        };
-                        vacant.insert(Box::new(Entry {
-                            value: EntryValue::Str(val.into()),
-                            deadline: expires_at_ms.into(),
-                            last_access_ms: AtomicU64::new(now),
-                        }));
-                        if opts.get {
-                            Value::BulkString(None)
-                        } else {
-                            Value::SimpleString("OK".to_string())
-                        }
-                    }
-                }
-            }
+            Command::Set(key, val, opts) => self.set(key, val, &opts),
 
             Command::Get(key) => {
                 let now = now_ms();
@@ -3543,12 +3742,7 @@ impl KeyValueStore {
                 Value::Array(Some(results))
             }
 
-            Command::MSet(pairs) => {
-                for (k, v) in pairs {
-                    self.data.insert(Key::from(k), Box::new(Entry::new_str(v)));
-                }
-                Value::SimpleString("OK".to_string())
-            }
+            Command::MSet(pairs) => self.mset(pairs.into_iter()),
 
             Command::SetNx(key, val) => {
                 let now = now_ms();
@@ -3925,27 +4119,7 @@ impl KeyValueStore {
             }
 
             // ── Hash ──────────────────────────────────────────────────────────
-            Command::HSet(key, pairs) => {
-                let now = now_ms();
-                typed_entry!(
-                    entry,
-                    h,
-                    self.data,
-                    key,
-                    now,
-                    EntryValue::Hash,
-                    Box::new(CompactHash::new())
-                );
-                // Counted from the inserts themselves, so a field named twice
-                // in one command counts once — as in Redis. Checking
-                // presence for every pair first counted it twice.
-                let new_count = pairs
-                    .into_iter()
-                    .map(|(field, val)| h.insert(field, val))
-                    .filter(|&added| added)
-                    .count();
-                Value::Integer(new_count as i64)
-            }
+            Command::HSet(key, pairs) => self.hset(key, pairs.into_iter()),
 
             Command::HStrLen(key, field) => {
                 let now = now_ms();
@@ -5318,17 +5492,23 @@ impl KeyValueStore {
 
 // ── Free helpers ──────────────────────────────────────────────────────────────
 
-enum MutationScope {
+enum MutationScope<'c> {
     ReadOnly,
-    Keys(Vec<String>),
+    Keys(SmallVec<[&'c str; 2]>),
     All,
 }
 
-fn mutation_scope(cmd: &Command) -> MutationScope {
+/// A write's ordering scope, with its keys owned by whoever runs it.
+enum WriteScope<K> {
+    Keys(SmallVec<[K; 2]>),
+    All,
+}
+
+fn mutation_scope<'c>(cmd: &'c Command) -> MutationScope<'c> {
     if let Command::Dedup(_, _, inner) = cmd {
         return mutation_scope(inner);
     }
-    let one = |key: &String| MutationScope::Keys(vec![key.clone()]);
+    let one = |key: &'c String| MutationScope::Keys(smallvec::smallvec![key.as_str()]);
     match cmd {
         Command::Set(key, _, _)
         | Command::ESet(key, _)
@@ -5375,26 +5555,27 @@ fn mutation_scope(cmd: &Command) -> MutationScope {
         | Command::GetEx(key, Some(_))
         | Command::ZPopMin(key, _)
         | Command::ZPopMax(key, _) => one(key),
-        Command::Del(keys) | Command::Unlink(keys) => MutationScope::Keys(keys.clone()),
+        Command::Del(keys) | Command::Unlink(keys) => {
+            MutationScope::Keys(keys.iter().map(String::as_str).collect())
+        }
         // Both keys: the existence checks and the move must not interleave
         // with another write to either.
         Command::RenameNx(source, destination) | Command::Copy(source, destination, _) => {
-            MutationScope::Keys(vec![source.clone(), destination.clone()])
+            MutationScope::Keys(smallvec::smallvec![source.as_str(), destination.as_str()])
         }
         Command::MSet(pairs) => {
-            MutationScope::Keys(pairs.iter().map(|(key, _)| key.clone()).collect())
+            MutationScope::Keys(pairs.iter().map(|(key, _)| key.as_str()).collect())
         }
         Command::Rename(source, destination) | Command::SMove(source, destination, _) => {
-            MutationScope::Keys(vec![source.clone(), destination.clone()])
+            MutationScope::Keys(smallvec::smallvec![source.as_str(), destination.as_str()])
         }
         Command::SInterStore(destination, sources)
         | Command::SUnionStore(destination, sources)
-        | Command::SDiffStore(destination, sources) => {
-            let mut keys = Vec::with_capacity(sources.len() + 1);
-            keys.push(destination.clone());
-            keys.extend(sources.iter().cloned());
-            MutationScope::Keys(keys)
-        }
+        | Command::SDiffStore(destination, sources) => MutationScope::Keys(
+            std::iter::once(destination.as_str())
+                .chain(sources.iter().map(String::as_str))
+                .collect(),
+        ),
         Command::FlushDb => MutationScope::All,
         _ => MutationScope::ReadOnly,
     }
@@ -5731,7 +5912,27 @@ fn entry_size(key: &str, e: &Entry) -> usize {
     key.len() + val_size + 64
 }
 
-fn incr_by(data: &Keyspace, key: String, delta: i64) -> Value {
+/// `n` in decimal, written into `buf`.
+fn format_i64(n: i64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut at = buf.len();
+    // Work on the magnitude as u64 so i64::MIN does not overflow.
+    let mut rest = n.unsigned_abs();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    if n < 0 {
+        at -= 1;
+        buf[at] = b'-';
+    }
+    &buf[at..]
+}
+
+fn incr_by<K: AsRef<str> + Into<Key>>(data: &Keyspace, key: K, delta: i64) -> Value {
     let now = now_ms();
     typed_entry!(
         entry,
@@ -5749,7 +5950,10 @@ fn incr_by(data: &Keyspace, key: String, delta: i64) -> Value {
         Some(n) => match n.checked_add(delta) {
             None => Value::Error("ERR increment or decrement would overflow".to_string()),
             Some(new) => {
-                *s = new.to_string().into();
+                // Formatted on the stack: a decimal i64 is at most 20
+                // bytes, which the inline string holds, so the temporary
+                // `String` this used to build was an allocation per INCR.
+                *s = StrValue::from(format_i64(new, &mut [0u8; 20]));
                 Value::Integer(new)
             }
         },
@@ -5969,7 +6173,7 @@ fn hash_incr_int(data: &Keyspace, key: String, field: String, delta: i64) -> Val
     match cur.checked_add(delta) {
         None => Value::Error("ERR increment or decrement would overflow".to_string()),
         Some(new) => {
-            h.insert(field, new.to_string().into());
+            h.insert(field, new.to_string().into_bytes());
             Value::Integer(new)
         }
     }
@@ -6002,7 +6206,7 @@ fn hash_incr_float(data: &Keyspace, key: String, field: String, delta: f64) -> V
         return Value::Error("ERR increment would produce NaN or Infinity".to_string());
     }
     let new_str = format_score(new);
-    h.insert(field, new_str.clone().into());
+    h.insert(field, new_str.clone().into_bytes());
     Value::BulkString(Some(new_str.into_bytes()))
 }
 
@@ -11492,12 +11696,12 @@ mod storage_regression_tests {
             hash.insert(format!("f{i}"), b"v".to_vec());
         }
         assert!(matches!(hash.repr, CompactHashRepr::Packed { .. }));
-        hash.insert("spill".into(), b"v".to_vec());
+        hash.insert(String::from("spill"), b"v".to_vec());
         assert!(matches!(hash.repr, CompactHashRepr::Table(_)));
         // A value longer than a packed record allows converts at once.
         let mut long = CompactHash::new();
-        long.insert("f".into(), b"v".to_vec());
-        long.insert("g".into(), vec![b'x'; PACKED_HASH_LEN + 1]);
+        long.insert(String::from("f"), b"v".to_vec());
+        long.insert(String::from("g"), vec![b'x'; PACKED_HASH_LEN + 1]);
         assert!(matches!(long.repr, CompactHashRepr::Table(_)));
         assert_eq!(long.get("f"), Some(&b"v"[..]));
         assert_eq!(long.get("g").map(<[u8]>::len), Some(PACKED_HASH_LEN + 1));
@@ -11518,9 +11722,9 @@ mod storage_regression_tests {
         // A long first value makes the hash a table at one field, sized for
         // it: 4 buckets, capacity 3. Three fields fill it exactly.
         let mut hash = CompactHash::new();
-        hash.insert("f0".into(), vec![b'L'; PACKED_HASH_LEN + 1]);
-        hash.insert("f1".into(), b"v".to_vec());
-        hash.insert("f2".into(), b"v".to_vec());
+        hash.insert(String::from("f0"), vec![b'L'; PACKED_HASH_LEN + 1]);
+        hash.insert(String::from("f1"), b"v".to_vec());
+        hash.insert(String::from("f2"), b"v".to_vec());
         let CompactHashRepr::Table(table) = &hash.repr else {
             panic!("a long value should have made a table");
         };
@@ -11538,7 +11742,7 @@ mod storage_regression_tests {
         assert_eq!(hash.len(), 3);
         assert_eq!(hash.heap_bytes(), 3 * ("f0".len() + 1));
         // A genuinely new field still inserts.
-        assert!(hash.insert("new".into(), b"v".to_vec()));
+        assert!(hash.insert(String::from("new"), b"v".to_vec()));
         assert_eq!(hash.len(), 4);
     }
 
@@ -12236,3 +12440,6 @@ mod write_outcome_tests {
 
 #[cfg(test)]
 mod v06_command_tests;
+
+#[cfg(test)]
+mod ref_exec_tests;
