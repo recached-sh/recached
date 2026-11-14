@@ -1,19 +1,23 @@
 # Introduction
 
-Recached is a local-first cache and real-time sync engine, powered by Rust: **cache locally, sync everywhere**.
+**More than a cache. Built to sync.**
 
-It keeps shared cache data close to your application. The same Rust cache engine runs in the server, in browsers as WebAssembly, inside native Android and Apple apps, and in embedded Rust services. Clients read cached values from local memory, exchange writes and updates with the server over WebSocket, and expose APIs for reacting to changes. Your backend writes through a Redis-compatible RESP command subset.
+Recached is a Rust-powered, in-memory caching engine with real-time synchronization built in. Keep cached data close to your applications, read locally, and synchronize updates across connected clients.
 
-The difference from a conventional cache is where it runs. Instead of every read crossing the network to a central server, each client holds the keys it watches and the server keeps those copies current.
+The server is an in-memory key-value cache. Your backend reads and writes it with existing Redis clients through a Redis-compatible RESP interface that covers a [supported command subset](/server/commands), not all of Redis.
+
+Synchronization is integrated into the engine rather than added as a separate service. The same Rust cache engine runs in browsers as WebAssembly, inside native Android and Apple apps, and in embedded Rust services. Those clients maintain local caches of the keys they watch, read cached values from memory, exchange writes and updates with the server over WebSocket, and expose APIs for reacting to changes. Offline and persistence behavior varies by client; see [where the engine runs](#where-the-engine-runs).
+
+What sets it apart from a conventional cache is that the cache does not stop at the server. Instead of every read crossing the network to a central server, each client holds the keys it watches and the server keeps those copies current. Recached is still a cache, not a system-of-record database: your database stays the source of truth.
 
 ## What Recached is — and isn't {#what-recached-is-and-isnt}
 
 Recached **is**:
 
-- **A cache and synchronization engine.** It distributes cache state between your backend and its clients.
+- **An in-memory caching engine with synchronization built in.** One engine stores cache state and distributes it between your backend and its clients.
 - **An in-memory key-value cache server** with snapshot and AOF persistence, replication, and a RESP command subset that existing Redis clients can use.
-- **A local cache runtime** for browsers, Android, Apple platforms, and Rust services.
 - **A real-time cache synchronization layer.** Clients subscribe to key patterns, receive changes over WebSocket, and reconcile after reconnecting, within [sync scopes](/server/sync-scopes) your backend grants.
+- **A local cache runtime** for browsers, Android, Apple platforms, and Rust services.
 - **An offline-capable client cache.** Clients keep reading local data while disconnected, queue writes for replay, and on browser and mobile can persist locally.
 
 Recached **is not**:
@@ -183,7 +187,7 @@ Recached replaces the manual caching layer developers build on top of Zustand or
 
 | | Recached | TalaDB |
 |---|---|---|
-| What it is | Cache + **sync fabric** between backend and clients | Embedded **database** inside the app |
+| What it is | In-memory **cache** with sync built in, between backend and clients | Embedded **database** inside the app |
 | Data model | Keys — strings, collections, JSON | Documents with MongoDB-like queries, indexes, ACID transactions |
 | Server | Optional for local caches; required for cross-device sync | None — runs entirely on-device |
 | Superpower | Multi-client sync: scoped auth, live fan-out, offline outbox, deduplicated replay | On-device vector + hybrid search, rich queries |

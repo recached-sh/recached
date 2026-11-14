@@ -1,12 +1,12 @@
 ---
 layout: home
-title: "Recached: local-first cache and real-time sync engine"
-description: "A local-first cache and real-time sync engine, powered by Rust. Read shared cache data from local memory in browsers, Android and Apple apps, and Rust services, and sync updates over WebSocket."
+title: "Recached: in-memory cache with built-in real-time sync"
+description: "A Rust-powered in-memory cache with built-in real-time synchronization. Use the server from Redis clients over a supported RESP subset, read cached data locally in browsers, Android and Apple apps, and Rust services, and sync updates over WebSocket."
 
 hero:
   name: "Recached"
-  text: "Cache locally. Sync everywhere."
-  tagline: "A local-first cache and real-time sync engine, powered by Rust. Keep shared cache data in your application, read it from local memory, and sync updates across browser, mobile, and Rust clients."
+  text: "More than a cache. Built to sync."
+  tagline: "A Rust-powered caching engine with real-time synchronization built in. Keep cached data close to your applications, read locally, and synchronize updates across connected clients."
   image:
     src: /brand/hero.svg
     alt: Connected R and synchronized server, browser, mobile, and Rust clients
@@ -23,6 +23,24 @@ hero:
 
 features:
   - icon:
+      src: /brand/icons/server.svg
+      width: 24
+      height: 24
+      wrap: true
+    title: In-memory cache server
+    details: A key-value cache with expiry, counters, collections, and JSON. Connect ioredis, node-redis, or redis-py over RESP using the supported command subset. The server adds TLS, authentication, metrics, persistence, and replication.
+    link: /server/commands
+    linkText: Supported commands
+  - icon:
+      src: /brand/icons/real-time-sync.svg
+      width: 24
+      height: 24
+      wrap: true
+    title: Real-time sync, built in
+    details: Subscribe to key patterns to receive a snapshot and later changes over WebSocket. Reconnecting clients replay queued writes, then refresh what they watch.
+    link: /guide/how-it-works#connect-and-hydrate
+    linkText: Connect and hydrate
+  - icon:
       src: /brand/icons/local-reads.svg
       width: 24
       height: 24
@@ -31,24 +49,6 @@ features:
     details: Browser, Android, Apple, and embedded Rust clients read cached values from their own memory instead of making a server request for every read.
     link: /guide/how-it-works#read-and-write-locally
     linkText: Read and write locally
-  - icon:
-      src: /brand/icons/real-time-sync.svg
-      width: 24
-      height: 24
-      wrap: true
-    title: Real-time sync
-    details: Subscribe to key patterns to receive a snapshot and later changes over WebSocket. Reconnecting clients replay queued writes, then refresh what they watch.
-    link: /guide/how-it-works#connect-and-hydrate
-    linkText: Connect and hydrate
-  - icon:
-      src: /brand/icons/rust-engine.svg
-      width: 24
-      height: 24
-      wrap: true
-    title: One Rust engine
-    details: The server and every client run the same core-engine. Each platform adds its own transport, persistence, and reactive API, so behavior differs by client.
-    link: /guide/client-support
-    linkText: Compare clients
   - icon:
       src: /brand/icons/offline.svg
       width: 24
@@ -59,15 +59,6 @@ features:
     link: /guide/client-support#write-durability-and-replay
     linkText: Durability and replay
   - icon:
-      src: /brand/icons/server.svg
-      width: 24
-      height: 24
-      wrap: true
-    title: Redis-compatible server interface
-    details: Connect ioredis, node-redis, or redis-py over RESP using the supported command subset. The server adds TLS, authentication, metrics, persistence, and replication.
-    link: /server/commands
-    linkText: Supported commands
-  - icon:
       src: /brand/icons/scoped-access.svg
       width: 24
       height: 24
@@ -76,13 +67,22 @@ features:
     details: Backend-minted sync tokens limit which keys each connection may read and write. Watching a pattern never grants access to it.
     link: /server/sync-scopes
     linkText: Sync scopes
+  - icon:
+      src: /brand/icons/rust-engine.svg
+      width: 24
+      height: 24
+      wrap: true
+    title: One Rust engine
+    details: The server and every client run the same core-engine. Each platform adds its own transport, persistence, and reactive API, so behavior differs by client.
+    link: /guide/client-support
+    linkText: Compare clients
 ---
 
-## Keep shared cache data close to your application
+## A cache with synchronization built in
 
-Recached runs one Rust cache engine on the server, in browsers as WebAssembly, inside native Android and Apple apps, and in embedded Rust services. Your backend writes through the RESP command subset with the Redis client it already uses. Clients hold the keys they watch in local memory and receive changes over WebSocket, so a UI can render cached data without a request per read and update when the backend changes it.
+Recached is an in-memory caching engine. The server holds keys and values with expiry, counters, and collections, and your backend uses it through the RESP command subset with the Redis client it already has. Synchronization is part of the same engine, not a separate service: the Rust cache engine also runs in browsers as WebAssembly, inside native Android and Apple apps, and in embedded Rust services. Those clients hold the keys they watch in local memory and receive changes over WebSocket, so a UI can render cached data without a request per read and update when the backend changes it.
 
-Recached is a cache and synchronization engine, not a system of record. Keep MySQL or PostgreSQL as the source of truth and publish committed state into Recached. [What Recached is — and isn't](/guide/introduction#what-recached-is-and-isnt) draws the line.
+Recached is a cache with built-in sync, not a system of record. Keep MySQL or PostgreSQL as the source of truth and publish committed state into Recached. [What Recached is — and isn't](/guide/introduction#what-recached-is-and-isnt) draws the line.
 
 ## Architecture
 

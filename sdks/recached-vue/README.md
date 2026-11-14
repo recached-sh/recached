@@ -1,6 +1,6 @@
 # @recached/vue
 
-Official Vue 3 composables for [Recached](https://github.com/recached-sh/recached), the local-first cache and real-time sync engine. Refs read the local `recached-edge` cache and update when a key changes locally, in another tab, or on the server.
+Official Vue 3 composables for [Recached](https://github.com/recached-sh/recached), the Rust-powered in-memory cache with built-in real-time synchronization. Refs read the local `recached-edge` cache and update when a key changes locally, in another tab, or on the server.
 
 This package targets Vue in the browser. Native mobile apps use the [Kotlin](https://recached.dev/android/getting-started) or [Swift](https://recached.dev/ios/getting-started) preview.
 

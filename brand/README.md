@@ -1,6 +1,6 @@
 # Recached — Amber Signal
 
-**Positioning:** A local-first cache and real-time sync engine, powered by Rust.
+**Positioning:** More than a cache. Built to sync. A Rust-powered in-memory cache with built-in real-time synchronization.
 
 **Brand line:** Cache locally. Sync everywhere.
 
