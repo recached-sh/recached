@@ -26,12 +26,27 @@ impl Drop for Server {
     }
 }
 
+/// A port nothing in this test process has been handed before.
+///
+/// Binding port 0 and releasing it returns a free number, but the tests here
+/// run in parallel and the OS may hand the same number out again before the
+/// server binds it. Two servers then got the same port: one failed to start,
+/// and its readiness probe connected to the *other* server's RESP port, so the
+/// WebSocket handshake failed. That was this file's intermittent CI failure.
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut given = GIVEN.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        if !given.contains(&port) {
+            given.push(port);
+            return port;
+        }
+    }
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -47,11 +62,32 @@ fn scratch(name: &str) -> PathBuf {
 /// Start the server on `dir`'s files. The working directory is `dir` too, so
 /// nothing lands next to the test binary.
 fn start(dir: &Path, aof_sync: &str) -> Server {
+    // A port released by `free_port` can be taken by an unrelated socket
+    // before the server binds it. That start fails with "address in use" and
+    // proves nothing about recovery, so it is retried on fresh ports. Any other
+    // startup failure — a refused AOF, say — is the test's subject and panics
+    // with the server's own message.
+    for attempt in 1..=3 {
+        match try_start(dir, aof_sync) {
+            Ok(server) => return server,
+            Err(log) if attempt < 3 && is_port_collision(&log) => continue,
+            Err(log) => panic!("recached-server did not start:\n{log}"),
+        }
+    }
+    unreachable!("the last attempt returns or panics")
+}
+
+fn is_port_collision(log: &str) -> bool {
+    log.contains("AddrInUse") || log.contains("Address already in use")
+}
+
+fn try_start(dir: &Path, aof_sync: &str) -> Result<Server, String> {
     let (tcp_port, ws_port) = (free_port(), free_port());
     // `RECACHED_TEST_SERVER_BIN` runs these against another build — an older
     // release, to show what they catch.
     let bin = std::env::var("RECACHED_TEST_SERVER_BIN")
         .unwrap_or_else(|_| env!("CARGO_BIN_EXE_recached-server").to_string());
+    let stderr = dir.join("server.stderr");
     let child = Command::new(bin)
         .current_dir(dir)
         .env_clear()
@@ -65,15 +101,29 @@ fn start(dir: &Path, aof_sync: &str) -> Server {
         // No autosave: every checkpoint in these tests is an explicit SAVE.
         .env("RECACHED_SAVE_INTERVAL", "0")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        // Kept, so a failed start says why instead of just "exit status: 1".
+        .stderr(std::fs::File::create(&stderr).expect("stderr log"))
         .spawn()
         .expect("start recached-server");
+    let mut server = Server { child, ws_port };
+    // Ready means *this* child is alive and completes a WebSocket handshake —
+    // not merely that something accepts TCP on the port.
     let deadline = Instant::now() + Duration::from_secs(20);
-    while std::net::TcpStream::connect(("127.0.0.1", ws_port)).is_err() {
-        assert!(Instant::now() < deadline, "server did not start");
+    loop {
+        if let Ok(Some(status)) = server.child.try_wait() {
+            let log = std::fs::read_to_string(&stderr).unwrap_or_default();
+            return Err(format!("exit {status}\n{log}"));
+        }
+        if std::net::TcpStream::connect(("127.0.0.1", ws_port)).is_ok()
+            && tokio_tungstenite::tungstenite::connect(format!("ws://127.0.0.1:{ws_port}")).is_ok()
+        {
+            return Ok(server);
+        }
+        if Instant::now() >= deadline {
+            return Err("no WebSocket handshake within 20 s".to_string());
+        }
         std::thread::sleep(Duration::from_millis(25));
     }
-    Server { child, ws_port }
 }
 
 type Ws =
