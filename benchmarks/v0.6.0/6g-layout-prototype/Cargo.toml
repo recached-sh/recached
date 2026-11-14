@@ -1,0 +1,25 @@
+# Phase 6G-B prototype: candidate keyspace layouts measured side by side.
+#
+# Standalone on purpose, like ../hash-memory-20261114/live-bytes: a counting
+# allocator needs `unsafe`, which the workspace denies. The empty [workspace]
+# keeps Cargo from treating this as a member of the repository's workspace.
+[package]
+name = "layout-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+dashmap = { version = "6", features = ["raw-api"] }
+smallvec = { version = "1", features = ["union"] }
+serde_json = "1"
+tikv-jemallocator = "0.6"
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
+triomphe = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[workspace]

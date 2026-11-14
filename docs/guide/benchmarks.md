@@ -105,39 +105,46 @@ For host sizing, measure RSS of the server process against a known `DBSIZE`, usi
 
 ### Memory per key, v0.6
 
-v0.6 removed most of Recached's per-key overhead. Every key had been copied into four separate
-`String`s (six with a TTL) — the map's own plus three secondary indexes — and each entry was 72
-bytes. Now the indexes share one allocation per key, the index used only by `allkeys-*` eviction
-exists only under those policies, overwrites skip the index entirely, and an entry is 56 bytes.
+Linux process RSS (`VmRSS`) over idle, divided by the key count; a fresh server process per data
+shape; median of three runs, sampled 14 s after loading. Redis 7.2.5 and Valkey 9.1.0 were built
+from source with the same compiler and their bundled jemalloc, no persistence anywhere. Host:
+Docker Desktop Linux VM (kernel 7.0.12, 8 vCPU, 3.9 GB, no swap used) on an Intel i5-8259U laptop.
+Raw data and scripts:
+[`benchmarks/v0.6.0/6g-linux`](https://github.com/recached-sh/recached/tree/main/benchmarks/v0.6.0/6g-linux).
 
-Measured with [`scripts/bench-redis-valkey.sh`](https://github.com/recached-sh/recached/blob/main/scripts/bench-redis-valkey.sh)
-(`SKIP_THROUGHPUT=1`), fresh process per data shape, median of three runs; RSS growth divided by
-`DBSIZE`. One host: Intel i5-8259U, 8 GB, macOS 15.8, jemalloc defaults.
+| Shape | v0.5.1 | v0.6 | Redis 7.2.5 | Valkey 9.1.0 |
+|---|---:|---:|---:|---:|
+| 1M strings, 16-byte values | 516 B/key | 192 B/key | 88 B/key | 68 B/key |
+| 1M strings, 32-byte values | 559 B/key | 196 B/key | 104 B/key | 82 B/key |
+| 1M strings, 64-byte values | 577 B/key | 258 B/key | 144 B/key | 116 B/key |
+| 1M strings with a TTL, 32-byte values | 642 B/key | 265 B/key | 136 B/key | 120 B/key |
+| 1M hashes of 3 fields, 32-byte values | 1,102 B/key | 369 B/key | 196 B/key | 191 B/key |
+| 100k strings, 1 KiB values | 1,428 B/key | 1,176 B/key | 1,338 B/key | 1,326 B/key |
+| 100k strings, 4 KiB values | 4,575 B/key | 4,385 B/key | 5,204 B/key | 5,186 B/key |
 
-| Shape | v0.5.1 | v0.6 |
-|---|---:|---:|
-| 1M keys, 32-byte values | 532 B/key | 373 B/key |
-| 1M keys with a TTL, 32-byte values | 637 B/key | 427 B/key |
-| 100k keys, 1 KiB values | 1,398 B/key | 1,255 B/key |
+**Small keys still cost about 1.9× Redis** (2.4× Valkey). The largest remaining item is the
+ordered index behind `SCAN`, which gives every call bounded work and returns each key present for
+the whole iteration exactly once, in order; Redis and Valkey walk the hash table itself instead,
+which an open-addressing table cannot do safely. Next is the table's spare capacity, then
+allocator size classes (Redis's bundled jemalloc uses 8-byte classes). For values of 1 KiB and up
+Recached uses less than either. The per-key breakdown is in the v0.6 memory-layout audit.
 
-RSS left behind after `FLUSHDB` of 100k 1 KiB keys fell from 99% to 38% of what loading had added.
-These are Recached-only numbers on one host; re-measure on yours.
+After `DEL` of every key, 0.5.1 stayed 362 B/key above idle (266 after `FLUSHDB`). v0.6 rebuilds
+mostly-empty table shards on its 1-second maintenance tick and, on Linux, jemalloc's background
+thread returns the freed pages: 8 B/key above idle 40 s later.
 
-The same change measured as **live heap**, exactly, with a counting allocator linked to the engine
-and every command parsed from RESP bytes as the server does
+The same changes measured as **live heap**, exactly, with a counting allocator linked to the
+engine and every command parsed from RESP bytes as the server does
 ([`benchmarks/v0.6.0/hash-memory-20261114`](https://github.com/recached-sh/recached/tree/main/benchmarks/v0.6.0/hash-memory-20261114)).
 This excludes allocator size classes and fragmentation, so it sits below RSS:
 
 | 1M keys, 32-byte values | v0.5.1 | v0.6 |
 |---|---:|---:|
-| strings | 434.8 B/key | 282.2 B/key |
-| strings with a TTL | 557.1 B/key | 351.4 B/key |
-| hashes of 3 fields, after one overwrite | 1,192.8 B/key | 732.2 B/key |
+| strings | 434.8 B/key | 182.7 B/key |
+| strings with a TTL | 557.1 B/key | 251.9 B/key |
+| hashes of 3 fields, after one overwrite | 1,192.8 B/key | 346.7 B/key |
 
-The hash row includes a fix in 0.6: through 0.5.1, the first overwrite of a field in a hash whose
-field table was exactly full (3, 7, 14 … fields) doubled that table, adding 260 bytes per 3-field
-hash. Hash RSS figures taken on the test host before the fix were distorted by macOS memory
-compression and are not published.
+Re-measure on your own data: these are uniform synthetic keys (`mem:%010d`) on one host.
 
 ### The comparison harness
 

@@ -3,11 +3,13 @@ use crate::resp::Value;
 use dashmap::DashMap;
 // Aliased: this module has its own `Entry` (the stored value + TTL + recency).
 use dashmap::mapref::entry::Entry as DashEntry;
+use dashmap::mapref::one::RefMut;
 use indexmap::IndexSet;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::BuildHasher;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
@@ -534,7 +536,14 @@ impl<'de> Deserialize<'de> for Blob {
 
 // ── Compact hash encoding ─────────────────────────────────────────────────────
 
-const INLINE_HASH_FIELDS: usize = 2;
+/// A small hash is packed while it has at most this many fields…
+const PACKED_HASH_FIELDS: usize = 32;
+/// …and no field name or value longer than this. The same two limits as Redis's
+/// `hash-max-listpack-entries` / `-value` (128 / 64 by default); the field
+/// count is lower because a lookup scans the packed bytes, and the 6G
+/// measurements put the scan's crossover with a hash table near 32 fields.
+const PACKED_HASH_LEN: usize = 64;
+const _: () = assert!(PACKED_HASH_LEN <= u8::MAX as usize);
 
 /// A hash plus a running byte total.
 ///
@@ -553,24 +562,96 @@ struct CompactHash {
     bytes: usize,
 }
 
+/// How a hash is stored.
+///
+/// `Packed` is Redis's listpack idea in safe Rust: every field and value in
+/// one exact-size byte buffer, `[len][field][len][value]` repeated, with one
+/// length byte each (both are at most [`PACKED_HASH_LEN`]). A 3-field hash of
+/// 32-byte values is one ~110-byte allocation, where a `HashMap<String, Blob>`
+/// was a table plus a heap allocation per field name and per value — ~360
+/// more bytes (v0.6 6G layout audit). Lookups scan, which is why the field
+/// count is capped; past either cap the hash becomes a `Table` for good.
 #[derive(Clone)]
 enum CompactHashRepr {
-    Inline(SmallVec<[(String, Blob); INLINE_HASH_FIELDS]>),
+    Packed { buf: Vec<u8>, fields: u32 },
     Table(HashMap<String, Blob>),
+}
+
+/// One packed record: where its value starts and ends, and where the next
+/// record begins. `None` at the end of the buffer or on a malformed length,
+/// which only a bug in this module could write.
+fn packed_record(
+    buf: &[u8],
+    at: usize,
+) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let field_len = usize::from(*buf.get(at)?);
+    let field = at + 1..at + 1 + field_len;
+    let value_len = usize::from(*buf.get(field.end)?);
+    let value = field.end + 1..field.end + 1 + value_len;
+    (value.end <= buf.len()).then_some((field, value))
+}
+
+/// Byte offsets of `key`'s record: (record start, field range, value range).
+fn packed_find(
+    buf: &[u8],
+    key: &[u8],
+) -> Option<(usize, std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let mut at = 0;
+    while let Some((field, value)) = packed_record(buf, at) {
+        if buf.get(field.clone()) == Some(key) {
+            return Some((at, field, value));
+        }
+        at = value.end;
+    }
+    None
+}
+
+fn packs(field: &[u8], value: &[u8]) -> bool {
+    field.len() <= PACKED_HASH_LEN && value.len() <= PACKED_HASH_LEN
+}
+
+/// Append one record. Callers have checked `packs`, so both lengths fit a
+/// byte; exact reservation keeps the buffer at its real size.
+fn packed_push(buf: &mut Vec<u8>, field: &[u8], value: &[u8]) {
+    let (Ok(field_len), Ok(value_len)) = (u8::try_from(field.len()), u8::try_from(value.len()))
+    else {
+        return;
+    };
+    buf.reserve_exact(2 + field.len() + value.len());
+    buf.push(field_len);
+    buf.extend_from_slice(field);
+    buf.push(value_len);
+    buf.extend_from_slice(value);
 }
 
 impl CompactHash {
     fn new() -> Self {
         Self {
-            repr: CompactHashRepr::Inline(SmallVec::new()),
+            repr: CompactHashRepr::Packed {
+                buf: Vec::new(),
+                fields: 0,
+            },
             bytes: 0,
         }
     }
 
     fn from_map(map: HashMap<String, Blob>) -> Self {
         let bytes = map.iter().map(|(key, value)| key.len() + value.len()).sum();
-        let repr = if map.len() <= INLINE_HASH_FIELDS {
-            CompactHashRepr::Inline(map.into_iter().collect())
+        let repr = if map.len() <= PACKED_HASH_FIELDS
+            && map.iter().all(|(k, v)| packs(k.as_bytes(), v.as_slice()))
+        {
+            let mut buf = Vec::with_capacity(
+                map.iter()
+                    .map(|(k, v)| 2 + k.len() + v.len())
+                    .sum::<usize>(),
+            );
+            for (key, value) in &map {
+                packed_push(&mut buf, key.as_bytes(), value.as_slice());
+            }
+            CompactHashRepr::Packed {
+                buf,
+                fields: u32::try_from(map.len()).unwrap_or(u32::MAX),
+            }
         } else {
             CompactHashRepr::Table(map)
         };
@@ -584,13 +665,13 @@ impl CompactHash {
 
     fn to_map(&self) -> HashMap<String, Blob> {
         self.iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
+            .map(|(key, value)| (key.to_string(), Blob::from(value)))
             .collect()
     }
 
     fn len(&self) -> usize {
         match &self.repr {
-            CompactHashRepr::Inline(fields) => fields.len(),
+            CompactHashRepr::Packed { fields, .. } => *fields as usize,
             CompactHashRepr::Table(fields) => fields.len(),
         }
     }
@@ -599,30 +680,67 @@ impl CompactHash {
         self.get(key).is_some()
     }
 
-    fn get(&self, key: &str) -> Option<&Blob> {
+    fn get(&self, key: &str) -> Option<&[u8]> {
         match &self.repr {
-            CompactHashRepr::Inline(fields) => fields
-                .iter()
-                .find_map(|(field, value)| (field == key).then_some(value)),
-            CompactHashRepr::Table(fields) => fields.get(key),
+            CompactHashRepr::Packed { buf, .. } => {
+                let (_, _, value) = packed_find(buf, key.as_bytes())?;
+                buf.get(value)
+            }
+            CompactHashRepr::Table(fields) => fields.get(key).map(Blob::as_slice),
         }
     }
 
-    fn insert(&mut self, key: String, value: Blob) -> Option<Blob> {
+    /// Set `key` to `value`. Returns whether the field is new.
+    fn insert(&mut self, key: String, value: Vec<u8>) -> bool {
         let (key_len, value_len) = (key.len(), value.len());
-        let old = match &mut self.repr {
-            CompactHashRepr::Inline(fields) => {
-                if let Some((_, slot)) = fields.iter_mut().find(|(field, _)| field == &key) {
-                    Some(std::mem::replace(slot, value))
-                } else if fields.len() < INLINE_HASH_FIELDS {
-                    fields.push((key, value));
-                    None
-                } else {
-                    let mut table = HashMap::with_capacity(fields.len() + 1);
-                    table.extend(fields.drain(..));
-                    let old = table.insert(key, value);
-                    self.repr = CompactHashRepr::Table(table);
-                    old
+        let previous_len = match &mut self.repr {
+            CompactHashRepr::Packed { buf, fields } => {
+                match packed_find(buf, key.as_bytes()) {
+                    Some((_, _, old)) if value.len() <= PACKED_HASH_LEN => {
+                        // Overwrite in place: replace the value bytes and its
+                        // length byte; the buffer is resized exactly.
+                        let old_len = old.len();
+                        if let Ok(len_byte) = u8::try_from(value.len())
+                            && let Some(slot) =
+                                old.start.checked_sub(1).and_then(|i| buf.get_mut(i))
+                        {
+                            *slot = len_byte;
+                            // Reserve exactly first, or `splice` grows the
+                            // buffer by doubling and a shrink has to follow.
+                            buf.reserve_exact(value.len().saturating_sub(old_len));
+                            buf.splice(old, value);
+                            if buf.capacity() > buf.len() {
+                                buf.shrink_to_fit();
+                            }
+                        }
+                        Some(old_len)
+                    }
+                    found => {
+                        let new_field = found.is_none();
+                        let count = (*fields as usize).saturating_add(usize::from(new_field));
+                        if count <= PACKED_HASH_FIELDS && packs(key.as_bytes(), &value) {
+                            packed_push(buf, key.as_bytes(), &value);
+                            *fields = fields.saturating_add(1);
+                            None
+                        } else {
+                            // Too many fields, or a field or value too long to
+                            // pack: become a table for good.
+                            let mut table = HashMap::with_capacity(count);
+                            let mut at = 0;
+                            while let Some((f, v)) = packed_record(buf, at) {
+                                if let (Some(f), Some(v)) = (buf.get(f), buf.get(v.clone())) {
+                                    table.insert(
+                                        String::from_utf8_lossy(f).into_owned(),
+                                        Blob::from(v),
+                                    );
+                                }
+                                at = v.end;
+                            }
+                            let old = table.insert(key, Blob::from(value)).map(|b| b.len());
+                            self.repr = CompactHashRepr::Table(table);
+                            old
+                        }
+                    }
                 }
             }
             // Replace in place when the field exists. `HashMap::insert`
@@ -632,66 +750,83 @@ impl CompactHash {
             // overwrite, +228 live bytes per hash (measured: 1M small hashes
             // went from 732 to 960 B/key of live heap after one HSET pass).
             CompactHashRepr::Table(fields) => match fields.get_mut(key.as_str()) {
-                Some(slot) => Some(std::mem::replace(slot, value)),
-                None => fields.insert(key, value),
+                Some(slot) => Some(std::mem::replace(slot, Blob::from(value)).len()),
+                None => fields.insert(key, Blob::from(value)).map(|b| b.len()),
             },
         };
-        match &old {
+        match previous_len {
             // Overwrite: the field name is already counted, only the value moved.
             Some(previous) => {
                 self.bytes = self
                     .bytes
                     .saturating_add(value_len)
-                    .saturating_sub(previous.len());
+                    .saturating_sub(previous);
+                false
             }
-            None => self.bytes = self.bytes.saturating_add(key_len + value_len),
+            None => {
+                self.bytes = self.bytes.saturating_add(key_len + value_len);
+                true
+            }
         }
-        old
     }
 
-    fn insert_if_absent(&mut self, key: String, value: Blob) -> bool {
+    fn insert_if_absent(&mut self, key: String, value: Vec<u8>) -> bool {
         if self.contains_key(&key) {
             false
         } else {
-            self.insert(key, value);
-            true
+            self.insert(key, value)
         }
     }
 
-    fn remove(&mut self, key: &str) -> Option<Blob> {
+    /// Remove `key`. Returns whether it was present.
+    fn remove(&mut self, key: &str) -> bool {
         let removed = match &mut self.repr {
-            CompactHashRepr::Inline(fields) => fields
-                .iter()
-                .position(|(field, _)| field == key)
-                .map(|position| fields.swap_remove(position).1),
-            CompactHashRepr::Table(fields) => fields.remove(key),
+            CompactHashRepr::Packed { buf, fields } => match packed_find(buf, key.as_bytes()) {
+                Some((start, _, value)) => {
+                    let len = value.len();
+                    buf.drain(start..value.end);
+                    buf.shrink_to_fit();
+                    *fields = fields.saturating_sub(1);
+                    Some(len)
+                }
+                None => None,
+            },
+            CompactHashRepr::Table(fields) => fields.remove(key).map(|b| b.len()),
         };
-        if let Some(ref value) = removed {
-            self.bytes = self.bytes.saturating_sub(key.len() + value.len());
+        if let Some(value_len) = removed {
+            self.bytes = self.bytes.saturating_sub(key.len() + value_len);
         }
-        removed
+        removed.is_some()
     }
 
     fn iter(&self) -> CompactHashIter<'_> {
         match &self.repr {
-            CompactHashRepr::Inline(fields) => CompactHashIter::Inline(fields.iter()),
+            CompactHashRepr::Packed { buf, .. } => CompactHashIter::Packed { buf, at: 0 },
             CompactHashRepr::Table(fields) => CompactHashIter::Table(fields.iter()),
         }
     }
 }
 
 enum CompactHashIter<'a> {
-    Inline(std::slice::Iter<'a, (String, Blob)>),
+    Packed { buf: &'a [u8], at: usize },
     Table(std::collections::hash_map::Iter<'a, String, Blob>),
 }
 
 impl<'a> Iterator for CompactHashIter<'a> {
-    type Item = (&'a String, &'a Blob);
+    type Item = (&'a str, &'a [u8]);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::Inline(iter) => iter.next().map(|(key, value)| (key, value)),
-            Self::Table(iter) => iter.next(),
+            Self::Packed { buf, at } => {
+                let (field, value) = packed_record(buf, *at)?;
+                *at = value.end;
+                // Packed field names were written from `String`s, so this
+                // validation cannot fail; if it ever did, stopping is better
+                // than handing out bytes that are not a field name.
+                let name = std::str::from_utf8(buf.get(field)?).ok()?;
+                Some((name, buf.get(value)?))
+            }
+            Self::Table(iter) => iter.next().map(|(k, v)| (k.as_str(), v.as_slice())),
         }
     }
 }
@@ -973,11 +1108,183 @@ impl FromIterator<Blob> for CompactList {
     }
 }
 
+/// Bytes of a string value kept inside its entry rather than in a separate
+/// allocation.
+///
+/// Chosen so that a boxed [`Entry`] is exactly 64 bytes — one jemalloc size
+/// class, with nothing wasted — the same trade Redis makes with `EMBSTR`
+/// (strings up to 44 bytes share the 64-byte object allocation). Covers
+/// counters, flags, UUIDs (36), ISO timestamps, short tokens and small JSON.
+/// Asserted by `per_entry_layout_does_not_regrow`.
+const INLINE_STR: usize = 46;
+
+/// A top-level string value: inline up to [`INLINE_STR`] bytes, otherwise on
+/// the heap.
+///
+/// Distinct from [`Blob`], which is also every hash field value and list
+/// element, so that this inline capacity costs collections nothing. A
+/// `Vec<u8>` rather than a boxed slice on the heap side: `APPEND` keeps its
+/// amortised growth. The enum is plain safe Rust — the compiler places
+/// [`EntryValue`]'s own tag in this one's spare tag values, so wrapping it
+/// costs no space (asserted with the entry size).
+#[derive(Clone)]
+enum StrValue {
+    /// Invariant: `len as usize <= INLINE_STR`. Only [`StrValue::from_slice`]
+    /// builds this variant, and it checks.
+    Inline {
+        len: u8,
+        bytes: [u8; INLINE_STR],
+    },
+    Heap(Vec<u8>),
+}
+
+const _: () = assert!(INLINE_STR <= u8::MAX as usize);
+
+impl StrValue {
+    fn from_slice(data: &[u8]) -> Self {
+        match u8::try_from(data.len()) {
+            Ok(len) if data.len() <= INLINE_STR => {
+                let mut bytes = [0u8; INLINE_STR];
+                bytes[..data.len()].copy_from_slice(data);
+                StrValue::Inline { len, bytes }
+            }
+            _ => StrValue::Heap(data.to_vec()),
+        }
+    }
+
+    /// Takes the vector's allocation when the value is too long to inline,
+    /// so a large `SET` copies nothing.
+    fn from_vec(data: Vec<u8>) -> Self {
+        if data.len() <= INLINE_STR {
+            Self::from_slice(&data)
+        } else {
+            StrValue::Heap(data)
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            StrValue::Inline { len, bytes } => &bytes[..usize::from(*len)],
+            StrValue::Heap(data) => data,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            StrValue::Inline { len, .. } => usize::from(*len),
+            StrValue::Heap(data) => data.len(),
+        }
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        match self {
+            StrValue::Inline { .. } => self.as_slice().to_vec(),
+            StrValue::Heap(data) => data,
+        }
+    }
+
+    /// Append bytes, for `APPEND`. An inline value that outgrows the entry
+    /// moves to the heap once; after that the vector grows amortised.
+    fn extend(&mut self, other: &[u8]) {
+        match self {
+            StrValue::Heap(data) => data.extend_from_slice(other),
+            StrValue::Inline { len, bytes } => {
+                let used = usize::from(*len);
+                let total = used.saturating_add(other.len());
+                if let Ok(new_len) = u8::try_from(total)
+                    && total <= INLINE_STR
+                {
+                    bytes[used..total].copy_from_slice(other);
+                    *len = new_len;
+                } else {
+                    let mut data = Vec::with_capacity(total);
+                    data.extend_from_slice(&bytes[..used]);
+                    data.extend_from_slice(other);
+                    *self = StrValue::Heap(data);
+                }
+            }
+        }
+    }
+
+    /// Parse the payload as text, for the commands that require a number.
+    /// Non-UTF-8 fails the same way non-numeric text does.
+    fn parse_as<T: std::str::FromStr>(&self) -> Option<T> {
+        self.as_str()?.parse().ok()
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        std::str::from_utf8(self.as_slice()).ok()
+    }
+
+    /// The snapshot and wire form. Snapshots keep storing [`Blob`], so the
+    /// on-disk format does not change with the in-memory one.
+    fn to_blob(&self) -> Blob {
+        Blob::from(self.as_slice())
+    }
+}
+
+impl PartialEq for StrValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for StrValue {}
+
+impl Default for StrValue {
+    fn default() -> Self {
+        StrValue::Inline {
+            len: 0,
+            bytes: [0; INLINE_STR],
+        }
+    }
+}
+
+impl From<Vec<u8>> for StrValue {
+    fn from(data: Vec<u8>) -> Self {
+        Self::from_vec(data)
+    }
+}
+
+impl From<&[u8]> for StrValue {
+    fn from(data: &[u8]) -> Self {
+        Self::from_slice(data)
+    }
+}
+
+impl From<String> for StrValue {
+    fn from(text: String) -> Self {
+        Self::from_vec(text.into_bytes())
+    }
+}
+
+impl From<&str> for StrValue {
+    fn from(text: &str) -> Self {
+        Self::from_slice(text.as_bytes())
+    }
+}
+
+impl From<Blob> for StrValue {
+    fn from(blob: Blob) -> Self {
+        if blob.len() <= INLINE_STR {
+            Self::from_slice(blob.as_slice())
+        } else {
+            Self::from_vec(blob.into_vec())
+        }
+    }
+}
+
+impl std::fmt::Debug for StrValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.to_blob().fmt(f)
+    }
+}
+
 // ── Entry value type ──────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 enum EntryValue {
-    Str(Blob),
+    Str(StrValue),
     Hash(Box<CompactHash>),
     // Boxed like the other collections: inline, its 40 bytes made every
     // string key's entry 8 bytes larger (measured, v0.6).
@@ -1341,7 +1648,7 @@ impl Clone for Entry {
 }
 
 impl Entry {
-    fn new_str(value: impl Into<Blob>) -> Self {
+    fn new_str(value: impl Into<StrValue>) -> Self {
         Self {
             value: EntryValue::Str(value.into()),
             deadline: Deadline::NONE,
@@ -1349,7 +1656,7 @@ impl Entry {
         }
     }
 
-    fn new_str_ex(value: impl Into<Blob>, expires_at_ms: u64) -> Self {
+    fn new_str_ex(value: impl Into<StrValue>, expires_at_ms: u64) -> Self {
         Self {
             value: EntryValue::Str(value.into()),
             deadline: Deadline::at(expires_at_ms),
@@ -1482,6 +1789,32 @@ pub fn format_score(s: f64) -> String {
 
 // ── macro: check entry type and prepare for mutation ─────────────────────────
 
+/// Where a write to one key lands: its existing entry under the shard's write
+/// guard, or the vacant slot for it.
+enum WriteSlot<'a> {
+    Occupied(RefMut<'a, Key, Slot>),
+    Vacant(dashmap::mapref::entry::VacantEntry<'a, Key, Slot>),
+}
+
+/// [`DashMap::entry`] for a key the command owns as a `String`, without
+/// allocating a [`Key`] when the key already exists.
+///
+/// `entry` needs the map's key type up front, and building an `Arc<str>` for
+/// every write — then dropping it, because the key was there — would cost an
+/// allocation on every overwrite, `INCR` and `HSET`. A hit is one probe under
+/// the write guard, as before; only a miss allocates the key and probes again.
+/// A key inserted by another writer between the two probes is seen by
+/// `entry` as occupied, so the result is exactly what `entry` alone returns.
+fn write_slot(data: &Keyspace, key: String) -> WriteSlot<'_> {
+    if let Some(existing) = data.get_mut(key.as_str()) {
+        return WriteSlot::Occupied(existing);
+    }
+    match data.entry(Key::from(key)) {
+        DashEntry::Occupied(occupied) => WriteSlot::Occupied(occupied.into_ref()),
+        DashEntry::Vacant(vacant) => WriteSlot::Vacant(vacant),
+    }
+}
+
 /// Binds `$guard` to the entry for `$key` and `$inner` to the payload inside
 /// its `$variant`, creating the entry from `$default` when the key is absent or
 /// expired. Returns `WRONGTYPE` from the enclosing function if the key holds a
@@ -1502,11 +1835,14 @@ pub fn format_score(s: f64) -> String {
 /// mutating command instead of one.
 macro_rules! typed_entry {
     ($guard:ident, $inner:ident, $data:expr, $key:expr, $now:expr, $variant:path, $default:expr) => {
-        let mut $guard = $data.entry($key).or_insert_with(|| Entry {
-            value: $variant($default),
-            deadline: Deadline::NONE,
-            last_access_ms: AtomicU64::new($now),
-        });
+        let mut $guard = match write_slot(&$data, $key) {
+            WriteSlot::Occupied(existing) => existing,
+            WriteSlot::Vacant(vacant) => vacant.insert(Box::new(Entry {
+                value: $variant($default),
+                deadline: Deadline::NONE,
+                last_access_ms: AtomicU64::new($now),
+            })),
+        };
         // A freshly inserted entry carries no TTL, so this only fires for a key
         // that was already present and has aged out.
         if $guard.is_expired($now) {
@@ -1592,6 +1928,17 @@ impl DenseKeys {
         self.positions.insert(Arc::clone(key), pos);
     }
 
+    /// Shrink both structures when they are less than an eighth full.
+    fn reclaim(&mut self) -> bool {
+        let len = self.keys.len();
+        if !mostly_empty(len, self.keys.capacity().max(self.positions.capacity())) {
+            return false;
+        }
+        self.keys.shrink_to_fit();
+        self.positions.shrink_to_fit();
+        true
+    }
+
     fn remove(&mut self, key: &str) {
         let Some(pos) = self.positions.remove(key) else {
             return;
@@ -1637,20 +1984,21 @@ impl KeyIndex {
     }
 
     /// Bring the index into line with a key's current state: `None` if the
-    /// key is absent, otherwise whether it has a TTL.
-    fn sync(&mut self, key: &str, live_ttl: Option<bool>) {
-        match live_ttl {
+    /// key is absent, otherwise whether it has a TTL and the map's own key,
+    /// which a newly indexed key shares rather than copies.
+    fn sync(&mut self, key: &str, live: Option<(bool, &Key)>) {
+        match live {
             None => {
                 if self.ordered.remove(key) && self.track_all {
                     self.all.remove(key);
                 }
                 self.volatile.remove(key);
             }
-            Some(has_ttl) => {
+            Some((has_ttl, map_key)) => {
                 let shared = match self.ordered.get(key) {
                     Some(existing) => Arc::clone(existing),
                     None => {
-                        let fresh: Arc<str> = Arc::from(key);
+                        let fresh = Arc::clone(map_key);
                         self.ordered.insert(Arc::clone(&fresh));
                         if self.track_all {
                             self.all.insert(&fresh);
@@ -1668,6 +2016,21 @@ impl KeyIndex {
     }
 }
 
+/// Whether a table holding `len` entries in `slots` slots is worth rebuilding
+/// smaller: under an eighth full, and big enough to matter.
+fn mostly_empty(len: usize, slots: usize) -> bool {
+    const SMALLEST_WORTH_SHRINKING: usize = 1024;
+    slots >= SMALLEST_WORTH_SHRINKING && len.saturating_mul(8) < slots
+}
+
+/// Whether a write that left a key in state `after` (present, and whether
+/// with a TTL) from state `before` has to update the [`KeyIndex`]. A key
+/// present both times with unchanged TTL-ness — an overwrite, the common write
+/// — is already indexed correctly. Absent both times still re-asserts absence.
+fn index_changes(before: Option<bool>, after: Option<bool>) -> bool {
+    !(before.is_some() && before == after)
+}
+
 /// Whether eviction may sample the whole keyspace, which is what `all` is
 /// for. Decided by the policy alone: it is fixed at construction, and an
 /// `allkeys-*` policy is chosen precisely to evict from every key.
@@ -1678,9 +2041,24 @@ fn tracks_all_keys(policy: EvictionPolicy) -> bool {
     )
 }
 
+/// A key as the keyspace stores it: one allocation, shared with every
+/// [`KeyIndex`] structure that holds the same key.
+type Key = Arc<str>;
+
+/// A keyspace slot holds a pointer to its entry, not the entry itself.
+///
+/// The map is an open-addressing table that is between 44% and 87% full, so
+/// every slot it has — used or not — costs its full size. With `String` keys
+/// and inline entries that was 80 bytes a slot, ~170 bytes per key at 1M keys
+/// (v0.6 layout audit). With an `Arc<str>` key and a boxed entry a slot is 24
+/// bytes, and the entry is allocated once, at its real size.
+type Slot = Box<Entry>;
+
+type Keyspace = DashMap<Key, Slot>;
+
 #[derive(Clone)]
 pub struct KeyValueStore {
-    data: Arc<DashMap<String, Entry>>,
+    data: Arc<Keyspace>,
     max_keys: Option<usize>,
     max_memory_bytes: Option<usize>,
     eviction_policy: EvictionPolicy,
@@ -1702,6 +2080,8 @@ pub struct KeyValueStore {
     scan_cursors: Arc<std::sync::Mutex<HashMap<u64, String>>>,
     next_scan_cursor: Arc<AtomicU64>,
     expiry_cursor: Arc<AtomicUsize>,
+    /// Next keyspace shard [`Self::reclaim_capacity_step`] looks at.
+    reclaim_cursor: Arc<AtomicUsize>,
     /// Serializes capacity checks only when a key or memory cap is configured.
     capacity_gate: Arc<std::sync::Mutex<()>>,
     /// Per-key write ordering, striped by key hash. See [`Self::order_keys`].
@@ -1774,6 +2154,7 @@ impl KeyValueStore {
             scan_cursors: Arc::new(std::sync::Mutex::new(HashMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
+            reclaim_cursor: Arc::new(AtomicUsize::new(0)),
             capacity_gate: Arc::new(std::sync::Mutex::new(())),
             write_order: write_order_stripes(),
         }
@@ -1793,6 +2174,7 @@ impl KeyValueStore {
             scan_cursors: Arc::new(std::sync::Mutex::new(HashMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
+            reclaim_cursor: Arc::new(AtomicUsize::new(0)),
             capacity_gate: Arc::new(std::sync::Mutex::new(())),
             write_order: write_order_stripes(),
         }
@@ -1818,6 +2200,7 @@ impl KeyValueStore {
             scan_cursors: Arc::new(std::sync::Mutex::new(HashMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
+            reclaim_cursor: Arc::new(AtomicUsize::new(0)),
             capacity_gate: Arc::new(std::sync::Mutex::new(())),
             write_order: write_order_stripes(),
         }
@@ -1934,14 +2317,14 @@ impl KeyValueStore {
         // removes them. A very short TTL can elapse between mutation and this
         // bookkeeping step; dropping it here would make it unreachable to the
         // bounded sweeper and suppress the expiry notification.
-        let live_ttl = self
+        let live = self
             .data
             .get(key)
-            .map(|entry| entry.deadline.get().is_some());
+            .map(|entry| (entry.deadline.get().is_some(), Arc::clone(entry.key())));
         self.index
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .sync(key, live_ttl);
+            .sync(key, live.as_ref().map(|(ttl, shared)| (*ttl, shared)));
     }
 
     fn rebuild_metadata(&self) {
@@ -1952,7 +2335,10 @@ impl KeyValueStore {
             if entry.value().is_expired(now) {
                 continue;
             }
-            index.sync(entry.key(), Some(entry.value().deadline.get().is_some()));
+            index.sync(
+                entry.key(),
+                Some((entry.value().deadline.get().is_some(), entry.key())),
+            );
             memory = memory.saturating_add(entry_size(entry.key(), entry.value()));
         }
         *self
@@ -2011,11 +2397,16 @@ impl KeyValueStore {
         match value {
             EntryValue::Str(s) => Value::BulkString(Some(s.clone().into_bytes())),
             EntryValue::Hash(m) => {
-                let mut fields: Vec<(&String, &Blob)> = m.iter().collect();
+                let mut fields: Vec<(&str, &[u8])> = m.iter().collect();
                 fields.sort_by(|a, b| a.0.cmp(b.0));
                 let items = fields
                     .into_iter()
-                    .flat_map(|(f, v)| [bulk(f), blob(v)])
+                    .flat_map(|(f, v)| {
+                        [
+                            Value::BulkString(Some(f.as_bytes().to_vec())),
+                            Value::BulkString(Some(v.to_vec())),
+                        ]
+                    })
                     .collect();
                 tagged("hash", items)
             }
@@ -2082,7 +2473,7 @@ impl KeyValueStore {
         self.data
             .iter()
             .filter(|e| !e.is_expired(now) && glob_match(pattern, e.key()))
-            .map(|e| e.key().clone())
+            .map(|e| e.key().to_string())
             .collect()
     }
 
@@ -2095,7 +2486,7 @@ impl KeyValueStore {
             .iter()
             .filter(|e| !e.is_expired(now) && glob_match(pattern, e.key()))
             .take(limit)
-            .map(|e| (e.key().clone(), Self::encode_current_value(&e.value)))
+            .map(|e| (e.key().to_string(), Self::encode_current_value(&e.value)))
             .collect()
     }
 
@@ -2113,7 +2504,7 @@ impl KeyValueStore {
             .take(limit)
             .map(|e| {
                 (
-                    e.key().clone(),
+                    e.key().to_string(),
                     Self::encode_current_value(&e.value),
                     e.deadline.get().map(|exp| exp - now),
                 )
@@ -2132,6 +2523,62 @@ impl KeyValueStore {
             .volatile
             .keys
             .len()
+    }
+
+    /// Give back table capacity that mass deletion left empty, one shard at a
+    /// time. Returns whether a table was shrunk.
+    ///
+    /// A hash table keeps its high-water capacity when entries are removed,
+    /// so deleting every key of a million left ~50 MiB of empty slots that
+    /// only `FLUSHDB` released (v0.6 hash-memory report). Redis shrinks a dict
+    /// below 10% fill from `serverCron`; this is the same idea, bounded for a
+    /// sharded map: each call looks at one shard (round-robin), and rebuilds
+    /// it only when it is less than an eighth full, so a call costs one read
+    /// lock when there is nothing to do. A rebuild holds that one shard's
+    /// write lock for O(its capacity); the other shards stay available.
+    /// Shrinking to the live count lands at 44-87% full, far from both
+    /// thresholds, so a steady keyspace never oscillates.
+    ///
+    /// The TTL and all-keys indexes are shrunk on the same rule.
+    pub fn reclaim_capacity_step(&self) -> bool {
+        let shards = self.data.shards();
+        let count = shards.len();
+        if count == 0 {
+            return false;
+        }
+        let at = self.reclaim_cursor.fetch_add(1, Ordering::Relaxed) % count;
+        let mut shrunk = false;
+        if let Some(shard) = shards.get(at) {
+            // Buckets, not `capacity()`: deletion can leave tombstones that
+            // shrink `capacity()` while every bucket is still allocated.
+            let sparse = {
+                let table = shard.read();
+                mostly_empty(table.len(), table.buckets())
+            };
+            if sparse {
+                let mut table = shard.write();
+                let len = table.len();
+                if mostly_empty(len, table.buckets()) {
+                    let hasher = self.data.hasher();
+                    // Must hash exactly as DashMap does — `build_hasher`,
+                    // `Hash::hash`, `finish` — or entries land in buckets
+                    // their lookups never probe. `hash_one` is that sequence.
+                    table.shrink_to(len, |(key, _)| hasher.hash_one(key));
+                    shrunk = true;
+                }
+            }
+        }
+        // The dense indexes behave the same way: their vectors and position
+        // maps keep the capacity of the largest TTL keyspace ever held.
+        if at == 0 {
+            let mut index = self
+                .index
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            shrunk |= index.volatile.reclaim();
+            shrunk |= index.all.reclaim();
+        }
+        shrunk
     }
 
     /// Drop every expired volatile entry. This full form is retained for
@@ -2184,12 +2631,13 @@ impl KeyValueStore {
         let mut removed = Vec::new();
         for key in keys {
             let _order = self.order_keys(std::slice::from_ref(&key));
-            if let Some((removed_key, entry)) =
-                self.data.remove_if(&key, |_, entry| entry.is_expired(now))
+            if let Some((removed_key, entry)) = self
+                .data
+                .remove_if(key.as_str(), |_, entry| entry.is_expired(now))
             {
                 let bytes = entry_size(&removed_key, &entry);
                 self.adjust_memory(bytes, 0);
-                removed.push(removed_key);
+                removed.push(removed_key.to_string());
             }
             // Re-read current state: a concurrent replacement may have landed
             // between removal and bookkeeping.
@@ -2335,7 +2783,7 @@ impl KeyValueStore {
             .into_iter()
             .filter(|key| protect.binary_search(key).is_err() && !chosen.contains(key))
             .filter_map(|key| {
-                let entry = self.data.get(&key)?;
+                let entry = self.data.get(key.as_str())?;
                 if entry.is_expired(now) {
                     return Some((key, 0));
                 }
@@ -2372,7 +2820,7 @@ impl KeyValueStore {
             .filter(|key| protect.binary_search(key).is_err() && !chosen.contains(key))
             .find(|key| {
                 self.data
-                    .get(key)
+                    .get(key.as_str())
                     .is_some_and(|entry| entry.is_expired(now))
             })
     }
@@ -2390,7 +2838,7 @@ impl KeyValueStore {
         if eviction {
             self.evicted.fetch_add(1, Ordering::Relaxed);
         }
-        evicted.push(removed_key);
+        evicted.push(removed_key.to_string());
         Some(freed)
     }
 
@@ -2425,7 +2873,7 @@ impl KeyValueStore {
 
     fn snapshot_entry(key: &str, e: &Entry) -> SnapshotEntry {
         let value = match &e.value {
-            EntryValue::Str(s) => SnapshotValue::Str(s.clone()),
+            EntryValue::Str(s) => SnapshotValue::Str(s.to_blob()),
             EntryValue::Hash(m) => SnapshotValue::Hash(m.to_map()),
             EntryValue::List(l) => SnapshotValue::List(l.iter().cloned().collect()),
             EntryValue::Set(s) => SnapshotValue::Set(s.iter().cloned().collect()),
@@ -2466,7 +2914,7 @@ impl KeyValueStore {
                 continue;
             }
             let value = match e.value {
-                SnapshotValue::Str(s) => EntryValue::Str(s),
+                SnapshotValue::Str(s) => EntryValue::Str(s.into()),
                 SnapshotValue::Hash(m) => EntryValue::Hash(Box::new(CompactHash::from_map(m))),
                 SnapshotValue::List(l) => EntryValue::List(Box::new(l.into_iter().collect())),
                 SnapshotValue::Set(s) => EntryValue::Set(Box::new(s.into_iter().collect())),
@@ -2495,12 +2943,12 @@ impl KeyValueStore {
                 continue;
             }
             self.data.insert(
-                e.key,
-                Entry {
+                Key::from(e.key),
+                Box::new(Entry {
                     value,
                     deadline: e.expires_at_ms.into(),
                     last_access_ms: AtomicU64::new(now),
-                },
+                }),
             );
         }
         self.rebuild_metadata();
@@ -2584,7 +3032,9 @@ impl KeyValueStore {
                         .map(|key| {
                             (
                                 key.clone(),
-                                self.data.get(key).map(|entry| entry.value().clone()),
+                                self.data
+                                    .get(key.as_str())
+                                    .map(|entry| entry.value().clone()),
                             )
                         })
                         .collect::<Vec<_>>()
@@ -2607,16 +3057,21 @@ impl KeyValueStore {
                 // index lock across a `data` lookup here would invert that
                 // order and risk a deadlock.
                 let mut after = 0usize;
-                let mut ttl_states: SmallVec<[Option<bool>; 4]> =
+                // Each key's state after the write, and — only when its index
+                // state changed — the map's own key, so the index shares that
+                // allocation instead of making a copy. An overwrite leaves the
+                // refcount alone: on a hot key every worker would otherwise
+                // bounce its cache line.
+                let mut ttl_states: SmallVec<[(Option<bool>, Option<Key>); 4]> =
                     SmallVec::with_capacity(keys.len());
                 let mut emptied: SmallVec<[&String; 2]> = SmallVec::new();
-                for key in &keys {
+                for (key, (_, was)) in keys.iter().zip(&before_states) {
                     // Expired-but-unswept entries stay in the TTL index on
                     // purpose: dropping them here would make them unreachable
                     // to the bounded sweeper and suppress the expiry
                     // notification. So this asks whether the entry is present,
                     // not whether it is live — matching `sync_key_metadata`.
-                    ttl_states.push(match self.data.get(key) {
+                    ttl_states.push(match self.data.get(key.as_str()) {
                         // A collection the write left with no members is
                         // removed below, in this one place, rather than by
                         // each command: HDEL of the last field, the last pop,
@@ -2626,20 +3081,22 @@ impl KeyValueStore {
                         // EXISTS, KEYS, the key cap and replicas all count.
                         Some(entry) if entry.value().value.is_empty_collection() => {
                             emptied.push(key);
-                            None
+                            (None, None)
                         }
                         Some(entry) => {
                             after = after.saturating_add(entry_size(key, entry.value()));
-                            Some(entry.value().deadline.get().is_some())
+                            let live = Some(entry.value().deadline.get().is_some());
+                            let shared = index_changes(*was, live).then(|| Arc::clone(entry.key()));
+                            (live, shared)
                         }
-                        None => None,
+                        None => (None, None),
                     });
                 }
                 // The write-order stripes held for `keys` keep anyone from
                 // refilling these between the check above and the removal.
                 for key in emptied {
                     self.data
-                        .remove_if(key, |_, entry| entry.value.is_empty_collection());
+                        .remove_if(key.as_str(), |_, entry| entry.value.is_empty_collection());
                 }
                 {
                     // A key present before and after with unchanged TTL-ness —
@@ -2649,10 +3106,10 @@ impl KeyValueStore {
                     // lost, or absent both times, which re-asserts absence)
                     // is synced.
                     let mut index = None;
-                    for ((key, live_ttl), (_, was)) in
+                    for ((key, (live_ttl, shared)), (_, was)) in
                         keys.iter().zip(ttl_states).zip(before_states)
                     {
-                        if was.is_some() && was == live_ttl {
+                        if !index_changes(was, live_ttl) {
                             continue;
                         }
                         index
@@ -2661,7 +3118,7 @@ impl KeyValueStore {
                                     .lock()
                                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                             })
-                            .sync(key, live_ttl);
+                            .sync(key, live_ttl.zip(shared.as_ref()));
                     }
                 }
                 self.adjust_memory(before, after);
@@ -2674,10 +3131,10 @@ impl KeyValueStore {
                         for (key, previous) in rollback {
                             match previous {
                                 Some(entry) => {
-                                    self.data.insert(key, entry);
+                                    self.data.insert(Key::from(key), entry);
                                 }
                                 None => {
-                                    self.data.remove(&key);
+                                    self.data.remove(key.as_str());
                                 }
                             }
                         }
@@ -2888,11 +3345,13 @@ impl KeyValueStore {
                 // The condition check, optional old-value read, and replacement
                 // all happen under one DashMap entry guard. Two concurrent NX
                 // writers can therefore never both succeed.
-                match self.data.entry(key) {
-                    DashEntry::Occupied(mut occupied) => {
-                        let live = !occupied.get().is_expired(now);
-                        let existing_ttl = live.then_some(occupied.get().deadline.get()).flatten();
-                        if opts.get && live && !matches!(occupied.get().value, EntryValue::Str(_)) {
+                match write_slot(&self.data, key) {
+                    WriteSlot::Occupied(mut occupied) => {
+                        let live = !occupied.value().is_expired(now);
+                        let existing_ttl =
+                            live.then_some(occupied.value().deadline.get()).flatten();
+                        if opts.get && live && !matches!(occupied.value().value, EntryValue::Str(_))
+                        {
                             return Value::Error(WRONGTYPE.to_string());
                         }
                         let condition_met = match opts.condition {
@@ -2903,7 +3362,7 @@ impl KeyValueStore {
                         if !condition_met {
                             // Only `NX` fails on a live key, so this is the one
                             // path that copies the old value — and only for GET.
-                            return match &occupied.get().value {
+                            return match &occupied.value().value {
                                 EntryValue::Str(value) if opts.get && live => {
                                     Value::BulkString(Some(value.as_slice().to_vec()))
                                 }
@@ -2918,11 +3377,16 @@ impl KeyValueStore {
                         // ordinary overwrite used to copy the old value (8 MiB
                         // to replace an 8 MiB string with one byte) under the
                         // shard's exclusive guard, only to drop the copy.
-                        let replaced = occupied.insert(Entry {
-                            value: EntryValue::Str(val.into()),
-                            deadline: expires_at_ms.into(),
-                            last_access_ms: AtomicU64::new(now),
-                        });
+                        // Replaced inside the existing box: an overwrite
+                        // neither allocates nor frees a slot.
+                        let replaced = std::mem::replace(
+                            &mut **occupied.value_mut(),
+                            Entry {
+                                value: EntryValue::Str(val.into()),
+                                deadline: expires_at_ms.into(),
+                                last_access_ms: AtomicU64::new(now),
+                            },
+                        );
                         // Free the old value outside the shard guard.
                         drop(occupied);
                         if opts.get {
@@ -2936,7 +3400,7 @@ impl KeyValueStore {
                             Value::SimpleString("OK".to_string())
                         }
                     }
-                    DashEntry::Vacant(vacant) => {
+                    WriteSlot::Vacant(vacant) => {
                         if matches!(opts.condition, Some(SetCondition::Xx)) {
                             return Value::BulkString(None);
                         }
@@ -2944,11 +3408,11 @@ impl KeyValueStore {
                             Ok(expiry) => expiry,
                             Err(error) => return error,
                         };
-                        vacant.insert(Entry {
+                        vacant.insert(Box::new(Entry {
                             value: EntryValue::Str(val.into()),
                             deadline: expires_at_ms.into(),
                             last_access_ms: AtomicU64::new(now),
-                        });
+                        }));
                         if opts.get {
                             Value::BulkString(None)
                         } else {
@@ -2960,7 +3424,7 @@ impl KeyValueStore {
 
             Command::Get(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     Some(e) if !e.is_expired(now) => match &e.value {
                         EntryValue::Str(s) => {
                             e.touch(now);
@@ -2976,7 +3440,11 @@ impl KeyValueStore {
                 let now = now_ms();
                 let count = keys
                     .into_iter()
-                    .filter(|k| self.data.remove_if(k, |_, e| !e.is_expired(now)).is_some())
+                    .filter(|k| {
+                        self.data
+                            .remove_if(k.as_str(), |_, e| !e.is_expired(now))
+                            .is_some()
+                    })
                     .count();
                 Value::Integer(count as i64)
             }
@@ -2990,7 +3458,7 @@ impl KeyValueStore {
                     key,
                     now,
                     EntryValue::Str,
-                    Blob::default()
+                    StrValue::default()
                 );
                 s.extend(&suffix);
                 Value::Integer(s.len() as i64)
@@ -2998,7 +3466,7 @@ impl KeyValueStore {
 
             Command::Strlen(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     Some(e) if !e.is_expired(now) => match &e.value {
                         EntryValue::Str(s) => Value::Integer(s.len() as i64),
                         _ => Value::Error(WRONGTYPE.to_string()),
@@ -3009,7 +3477,7 @@ impl KeyValueStore {
 
             Command::GetRange(key, start, end) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     Some(e) if !e.is_expired(now) => match &e.value {
                         EntryValue::Str(s) => {
                             e.touch(now);
@@ -3033,12 +3501,12 @@ impl KeyValueStore {
                 // update in the one command whose entire purpose is an atomic
                 // read-and-replace. Redis gets that atomicity for free from
                 // executing on one thread; here it has to be asked for.
-                match self.data.entry(key) {
-                    DashEntry::Occupied(mut occupied) => {
-                        let old = if occupied.get().is_expired(now) {
+                match write_slot(&self.data, key) {
+                    WriteSlot::Occupied(mut occupied) => {
+                        let old = if occupied.value().is_expired(now) {
                             Value::BulkString(None)
                         } else {
-                            match &occupied.get().value {
+                            match &occupied.value().value {
                                 EntryValue::Str(s) => {
                                     Value::BulkString(Some(s.clone().into_bytes()))
                                 }
@@ -3047,11 +3515,11 @@ impl KeyValueStore {
                                 _ => return Value::Error(WRONGTYPE.to_string()),
                             }
                         };
-                        occupied.insert(Entry::new_str(new_val));
+                        **occupied.value_mut() = Entry::new_str(new_val);
                         old
                     }
-                    DashEntry::Vacant(vacant) => {
-                        vacant.insert(Entry::new_str(new_val));
+                    WriteSlot::Vacant(vacant) => {
+                        vacant.insert(Box::new(Entry::new_str(new_val)));
                         Value::BulkString(None)
                     }
                 }
@@ -3061,7 +3529,7 @@ impl KeyValueStore {
                 let now = now_ms();
                 let results = keys
                     .iter()
-                    .map(|k| match self.data.get(k) {
+                    .map(|k| match self.data.get(k.as_str()) {
                         Some(e) if !e.is_expired(now) => match &e.value {
                             EntryValue::Str(s) => {
                                 e.touch(now);
@@ -3077,37 +3545,39 @@ impl KeyValueStore {
 
             Command::MSet(pairs) => {
                 for (k, v) in pairs {
-                    self.data.insert(k, Entry::new_str(v));
+                    self.data.insert(Key::from(k), Box::new(Entry::new_str(v)));
                 }
                 Value::SimpleString("OK".to_string())
             }
 
             Command::SetNx(key, val) => {
                 let now = now_ms();
-                match self.data.entry(key) {
-                    DashEntry::Vacant(vacant) => {
-                        vacant.insert(Entry::new_str(val));
+                match write_slot(&self.data, key) {
+                    WriteSlot::Vacant(vacant) => {
+                        vacant.insert(Box::new(Entry::new_str(val)));
                         Value::Integer(1)
                     }
-                    DashEntry::Occupied(mut occupied) if occupied.get().is_expired(now) => {
-                        occupied.insert(Entry::new_str(val));
+                    WriteSlot::Occupied(mut occupied) if occupied.value().is_expired(now) => {
+                        **occupied.value_mut() = Entry::new_str(val);
                         Value::Integer(1)
                     }
-                    DashEntry::Occupied(_) => Value::Integer(0),
+                    WriteSlot::Occupied(_) => Value::Integer(0),
                 }
             }
 
             Command::SetEx(key, secs, val) => {
                 let now = now_ms();
                 let exp = now.saturating_add(secs.saturating_mul(1000));
-                self.data.insert(key, Entry::new_str_ex(val, exp));
+                self.data
+                    .insert(Key::from(key), Box::new(Entry::new_str_ex(val, exp)));
                 Value::SimpleString("OK".to_string())
             }
 
             Command::PSetEx(key, ms, val) => {
                 let now = now_ms();
                 let exp = now.saturating_add(ms);
-                self.data.insert(key, Entry::new_str_ex(val, exp));
+                self.data
+                    .insert(Key::from(key), Box::new(Entry::new_str_ex(val, exp)));
                 Value::SimpleString("OK".to_string())
             }
 
@@ -3133,7 +3603,7 @@ impl KeyValueStore {
                 let now = now_ms();
                 // One guard for the read and the delete, as in GETSET: two
                 // callers must not both read the value both believe they took.
-                match self.data.entry(key) {
+                match self.data.entry(Key::from(key)) {
                     DashEntry::Vacant(_) => Value::BulkString(None),
                     DashEntry::Occupied(occupied) => {
                         if occupied.get().is_expired(now) {
@@ -3153,7 +3623,7 @@ impl KeyValueStore {
 
             Command::GetEx(key, option) => {
                 let now = now_ms();
-                let DashEntry::Occupied(mut occupied) = self.data.entry(key) else {
+                let DashEntry::Occupied(mut occupied) = self.data.entry(Key::from(key)) else {
                     return Value::BulkString(None);
                 };
                 if occupied.get().is_expired(now) {
@@ -3194,7 +3664,7 @@ impl KeyValueStore {
 
             Command::Ttl(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(-2),
                     Some(e) if e.is_expired(now) => Value::Integer(-2),
                     Some(e) => match e.deadline.get() {
@@ -3215,7 +3685,7 @@ impl KeyValueStore {
 
             Command::PTtl(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(-2),
                     Some(e) if e.is_expired(now) => Value::Integer(-2),
                     Some(e) => match e.deadline.get() {
@@ -3227,7 +3697,7 @@ impl KeyValueStore {
 
             Command::Persist(key) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     Some(mut e) if !e.is_expired(now) && e.deadline.get().is_some() => {
                         e.deadline = Deadline::NONE;
                         Value::Integer(1)
@@ -3242,7 +3712,11 @@ impl KeyValueStore {
                 let now = now_ms();
                 let count = keys
                     .iter()
-                    .filter(|k| self.data.get(*k).is_some_and(|e| !e.is_expired(now)))
+                    .filter(|k| {
+                        self.data
+                            .get(k.as_str())
+                            .is_some_and(|e| !e.is_expired(now))
+                    })
                     .count();
                 Value::Integer(count as i64)
             }
@@ -3337,7 +3811,7 @@ impl KeyValueStore {
                         glob_match(pattern, key)
                             && self
                                 .data
-                                .get(key)
+                                .get(key.as_str())
                                 .is_some_and(|entry| !entry.is_expired(now))
                     })
                     .map(|key| Value::BulkString(Some(key.into_bytes())))
@@ -3358,13 +3832,13 @@ impl KeyValueStore {
 
             Command::Rename(src, dst) => {
                 let now = now_ms();
-                match self.data.remove(&src) {
+                match self.data.remove(src.as_str()) {
                     None => Value::Error("ERR no such key".to_string()),
                     Some((_, e)) if e.is_expired(now) => {
                         Value::Error("ERR no such key".to_string())
                     }
                     Some((_, entry)) => {
-                        self.data.insert(dst, entry);
+                        self.data.insert(Key::from(dst), entry);
                         Value::SimpleString("OK".to_string())
                     }
                 }
@@ -3377,16 +3851,24 @@ impl KeyValueStore {
             // RENAME; see the concurrency model in the command reference.
             Command::RenameNx(src, dst) => {
                 let now = now_ms();
-                let source_live = self.data.get(&src).is_some_and(|e| !e.is_expired(now));
+                let source_live = self
+                    .data
+                    .get(src.as_str())
+                    .is_some_and(|e| !e.is_expired(now));
                 if !source_live {
                     return Value::Error("ERR no such key".to_string());
                 }
-                if src == dst || self.data.get(&dst).is_some_and(|e| !e.is_expired(now)) {
+                if src == dst
+                    || self
+                        .data
+                        .get(dst.as_str())
+                        .is_some_and(|e| !e.is_expired(now))
+                {
                     return Value::Integer(0);
                 }
-                match self.data.remove(&src) {
+                match self.data.remove(src.as_str()) {
                     Some((_, entry)) if !entry.is_expired(now) => {
-                        self.data.insert(dst, entry);
+                        self.data.insert(Key::from(dst), entry);
                         Value::Integer(1)
                     }
                     _ => Value::Error("ERR no such key".to_string()),
@@ -3399,7 +3881,7 @@ impl KeyValueStore {
                 // destination is written: holding a guard on one shard while
                 // taking another can deadlock against a writer doing the
                 // reverse, or against itself when both keys share a shard.
-                let copy = match self.data.get(&src) {
+                let copy = match self.data.get(src.as_str()) {
                     Some(e) if !e.is_expired(now) => {
                         let mut copy = e.value().clone();
                         copy.last_access_ms = AtomicU64::new(now);
@@ -3407,7 +3889,7 @@ impl KeyValueStore {
                     }
                     _ => return Value::Integer(0),
                 };
-                match self.data.entry(dst) {
+                match self.data.entry(Key::from(dst)) {
                     DashEntry::Occupied(mut occupied) => {
                         if !replace && !occupied.get().is_expired(now) {
                             return Value::Integer(0);
@@ -3423,7 +3905,7 @@ impl KeyValueStore {
 
             Command::Type(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     Some(e) if !e.is_expired(now) => {
                         Value::SimpleString(e.value.type_name().to_string())
                     }
@@ -3432,7 +3914,7 @@ impl KeyValueStore {
             }
             Command::MemoryUsage(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     // The same figure the eviction loop bills the key for, so
                     // "which key is eating my maxmemory" and "which key gets
                     // evicted next" are answered from one measurement rather
@@ -3454,19 +3936,20 @@ impl KeyValueStore {
                     EntryValue::Hash,
                     Box::new(CompactHash::new())
                 );
+                // Counted from the inserts themselves, so a field named twice
+                // in one command counts once — as in Redis. Checking
+                // presence for every pair first counted it twice.
                 let new_count = pairs
-                    .iter()
-                    .filter(|(f, _)| !h.contains_key(f.as_str()))
+                    .into_iter()
+                    .map(|(field, val)| h.insert(field, val))
+                    .filter(|&added| added)
                     .count();
-                for (field, val) in pairs {
-                    h.insert(field, val.into());
-                }
                 Value::Integer(new_count as i64)
             }
 
             Command::HStrLen(key, field) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -3481,14 +3964,14 @@ impl KeyValueStore {
 
             Command::HGet(key, field) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::BulkString(None),
                     Some(e) if e.is_expired(now) => Value::BulkString(None),
                     Some(e) => match &e.value {
                         EntryValue::Hash(h) => {
                             e.touch(now);
                             h.get(&field)
-                                .map(|v| Value::BulkString(Some(v.clone().into_bytes())))
+                                .map(|v| Value::BulkString(Some(v.to_vec())))
                                 .unwrap_or(Value::BulkString(None))
                         }
                         _ => Value::Error(WRONGTYPE.to_string()),
@@ -3498,21 +3981,20 @@ impl KeyValueStore {
 
             Command::HGetAll(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(vec![])),
                     Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
                     Some(e) => match &e.value {
                         EntryValue::Hash(h) => {
                             e.touch(now);
-                            let mut pairs: Vec<(&str, &Blob)> =
-                                h.iter().map(|(f, v)| (f.as_str(), v)).collect();
+                            let mut pairs: Vec<(&str, &[u8])> = h.iter().collect();
                             pairs.sort_unstable_by_key(|(f, _)| *f);
                             let out = pairs
                                 .into_iter()
                                 .flat_map(|(f, v)| {
                                     [
                                         Value::BulkString(Some(f.as_bytes().to_vec())),
-                                        Value::BulkString(Some(v.as_slice().to_vec())),
+                                        Value::BulkString(Some(v.to_vec())),
                                     ]
                                 })
                                 .collect();
@@ -3525,13 +4007,12 @@ impl KeyValueStore {
 
             Command::HDel(key, fields) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
                         EntryValue::Hash(h) => {
-                            let count =
-                                fields.into_iter().filter(|f| h.remove(f).is_some()).count();
+                            let count = fields.into_iter().filter(|f| h.remove(f)).count();
                             Value::Integer(count as i64)
                         }
                         _ => Value::Error(WRONGTYPE.to_string()),
@@ -3541,13 +4022,12 @@ impl KeyValueStore {
 
             Command::HKeys(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(vec![])),
                     Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
                     Some(e) => match &e.value {
                         EntryValue::Hash(h) => {
-                            let mut keys: Vec<&str> =
-                                h.iter().map(|(field, _)| field.as_str()).collect();
+                            let mut keys: Vec<&str> = h.iter().map(|(field, _)| field).collect();
                             keys.sort_unstable();
                             Value::Array(Some(
                                 keys.into_iter()
@@ -3562,18 +4042,15 @@ impl KeyValueStore {
 
             Command::HScan(key, args) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => empty_scan(),
                     Some(e) if e.is_expired(now) => empty_scan(),
                     Some(e) => match &e.value {
                         EntryValue::Hash(h) => {
                             e.touch(now);
                             let pat = args.pattern.as_deref().unwrap_or("*");
-                            let mut fields: Vec<(&str, &Blob)> = h
-                                .iter()
-                                .filter(|(f, _)| glob_match(pat, f))
-                                .map(|(f, v)| (f.as_str(), v))
-                                .collect();
+                            let mut fields: Vec<(&str, &[u8])> =
+                                h.iter().filter(|(f, _)| glob_match(pat, f)).collect();
                             fields.sort_unstable_by_key(|(f, _)| *f);
                             let (page, next) = scan_page(&fields, args.cursor, args.count);
                             let out = page
@@ -3583,7 +4060,7 @@ impl KeyValueStore {
                                     if args.novalues {
                                         vec![field]
                                     } else {
-                                        vec![field, Value::BulkString(Some(v.as_slice().to_vec()))]
+                                        vec![field, Value::BulkString(Some(v.to_vec()))]
                                     }
                                 })
                                 .collect();
@@ -3596,18 +4073,17 @@ impl KeyValueStore {
 
             Command::HVals(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(vec![])),
                     Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
                     Some(e) => match &e.value {
                         EntryValue::Hash(h) => {
-                            let mut pairs: Vec<(&str, &Blob)> =
-                                h.iter().map(|(f, v)| (f.as_str(), v)).collect();
+                            let mut pairs: Vec<(&str, &[u8])> = h.iter().collect();
                             pairs.sort_unstable_by_key(|(f, _)| *f);
                             Value::Array(Some(
                                 pairs
                                     .into_iter()
-                                    .map(|(_, v)| Value::BulkString(Some(v.as_slice().to_vec())))
+                                    .map(|(_, v)| Value::BulkString(Some(v.to_vec())))
                                     .collect(),
                             ))
                         }
@@ -3618,7 +4094,7 @@ impl KeyValueStore {
 
             Command::HLen(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -3636,7 +4112,7 @@ impl KeyValueStore {
 
             Command::HExists(key, field) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -3659,16 +4135,12 @@ impl KeyValueStore {
                     EntryValue::Hash,
                     Box::new(CompactHash::new())
                 );
-                Value::Integer(if h.insert_if_absent(field, val.into()) {
-                    1
-                } else {
-                    0
-                })
+                Value::Integer(if h.insert_if_absent(field, val) { 1 } else { 0 })
             }
 
             Command::HMGet(key, fields) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(
                         fields.iter().map(|_| Value::BulkString(None)).collect(),
                     )),
@@ -3681,7 +4153,7 @@ impl KeyValueStore {
                                 .iter()
                                 .map(|f| {
                                     h.get(f)
-                                        .map(|v| Value::BulkString(Some(v.clone().into_bytes())))
+                                        .map(|v| Value::BulkString(Some(v.to_vec())))
                                         .unwrap_or(Value::BulkString(None))
                                 })
                                 .collect(),
@@ -3728,7 +4200,7 @@ impl KeyValueStore {
 
             Command::LPushX(key, vals) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
@@ -3745,7 +4217,7 @@ impl KeyValueStore {
 
             Command::RPushX(key, vals) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
@@ -3762,7 +4234,7 @@ impl KeyValueStore {
 
             Command::LPop(key, count) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => no_list_response(count),
                     Some(e) if e.is_expired(now) => no_list_response(count),
                     Some(mut e) => match &mut e.value {
@@ -3794,7 +4266,7 @@ impl KeyValueStore {
 
             Command::RPop(key, count) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => no_list_response(count),
                     Some(e) if e.is_expired(now) => no_list_response(count),
                     Some(mut e) => match &mut e.value {
@@ -3824,7 +4296,7 @@ impl KeyValueStore {
 
             Command::LRange(key, start, stop) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(vec![])),
                     Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
                     Some(e) => match &e.value {
@@ -3848,7 +4320,7 @@ impl KeyValueStore {
 
             Command::LLen(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -3860,7 +4332,7 @@ impl KeyValueStore {
 
             Command::LIndex(key, idx) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::BulkString(None),
                     Some(e) if e.is_expired(now) => Value::BulkString(None),
                     Some(e) => match &e.value {
@@ -3877,7 +4349,7 @@ impl KeyValueStore {
 
             Command::LSet(key, idx, val) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Error("ERR no such key".to_string()),
                     Some(e) if e.is_expired(now) => Value::Error("ERR no such key".to_string()),
                     Some(mut e) => match &mut e.value {
@@ -3898,7 +4370,7 @@ impl KeyValueStore {
 
             Command::LRem(key, count, element) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
@@ -3940,7 +4412,7 @@ impl KeyValueStore {
 
             Command::LTrim(key, start, stop) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::SimpleString("OK".to_string()),
                     Some(e) if e.is_expired(now) => Value::SimpleString("OK".to_string()),
                     Some(mut e) => match &mut e.value {
@@ -3969,16 +4441,19 @@ impl KeyValueStore {
                     EntryValue::Set,
                     Box::new(CompactSet::new())
                 );
+                // Members are moved in: `filter(|m| set.insert(m.clone()))`
+                // allocated and copied every member only to drop the original.
                 let added = members
                     .into_iter()
-                    .filter(|m| set.insert(m.clone()))
+                    .map(|m| set.insert(m))
+                    .filter(|&added| added)
                     .count();
                 Value::Integer(added as i64)
             }
 
             Command::SMembers(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(vec![])),
                     Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
                     Some(e) => match &e.value {
@@ -4000,7 +4475,7 @@ impl KeyValueStore {
 
             Command::SScan(key, args) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => empty_scan(),
                     Some(e) if e.is_expired(now) => empty_scan(),
                     Some(e) => match &e.value {
@@ -4027,7 +4502,7 @@ impl KeyValueStore {
 
             Command::SRem(key, members) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
@@ -4042,7 +4517,7 @@ impl KeyValueStore {
 
             Command::SCard(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -4054,7 +4529,7 @@ impl KeyValueStore {
 
             Command::SIsMember(key, member) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -4069,7 +4544,7 @@ impl KeyValueStore {
 
             Command::SMIsMember(key, members) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(members.iter().map(|_| Value::Integer(0)).collect())),
                     Some(e) if e.is_expired(now) => {
                         Value::Array(Some(members.iter().map(|_| Value::Integer(0)).collect()))
@@ -4104,12 +4579,12 @@ impl KeyValueStore {
                 };
                 let len = result.len();
                 self.data.insert(
-                    dst,
-                    Entry {
+                    Key::from(dst),
+                    Box::new(Entry {
                         value: EntryValue::Set(Box::new(CompactSet::from_index_set(result))),
                         deadline: Deadline::NONE,
                         last_access_ms: AtomicU64::new(now_ms()),
-                    },
+                    }),
                 );
                 Value::Integer(len as i64)
             }
@@ -4132,12 +4607,12 @@ impl KeyValueStore {
                 };
                 let len = result.len();
                 self.data.insert(
-                    dst,
-                    Entry {
+                    Key::from(dst),
+                    Box::new(Entry {
                         value: EntryValue::Set(Box::new(CompactSet::from_index_set(result))),
                         deadline: Deadline::NONE,
                         last_access_ms: AtomicU64::new(now_ms()),
-                    },
+                    }),
                 );
                 Value::Integer(len as i64)
             }
@@ -4160,19 +4635,19 @@ impl KeyValueStore {
                 };
                 let len = result.len();
                 self.data.insert(
-                    dst,
-                    Entry {
+                    Key::from(dst),
+                    Box::new(Entry {
                         value: EntryValue::Set(Box::new(CompactSet::from_index_set(result))),
                         deadline: Deadline::NONE,
                         last_access_ms: AtomicU64::new(now_ms()),
-                    },
+                    }),
                 );
                 Value::Integer(len as i64)
             }
 
             Command::SPop(key, count) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => no_list_response(count),
                     Some(e) if e.is_expired(now) => no_list_response(count),
                     Some(mut e) => match &mut e.value {
@@ -4219,7 +4694,7 @@ impl KeyValueStore {
 
             Command::SRandMember(key, count) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => match count {
                         None => Value::BulkString(None),
                         Some(_) => Value::Array(Some(vec![])),
@@ -4300,12 +4775,12 @@ impl KeyValueStore {
             Command::SMove(src, dst, member) => {
                 let now = now_ms();
                 // Check types
-                let src_type_ok = match self.data.get(&src) {
+                let src_type_ok = match self.data.get(src.as_str()) {
                     None => true,
                     Some(e) if e.is_expired(now) => true,
                     Some(e) => matches!(&e.value, EntryValue::Set(_)),
                 };
-                let dst_type_ok = match self.data.get(&dst) {
+                let dst_type_ok = match self.data.get(dst.as_str()) {
                     None => true,
                     Some(e) if e.is_expired(now) => true,
                     Some(e) => matches!(&e.value, EntryValue::Set(_)),
@@ -4314,7 +4789,7 @@ impl KeyValueStore {
                     return Value::Error(WRONGTYPE.to_string());
                 }
                 // Remove from source
-                let removed = match self.data.get_mut(&src) {
+                let removed = match self.data.get_mut(src.as_str()) {
                     Some(mut e) if !e.is_expired(now) => {
                         if let EntryValue::Set(s) = &mut e.value {
                             s.swap_remove(&member)
@@ -4332,11 +4807,14 @@ impl KeyValueStore {
                 // first (as this used to) let the destination be retyped in
                 // between, after which the member was silently dropped and the
                 // reply still claimed a successful move.
-                let mut dst_entry = self.data.entry(dst).or_insert_with(|| Entry {
-                    value: EntryValue::Set(Box::new(CompactSet::new())),
-                    deadline: Deadline::NONE,
-                    last_access_ms: AtomicU64::new(now),
-                });
+                let mut dst_entry = match write_slot(&self.data, dst) {
+                    WriteSlot::Occupied(existing) => existing,
+                    WriteSlot::Vacant(vacant) => vacant.insert(Box::new(Entry {
+                        value: EntryValue::Set(Box::new(CompactSet::new())),
+                        deadline: Deadline::NONE,
+                        last_access_ms: AtomicU64::new(now),
+                    })),
+                };
                 if dst_entry.is_expired(now) {
                     dst_entry.value = EntryValue::Set(Box::new(CompactSet::new()));
                     dst_entry.deadline = Deadline::NONE;
@@ -4349,7 +4827,7 @@ impl KeyValueStore {
                 // removal has already happened, so put the member back rather
                 // than losing it: SMOVE either moves or fails.
                 drop(dst_entry);
-                if let Some(mut e) = self.data.get_mut(&src)
+                if let Some(mut e) = self.data.get_mut(src.as_str())
                     && let EntryValue::Set(s) = &mut e.value
                 {
                     s.insert(member);
@@ -4414,7 +4892,7 @@ impl KeyValueStore {
 
             Command::ZScore(key, member) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::BulkString(None),
                     Some(e) if e.is_expired(now) => Value::BulkString(None),
                     Some(e) => match &e.value {
@@ -4431,7 +4909,7 @@ impl KeyValueStore {
 
             Command::ZMScore(key, members) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(
                         members.iter().map(|_| Value::BulkString(None)).collect(),
                     )),
@@ -4458,7 +4936,7 @@ impl KeyValueStore {
 
             Command::ZRank(key, member) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::BulkString(None),
                     Some(e) if e.is_expired(now) => Value::BulkString(None),
                     Some(e) => match &e.value {
@@ -4473,7 +4951,7 @@ impl KeyValueStore {
 
             Command::ZRevRank(key, member) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::BulkString(None),
                     Some(e) if e.is_expired(now) => Value::BulkString(None),
                     Some(e) => match &e.value {
@@ -4491,7 +4969,7 @@ impl KeyValueStore {
 
             Command::ZRem(key, members) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
@@ -4506,7 +4984,7 @@ impl KeyValueStore {
 
             Command::ZCard(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -4591,22 +5069,22 @@ impl KeyValueStore {
                 // writer create the key between the test and the insert. The
                 // path is checked against the document before anything is
                 // created or reset, so a refused write changes nothing.
-                let mut entry = match self.data.entry(key) {
-                    DashEntry::Vacant(v) => {
+                let mut entry = match write_slot(&self.data, key) {
+                    WriteSlot::Vacant(v) => {
                         if leading_index {
                             return Value::Error(NOT_AN_ARRAY.to_string());
                         }
                         if let Err(e) = json_check_set(None, &segs) {
                             return Value::Error(e);
                         }
-                        v.insert(Entry {
+                        v.insert(Box::new(Entry {
                             value: EntryValue::Json(serde_json::Value::Null),
                             deadline: Deadline::NONE,
                             last_access_ms: AtomicU64::new(now),
-                        })
+                        }))
                     }
-                    DashEntry::Occupied(mut o) => {
-                        let e = o.get_mut();
+                    WriteSlot::Occupied(mut o) => {
+                        let e = o.value_mut();
                         let current = if e.is_expired(now) {
                             if leading_index {
                                 return Value::Error(NOT_AN_ARRAY.to_string());
@@ -4625,7 +5103,7 @@ impl KeyValueStore {
                             e.value = EntryValue::Json(serde_json::Value::Null);
                             e.deadline = Deadline::NONE;
                         }
-                        o.into_ref()
+                        o
                     }
                 };
                 let EntryValue::Json(doc) = &mut entry.value else {
@@ -4642,7 +5120,7 @@ impl KeyValueStore {
 
             Command::JGet(key, path) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::BulkString(None),
                     Some(e) if e.is_expired(now) => Value::BulkString(None),
                     Some(e) => match &e.value {
@@ -4676,7 +5154,7 @@ impl KeyValueStore {
                     // if it really is a JSON document, so a null patch cannot be
                     // used to delete a string or a hash.
                     let mut wrong_type = false;
-                    self.data.remove_if(&key, |_, e| {
+                    self.data.remove_if(key.as_str(), |_, e| {
                         let ok = e.is_expired(now) || matches!(e.value, EntryValue::Json(_));
                         wrong_type = !ok;
                         ok
@@ -4757,19 +5235,19 @@ impl KeyValueStore {
                 // needed an "ERR rate limiter vanished mid-check" arm for the
                 // case where the key was deleted in between. It cannot happen
                 // now, so that error is gone.
-                let mut entry = match self.data.entry(key) {
-                    DashEntry::Vacant(v) => match fresh_limiter(v.key()) {
-                        Ok(e) => v.insert(e),
+                let mut entry = match write_slot(&self.data, key) {
+                    WriteSlot::Vacant(v) => match fresh_limiter(v.key()) {
+                        Ok(e) => v.insert(Box::new(e)),
                         Err(err) => return err,
                     },
-                    DashEntry::Occupied(mut o) => {
-                        if o.get().is_expired(now) {
+                    WriteSlot::Occupied(mut o) => {
+                        if o.value().is_expired(now) {
                             match fresh_limiter(o.key()) {
-                                Ok(e) => *o.get_mut() = e,
+                                Ok(e) => **o.value_mut() = e,
                                 Err(err) => return err,
                             }
                         }
-                        o.into_ref()
+                        o
                     }
                 };
                 let EntryValue::RateLimiter(rl) = &mut entry.value else {
@@ -5253,9 +5731,17 @@ fn entry_size(key: &str, e: &Entry) -> usize {
     key.len() + val_size + 64
 }
 
-fn incr_by(data: &DashMap<String, Entry>, key: String, delta: i64) -> Value {
+fn incr_by(data: &Keyspace, key: String, delta: i64) -> Value {
     let now = now_ms();
-    typed_entry!(entry, s, data, key, now, EntryValue::Str, Blob::from("0"));
+    typed_entry!(
+        entry,
+        s,
+        data,
+        key,
+        now,
+        EntryValue::Str,
+        StrValue::from("0")
+    );
     // A non-UTF-8 value fails here exactly as non-numeric text does: the bytes
     // are stored faithfully, they are simply not a number.
     match s.parse_as::<i64>() {
@@ -5270,9 +5756,9 @@ fn incr_by(data: &DashMap<String, Entry>, key: String, delta: i64) -> Value {
     }
 }
 
-fn set_expiry(data: &DashMap<String, Entry>, key: String, ts_ms: u64) -> Value {
+fn set_expiry(data: &Keyspace, key: String, ts_ms: u64) -> Value {
     let now = now_ms();
-    match data.get_mut(&key) {
+    match data.get_mut(key.as_str()) {
         None => Value::Integer(0),
         Some(e) if e.is_expired(now) => Value::Integer(0),
         Some(mut e) => {
@@ -5374,18 +5860,14 @@ fn set_to_value(mut result: IndexSet<String>) -> Value {
     ))
 }
 
-fn set_inter(
-    data: &DashMap<String, Entry>,
-    keys: &[String],
-    now: u64,
-) -> Result<IndexSet<String>, Value> {
+fn set_inter(data: &Keyspace, keys: &[String], now: u64) -> Result<IndexSet<String>, Value> {
     if keys.is_empty() {
         return Ok(IndexSet::new());
     }
     let mut sets: Vec<Option<IndexSet<String>>> = Vec::with_capacity(keys.len());
     for k in keys {
         let cloned = {
-            let entry = data.get(k);
+            let entry = data.get(k.as_str());
             match entry {
                 None => None,
                 Some(e) if e.is_expired(now) => None,
@@ -5408,15 +5890,11 @@ fn set_inter(
     Ok(result)
 }
 
-fn set_union(
-    data: &DashMap<String, Entry>,
-    keys: &[String],
-    now: u64,
-) -> Result<IndexSet<String>, Value> {
+fn set_union(data: &Keyspace, keys: &[String], now: u64) -> Result<IndexSet<String>, Value> {
     let mut result: IndexSet<String> = IndexSet::new();
     for k in keys {
         let s_clone = {
-            let entry = data.get(k);
+            let entry = data.get(k.as_str());
             match entry {
                 None => None,
                 Some(e) if e.is_expired(now) => None,
@@ -5433,15 +5911,11 @@ fn set_union(
     Ok(result)
 }
 
-fn set_diff(
-    data: &DashMap<String, Entry>,
-    keys: &[String],
-    now: u64,
-) -> Result<IndexSet<String>, Value> {
+fn set_diff(data: &Keyspace, keys: &[String], now: u64) -> Result<IndexSet<String>, Value> {
     if keys.is_empty() {
         return Ok(IndexSet::new());
     }
-    let mut result: IndexSet<String> = match data.get(&keys[0]) {
+    let mut result: IndexSet<String> = match data.get(keys[0].as_str()) {
         None => IndexSet::new(),
         Some(e) if e.is_expired(now) => IndexSet::new(),
         Some(e) => match &e.value {
@@ -5451,7 +5925,7 @@ fn set_diff(
     };
     for k in &keys[1..] {
         let s_clone = {
-            let entry = data.get(k);
+            let entry = data.get(k.as_str());
             match entry {
                 None => None,
                 Some(e) if e.is_expired(now) => None,
@@ -5468,7 +5942,7 @@ fn set_diff(
     Ok(result)
 }
 
-fn hash_incr_int(data: &DashMap<String, Entry>, key: String, field: String, delta: i64) -> Value {
+fn hash_incr_int(data: &Keyspace, key: String, field: String, delta: i64) -> Value {
     let now = now_ms();
     typed_entry!(
         entry,
@@ -5484,7 +5958,10 @@ fn hash_incr_int(data: &DashMap<String, Entry>, key: String, field: String, delt
     // `HINCRBY` silently overwrite `not-a-number` with the increment.
     let cur: i64 = match h.get(&field) {
         None => 0,
-        Some(existing) => match existing.parse_as() {
+        Some(existing) => match std::str::from_utf8(existing)
+            .ok()
+            .and_then(|t| t.parse().ok())
+        {
             Some(n) => n,
             None => return Value::Error("ERR hash value is not an integer".to_string()),
         },
@@ -5498,7 +5975,7 @@ fn hash_incr_int(data: &DashMap<String, Entry>, key: String, field: String, delt
     }
 }
 
-fn hash_incr_float(data: &DashMap<String, Entry>, key: String, field: String, delta: f64) -> Value {
+fn hash_incr_float(data: &Keyspace, key: String, field: String, delta: f64) -> Value {
     let now = now_ms();
     typed_entry!(
         entry,
@@ -5512,7 +5989,10 @@ fn hash_incr_float(data: &DashMap<String, Entry>, key: String, field: String, de
     // As in `hash_incr_int`: absence is zero, anything else must parse.
     let cur: f64 = match h.get(&field) {
         None => 0.0,
-        Some(existing) => match existing.parse_as::<f64>() {
+        Some(existing) => match std::str::from_utf8(existing)
+            .ok()
+            .and_then(|t| t.parse::<f64>().ok())
+        {
             Some(n) if !n.is_nan() => n,
             _ => return Value::Error("ERR hash value is not a float".to_string()),
         },
@@ -5595,7 +6075,7 @@ fn empty_scan() -> Value {
     scan_reply(0, vec![])
 }
 
-fn zset_read<F>(data: &DashMap<String, Entry>, key: &str, f: F) -> Value
+fn zset_read<F>(data: &Keyspace, key: &str, f: F) -> Value
 where
     F: FnOnce(&ZSetInner) -> Result<Value, Value>,
 {
@@ -9807,7 +10287,7 @@ mod eviction_sampling_tests {
         // Touch everything except k0, making it the oldest.
         let now = now_ms() + 1_000;
         for i in 1..5 {
-            if let Some(e) = store.data.get(&format!("k{i}")) {
+            if let Some(e) = store.data.get(format!("k{i}").as_str()) {
                 e.touch(now);
             }
         }
@@ -9878,10 +10358,10 @@ mod eviction_sampling_tests {
             let store = KeyValueStore::with_config(None, None, EvictionPolicy::AllKeysRandom);
             fill(&store, 20);
             let before: std::collections::HashSet<String> =
-                store.data.iter().map(|r| r.key().clone()).collect();
+                store.data.iter().map(|r| r.key().to_string()).collect();
             store.evict_one(now_ms());
             let after: std::collections::HashSet<String> =
-                store.data.iter().map(|r| r.key().clone()).collect();
+                store.data.iter().map(|r| r.key().to_string()).collect();
             seen.extend(before.difference(&after).cloned());
         }
         assert!(
@@ -11008,12 +11488,19 @@ mod storage_regression_tests {
         assert!(!payload.0.spilled());
 
         let mut hash = CompactHash::new();
-        for i in 0..INLINE_HASH_FIELDS {
-            hash.insert(format!("f{i}"), Blob::from("v"));
+        for i in 0..PACKED_HASH_FIELDS {
+            hash.insert(format!("f{i}"), b"v".to_vec());
         }
-        assert!(matches!(hash.repr, CompactHashRepr::Inline(_)));
-        hash.insert("spill".into(), Blob::from("v"));
+        assert!(matches!(hash.repr, CompactHashRepr::Packed { .. }));
+        hash.insert("spill".into(), b"v".to_vec());
         assert!(matches!(hash.repr, CompactHashRepr::Table(_)));
+        // A value longer than a packed record allows converts at once.
+        let mut long = CompactHash::new();
+        long.insert("f".into(), b"v".to_vec());
+        long.insert("g".into(), vec![b'x'; PACKED_HASH_LEN + 1]);
+        assert!(matches!(long.repr, CompactHashRepr::Table(_)));
+        assert_eq!(long.get("f"), Some(&b"v"[..]));
+        assert_eq!(long.get("g").map(<[u8]>::len), Some(PACKED_HASH_LEN + 1));
 
         let mut set = CompactSet::new();
         for i in 0..INLINE_SET_MEMBERS {
@@ -11028,35 +11515,101 @@ mod storage_regression_tests {
     /// every small hash's table double on its first `HSET` overwrite.
     #[test]
     fn overwriting_fields_does_not_grow_a_full_table() {
+        // A long first value makes the hash a table at one field, sized for
+        // it: 4 buckets, capacity 3. Three fields fill it exactly.
         let mut hash = CompactHash::new();
-        for i in 0..=INLINE_HASH_FIELDS {
-            hash.insert(format!("f{i}"), Blob::from("v"));
-        }
+        hash.insert("f0".into(), vec![b'L'; PACKED_HASH_LEN + 1]);
+        hash.insert("f1".into(), b"v".to_vec());
+        hash.insert("f2".into(), b"v".to_vec());
         let CompactHashRepr::Table(table) = &hash.repr else {
-            panic!(
-                "{} fields should have spilled to a table",
-                INLINE_HASH_FIELDS + 1
-            );
+            panic!("a long value should have made a table");
         };
         let capacity = table.capacity();
         assert_eq!(table.len(), capacity, "precondition: the table is full");
         for _ in 0..3 {
-            for i in 0..=INLINE_HASH_FIELDS {
-                assert!(hash.insert(format!("f{i}"), Blob::from("w")).is_some());
+            for i in 0..3 {
+                assert!(!hash.insert(format!("f{i}"), b"w".to_vec()), "overwrite");
             }
         }
         let CompactHashRepr::Table(table) = &hash.repr else {
             panic!("still a table");
         };
         assert_eq!(table.capacity(), capacity, "overwrites grew the table");
-        assert_eq!(hash.len(), INLINE_HASH_FIELDS + 1);
-        assert_eq!(
-            hash.heap_bytes(),
-            (INLINE_HASH_FIELDS + 1) * ("f0".len() + 1)
-        );
+        assert_eq!(hash.len(), 3);
+        assert_eq!(hash.heap_bytes(), 3 * ("f0".len() + 1));
         // A genuinely new field still inserts.
-        assert!(hash.insert("new".into(), Blob::from("v")).is_none());
-        assert_eq!(hash.len(), INLINE_HASH_FIELDS + 2);
+        assert!(hash.insert("new".into(), b"v".to_vec()));
+        assert_eq!(hash.len(), 4);
+    }
+
+    /// 6G: the packed form against a `HashMap` model, across both conversion
+    /// thresholds (field count and record length), binary values included.
+    /// Every operation's result and the whole observable state are compared
+    /// after each step.
+    #[test]
+    fn packed_hashes_behave_exactly_like_a_map() {
+        let mut state = 0x243F_6A88_85A3_08D3u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for round in 0..200 {
+            let mut hash = CompactHash::new();
+            let mut model: HashMap<String, Vec<u8>> = HashMap::new();
+            // Half the rounds stay small enough to remain packed throughout.
+            let field_space = if round % 2 == 0 { 24 } else { 48 };
+            for _ in 0..300 {
+                let n = next();
+                let field = format!("f{}", n % field_space);
+                match n % 7 {
+                    0..=3 => {
+                        // Lengths around the packed limit, bytes 0..=255.
+                        let len = (n >> 8) as usize % (PACKED_HASH_LEN + 8);
+                        let len = if round % 4 == 0 {
+                            len.min(PACKED_HASH_LEN)
+                        } else {
+                            len
+                        };
+                        let value: Vec<u8> = (0..len).map(|i| (n >> (i % 56)) as u8).collect();
+                        let fresh = model.insert(field.clone(), value.clone()).is_none();
+                        assert_eq!(hash.insert(field, value), fresh, "insert result");
+                    }
+                    4 | 5 => {
+                        assert_eq!(hash.remove(&field), model.remove(&field).is_some());
+                    }
+                    _ => {
+                        assert_eq!(hash.get(&field), model.get(&field).map(Vec::as_slice));
+                    }
+                }
+                assert_eq!(hash.len(), model.len());
+                assert_eq!(
+                    hash.heap_bytes(),
+                    model.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
+                );
+            }
+            let mut seen: Vec<(String, Vec<u8>)> = hash
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_vec()))
+                .collect();
+            seen.sort();
+            let mut want: Vec<(String, Vec<u8>)> = model.clone().into_iter().collect();
+            want.sort();
+            assert_eq!(seen, want, "iteration, round {round}");
+            // Snapshot round trip preserves everything and re-packs when it fits.
+            let restored = CompactHash::from_map(hash.to_map());
+            assert_eq!(restored.len(), model.len());
+            for (k, v) in &model {
+                assert_eq!(restored.get(k), Some(v.as_slice()));
+            }
+            if let CompactHashRepr::Packed { buf, .. } = &hash.repr {
+                // Exact size: no growth slack is kept.
+                let used: usize = model.iter().map(|(k, v)| 2 + k.len() + v.len()).sum();
+                assert_eq!(buf.len(), used);
+                assert_eq!(buf.capacity(), used, "packed buffer keeps slack");
+            }
+        }
     }
 }
 

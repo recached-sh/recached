@@ -123,20 +123,33 @@ queries and watches on the destination still receive the new value.
 
 ## Memory
 
-0.6 stores small keys in about a third less memory. RSS growth at 1M keys with 32-byte values went
-from 532 to 373 bytes per key, and with a TTL from 637 to 427 (median of 3 runs on one macOS
-host). Overwriting a field of a small hash no longer grows it: through 0.5.1, the first `HSET`
-overwrite of a hash whose field table was exactly full — 3, 7, 14, 28 … fields — doubled the
-table (228 bytes of live heap per 3-field hash in 0.6's layout). That is why overwriting many
-3-field hashes appeared to double RSS.
+0.6 stores small keys in about a third of 0.5.1's memory. Linux RSS at 1M keys with 32-byte
+values: 559 → 196 bytes per key; with a TTL 642 → 265; three-field hashes 1,102 → 369 (median of
+3 runs; [benchmarks](/guide/benchmarks#memory-per-key-v0-6)). Overwriting a field of a small hash
+no longer grows it: through 0.5.1, the first `HSET` overwrite of a hash whose field table was
+exactly full — 3, 7, 14, 28 … fields — doubled the table. That is why overwriting many 3-field
+hashes appeared to double RSS.
+
+Deleted keys now give their memory back. The keyspace rebuilds a mostly-empty table shard on each
+1-second maintenance tick, and on Linux (glibc) the server runs **jemalloc's background purge
+threads**, as Redis does by default: after `DEL` of 1M keys, RSS returns to within 8 bytes per key
+of idle in about 40 s (0.5.1 kept 362). Expect a few extra mostly-idle `jemalloc_bg_thd` threads in
+the process; `_RJEM_MALLOC_CONF=background_thread:false` turns them off.
 
 Throughput and latency of 0.6 against 0.5.1 have not been measured on a controlled host. Plan
 capacity from your own load test, not from these figures.
+
+## Behaviour changes
+
+- `HSET` with a field named twice in one command counts it once, as Redis does: `HSET k f a f b`
+  on a new key now replies `1` (it replied `2`). The stored value is unchanged — the last one.
 
 ## Known limitations
 
 - The RESP port stays all-or-nothing: one password, no ACLs.
 - Tokens cannot be revoked before they expire. Rotating `RECACHED_SYNC_SECRET` and restarting
   invalidates all of them.
-- After a mass `DEL`, the keyspace table keeps its capacity until `FLUSHDB`. Memory is not
-  returned to the OS, but it is reused by new keys.
+- Small keys use about 1.9× the memory of Redis 7.2.5 (2.4× Valkey 9.1.0). The largest remaining
+  cost is the ordered index behind `SCAN`'s bounded, exactly-once cursor.
+- On macOS and musl, jemalloc has no background thread: memory freed while the server is idle
+  is returned when it next allocates, not on a timer.

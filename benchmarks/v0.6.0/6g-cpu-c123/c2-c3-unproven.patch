@@ -1,0 +1,119 @@
+diff --git a/server-native/Cargo.toml b/server-native/Cargo.toml
+index e87e0f4..74d938c 100644
+--- a/server-native/Cargo.toml
++++ b/server-native/Cargo.toml
+@@ -41,6 +41,7 @@ hmac.workspace                     = true
+ sha2.workspace                     = true
+ base64.workspace                   = true
+ rand.workspace                     = true
++smallvec.workspace                 = true
+ 
+ # jemalloc does not build under MSVC (its C build needs a Unix-like toolchain),
+ # so it is only pulled in off-MSVC; Windows MSVC uses the system allocator.
+diff --git a/server-native/src/clients.rs b/server-native/src/clients.rs
+index 62f302a..b4b185e 100644
+--- a/server-native/src/clients.rs
++++ b/server-native/src/clients.rs
+@@ -326,6 +326,27 @@ pub(crate) static CMD_COUNTERS: std::sync::LazyLock<HashMap<&'static str, metric
+             .collect()
+     });
+ 
++/// Per-command latency histogram handles, cached for the same reason as
++/// [`CMD_COUNTERS`]: `histogram!` with a label hashes the label and looks the
++/// series up in the recorder's registry on every call — measured as part of
++/// the per-command overhead in the 6G profile.
++pub(crate) static CMD_DURATIONS: std::sync::LazyLock<HashMap<&'static str, metrics::Histogram>> =
++    std::sync::LazyLock::new(|| {
++        core_engine::catalog::CATALOG
++            .iter()
++            .map(|spec| {
++                (
++                    spec.name,
++                    histogram!("recached_command_duration_seconds", "command" => spec.name),
++                )
++            })
++            .chain(std::iter::once((
++                UNKNOWN_COMMAND,
++                histogram!("recached_command_duration_seconds", "command" => UNKNOWN_COMMAND),
++            )))
++            .collect()
++    });
++
+ /// Label used for a command the parser did not recognise. Not a catalog row, so
+ /// it is registered alongside them.
+ pub(crate) const UNKNOWN_COMMAND: &str = "unknown";
+@@ -367,8 +388,11 @@ pub(crate) fn execute_and_record_with_evictions(
+     let is_get = matches!(cmd, Command::Get(_));
+     let started = std::time::Instant::now();
+     let (response, evicted) = store.execute_reporting(cmd);
+-    histogram!("recached_command_duration_seconds", "command" => name)
+-        .record(started.elapsed().as_secs_f64());
++    let elapsed = started.elapsed().as_secs_f64();
++    match CMD_DURATIONS.get(name) {
++        Some(h) => h.record(elapsed),
++        None => histogram!("recached_command_duration_seconds", "command" => name).record(elapsed),
++    }
+     record_command(name);
+     if matches!(response, Value::Error(_)) {
+         counter!("recached_command_errors_total", "command" => name).increment(1);
+diff --git a/server-native/src/replication.rs b/server-native/src/replication.rs
+index cb598c8..2fbc956 100644
+--- a/server-native/src/replication.rs
++++ b/server-native/src/replication.rs
+@@ -3,6 +3,9 @@
+ 
+ use crate::*;
+ use std::collections::VecDeque;
++
++/// Write-ordering guards one command holds; inline up to four stripes.
++pub(crate) type CommandGuards<'a> = smallvec::SmallVec<[tokio::sync::MutexGuard<'a, ()>; 4]>;
+ use std::hash::{Hash, Hasher};
+ 
+ #[derive(Clone)]
+@@ -280,10 +283,7 @@ impl ReplHub {
+     /// Lock every ordering stripe touched by the supplied commands. Guards are
+     /// acquired in numeric order, which also makes multi-key writes deadlock
+     /// free. A global command such as FLUSHDB locks every stripe.
+-    pub(crate) async fn lock_commands<'a>(
+-        &'a self,
+-        commands: &[Command],
+-    ) -> Vec<tokio::sync::MutexGuard<'a, ()>> {
++    pub(crate) async fn lock_commands<'a>(&'a self, commands: &[Command]) -> CommandGuards<'a> {
+         self.lock_commands_and_keys(commands, std::iter::empty::<&str>())
+             .await
+     }
+@@ -296,11 +296,13 @@ impl ReplHub {
+         &'a self,
+         commands: &[Command],
+         extra_keys: I,
+-    ) -> Vec<tokio::sync::MutexGuard<'a, ()>>
++    ) -> CommandGuards<'a>
+     where
+         I: IntoIterator<Item = &'k str>,
+     {
+-        let mut stripes = Vec::new();
++        // Inline for the common one- or few-key write: two heap allocations
++        // per write (stripe list and guard list) showed in the 6G profile.
++        let mut stripes: smallvec::SmallVec<[usize; 4]> = smallvec::SmallVec::new();
+         let mut lock_all = false;
+         for command in commands {
+             if !is_write_command(command) {
+@@ -322,15 +324,15 @@ impl ReplHub {
+             stripes.dedup();
+         }
+ 
+-        let mut guards = Vec::with_capacity(stripes.len());
++        let mut guards = CommandGuards::with_capacity(stripes.len());
+         for stripe in stripes {
+             guards.push(self.write_order[stripe].lock().await);
+         }
+         guards
+     }
+ 
+-    pub(crate) async fn lock_all_writes(&self) -> Vec<tokio::sync::MutexGuard<'_, ()>> {
+-        let mut guards = Vec::with_capacity(WRITE_ORDER_STRIPES);
++    pub(crate) async fn lock_all_writes(&self) -> CommandGuards<'_> {
++        let mut guards = CommandGuards::with_capacity(WRITE_ORDER_STRIPES);
+         for lock in &self.write_order {
+             guards.push(lock.lock().await);
+         }

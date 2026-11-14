@@ -24,7 +24,12 @@ repository = "https://github.com/recached-sh/recached.git"
 # internal
 core-engine = { path = "core-engine" }
 sync-client = { path = "sync-client" }
-dashmap        = "6"
+# `raw-api`: per-shard access, so a mostly-empty shard's table can be shrunk
+# on its own after mass deletion (`KeyValueStore::reclaim_capacity_step`).
+# DashMap calls that API unstable, hence `~6.1`: a layout change there is a
+# compile error, and `reclaimed_shards_still_find_every_key` fails if its
+# hashing ever stops matching ours.
+dashmap        = { version = "~6.1", features = ["raw-api"] }
 indexmap       = "2"
 rand           = { version = "0.9", features = ["thread_rng"] }
 # `union`: a SmallVec's inline buffer and its heap pointer share storage

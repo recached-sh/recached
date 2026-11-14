@@ -568,11 +568,55 @@ fn per_entry_layout_does_not_regrow() {
     use std::mem::size_of;
     assert_eq!(size_of::<Blob>(), 32, "Blob");
     assert_eq!(size_of::<Deadline>(), 8, "Deadline");
-    assert!(
-        size_of::<Entry>() <= 56,
-        "Entry is {} bytes",
-        size_of::<Entry>()
-    );
+    // 6G: a boxed entry is exactly one 64-byte jemalloc size class. String
+    // values up to INLINE_STR bytes live inside it; `EntryValue`'s tag sits
+    // in `StrValue`'s spare tag values, so the wrapper costs nothing.
+    assert_eq!(size_of::<StrValue>(), 48, "StrValue");
+    assert_eq!(size_of::<EntryValue>(), 48, "EntryValue");
+    assert_eq!(size_of::<Entry>(), 64, "Entry");
+    // A hash's box: 136 bytes with the old two-field inline SmallVec, which a
+    // spilled hash kept paying for; packed, it fits jemalloc's 64-byte class.
+    assert!(size_of::<CompactHash>() <= 64, "CompactHash");
+    // 6G: the map's table is open addressing, so every slot it has, used or
+    // not, costs this much. It was 80 (`String` + inline `Entry`); a pointer
+    // slot is what keeps empty buckets cheap.
+    assert_eq!(size_of::<(Key, Slot)>(), 24, "keyspace slot");
+}
+
+#[test]
+fn the_key_index_shares_the_maps_key_allocation() {
+    // 6G: every key used to be allocated twice, once as the map's `String`
+    // and once as the index's `Arc<str>`. Now a key the write path indexes is
+    // the map's own allocation. This checks the sharing directly: a copy would
+    // still pass every behavioural test while costing ~32 bytes a key.
+    let s = KeyValueStore::new();
+    for i in 0..64 {
+        set(&s, &format!("plain:{i}"), "v");
+        s.execute(Command::SetEx(format!("volatile:{i}"), 100, "v".into()));
+        s.execute(Command::HSet(
+            format!("hash:{i}"),
+            vec![("f".into(), "v".into())],
+        ));
+    }
+    // An overwrite and a TTL change must not swap in a fresh copy either.
+    set(&s, "plain:1", "w");
+    s.execute(Command::Expire("plain:2".into(), 100));
+    let index = s.index.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(index.ordered.len(), 64 * 3);
+    for indexed in &index.ordered {
+        let entry = s.data.get(&**indexed).expect("indexed key is in the map");
+        assert!(
+            Arc::ptr_eq(indexed, entry.key()),
+            "{indexed} is indexed as a copy of the map's key"
+        );
+    }
+    for volatile in &index.volatile.keys {
+        let ordered = index
+            .ordered
+            .get(&**volatile)
+            .expect("volatile key is ordered");
+        assert!(Arc::ptr_eq(volatile, ordered), "{volatile} volatile copy");
+    }
 }
 
 #[test]
@@ -587,4 +631,203 @@ fn a_zero_deadline_is_stored_as_already_past() {
     set(&s, "k", "v");
     s.execute(Command::PExpireAt("k".into(), 0));
     assert_eq!(s.execute(Command::Exists(vec!["k".into()])), int(0));
+}
+
+#[test]
+fn string_values_inline_up_to_the_entry_and_spill_past_it() {
+    // The boundary is invisible to clients: every length round-trips through
+    // SET/GET/APPEND/STRLEN/GETRANGE and a snapshot, binary bytes included.
+    for len in [0, 1, INLINE_STR - 1, INLINE_STR, INLINE_STR + 1, 300] {
+        let value: Vec<u8> = (0..len).map(|i| (i * 37 % 256) as u8).collect();
+        let inline = StrValue::from(value.clone());
+        assert_eq!(
+            matches!(inline, StrValue::Inline { .. }),
+            len <= INLINE_STR,
+            "{len} bytes"
+        );
+        assert_eq!(inline.as_slice(), value.as_slice());
+        assert_eq!(inline.len(), len);
+        assert_eq!(inline.clone().into_bytes(), value);
+
+        let s = KeyValueStore::new();
+        s.execute(Command::Set(
+            "k".into(),
+            value.clone(),
+            SetOptions::default(),
+        ));
+        assert_eq!(
+            s.execute(Command::Get("k".into())),
+            Value::BulkString(Some(value.clone()))
+        );
+        let restored = KeyValueStore::new();
+        restored.restore(s.snapshot());
+        assert_eq!(
+            restored.execute(Command::Get("k".into())),
+            Value::BulkString(Some(value))
+        );
+    }
+}
+
+#[test]
+fn append_moves_an_inline_value_to_the_heap_exactly_once() {
+    let s = KeyValueStore::new();
+    let mut expected = Vec::new();
+    // Grow one byte at a time across the boundary and well past it.
+    for i in 0..(INLINE_STR * 3) {
+        let byte = [b'a' + (i % 26) as u8];
+        expected.extend_from_slice(&byte);
+        assert_eq!(
+            s.execute(Command::Append("k".into(), byte.to_vec())),
+            int(expected.len() as i64)
+        );
+    }
+    assert_eq!(
+        s.execute(Command::Get("k".into())),
+        Value::BulkString(Some(expected.clone()))
+    );
+    // One large append from empty goes straight to the heap.
+    let big = vec![b'z'; INLINE_STR + 10];
+    s.execute(Command::Append("big".into(), big.clone()));
+    assert_eq!(
+        s.execute(Command::Get("big".into())),
+        Value::BulkString(Some(big))
+    );
+    // INCR keeps working on inline numbers and stays inline.
+    s.execute(Command::Set(
+        "n".into(),
+        b"41".to_vec(),
+        SetOptions::default(),
+    ));
+    assert_eq!(s.execute(Command::Incr("n".into())), int(42));
+    let entry = s.data.get("n").expect("n");
+    assert!(matches!(
+        &entry.value,
+        EntryValue::Str(StrValue::Inline { .. })
+    ));
+}
+
+/// Allocated slots across every shard: the memory, unlike `capacity()`, which
+/// deletion tombstones reduce while the buckets stay allocated.
+fn keyspace_buckets(s: &KeyValueStore) -> usize {
+    s.data
+        .shards()
+        .iter()
+        .map(|shard| shard.read().buckets())
+        .sum()
+}
+
+#[test]
+fn reclaimed_shards_still_find_every_key() {
+    // 6G: `reclaim_capacity_step` rebuilds shard tables through DashMap's raw
+    // shard API with its own hash closure. If that closure ever stopped
+    // hashing exactly as DashMap does, entries would sit in buckets lookups
+    // never probe — so check every surviving key, by every access path.
+    let s = KeyValueStore::new();
+    let total = 200_000;
+    for i in 0..total {
+        if i % 2 == 0 {
+            set(&s, &format!("k{i}"), "v");
+        } else {
+            s.execute(Command::SetEx(
+                format!("k{i}"),
+                3600,
+                format!("t{i}").into_bytes(),
+            ));
+        }
+    }
+    let loaded = keyspace_buckets(&s);
+    // Delete all but every 400th key: 500 survivors, half of them volatile.
+    let doomed: Vec<String> = (0..total)
+        .filter(|i| i % 400 != 0 && i % 400 != 1)
+        .map(|i| format!("k{i}"))
+        .collect();
+    s.execute(Command::Del(doomed));
+    assert_eq!(keyspace_buckets(&s), loaded, "DEL alone keeps every bucket");
+
+    let shards = s.data.shards().len();
+    let mut shrunk = 0;
+    for _ in 0..shards * 2 {
+        shrunk += usize::from(s.reclaim_capacity_step());
+    }
+    assert!(shrunk >= shards, "every sparse shard is rebuilt ({shrunk})");
+    assert!(
+        keyspace_buckets(&s) * 16 < loaded,
+        "{} of {loaded} buckets left after reclaiming",
+        keyspace_buckets(&s)
+    );
+    let index = s.index.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(index.volatile.keys.capacity() < 4 * 1024);
+    drop(index);
+
+    for i in (0..total).filter(|i| i % 400 == 0 || i % 400 == 1) {
+        let key = format!("k{i}");
+        let want = if i % 2 == 0 {
+            b"v".to_vec()
+        } else {
+            format!("t{i}").into_bytes()
+        };
+        assert_eq!(
+            s.execute(Command::Get(key.clone())),
+            Value::BulkString(Some(want)),
+            "{key} lost by the rebuild"
+        );
+        assert!(s.data.contains_key(key.as_str()));
+        assert!(s.data.get_mut(key.as_str()).is_some());
+    }
+    assert_eq!(s.key_count(), 1_000);
+    // Writes after the rebuild land where reads find them, and the reclaimed
+    // map grows again normally.
+    for i in 0..10_000 {
+        set(&s, &format!("again{i}"), "w");
+    }
+    for i in 0..10_000 {
+        assert_eq!(
+            s.execute(Command::Get(format!("again{i}"))),
+            Value::BulkString(Some(b"w".to_vec()))
+        );
+    }
+}
+
+#[test]
+fn reclaiming_leaves_a_well_filled_keyspace_alone() {
+    let s = KeyValueStore::new();
+    for i in 0..50_000 {
+        set(&s, &format!("k{i}"), "v");
+    }
+    let buckets = keyspace_buckets(&s);
+    for _ in 0..s.data.shards().len() * 2 {
+        assert!(!s.reclaim_capacity_step());
+    }
+    assert_eq!(keyspace_buckets(&s), buckets);
+}
+
+#[test]
+fn hset_counts_a_field_named_twice_once() {
+    // Redis 7.2.5: `HSET k f a f b` -> 1 and f = "b"; `HSET k f c g d g e` -> 1.
+    // Recached up to 6F counted presence before inserting, so it said 2.
+    let s = KeyValueStore::new();
+    let pairs = |p: &[(&str, &str)]| -> Vec<(String, Vec<u8>)> {
+        p.iter()
+            .map(|(f, v)| (f.to_string(), v.as_bytes().to_vec()))
+            .collect()
+    };
+    assert_eq!(
+        s.execute(Command::HSet("k".into(), pairs(&[("f", "a"), ("f", "b")]))),
+        int(1)
+    );
+    assert_eq!(
+        s.execute(Command::HGet("k".into(), "f".into())),
+        Value::BulkString(Some(b"b".to_vec()))
+    );
+    assert_eq!(
+        s.execute(Command::HSet(
+            "k".into(),
+            pairs(&[("f", "c"), ("g", "d"), ("g", "e")])
+        )),
+        int(1)
+    );
+    assert_eq!(
+        s.execute(Command::HGet("k".into(), "g".into())),
+        Value::BulkString(Some(b"e".to_vec()))
+    );
 }
