@@ -201,6 +201,25 @@ jobs:
           tag: ${{ github.ref }}
           overwrite: true
 
+  # ── Release title ───────────────────────────────────────────────────────────
+  # The upload steps above create the release without a title, so GitHub falls
+  # back to the tag's commit message ("Merge pull request #…"). Name it once
+  # every upload has finished, whichever matrix job created it: tag v0.6.0
+  # becomes "Recached 0.6.0". tag-checks has already matched the tag to
+  # Cargo.toml, so the title is the shipped version.
+  release-title:
+    name: Name release
+    needs: [binaries, mobile]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Title the release "Recached <version>"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "Recached ${TAG#v}"
+
   # ── Container image ─────────────────────────────────────────────────────────
   # Lives in docker.yml so a failed image can be rebuilt for an existing tag by
   # hand, without retagging and re-running the npm publishes.
