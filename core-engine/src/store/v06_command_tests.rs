@@ -568,11 +568,12 @@ fn per_entry_layout_does_not_regrow() {
     use std::mem::size_of;
     assert_eq!(size_of::<Blob>(), 32, "Blob");
     assert_eq!(size_of::<Deadline>(), 8, "Deadline");
-    assert!(
-        size_of::<Entry>() <= 56,
-        "Entry is {} bytes",
-        size_of::<Entry>()
-    );
+    // 6G: a boxed entry is exactly one 64-byte jemalloc size class. String
+    // values up to INLINE_STR bytes live inside it; `EntryValue`'s tag sits
+    // in `StrValue`'s spare tag values, so the wrapper costs nothing.
+    assert_eq!(size_of::<StrValue>(), 48, "StrValue");
+    assert_eq!(size_of::<EntryValue>(), 48, "EntryValue");
+    assert_eq!(size_of::<Entry>(), 64, "Entry");
     // 6G: the map's table is open addressing, so every slot it has, used or
     // not, costs this much. It was 80 (`String` + inline `Entry`); a pointer
     // slot is what keeps empty buckets cheap.
@@ -627,4 +628,77 @@ fn a_zero_deadline_is_stored_as_already_past() {
     set(&s, "k", "v");
     s.execute(Command::PExpireAt("k".into(), 0));
     assert_eq!(s.execute(Command::Exists(vec!["k".into()])), int(0));
+}
+
+#[test]
+fn string_values_inline_up_to_the_entry_and_spill_past_it() {
+    // The boundary is invisible to clients: every length round-trips through
+    // SET/GET/APPEND/STRLEN/GETRANGE and a snapshot, binary bytes included.
+    for len in [0, 1, INLINE_STR - 1, INLINE_STR, INLINE_STR + 1, 300] {
+        let value: Vec<u8> = (0..len).map(|i| (i * 37 % 256) as u8).collect();
+        let inline = StrValue::from(value.clone());
+        assert_eq!(
+            matches!(inline, StrValue::Inline { .. }),
+            len <= INLINE_STR,
+            "{len} bytes"
+        );
+        assert_eq!(inline.as_slice(), value.as_slice());
+        assert_eq!(inline.len(), len);
+        assert_eq!(inline.clone().into_bytes(), value);
+
+        let s = KeyValueStore::new();
+        s.execute(Command::Set(
+            "k".into(),
+            value.clone(),
+            SetOptions::default(),
+        ));
+        assert_eq!(
+            s.execute(Command::Get("k".into())),
+            Value::BulkString(Some(value.clone()))
+        );
+        let restored = KeyValueStore::new();
+        restored.restore(s.snapshot());
+        assert_eq!(
+            restored.execute(Command::Get("k".into())),
+            Value::BulkString(Some(value))
+        );
+    }
+}
+
+#[test]
+fn append_moves_an_inline_value_to_the_heap_exactly_once() {
+    let s = KeyValueStore::new();
+    let mut expected = Vec::new();
+    // Grow one byte at a time across the boundary and well past it.
+    for i in 0..(INLINE_STR * 3) {
+        let byte = [b'a' + (i % 26) as u8];
+        expected.extend_from_slice(&byte);
+        assert_eq!(
+            s.execute(Command::Append("k".into(), byte.to_vec())),
+            int(expected.len() as i64)
+        );
+    }
+    assert_eq!(
+        s.execute(Command::Get("k".into())),
+        Value::BulkString(Some(expected.clone()))
+    );
+    // One large append from empty goes straight to the heap.
+    let big = vec![b'z'; INLINE_STR + 10];
+    s.execute(Command::Append("big".into(), big.clone()));
+    assert_eq!(
+        s.execute(Command::Get("big".into())),
+        Value::BulkString(Some(big))
+    );
+    // INCR keeps working on inline numbers and stays inline.
+    s.execute(Command::Set(
+        "n".into(),
+        b"41".to_vec(),
+        SetOptions::default(),
+    ));
+    assert_eq!(s.execute(Command::Incr("n".into())), int(42));
+    let entry = s.data.get("n").expect("n");
+    assert!(matches!(
+        &entry.value,
+        EntryValue::Str(StrValue::Inline { .. })
+    ));
 }

@@ -974,11 +974,183 @@ impl FromIterator<Blob> for CompactList {
     }
 }
 
+/// Bytes of a string value kept inside its entry rather than in a separate
+/// allocation.
+///
+/// Chosen so that a boxed [`Entry`] is exactly 64 bytes — one jemalloc size
+/// class, with nothing wasted — the same trade Redis makes with `EMBSTR`
+/// (strings up to 44 bytes share the 64-byte object allocation). Covers
+/// counters, flags, UUIDs (36), ISO timestamps, short tokens and small JSON.
+/// Asserted by `per_entry_layout_does_not_regrow`.
+const INLINE_STR: usize = 46;
+
+/// A top-level string value: inline up to [`INLINE_STR`] bytes, otherwise on
+/// the heap.
+///
+/// Distinct from [`Blob`], which is also every hash field value and list
+/// element, so that this inline capacity costs collections nothing. A
+/// `Vec<u8>` rather than a boxed slice on the heap side: `APPEND` keeps its
+/// amortised growth. The enum is plain safe Rust — the compiler places
+/// [`EntryValue`]'s own tag in this one's spare tag values, so wrapping it
+/// costs no space (asserted with the entry size).
+#[derive(Clone)]
+enum StrValue {
+    /// Invariant: `len as usize <= INLINE_STR`. Only [`StrValue::from_slice`]
+    /// builds this variant, and it checks.
+    Inline {
+        len: u8,
+        bytes: [u8; INLINE_STR],
+    },
+    Heap(Vec<u8>),
+}
+
+const _: () = assert!(INLINE_STR <= u8::MAX as usize);
+
+impl StrValue {
+    fn from_slice(data: &[u8]) -> Self {
+        match u8::try_from(data.len()) {
+            Ok(len) if data.len() <= INLINE_STR => {
+                let mut bytes = [0u8; INLINE_STR];
+                bytes[..data.len()].copy_from_slice(data);
+                StrValue::Inline { len, bytes }
+            }
+            _ => StrValue::Heap(data.to_vec()),
+        }
+    }
+
+    /// Takes the vector's allocation when the value is too long to inline,
+    /// so a large `SET` copies nothing.
+    fn from_vec(data: Vec<u8>) -> Self {
+        if data.len() <= INLINE_STR {
+            Self::from_slice(&data)
+        } else {
+            StrValue::Heap(data)
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            StrValue::Inline { len, bytes } => &bytes[..usize::from(*len)],
+            StrValue::Heap(data) => data,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            StrValue::Inline { len, .. } => usize::from(*len),
+            StrValue::Heap(data) => data.len(),
+        }
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        match self {
+            StrValue::Inline { .. } => self.as_slice().to_vec(),
+            StrValue::Heap(data) => data,
+        }
+    }
+
+    /// Append bytes, for `APPEND`. An inline value that outgrows the entry
+    /// moves to the heap once; after that the vector grows amortised.
+    fn extend(&mut self, other: &[u8]) {
+        match self {
+            StrValue::Heap(data) => data.extend_from_slice(other),
+            StrValue::Inline { len, bytes } => {
+                let used = usize::from(*len);
+                let total = used.saturating_add(other.len());
+                if let Ok(new_len) = u8::try_from(total)
+                    && total <= INLINE_STR
+                {
+                    bytes[used..total].copy_from_slice(other);
+                    *len = new_len;
+                } else {
+                    let mut data = Vec::with_capacity(total);
+                    data.extend_from_slice(&bytes[..used]);
+                    data.extend_from_slice(other);
+                    *self = StrValue::Heap(data);
+                }
+            }
+        }
+    }
+
+    /// Parse the payload as text, for the commands that require a number.
+    /// Non-UTF-8 fails the same way non-numeric text does.
+    fn parse_as<T: std::str::FromStr>(&self) -> Option<T> {
+        self.as_str()?.parse().ok()
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        std::str::from_utf8(self.as_slice()).ok()
+    }
+
+    /// The snapshot and wire form. Snapshots keep storing [`Blob`], so the
+    /// on-disk format does not change with the in-memory one.
+    fn to_blob(&self) -> Blob {
+        Blob::from(self.as_slice())
+    }
+}
+
+impl PartialEq for StrValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for StrValue {}
+
+impl Default for StrValue {
+    fn default() -> Self {
+        StrValue::Inline {
+            len: 0,
+            bytes: [0; INLINE_STR],
+        }
+    }
+}
+
+impl From<Vec<u8>> for StrValue {
+    fn from(data: Vec<u8>) -> Self {
+        Self::from_vec(data)
+    }
+}
+
+impl From<&[u8]> for StrValue {
+    fn from(data: &[u8]) -> Self {
+        Self::from_slice(data)
+    }
+}
+
+impl From<String> for StrValue {
+    fn from(text: String) -> Self {
+        Self::from_vec(text.into_bytes())
+    }
+}
+
+impl From<&str> for StrValue {
+    fn from(text: &str) -> Self {
+        Self::from_slice(text.as_bytes())
+    }
+}
+
+impl From<Blob> for StrValue {
+    fn from(blob: Blob) -> Self {
+        if blob.len() <= INLINE_STR {
+            Self::from_slice(blob.as_slice())
+        } else {
+            Self::from_vec(blob.into_vec())
+        }
+    }
+}
+
+impl std::fmt::Debug for StrValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.to_blob().fmt(f)
+    }
+}
+
 // ── Entry value type ──────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 enum EntryValue {
-    Str(Blob),
+    Str(StrValue),
     Hash(Box<CompactHash>),
     // Boxed like the other collections: inline, its 40 bytes made every
     // string key's entry 8 bytes larger (measured, v0.6).
@@ -1342,7 +1514,7 @@ impl Clone for Entry {
 }
 
 impl Entry {
-    fn new_str(value: impl Into<Blob>) -> Self {
+    fn new_str(value: impl Into<StrValue>) -> Self {
         Self {
             value: EntryValue::Str(value.into()),
             deadline: Deadline::NONE,
@@ -1350,7 +1522,7 @@ impl Entry {
         }
     }
 
-    fn new_str_ex(value: impl Into<Blob>, expires_at_ms: u64) -> Self {
+    fn new_str_ex(value: impl Into<StrValue>, expires_at_ms: u64) -> Self {
         Self {
             value: EntryValue::Str(value.into()),
             deadline: Deadline::at(expires_at_ms),
@@ -2483,7 +2655,7 @@ impl KeyValueStore {
 
     fn snapshot_entry(key: &str, e: &Entry) -> SnapshotEntry {
         let value = match &e.value {
-            EntryValue::Str(s) => SnapshotValue::Str(s.clone()),
+            EntryValue::Str(s) => SnapshotValue::Str(s.to_blob()),
             EntryValue::Hash(m) => SnapshotValue::Hash(m.to_map()),
             EntryValue::List(l) => SnapshotValue::List(l.iter().cloned().collect()),
             EntryValue::Set(s) => SnapshotValue::Set(s.iter().cloned().collect()),
@@ -2524,7 +2696,7 @@ impl KeyValueStore {
                 continue;
             }
             let value = match e.value {
-                SnapshotValue::Str(s) => EntryValue::Str(s),
+                SnapshotValue::Str(s) => EntryValue::Str(s.into()),
                 SnapshotValue::Hash(m) => EntryValue::Hash(Box::new(CompactHash::from_map(m))),
                 SnapshotValue::List(l) => EntryValue::List(Box::new(l.into_iter().collect())),
                 SnapshotValue::Set(s) => EntryValue::Set(Box::new(s.into_iter().collect())),
@@ -3068,7 +3240,7 @@ impl KeyValueStore {
                     key,
                     now,
                     EntryValue::Str,
-                    Blob::default()
+                    StrValue::default()
                 );
                 s.extend(&suffix);
                 Value::Integer(s.len() as i64)
@@ -5350,7 +5522,15 @@ fn entry_size(key: &str, e: &Entry) -> usize {
 
 fn incr_by(data: &Keyspace, key: String, delta: i64) -> Value {
     let now = now_ms();
-    typed_entry!(entry, s, data, key, now, EntryValue::Str, Blob::from("0"));
+    typed_entry!(
+        entry,
+        s,
+        data,
+        key,
+        now,
+        EntryValue::Str,
+        StrValue::from("0")
+    );
     // A non-UTF-8 value fails here exactly as non-numeric text does: the bytes
     // are stored faithfully, they are simply not a number.
     match s.parse_as::<i64>() {
