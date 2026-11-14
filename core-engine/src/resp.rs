@@ -29,7 +29,7 @@ fn prealloc_for(declared: usize) -> usize {
 /// `CONFIG GET proto-max-bulk-len` has to report the limit actually enforced
 /// rather than a second copy of the number.
 pub const MAX_BULK_STRING_BYTES: usize = 64 * 1024 * 1024; // 64 MB
-const MAX_TOTAL_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MB total per message
+pub(crate) const MAX_TOTAL_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MB total per message
 
 /// Bytes in the shortest encodable RESP value — `+\r\n`, the empty simple
 /// string. Used to bound from below how much space an aggregate's outstanding
@@ -262,7 +262,7 @@ impl Value {
         }
     }
 
-    fn read_until_crlf(buffer: &[u8]) -> Option<(&[u8], usize)> {
+    pub(crate) fn read_until_crlf(buffer: &[u8]) -> Option<(&[u8], usize)> {
         // Searches for CR and checks the byte behind it, rather than testing
         // every adjacent pair: one comparison per byte instead of two, and
         // `position` drops the bounds checks the indexed loop carried.
@@ -294,7 +294,7 @@ impl Value {
     /// Accepts exactly what `i64::from_str` accepts — an optional `+` or `-`
     /// followed by at least one ASCII digit, nothing else — and accumulates
     /// negatives downward so `i64::MIN` still parses rather than overflowing.
-    fn parse_header_int(data: &[u8]) -> Option<i64> {
+    pub(crate) fn parse_header_int(data: &[u8]) -> Option<i64> {
         let (negative, digits) = match data.first()? {
             b'-' => (true, &data[1..]),
             b'+' => (false, &data[1..]),
