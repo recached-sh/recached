@@ -55,6 +55,7 @@ async fn spawn_server_cfg(
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
         ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -375,6 +376,7 @@ async fn checkpoint_reseeds_live_ephemeral_keys_before_later_mutations() {
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
         ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
         dedup_dirty: AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -996,6 +998,7 @@ async fn integration_aof_replay() {
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
         ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1179,6 +1182,7 @@ fn state_with_snapshot_path(path: PathBuf) -> Arc<ServerState> {
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
         ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1501,6 +1505,7 @@ async fn integration_replica_receives_write() {
             dedup: std::sync::Mutex::new(HashMap::new()),
             ephemeral: std::sync::Mutex::new(HashMap::new()),
             ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+            ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
             dedup_dirty: std::sync::atomic::AtomicBool::new(false),
             dedup_order: tokio::sync::Mutex::new(()),
             save_lock: tokio::sync::Mutex::new(()),
@@ -1560,6 +1565,7 @@ async fn integration_replica_receives_write() {
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
         ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1854,6 +1860,7 @@ async fn integration_connection_limit() {
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
         ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -1980,6 +1987,7 @@ async fn integration_failover_timeout_does_not_promote() {
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
         ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -2165,6 +2173,7 @@ async fn ws_closes_a_client_whose_mutation_stream_developed_a_gap() {
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
         ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -2269,6 +2278,7 @@ pub(super) async fn spawn_ws_server_policy(
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
         ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),
@@ -4955,6 +4965,36 @@ async fn integration_presence_departure_reaches_live_queries() {
 }
 
 #[test]
+fn a_regular_write_ends_ephemeral_status_of_exactly_the_keys_it_wrote() {
+    // 6G: `forget_ephemeral_keys` runs on every write. It now skips both
+    // registry locks until the first claim, and removes keys by name.
+    let state = state_with_snapshot_path(tmp_path("presence_forget.rdb"));
+    assert!(!state.ephemeral_in_use.load(Ordering::Acquire));
+    state.forget_ephemeral_keys(["anything"]);
+    assert!(
+        !state.ephemeral_in_use.load(Ordering::Acquire),
+        "a forget is not a claim"
+    );
+
+    state.claim_ephemeral("presence:1", 7);
+    state.claim_ephemeral("presence:2", 7);
+    state.claim_ephemeral_members("room:1", &["alice".to_string(), "bob".to_string()], 7);
+    state.claim_ephemeral_members("room:2", &["carol".to_string()], 7);
+    assert!(state.ephemeral_in_use.load(Ordering::Acquire));
+
+    // SET presence:1 and SADD room:1 by an ordinary client.
+    state.forget_ephemeral_keys(["presence:1", "room:1"]);
+
+    // Their holds are gone; the others survive, so closing connection 7 now
+    // deletes only what is still ephemeral.
+    assert_eq!(state.take_ephemeral_for(7), vec!["presence:2".to_string()]);
+    assert_eq!(
+        state.take_ephemeral_members_for(7),
+        vec![("room:2".to_string(), vec!["carol".to_string()])]
+    );
+}
+
+#[test]
 fn ephemeral_holds_are_released_only_by_the_last_holder() {
     let state = state_with_snapshot_path(tmp_path("presence_holds.rdb"));
     state.claim_ephemeral("presence:42", 1);
@@ -6154,6 +6194,7 @@ async fn failed_checkpoint_keeps_dirty_state_and_aof_until_recovery() {
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
         ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
         dedup_dirty: AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),

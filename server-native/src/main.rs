@@ -699,6 +699,7 @@ async fn run(
         dedup: std::sync::Mutex::new(HashMap::new()),
         ephemeral: std::sync::Mutex::new(HashMap::new()),
         ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+        ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
         dedup_dirty: std::sync::atomic::AtomicBool::new(false),
         dedup_order: tokio::sync::Mutex::new(()),
         save_lock: tokio::sync::Mutex::new(()),

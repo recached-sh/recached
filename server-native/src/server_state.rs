@@ -27,11 +27,23 @@ pub(crate) struct ServerState {
     /// while still looking at the page. The key now outlives every holder and
     /// is removed when the last one goes.
     pub(crate) ephemeral: std::sync::Mutex<HashMap<String, HashSet<u64>>>,
-    /// Ephemeral (`EADD`) set memberships → the connections holding each one,
-    /// keyed by `(set key, member)`. Same lifetime rule as `ephemeral`, one
-    /// level down: a member survives while any connection that added it is
-    /// open, and the set is deleted once it empties.
-    pub(crate) ephemeral_members: std::sync::Mutex<HashMap<(String, String), HashSet<u64>>>,
+    /// Ephemeral (`EADD`) set memberships: set key → member → the connections
+    /// holding it. Same lifetime rule as `ephemeral`, one level down: a member
+    /// survives while any connection that added it is open, and the set is
+    /// deleted once it empties.
+    ///
+    /// Nested by set key so a write to a key drops its memberships with one
+    /// `remove`. Keyed by `(key, member)` it had to be scanned whole, under the
+    /// mutex, on every write: with 20k members held, `SET` on unrelated keys
+    /// ran at ~1,200/s (6G, `benchmarks/v0.6.0/6g-cpu-c4`).
+    pub(crate) ephemeral_members: std::sync::Mutex<EphemeralMembers>,
+    /// Set the first time a connection claims an ephemeral key or member;
+    /// never cleared. Every write calls [`Self::forget_ephemeral_keys`], which
+    /// took both registry mutexes — process-wide, so every worker's every
+    /// write contended on them — and scanned both maps, even on a server that
+    /// has never seen `ESET` or `EADD`. With this unset there is nothing to
+    /// forget, and the write path touches neither lock.
+    pub(crate) ephemeral_in_use: AtomicBool,
     /// Set when a dedup high-water mark advances; cleared once persisted.
     pub(crate) dedup_dirty: std::sync::atomic::AtomicBool,
     /// Serializes DEDUP checks through successful execution and mark commit.
@@ -44,10 +56,16 @@ pub(crate) struct ServerState {
     pub(crate) persistence_failures: AtomicU64,
 }
 
+/// Set key → member → connections holding that membership.
+pub(crate) type EphemeralMembers = HashMap<String, HashMap<String, HashSet<u64>>>;
+
 impl ServerState {
     /// Record `conn_id` as a holder of an ephemeral key. Repeating an `ESET`
     /// from the same connection is idempotent.
     pub(crate) fn claim_ephemeral(&self, key: &str, conn_id: u64) {
+        // Before the claim exists, so any forget ordered after it sees the
+        // flag (see `forget_ephemeral_keys`).
+        self.ephemeral_in_use.store(true, Ordering::Release);
         if let Ok(mut map) = self.ephemeral.lock() {
             map.entry(key.to_string()).or_default().insert(conn_id);
         }
@@ -55,11 +73,11 @@ impl ServerState {
 
     /// Record `conn_id` as a holder of each ephemeral set membership.
     pub(crate) fn claim_ephemeral_members(&self, key: &str, members: &[String], conn_id: u64) {
+        self.ephemeral_in_use.store(true, Ordering::Release);
         if let Ok(mut map) = self.ephemeral_members.lock() {
+            let held = map.entry(key.to_string()).or_default();
             for member in members {
-                map.entry((key.to_string(), member.clone()))
-                    .or_default()
-                    .insert(conn_id);
+                held.entry(member.clone()).or_default().insert(conn_id);
             }
         }
     }
@@ -70,7 +88,7 @@ impl ServerState {
     pub(crate) fn is_ephemeral_member(&self, key: &str, member: &str) -> bool {
         self.ephemeral_members
             .lock()
-            .is_ok_and(|map| map.contains_key(&(key.to_string(), member.to_string())))
+            .is_ok_and(|map| map.get(key).is_some_and(|held| held.contains_key(member)))
     }
 
     /// Keys and set memberships currently held by `conn_id`, without changing
@@ -90,15 +108,20 @@ impl ServerState {
                     .collect()
             })
             .unwrap_or_default();
-        let mut members: HashMap<String, Vec<String>> = HashMap::new();
+        let mut members: Vec<(String, Vec<String>)> = Vec::new();
         if let Ok(map) = self.ephemeral_members.lock() {
-            for ((key, member), holders) in map.iter() {
-                if holders.contains(&conn_id) {
-                    members.entry(key.clone()).or_default().push(member.clone());
+            for (key, held) in map.iter() {
+                let mine: Vec<String> = held
+                    .iter()
+                    .filter(|(_, holders)| holders.contains(&conn_id))
+                    .map(|(member, _)| member.clone())
+                    .collect();
+                if !mine.is_empty() {
+                    members.push((key.clone(), mine));
                 }
             }
         }
-        (keys, members.into_iter().collect())
+        (keys, members)
     }
 
     pub(crate) fn forget_ephemeral_key(&self, key: &str) {
@@ -109,7 +132,7 @@ impl ServerState {
 
     pub(crate) fn forget_ephemeral_members_for_key(&self, key: &str) {
         if let Ok(mut map) = self.ephemeral_members.lock() {
-            map.retain(|(member_key, _), _| member_key != key);
+            map.remove(key);
         }
     }
 
@@ -122,20 +145,45 @@ impl ServerState {
         }
     }
 
+    /// A regular write to these keys ends their ephemeral status.
+    ///
+    /// Called on every write. Skipped without locking until the first claim:
+    /// a claim sets `ephemeral_in_use` before it is recorded, and a forget
+    /// that must see it is ordered after it by the key's write-order stripe,
+    /// which makes the flag visible. A forget racing a claim on no common
+    /// lock may miss it — exactly as if it had run first, which the locked
+    /// version could also do.
     pub(crate) fn forget_ephemeral_keys<'a>(&self, keys: impl IntoIterator<Item = &'a str>) {
-        let keys: HashSet<&str> = keys.into_iter().collect();
-        if let Ok(mut map) = self.ephemeral.lock() {
-            map.retain(|key, _| !keys.contains(key.as_str()));
+        if !self.ephemeral_in_use.load(Ordering::Acquire) {
+            return;
         }
-        if let Ok(mut map) = self.ephemeral_members.lock() {
-            map.retain(|(key, _), _| !keys.contains(key.as_str()));
+        let keys: Vec<&str> = keys.into_iter().collect();
+        if let Ok(mut map) = self.ephemeral.lock()
+            && !map.is_empty()
+        {
+            // By key, not a scan of every claim: O(keys written).
+            for key in &keys {
+                map.remove(*key);
+            }
+        }
+        if let Ok(mut map) = self.ephemeral_members.lock()
+            && !map.is_empty()
+        {
+            for key in &keys {
+                map.remove(*key);
+            }
         }
     }
 
     pub(crate) fn forget_ephemeral_members(&self, key: &str, members: &[String]) {
-        if let Ok(mut map) = self.ephemeral_members.lock() {
+        if let Ok(mut map) = self.ephemeral_members.lock()
+            && let Some(held) = map.get_mut(key)
+        {
             for member in members {
-                map.remove(&(key.to_string(), member.clone()));
+                held.remove(member);
+            }
+            if held.is_empty() {
+                map.remove(key);
             }
         }
     }
@@ -146,18 +194,22 @@ impl ServerState {
         let Ok(mut map) = self.ephemeral_members.lock() else {
             return Vec::new();
         };
-        let mut released: HashMap<String, Vec<String>> = HashMap::new();
-        map.retain(|(key, member), holders| {
-            if !holders.remove(&conn_id) || !holders.is_empty() {
-                return true;
+        let mut released: Vec<(String, Vec<String>)> = Vec::new();
+        map.retain(|key, held| {
+            let mut last = Vec::new();
+            held.retain(|member, holders| {
+                if !holders.remove(&conn_id) || !holders.is_empty() {
+                    return true;
+                }
+                last.push(member.clone());
+                false
+            });
+            if !last.is_empty() {
+                released.push((key.clone(), last));
             }
-            released
-                .entry(key.clone())
-                .or_default()
-                .push(member.clone());
-            false
+            !held.is_empty()
         });
-        released.into_iter().collect()
+        released
     }
 
     /// Snapshot only durable state. Ephemeral keys and memberships are live
@@ -170,18 +222,13 @@ impl ServerState {
             .keys()
             .cloned()
             .collect();
-        let mut ephemeral_members: HashMap<String, HashSet<String>> = HashMap::new();
-        for (key, member) in self
+        let ephemeral_members: HashMap<String, HashSet<String>> = self
             .ephemeral_members
             .lock()
             .expect("ephemeral member mutex poisoned")
-            .keys()
-        {
-            ephemeral_members
-                .entry(key.clone())
-                .or_default()
-                .insert(member.clone());
-        }
+            .iter()
+            .map(|(key, held)| (key.clone(), held.keys().cloned().collect()))
+            .collect();
         store
             .snapshot()
             .into_iter()
@@ -223,17 +270,19 @@ impl ServerState {
         }
 
         let mut by_key: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (key, member) in self
+        let held: Vec<(String, String)> = self
             .ephemeral_members
             .lock()
             .expect("ephemeral member mutex poisoned")
-            .keys()
-        {
+            .iter()
+            .flat_map(|(key, held)| held.keys().map(move |member| (key.clone(), member.clone())))
+            .collect();
+        for (key, member) in held {
             if matches!(
                 store.execute(Command::SIsMember(key.clone(), member.clone())),
                 Value::Integer(1)
             ) {
-                by_key.entry(key.clone()).or_default().push(member.clone());
+                by_key.entry(key).or_default().push(member);
             }
         }
         for (key, mut members) in by_key {
@@ -372,6 +421,7 @@ impl ServerState {
             dedup: std::sync::Mutex::new(HashMap::new()),
             ephemeral: std::sync::Mutex::new(HashMap::new()),
             ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+            ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
             dedup_dirty: std::sync::atomic::AtomicBool::new(false),
             dedup_order: tokio::sync::Mutex::new(()),
             save_lock: tokio::sync::Mutex::new(()),
