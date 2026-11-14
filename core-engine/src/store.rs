@@ -4441,9 +4441,12 @@ impl KeyValueStore {
                     EntryValue::Set,
                     Box::new(CompactSet::new())
                 );
+                // Members are moved in: `filter(|m| set.insert(m.clone()))`
+                // allocated and copied every member only to drop the original.
                 let added = members
                     .into_iter()
-                    .filter(|m| set.insert(m.clone()))
+                    .map(|m| set.insert(m))
+                    .filter(|&added| added)
                     .count();
                 Value::Integer(added as i64)
             }
