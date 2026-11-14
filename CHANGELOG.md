@@ -16,10 +16,24 @@ All notable changes to Recached are documented here.
 - **An empty `RECACHED_PASSWORD` or `RECACHED_REPL_PASSWORD` is treated as unset.** It was a password that `AUTH ""` matched, while the multitenant profile and the public-replication-bind check both counted it as configured
 
 ### Performance — memory
-- **About a third less memory per small key.** Every key was copied into four `String`s (six with a TTL): the map's own and three secondary indexes. The indexes now share one allocation per key; the all-keys index, read only by `allkeys-*` eviction sampling, is kept only under those policies; and a write that leaves a key present with unchanged TTL-ness no longer touches the index (or takes its store-wide lock). Entries shrank from 72 to 56 bytes (8-byte expiry, `smallvec`'s `union` layout, list and rate-limiter values boxed like the other collections). Measured at 1M keys with 32-byte values: 532 → 373 bytes/key of RSS; with a TTL 637 → 427; 100k × 1 KiB: 1,398 → 1,255. Median of 3 runs on one host
+- **About two thirds less memory per small key than 0.5.1.** Linux RSS per key at 1M keys, 32-byte values (median of 3, fresh process each, Redis 7.2.5 and Valkey 9.1.0 measured alongside): strings 558.6 → 196.1 bytes (Redis 103.6, Valkey 81.7); with a TTL 642.4 → 265.4; three-field hashes 1,102.3 → 369.0. At 1 KiB and 4 KiB values Recached now uses less than either. How:
+  - every key is one allocation, shared by the map and its secondary indexes (it was four copies; six with a TTL), and the all-keys index exists only under `allkeys-*` eviction
+  - the keyspace table holds 24-byte pointer slots instead of 80-byte inline entries, so its unavoidable empty capacity costs a third as much
+  - string values up to 46 bytes are stored inside their 64-byte entry, as Redis's `EMBSTR` does for 44
+  - hashes of up to 32 fields, each field and value up to 64 bytes, are packed into one buffer, as Redis's listpack does (`HGET`/`HSET` measured as fast or faster at those sizes)
+  - still about 1.9× Redis for small keys: the largest remaining cost is the ordered index that gives `SCAN` its bounded, exactly-once cursor (Redis walks its hash table instead)
 - The same change makes writes cheaper in the engine: an overwrite no longer takes the store-wide index lock. In-process `execute` cost (best of 4 interleaved runs × 9 × 1M ops, `core-engine/examples/hotpath.rs`): `SET` overwrite −16%, `INCR` −13%, `SET` + `PEXPIRE` −21%, delete-and-recreate −14%, `HSET` −12%, new keys −6%; `GET` unchanged. Engine only — networked throughput was not measurable on the test host
 - `FLUSHDB` returns the keyspace's table capacity instead of keeping it at the high-water mark: RSS retained after flushing 100k × 1 KiB keys fell from 99% to 38%
+- **Deleting keys gives the memory back.** A hash table keeps its capacity when entries are removed, and an idle jemalloc kept the pages it had freed, so after `DEL` of 1M keys 0.5.1 stayed 362 bytes/key above idle (266 even after `FLUSHDB`). The keyspace now rebuilds a mostly-empty shard table on each 1-second maintenance tick (one shard at a time, only below ⅛ full), and on Linux jemalloc's background thread returns freed pages: 8 bytes/key above idle 40 s after the `DEL`
+- On Linux (glibc) the server runs jemalloc's background purge threads, as Redis does by default (`jemalloc-bg-thread`). Set `_RJEM_MALLOC_CONF=background_thread:false` to turn them off
 - **Overwriting a field of a small hash no longer grows it.** `HashMap::insert` reserves room before it finds an existing key, so the first `HSET` overwrite of a hash whose field table was exactly full (3, 7, 14 … fields) doubled the table: +228 bytes of live heap per 3-field hash, which is why overwriting 1M small hashes appeared to double RSS. Measured with a counting allocator: 1M three-field hashes stay at 732 bytes/key of live heap across repeated overwrites, instead of rising to 960. Present since hashes became compact (0.3.4)
+
+### Performance — server
+- **Writes no longer slow down with the number of connected presence users.** Every write scanned every `ESET`/`EADD` claim under two process-wide locks: with 20,000 presence keys held, `SET` on unrelated keys ran at about 1,100 per second (4 workers). It is now unaffected by them (~490,000 per second on the same host), and a server that never uses `ESET`/`EADD` takes neither lock on a write
+- `SADD` no longer copies every member it inserts (+6.7% throughput, −5.6% CPU per request, single worker, pipelined)
+
+### Fixed — commands
+- **`HSET` counts a field named twice in one command once**, as Redis does: `HSET k f a f b` on a new key replied `2` (the value stored was already the last one). Covered by the Redis differential test
 
 ### Added — benchmarking
 - `scripts/bench-redis-valkey.sh`, `scripts/bench-summarize.py`, `scripts/bench-memory-aggregate.py`: reproducible Recached/Redis/Valkey (or build-vs-build) comparison of throughput, latency percentiles, server CPU per million requests and RSS per key, with recorded conditions

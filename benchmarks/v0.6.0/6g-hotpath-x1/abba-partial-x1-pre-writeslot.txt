@@ -1,0 +1,7 @@
+### round=1 build=A load=7.28 12.00 9.87
+SET overwrite (existing)     min  1573.5 ns/op   median  1625.8 ns/op
+SET new keys                 min  3275.6 ns/op   median  3339.3 ns/op
+GET hit                      min   830.0 ns/op   median   841.9 ns/op
+INCR                         min  1530.9 ns/op   median  1564.4 ns/op
+SET+PEXPIRE (volatile)       min  1351.3 ns/op   median  1373.8 ns/op
+./run.sh: line 8: 53621 Terminated: 15          "$bin"

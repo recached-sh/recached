@@ -31,3 +31,22 @@ Binaries (checksums in each `conditions.txt`):
 
 No throughput or latency comparison between servers from this directory should be published.
 Re-run on a quiet, pinned Linux host (`PIN=1`) before drawing CPU or latency conclusions.
+
+## Phase 6G (2026-11-14) — memory and performance parity
+
+Reports: `docs/reports/v0.6.0/V0.6G-*.md`. Linux data come from a Docker Desktop VM (kernel
+7.0.12-linuxkit, 8 vCPU, 3.9 GB, swap never used — `6g-linux/vm-swap-monitor.log`) on the same
+laptop; server and load generator pinned to disjoint vCPUs.
+
+| Directory | What | Trust |
+|---|---|---|
+| `6g-linux/mem-ref/`, `6g-linux/mem-opt/` | Linux RSS matrix: 10 shapes × 3 reps, fresh process each; v0.5.1, v0.6 current, optimized (+ bg thread, + glibc malloc), Redis 7.2.5, Valkey 9.1.0. Summary: `6g-linux/memory-summary.md` | **Use.** Page accounting, no swap, tight ranges |
+| `6g-linux/tput/` | memtier matrix: 27 cells × 5 servers × 3 reps (single and 4-worker). Summary: `6g-linux/throughput-summary.md`; raw JSON in `tput-json.tar.gz` | **Indicative only.** Non-dedicated host; ±15% run-to-run |
+| `6g-linux/tput-bg/` | final build with vs without jemalloc's background thread | Indicative; no consistent difference |
+| `6g-linux/*.sh`, `summarize.py` | image builds (Redis/Valkey/memtier from source), Recached Linux builds, drivers, summariser | — |
+| `6g-layout-prototype/` | standalone crate: candidate keyspace layouts, counting allocator + jemalloc stats | **Use** for live/allocated bytes; ns/op single-run |
+| `6g-hashpath/abab.txt` | `core-engine/examples/hashpath.rs`, table vs packed hash by field count | Use the low-load runs (first `table` run overlapped a build; discarded) |
+| `6g-cpu-c123/` | native ABAB of C1–C3; `c2-c3-unproven.patch` = the two reverted changes | C1 effect clears noise; C2/C3 do not |
+| `6g-cpu-c4/` | native A/B of the ephemeral write-path fix; `presence*.csv` = with 20k claims held | `presence*`: **use** (440× effect). `abab.csv`: noise |
+| `6g-perf/` | Linux `perf` flat profiles of the final build (SET P16 1 worker; hot INCR 1 and 4 workers) | Use for shares, not absolute rates |
+| `6g-hotpath-x1/` | partial ABAB, stopped early: its X1 build predates `write_slot` | Do not use |

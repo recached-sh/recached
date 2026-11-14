@@ -1,0 +1,16 @@
+Writing results to stdout
+[RUN #1] Preparing benchmark client...
+[RUN #1] Launching threads now...
+[RUN #1 7%,   0 secs]  4 threads:      172544 ops,  172568 (avg:  172568) ops/sec, 6.91MB/sec (avg: 6.91MB/sec),  4.43 (avg:  4.43) msec latency[RUN #1 14%,   2 secs]  4 threads:      359984 ops,  187336 (avg:  179954) ops/sec, 7.50MB/sec (avg: 7.21MB/sec),  4.09 (avg:  4.25) msec latency[RUN #1 21%,   3 secs]  4 threads:      533840 ops,  173436 (avg:  177778) ops/sec, 6.95MB/sec (avg: 7.12MB/sec),  4.41 (avg:  4.30) msec latency[RUN #1 29%,   4 secs]  4 threads:      709984 ops,  175800 (avg:  177283) ops/sec, 7.04MB/sec (avg: 7.10MB/sec),  4.35 (avg:  4.32) msec latency[RUN #1 36%,   5 secs]  4 threads:      841584 ops,  131133 (avg:  168036) ops/sec, 5.25MB/sec (avg: 6.73MB/sec),  5.83 (avg:  4.55) msec latency[RUN #1 43%,   6 secs]  4 threads:      998080 ops,  156239 (avg:  166070) ops/sec, 6.26MB/sec (avg: 6.65MB/sec),  4.92 (avg:  4.61) msec latency[RUN #1 50%,   7 secs]  4 threads:     1178176 ops,  180002 (avg:  168058) ops/sec, 7.21MB/sec (avg: 6.73MB/sec),  4.26 (avg:  4.56) msec latency[RUN #1 57%,   8 secs]  4 threads:     1352096 ops,  173847 (avg:  168781) ops/sec, 6.96MB/sec (avg: 6.76MB/sec),  4.41 (avg:  4.54) msec latency[RUN #1 64%,   9 secs]  4 threads:     1528160 ops,  175948 (avg:  169577) ops/sec, 7.05MB/sec (avg: 6.79MB/sec),  4.35 (avg:  4.52) msec latency[RUN #1 72%,  10 secs]  4 threads:     1709185 ops,  180911 (avg:  170710) ops/sec, 7.25MB/sec (avg: 6.84MB/sec),  4.22 (avg:  4.48) msec latency[RUN #1 79%,  11 secs]  4 threads:     1888368 ops,  179092 (avg:  171471) ops/sec, 7.17MB/sec (avg: 6.87MB/sec),  4.28 (avg:  4.47) msec latency[RUN #1 86%,  12 secs]  4 threads:     2062032 ops,  173561 (avg:  171645) ops/sec, 6.95MB/sec (avg: 6.88MB/sec),  4.41 (avg:  4.46) msec latency[RUN #1 93%,  13 secs]  4 threads:     2249456 ops,  187250 (avg:  172845) ops/sec, 7.50MB/sec (avg: 6.92MB/sec),  4.09 (avg:  4.43) msec latency[RUN #1 100%,  14 secs]  0 threads:     2430352 ops,  187250 (avg:  173552) ops/sec, 7.50MB/sec (avg: 6.95MB/sec),  4.09 (avg:  4.41) msec latency
+
+4         Threads
+12        Connections per thread
+14        Seconds
+
+
+ALL STATS
+==================================================================================================
+Type         Ops/sec    Avg. Latency     p50 Latency     p99 Latency   p99.9 Latency       KB/sec 
+--------------------------------------------------------------------------------------------------
+Incrs      173553.98         4.41365         4.31900         7.26300        14.27100      7118.42 
+Totals     173553.98         4.41365         4.31900         7.26300        14.27100     14236.85 
