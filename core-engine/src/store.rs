@@ -3,6 +3,7 @@ use crate::resp::Value;
 use dashmap::DashMap;
 // Aliased: this module has its own `Entry` (the stored value + TTL + recency).
 use dashmap::mapref::entry::Entry as DashEntry;
+use dashmap::mapref::one::RefMut;
 use indexmap::IndexSet;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -1482,6 +1483,32 @@ pub fn format_score(s: f64) -> String {
 
 // ── macro: check entry type and prepare for mutation ─────────────────────────
 
+/// Where a write to one key lands: its existing entry under the shard's write
+/// guard, or the vacant slot for it.
+enum WriteSlot<'a> {
+    Occupied(RefMut<'a, Key, Slot>),
+    Vacant(dashmap::mapref::entry::VacantEntry<'a, Key, Slot>),
+}
+
+/// [`DashMap::entry`] for a key the command owns as a `String`, without
+/// allocating a [`Key`] when the key already exists.
+///
+/// `entry` needs the map's key type up front, and building an `Arc<str>` for
+/// every write — then dropping it, because the key was there — would cost an
+/// allocation on every overwrite, `INCR` and `HSET`. A hit is one probe under
+/// the write guard, as before; only a miss allocates the key and probes again.
+/// A key inserted by another writer between the two probes is seen by
+/// `entry` as occupied, so the result is exactly what `entry` alone returns.
+fn write_slot(data: &Keyspace, key: String) -> WriteSlot<'_> {
+    if let Some(existing) = data.get_mut(key.as_str()) {
+        return WriteSlot::Occupied(existing);
+    }
+    match data.entry(Key::from(key)) {
+        DashEntry::Occupied(occupied) => WriteSlot::Occupied(occupied.into_ref()),
+        DashEntry::Vacant(vacant) => WriteSlot::Vacant(vacant),
+    }
+}
+
 /// Binds `$guard` to the entry for `$key` and `$inner` to the payload inside
 /// its `$variant`, creating the entry from `$default` when the key is absent or
 /// expired. Returns `WRONGTYPE` from the enclosing function if the key holds a
@@ -1502,11 +1529,14 @@ pub fn format_score(s: f64) -> String {
 /// mutating command instead of one.
 macro_rules! typed_entry {
     ($guard:ident, $inner:ident, $data:expr, $key:expr, $now:expr, $variant:path, $default:expr) => {
-        let mut $guard = $data.entry($key).or_insert_with(|| Entry {
-            value: $variant($default),
-            deadline: Deadline::NONE,
-            last_access_ms: AtomicU64::new($now),
-        });
+        let mut $guard = match write_slot(&$data, $key) {
+            WriteSlot::Occupied(existing) => existing,
+            WriteSlot::Vacant(vacant) => vacant.insert(Box::new(Entry {
+                value: $variant($default),
+                deadline: Deadline::NONE,
+                last_access_ms: AtomicU64::new($now),
+            })),
+        };
         // A freshly inserted entry carries no TTL, so this only fires for a key
         // that was already present and has aged out.
         if $guard.is_expired($now) {
@@ -1637,20 +1667,21 @@ impl KeyIndex {
     }
 
     /// Bring the index into line with a key's current state: `None` if the
-    /// key is absent, otherwise whether it has a TTL.
-    fn sync(&mut self, key: &str, live_ttl: Option<bool>) {
-        match live_ttl {
+    /// key is absent, otherwise whether it has a TTL and the map's own key,
+    /// which a newly indexed key shares rather than copies.
+    fn sync(&mut self, key: &str, live: Option<(bool, &Key)>) {
+        match live {
             None => {
                 if self.ordered.remove(key) && self.track_all {
                     self.all.remove(key);
                 }
                 self.volatile.remove(key);
             }
-            Some(has_ttl) => {
+            Some((has_ttl, map_key)) => {
                 let shared = match self.ordered.get(key) {
                     Some(existing) => Arc::clone(existing),
                     None => {
-                        let fresh: Arc<str> = Arc::from(key);
+                        let fresh = Arc::clone(map_key);
                         self.ordered.insert(Arc::clone(&fresh));
                         if self.track_all {
                             self.all.insert(&fresh);
@@ -1668,6 +1699,14 @@ impl KeyIndex {
     }
 }
 
+/// Whether a write that left a key in state `after` (present, and whether
+/// with a TTL) from state `before` has to update the [`KeyIndex`]. A key
+/// present both times with unchanged TTL-ness — an overwrite, the common write
+/// — is already indexed correctly. Absent both times still re-asserts absence.
+fn index_changes(before: Option<bool>, after: Option<bool>) -> bool {
+    !(before.is_some() && before == after)
+}
+
 /// Whether eviction may sample the whole keyspace, which is what `all` is
 /// for. Decided by the policy alone: it is fixed at construction, and an
 /// `allkeys-*` policy is chosen precisely to evict from every key.
@@ -1678,9 +1717,24 @@ fn tracks_all_keys(policy: EvictionPolicy) -> bool {
     )
 }
 
+/// A key as the keyspace stores it: one allocation, shared with every
+/// [`KeyIndex`] structure that holds the same key.
+type Key = Arc<str>;
+
+/// A keyspace slot holds a pointer to its entry, not the entry itself.
+///
+/// The map is an open-addressing table that is between 44% and 87% full, so
+/// every slot it has — used or not — costs its full size. With `String` keys
+/// and inline entries that was 80 bytes a slot, ~170 bytes per key at 1M keys
+/// (v0.6 layout audit). With an `Arc<str>` key and a boxed entry a slot is 24
+/// bytes, and the entry is allocated once, at its real size.
+type Slot = Box<Entry>;
+
+type Keyspace = DashMap<Key, Slot>;
+
 #[derive(Clone)]
 pub struct KeyValueStore {
-    data: Arc<DashMap<String, Entry>>,
+    data: Arc<Keyspace>,
     max_keys: Option<usize>,
     max_memory_bytes: Option<usize>,
     eviction_policy: EvictionPolicy,
@@ -1934,14 +1988,14 @@ impl KeyValueStore {
         // removes them. A very short TTL can elapse between mutation and this
         // bookkeeping step; dropping it here would make it unreachable to the
         // bounded sweeper and suppress the expiry notification.
-        let live_ttl = self
+        let live = self
             .data
             .get(key)
-            .map(|entry| entry.deadline.get().is_some());
+            .map(|entry| (entry.deadline.get().is_some(), Arc::clone(entry.key())));
         self.index
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .sync(key, live_ttl);
+            .sync(key, live.as_ref().map(|(ttl, shared)| (*ttl, shared)));
     }
 
     fn rebuild_metadata(&self) {
@@ -1952,7 +2006,10 @@ impl KeyValueStore {
             if entry.value().is_expired(now) {
                 continue;
             }
-            index.sync(entry.key(), Some(entry.value().deadline.get().is_some()));
+            index.sync(
+                entry.key(),
+                Some((entry.value().deadline.get().is_some(), entry.key())),
+            );
             memory = memory.saturating_add(entry_size(entry.key(), entry.value()));
         }
         *self
@@ -2082,7 +2139,7 @@ impl KeyValueStore {
         self.data
             .iter()
             .filter(|e| !e.is_expired(now) && glob_match(pattern, e.key()))
-            .map(|e| e.key().clone())
+            .map(|e| e.key().to_string())
             .collect()
     }
 
@@ -2095,7 +2152,7 @@ impl KeyValueStore {
             .iter()
             .filter(|e| !e.is_expired(now) && glob_match(pattern, e.key()))
             .take(limit)
-            .map(|e| (e.key().clone(), Self::encode_current_value(&e.value)))
+            .map(|e| (e.key().to_string(), Self::encode_current_value(&e.value)))
             .collect()
     }
 
@@ -2113,7 +2170,7 @@ impl KeyValueStore {
             .take(limit)
             .map(|e| {
                 (
-                    e.key().clone(),
+                    e.key().to_string(),
                     Self::encode_current_value(&e.value),
                     e.deadline.get().map(|exp| exp - now),
                 )
@@ -2184,12 +2241,13 @@ impl KeyValueStore {
         let mut removed = Vec::new();
         for key in keys {
             let _order = self.order_keys(std::slice::from_ref(&key));
-            if let Some((removed_key, entry)) =
-                self.data.remove_if(&key, |_, entry| entry.is_expired(now))
+            if let Some((removed_key, entry)) = self
+                .data
+                .remove_if(key.as_str(), |_, entry| entry.is_expired(now))
             {
                 let bytes = entry_size(&removed_key, &entry);
                 self.adjust_memory(bytes, 0);
-                removed.push(removed_key);
+                removed.push(removed_key.to_string());
             }
             // Re-read current state: a concurrent replacement may have landed
             // between removal and bookkeeping.
@@ -2335,7 +2393,7 @@ impl KeyValueStore {
             .into_iter()
             .filter(|key| protect.binary_search(key).is_err() && !chosen.contains(key))
             .filter_map(|key| {
-                let entry = self.data.get(&key)?;
+                let entry = self.data.get(key.as_str())?;
                 if entry.is_expired(now) {
                     return Some((key, 0));
                 }
@@ -2372,7 +2430,7 @@ impl KeyValueStore {
             .filter(|key| protect.binary_search(key).is_err() && !chosen.contains(key))
             .find(|key| {
                 self.data
-                    .get(key)
+                    .get(key.as_str())
                     .is_some_and(|entry| entry.is_expired(now))
             })
     }
@@ -2390,7 +2448,7 @@ impl KeyValueStore {
         if eviction {
             self.evicted.fetch_add(1, Ordering::Relaxed);
         }
-        evicted.push(removed_key);
+        evicted.push(removed_key.to_string());
         Some(freed)
     }
 
@@ -2495,12 +2553,12 @@ impl KeyValueStore {
                 continue;
             }
             self.data.insert(
-                e.key,
-                Entry {
+                Key::from(e.key),
+                Box::new(Entry {
                     value,
                     deadline: e.expires_at_ms.into(),
                     last_access_ms: AtomicU64::new(now),
-                },
+                }),
             );
         }
         self.rebuild_metadata();
@@ -2584,7 +2642,9 @@ impl KeyValueStore {
                         .map(|key| {
                             (
                                 key.clone(),
-                                self.data.get(key).map(|entry| entry.value().clone()),
+                                self.data
+                                    .get(key.as_str())
+                                    .map(|entry| entry.value().clone()),
                             )
                         })
                         .collect::<Vec<_>>()
@@ -2607,16 +2667,21 @@ impl KeyValueStore {
                 // index lock across a `data` lookup here would invert that
                 // order and risk a deadlock.
                 let mut after = 0usize;
-                let mut ttl_states: SmallVec<[Option<bool>; 4]> =
+                // Each key's state after the write, and — only when its index
+                // state changed — the map's own key, so the index shares that
+                // allocation instead of making a copy. An overwrite leaves the
+                // refcount alone: on a hot key every worker would otherwise
+                // bounce its cache line.
+                let mut ttl_states: SmallVec<[(Option<bool>, Option<Key>); 4]> =
                     SmallVec::with_capacity(keys.len());
                 let mut emptied: SmallVec<[&String; 2]> = SmallVec::new();
-                for key in &keys {
+                for (key, (_, was)) in keys.iter().zip(&before_states) {
                     // Expired-but-unswept entries stay in the TTL index on
                     // purpose: dropping them here would make them unreachable
                     // to the bounded sweeper and suppress the expiry
                     // notification. So this asks whether the entry is present,
                     // not whether it is live — matching `sync_key_metadata`.
-                    ttl_states.push(match self.data.get(key) {
+                    ttl_states.push(match self.data.get(key.as_str()) {
                         // A collection the write left with no members is
                         // removed below, in this one place, rather than by
                         // each command: HDEL of the last field, the last pop,
@@ -2626,20 +2691,22 @@ impl KeyValueStore {
                         // EXISTS, KEYS, the key cap and replicas all count.
                         Some(entry) if entry.value().value.is_empty_collection() => {
                             emptied.push(key);
-                            None
+                            (None, None)
                         }
                         Some(entry) => {
                             after = after.saturating_add(entry_size(key, entry.value()));
-                            Some(entry.value().deadline.get().is_some())
+                            let live = Some(entry.value().deadline.get().is_some());
+                            let shared = index_changes(*was, live).then(|| Arc::clone(entry.key()));
+                            (live, shared)
                         }
-                        None => None,
+                        None => (None, None),
                     });
                 }
                 // The write-order stripes held for `keys` keep anyone from
                 // refilling these between the check above and the removal.
                 for key in emptied {
                     self.data
-                        .remove_if(key, |_, entry| entry.value.is_empty_collection());
+                        .remove_if(key.as_str(), |_, entry| entry.value.is_empty_collection());
                 }
                 {
                     // A key present before and after with unchanged TTL-ness —
@@ -2649,10 +2716,10 @@ impl KeyValueStore {
                     // lost, or absent both times, which re-asserts absence)
                     // is synced.
                     let mut index = None;
-                    for ((key, live_ttl), (_, was)) in
+                    for ((key, (live_ttl, shared)), (_, was)) in
                         keys.iter().zip(ttl_states).zip(before_states)
                     {
-                        if was.is_some() && was == live_ttl {
+                        if !index_changes(was, live_ttl) {
                             continue;
                         }
                         index
@@ -2661,7 +2728,7 @@ impl KeyValueStore {
                                     .lock()
                                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                             })
-                            .sync(key, live_ttl);
+                            .sync(key, live_ttl.zip(shared.as_ref()));
                     }
                 }
                 self.adjust_memory(before, after);
@@ -2674,10 +2741,10 @@ impl KeyValueStore {
                         for (key, previous) in rollback {
                             match previous {
                                 Some(entry) => {
-                                    self.data.insert(key, entry);
+                                    self.data.insert(Key::from(key), entry);
                                 }
                                 None => {
-                                    self.data.remove(&key);
+                                    self.data.remove(key.as_str());
                                 }
                             }
                         }
@@ -2888,11 +2955,13 @@ impl KeyValueStore {
                 // The condition check, optional old-value read, and replacement
                 // all happen under one DashMap entry guard. Two concurrent NX
                 // writers can therefore never both succeed.
-                match self.data.entry(key) {
-                    DashEntry::Occupied(mut occupied) => {
-                        let live = !occupied.get().is_expired(now);
-                        let existing_ttl = live.then_some(occupied.get().deadline.get()).flatten();
-                        if opts.get && live && !matches!(occupied.get().value, EntryValue::Str(_)) {
+                match write_slot(&self.data, key) {
+                    WriteSlot::Occupied(mut occupied) => {
+                        let live = !occupied.value().is_expired(now);
+                        let existing_ttl =
+                            live.then_some(occupied.value().deadline.get()).flatten();
+                        if opts.get && live && !matches!(occupied.value().value, EntryValue::Str(_))
+                        {
                             return Value::Error(WRONGTYPE.to_string());
                         }
                         let condition_met = match opts.condition {
@@ -2903,7 +2972,7 @@ impl KeyValueStore {
                         if !condition_met {
                             // Only `NX` fails on a live key, so this is the one
                             // path that copies the old value — and only for GET.
-                            return match &occupied.get().value {
+                            return match &occupied.value().value {
                                 EntryValue::Str(value) if opts.get && live => {
                                     Value::BulkString(Some(value.as_slice().to_vec()))
                                 }
@@ -2918,11 +2987,16 @@ impl KeyValueStore {
                         // ordinary overwrite used to copy the old value (8 MiB
                         // to replace an 8 MiB string with one byte) under the
                         // shard's exclusive guard, only to drop the copy.
-                        let replaced = occupied.insert(Entry {
-                            value: EntryValue::Str(val.into()),
-                            deadline: expires_at_ms.into(),
-                            last_access_ms: AtomicU64::new(now),
-                        });
+                        // Replaced inside the existing box: an overwrite
+                        // neither allocates nor frees a slot.
+                        let replaced = std::mem::replace(
+                            &mut **occupied.value_mut(),
+                            Entry {
+                                value: EntryValue::Str(val.into()),
+                                deadline: expires_at_ms.into(),
+                                last_access_ms: AtomicU64::new(now),
+                            },
+                        );
                         // Free the old value outside the shard guard.
                         drop(occupied);
                         if opts.get {
@@ -2936,7 +3010,7 @@ impl KeyValueStore {
                             Value::SimpleString("OK".to_string())
                         }
                     }
-                    DashEntry::Vacant(vacant) => {
+                    WriteSlot::Vacant(vacant) => {
                         if matches!(opts.condition, Some(SetCondition::Xx)) {
                             return Value::BulkString(None);
                         }
@@ -2944,11 +3018,11 @@ impl KeyValueStore {
                             Ok(expiry) => expiry,
                             Err(error) => return error,
                         };
-                        vacant.insert(Entry {
+                        vacant.insert(Box::new(Entry {
                             value: EntryValue::Str(val.into()),
                             deadline: expires_at_ms.into(),
                             last_access_ms: AtomicU64::new(now),
-                        });
+                        }));
                         if opts.get {
                             Value::BulkString(None)
                         } else {
@@ -2960,7 +3034,7 @@ impl KeyValueStore {
 
             Command::Get(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     Some(e) if !e.is_expired(now) => match &e.value {
                         EntryValue::Str(s) => {
                             e.touch(now);
@@ -2976,7 +3050,11 @@ impl KeyValueStore {
                 let now = now_ms();
                 let count = keys
                     .into_iter()
-                    .filter(|k| self.data.remove_if(k, |_, e| !e.is_expired(now)).is_some())
+                    .filter(|k| {
+                        self.data
+                            .remove_if(k.as_str(), |_, e| !e.is_expired(now))
+                            .is_some()
+                    })
                     .count();
                 Value::Integer(count as i64)
             }
@@ -2998,7 +3076,7 @@ impl KeyValueStore {
 
             Command::Strlen(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     Some(e) if !e.is_expired(now) => match &e.value {
                         EntryValue::Str(s) => Value::Integer(s.len() as i64),
                         _ => Value::Error(WRONGTYPE.to_string()),
@@ -3009,7 +3087,7 @@ impl KeyValueStore {
 
             Command::GetRange(key, start, end) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     Some(e) if !e.is_expired(now) => match &e.value {
                         EntryValue::Str(s) => {
                             e.touch(now);
@@ -3033,12 +3111,12 @@ impl KeyValueStore {
                 // update in the one command whose entire purpose is an atomic
                 // read-and-replace. Redis gets that atomicity for free from
                 // executing on one thread; here it has to be asked for.
-                match self.data.entry(key) {
-                    DashEntry::Occupied(mut occupied) => {
-                        let old = if occupied.get().is_expired(now) {
+                match write_slot(&self.data, key) {
+                    WriteSlot::Occupied(mut occupied) => {
+                        let old = if occupied.value().is_expired(now) {
                             Value::BulkString(None)
                         } else {
-                            match &occupied.get().value {
+                            match &occupied.value().value {
                                 EntryValue::Str(s) => {
                                     Value::BulkString(Some(s.clone().into_bytes()))
                                 }
@@ -3047,11 +3125,11 @@ impl KeyValueStore {
                                 _ => return Value::Error(WRONGTYPE.to_string()),
                             }
                         };
-                        occupied.insert(Entry::new_str(new_val));
+                        **occupied.value_mut() = Entry::new_str(new_val);
                         old
                     }
-                    DashEntry::Vacant(vacant) => {
-                        vacant.insert(Entry::new_str(new_val));
+                    WriteSlot::Vacant(vacant) => {
+                        vacant.insert(Box::new(Entry::new_str(new_val)));
                         Value::BulkString(None)
                     }
                 }
@@ -3061,7 +3139,7 @@ impl KeyValueStore {
                 let now = now_ms();
                 let results = keys
                     .iter()
-                    .map(|k| match self.data.get(k) {
+                    .map(|k| match self.data.get(k.as_str()) {
                         Some(e) if !e.is_expired(now) => match &e.value {
                             EntryValue::Str(s) => {
                                 e.touch(now);
@@ -3077,37 +3155,39 @@ impl KeyValueStore {
 
             Command::MSet(pairs) => {
                 for (k, v) in pairs {
-                    self.data.insert(k, Entry::new_str(v));
+                    self.data.insert(Key::from(k), Box::new(Entry::new_str(v)));
                 }
                 Value::SimpleString("OK".to_string())
             }
 
             Command::SetNx(key, val) => {
                 let now = now_ms();
-                match self.data.entry(key) {
-                    DashEntry::Vacant(vacant) => {
-                        vacant.insert(Entry::new_str(val));
+                match write_slot(&self.data, key) {
+                    WriteSlot::Vacant(vacant) => {
+                        vacant.insert(Box::new(Entry::new_str(val)));
                         Value::Integer(1)
                     }
-                    DashEntry::Occupied(mut occupied) if occupied.get().is_expired(now) => {
-                        occupied.insert(Entry::new_str(val));
+                    WriteSlot::Occupied(mut occupied) if occupied.value().is_expired(now) => {
+                        **occupied.value_mut() = Entry::new_str(val);
                         Value::Integer(1)
                     }
-                    DashEntry::Occupied(_) => Value::Integer(0),
+                    WriteSlot::Occupied(_) => Value::Integer(0),
                 }
             }
 
             Command::SetEx(key, secs, val) => {
                 let now = now_ms();
                 let exp = now.saturating_add(secs.saturating_mul(1000));
-                self.data.insert(key, Entry::new_str_ex(val, exp));
+                self.data
+                    .insert(Key::from(key), Box::new(Entry::new_str_ex(val, exp)));
                 Value::SimpleString("OK".to_string())
             }
 
             Command::PSetEx(key, ms, val) => {
                 let now = now_ms();
                 let exp = now.saturating_add(ms);
-                self.data.insert(key, Entry::new_str_ex(val, exp));
+                self.data
+                    .insert(Key::from(key), Box::new(Entry::new_str_ex(val, exp)));
                 Value::SimpleString("OK".to_string())
             }
 
@@ -3133,7 +3213,7 @@ impl KeyValueStore {
                 let now = now_ms();
                 // One guard for the read and the delete, as in GETSET: two
                 // callers must not both read the value both believe they took.
-                match self.data.entry(key) {
+                match self.data.entry(Key::from(key)) {
                     DashEntry::Vacant(_) => Value::BulkString(None),
                     DashEntry::Occupied(occupied) => {
                         if occupied.get().is_expired(now) {
@@ -3153,7 +3233,7 @@ impl KeyValueStore {
 
             Command::GetEx(key, option) => {
                 let now = now_ms();
-                let DashEntry::Occupied(mut occupied) = self.data.entry(key) else {
+                let DashEntry::Occupied(mut occupied) = self.data.entry(Key::from(key)) else {
                     return Value::BulkString(None);
                 };
                 if occupied.get().is_expired(now) {
@@ -3194,7 +3274,7 @@ impl KeyValueStore {
 
             Command::Ttl(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(-2),
                     Some(e) if e.is_expired(now) => Value::Integer(-2),
                     Some(e) => match e.deadline.get() {
@@ -3215,7 +3295,7 @@ impl KeyValueStore {
 
             Command::PTtl(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(-2),
                     Some(e) if e.is_expired(now) => Value::Integer(-2),
                     Some(e) => match e.deadline.get() {
@@ -3227,7 +3307,7 @@ impl KeyValueStore {
 
             Command::Persist(key) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     Some(mut e) if !e.is_expired(now) && e.deadline.get().is_some() => {
                         e.deadline = Deadline::NONE;
                         Value::Integer(1)
@@ -3242,7 +3322,11 @@ impl KeyValueStore {
                 let now = now_ms();
                 let count = keys
                     .iter()
-                    .filter(|k| self.data.get(*k).is_some_and(|e| !e.is_expired(now)))
+                    .filter(|k| {
+                        self.data
+                            .get(k.as_str())
+                            .is_some_and(|e| !e.is_expired(now))
+                    })
                     .count();
                 Value::Integer(count as i64)
             }
@@ -3337,7 +3421,7 @@ impl KeyValueStore {
                         glob_match(pattern, key)
                             && self
                                 .data
-                                .get(key)
+                                .get(key.as_str())
                                 .is_some_and(|entry| !entry.is_expired(now))
                     })
                     .map(|key| Value::BulkString(Some(key.into_bytes())))
@@ -3358,13 +3442,13 @@ impl KeyValueStore {
 
             Command::Rename(src, dst) => {
                 let now = now_ms();
-                match self.data.remove(&src) {
+                match self.data.remove(src.as_str()) {
                     None => Value::Error("ERR no such key".to_string()),
                     Some((_, e)) if e.is_expired(now) => {
                         Value::Error("ERR no such key".to_string())
                     }
                     Some((_, entry)) => {
-                        self.data.insert(dst, entry);
+                        self.data.insert(Key::from(dst), entry);
                         Value::SimpleString("OK".to_string())
                     }
                 }
@@ -3377,16 +3461,24 @@ impl KeyValueStore {
             // RENAME; see the concurrency model in the command reference.
             Command::RenameNx(src, dst) => {
                 let now = now_ms();
-                let source_live = self.data.get(&src).is_some_and(|e| !e.is_expired(now));
+                let source_live = self
+                    .data
+                    .get(src.as_str())
+                    .is_some_and(|e| !e.is_expired(now));
                 if !source_live {
                     return Value::Error("ERR no such key".to_string());
                 }
-                if src == dst || self.data.get(&dst).is_some_and(|e| !e.is_expired(now)) {
+                if src == dst
+                    || self
+                        .data
+                        .get(dst.as_str())
+                        .is_some_and(|e| !e.is_expired(now))
+                {
                     return Value::Integer(0);
                 }
-                match self.data.remove(&src) {
+                match self.data.remove(src.as_str()) {
                     Some((_, entry)) if !entry.is_expired(now) => {
-                        self.data.insert(dst, entry);
+                        self.data.insert(Key::from(dst), entry);
                         Value::Integer(1)
                     }
                     _ => Value::Error("ERR no such key".to_string()),
@@ -3399,7 +3491,7 @@ impl KeyValueStore {
                 // destination is written: holding a guard on one shard while
                 // taking another can deadlock against a writer doing the
                 // reverse, or against itself when both keys share a shard.
-                let copy = match self.data.get(&src) {
+                let copy = match self.data.get(src.as_str()) {
                     Some(e) if !e.is_expired(now) => {
                         let mut copy = e.value().clone();
                         copy.last_access_ms = AtomicU64::new(now);
@@ -3407,7 +3499,7 @@ impl KeyValueStore {
                     }
                     _ => return Value::Integer(0),
                 };
-                match self.data.entry(dst) {
+                match self.data.entry(Key::from(dst)) {
                     DashEntry::Occupied(mut occupied) => {
                         if !replace && !occupied.get().is_expired(now) {
                             return Value::Integer(0);
@@ -3423,7 +3515,7 @@ impl KeyValueStore {
 
             Command::Type(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     Some(e) if !e.is_expired(now) => {
                         Value::SimpleString(e.value.type_name().to_string())
                     }
@@ -3432,7 +3524,7 @@ impl KeyValueStore {
             }
             Command::MemoryUsage(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     // The same figure the eviction loop bills the key for, so
                     // "which key is eating my maxmemory" and "which key gets
                     // evicted next" are answered from one measurement rather
@@ -3466,7 +3558,7 @@ impl KeyValueStore {
 
             Command::HStrLen(key, field) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -3481,7 +3573,7 @@ impl KeyValueStore {
 
             Command::HGet(key, field) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::BulkString(None),
                     Some(e) if e.is_expired(now) => Value::BulkString(None),
                     Some(e) => match &e.value {
@@ -3498,7 +3590,7 @@ impl KeyValueStore {
 
             Command::HGetAll(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(vec![])),
                     Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
                     Some(e) => match &e.value {
@@ -3525,7 +3617,7 @@ impl KeyValueStore {
 
             Command::HDel(key, fields) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
@@ -3541,7 +3633,7 @@ impl KeyValueStore {
 
             Command::HKeys(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(vec![])),
                     Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
                     Some(e) => match &e.value {
@@ -3562,7 +3654,7 @@ impl KeyValueStore {
 
             Command::HScan(key, args) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => empty_scan(),
                     Some(e) if e.is_expired(now) => empty_scan(),
                     Some(e) => match &e.value {
@@ -3596,7 +3688,7 @@ impl KeyValueStore {
 
             Command::HVals(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(vec![])),
                     Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
                     Some(e) => match &e.value {
@@ -3618,7 +3710,7 @@ impl KeyValueStore {
 
             Command::HLen(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -3636,7 +3728,7 @@ impl KeyValueStore {
 
             Command::HExists(key, field) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -3668,7 +3760,7 @@ impl KeyValueStore {
 
             Command::HMGet(key, fields) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(
                         fields.iter().map(|_| Value::BulkString(None)).collect(),
                     )),
@@ -3728,7 +3820,7 @@ impl KeyValueStore {
 
             Command::LPushX(key, vals) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
@@ -3745,7 +3837,7 @@ impl KeyValueStore {
 
             Command::RPushX(key, vals) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
@@ -3762,7 +3854,7 @@ impl KeyValueStore {
 
             Command::LPop(key, count) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => no_list_response(count),
                     Some(e) if e.is_expired(now) => no_list_response(count),
                     Some(mut e) => match &mut e.value {
@@ -3794,7 +3886,7 @@ impl KeyValueStore {
 
             Command::RPop(key, count) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => no_list_response(count),
                     Some(e) if e.is_expired(now) => no_list_response(count),
                     Some(mut e) => match &mut e.value {
@@ -3824,7 +3916,7 @@ impl KeyValueStore {
 
             Command::LRange(key, start, stop) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(vec![])),
                     Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
                     Some(e) => match &e.value {
@@ -3848,7 +3940,7 @@ impl KeyValueStore {
 
             Command::LLen(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -3860,7 +3952,7 @@ impl KeyValueStore {
 
             Command::LIndex(key, idx) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::BulkString(None),
                     Some(e) if e.is_expired(now) => Value::BulkString(None),
                     Some(e) => match &e.value {
@@ -3877,7 +3969,7 @@ impl KeyValueStore {
 
             Command::LSet(key, idx, val) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Error("ERR no such key".to_string()),
                     Some(e) if e.is_expired(now) => Value::Error("ERR no such key".to_string()),
                     Some(mut e) => match &mut e.value {
@@ -3898,7 +3990,7 @@ impl KeyValueStore {
 
             Command::LRem(key, count, element) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
@@ -3940,7 +4032,7 @@ impl KeyValueStore {
 
             Command::LTrim(key, start, stop) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::SimpleString("OK".to_string()),
                     Some(e) if e.is_expired(now) => Value::SimpleString("OK".to_string()),
                     Some(mut e) => match &mut e.value {
@@ -3978,7 +4070,7 @@ impl KeyValueStore {
 
             Command::SMembers(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(vec![])),
                     Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
                     Some(e) => match &e.value {
@@ -4000,7 +4092,7 @@ impl KeyValueStore {
 
             Command::SScan(key, args) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => empty_scan(),
                     Some(e) if e.is_expired(now) => empty_scan(),
                     Some(e) => match &e.value {
@@ -4027,7 +4119,7 @@ impl KeyValueStore {
 
             Command::SRem(key, members) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
@@ -4042,7 +4134,7 @@ impl KeyValueStore {
 
             Command::SCard(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -4054,7 +4146,7 @@ impl KeyValueStore {
 
             Command::SIsMember(key, member) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -4069,7 +4161,7 @@ impl KeyValueStore {
 
             Command::SMIsMember(key, members) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(members.iter().map(|_| Value::Integer(0)).collect())),
                     Some(e) if e.is_expired(now) => {
                         Value::Array(Some(members.iter().map(|_| Value::Integer(0)).collect()))
@@ -4104,12 +4196,12 @@ impl KeyValueStore {
                 };
                 let len = result.len();
                 self.data.insert(
-                    dst,
-                    Entry {
+                    Key::from(dst),
+                    Box::new(Entry {
                         value: EntryValue::Set(Box::new(CompactSet::from_index_set(result))),
                         deadline: Deadline::NONE,
                         last_access_ms: AtomicU64::new(now_ms()),
-                    },
+                    }),
                 );
                 Value::Integer(len as i64)
             }
@@ -4132,12 +4224,12 @@ impl KeyValueStore {
                 };
                 let len = result.len();
                 self.data.insert(
-                    dst,
-                    Entry {
+                    Key::from(dst),
+                    Box::new(Entry {
                         value: EntryValue::Set(Box::new(CompactSet::from_index_set(result))),
                         deadline: Deadline::NONE,
                         last_access_ms: AtomicU64::new(now_ms()),
-                    },
+                    }),
                 );
                 Value::Integer(len as i64)
             }
@@ -4160,19 +4252,19 @@ impl KeyValueStore {
                 };
                 let len = result.len();
                 self.data.insert(
-                    dst,
-                    Entry {
+                    Key::from(dst),
+                    Box::new(Entry {
                         value: EntryValue::Set(Box::new(CompactSet::from_index_set(result))),
                         deadline: Deadline::NONE,
                         last_access_ms: AtomicU64::new(now_ms()),
-                    },
+                    }),
                 );
                 Value::Integer(len as i64)
             }
 
             Command::SPop(key, count) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => no_list_response(count),
                     Some(e) if e.is_expired(now) => no_list_response(count),
                     Some(mut e) => match &mut e.value {
@@ -4219,7 +4311,7 @@ impl KeyValueStore {
 
             Command::SRandMember(key, count) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => match count {
                         None => Value::BulkString(None),
                         Some(_) => Value::Array(Some(vec![])),
@@ -4300,12 +4392,12 @@ impl KeyValueStore {
             Command::SMove(src, dst, member) => {
                 let now = now_ms();
                 // Check types
-                let src_type_ok = match self.data.get(&src) {
+                let src_type_ok = match self.data.get(src.as_str()) {
                     None => true,
                     Some(e) if e.is_expired(now) => true,
                     Some(e) => matches!(&e.value, EntryValue::Set(_)),
                 };
-                let dst_type_ok = match self.data.get(&dst) {
+                let dst_type_ok = match self.data.get(dst.as_str()) {
                     None => true,
                     Some(e) if e.is_expired(now) => true,
                     Some(e) => matches!(&e.value, EntryValue::Set(_)),
@@ -4314,7 +4406,7 @@ impl KeyValueStore {
                     return Value::Error(WRONGTYPE.to_string());
                 }
                 // Remove from source
-                let removed = match self.data.get_mut(&src) {
+                let removed = match self.data.get_mut(src.as_str()) {
                     Some(mut e) if !e.is_expired(now) => {
                         if let EntryValue::Set(s) = &mut e.value {
                             s.swap_remove(&member)
@@ -4332,11 +4424,14 @@ impl KeyValueStore {
                 // first (as this used to) let the destination be retyped in
                 // between, after which the member was silently dropped and the
                 // reply still claimed a successful move.
-                let mut dst_entry = self.data.entry(dst).or_insert_with(|| Entry {
-                    value: EntryValue::Set(Box::new(CompactSet::new())),
-                    deadline: Deadline::NONE,
-                    last_access_ms: AtomicU64::new(now),
-                });
+                let mut dst_entry = match write_slot(&self.data, dst) {
+                    WriteSlot::Occupied(existing) => existing,
+                    WriteSlot::Vacant(vacant) => vacant.insert(Box::new(Entry {
+                        value: EntryValue::Set(Box::new(CompactSet::new())),
+                        deadline: Deadline::NONE,
+                        last_access_ms: AtomicU64::new(now),
+                    })),
+                };
                 if dst_entry.is_expired(now) {
                     dst_entry.value = EntryValue::Set(Box::new(CompactSet::new()));
                     dst_entry.deadline = Deadline::NONE;
@@ -4349,7 +4444,7 @@ impl KeyValueStore {
                 // removal has already happened, so put the member back rather
                 // than losing it: SMOVE either moves or fails.
                 drop(dst_entry);
-                if let Some(mut e) = self.data.get_mut(&src)
+                if let Some(mut e) = self.data.get_mut(src.as_str())
                     && let EntryValue::Set(s) = &mut e.value
                 {
                     s.insert(member);
@@ -4414,7 +4509,7 @@ impl KeyValueStore {
 
             Command::ZScore(key, member) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::BulkString(None),
                     Some(e) if e.is_expired(now) => Value::BulkString(None),
                     Some(e) => match &e.value {
@@ -4431,7 +4526,7 @@ impl KeyValueStore {
 
             Command::ZMScore(key, members) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Array(Some(
                         members.iter().map(|_| Value::BulkString(None)).collect(),
                     )),
@@ -4458,7 +4553,7 @@ impl KeyValueStore {
 
             Command::ZRank(key, member) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::BulkString(None),
                     Some(e) if e.is_expired(now) => Value::BulkString(None),
                     Some(e) => match &e.value {
@@ -4473,7 +4568,7 @@ impl KeyValueStore {
 
             Command::ZRevRank(key, member) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::BulkString(None),
                     Some(e) if e.is_expired(now) => Value::BulkString(None),
                     Some(e) => match &e.value {
@@ -4491,7 +4586,7 @@ impl KeyValueStore {
 
             Command::ZRem(key, members) => {
                 let now = now_ms();
-                match self.data.get_mut(&key) {
+                match self.data.get_mut(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
@@ -4506,7 +4601,7 @@ impl KeyValueStore {
 
             Command::ZCard(key) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::Integer(0),
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(e) => match &e.value {
@@ -4591,22 +4686,22 @@ impl KeyValueStore {
                 // writer create the key between the test and the insert. The
                 // path is checked against the document before anything is
                 // created or reset, so a refused write changes nothing.
-                let mut entry = match self.data.entry(key) {
-                    DashEntry::Vacant(v) => {
+                let mut entry = match write_slot(&self.data, key) {
+                    WriteSlot::Vacant(v) => {
                         if leading_index {
                             return Value::Error(NOT_AN_ARRAY.to_string());
                         }
                         if let Err(e) = json_check_set(None, &segs) {
                             return Value::Error(e);
                         }
-                        v.insert(Entry {
+                        v.insert(Box::new(Entry {
                             value: EntryValue::Json(serde_json::Value::Null),
                             deadline: Deadline::NONE,
                             last_access_ms: AtomicU64::new(now),
-                        })
+                        }))
                     }
-                    DashEntry::Occupied(mut o) => {
-                        let e = o.get_mut();
+                    WriteSlot::Occupied(mut o) => {
+                        let e = o.value_mut();
                         let current = if e.is_expired(now) {
                             if leading_index {
                                 return Value::Error(NOT_AN_ARRAY.to_string());
@@ -4625,7 +4720,7 @@ impl KeyValueStore {
                             e.value = EntryValue::Json(serde_json::Value::Null);
                             e.deadline = Deadline::NONE;
                         }
-                        o.into_ref()
+                        o
                     }
                 };
                 let EntryValue::Json(doc) = &mut entry.value else {
@@ -4642,7 +4737,7 @@ impl KeyValueStore {
 
             Command::JGet(key, path) => {
                 let now = now_ms();
-                match self.data.get(&key) {
+                match self.data.get(key.as_str()) {
                     None => Value::BulkString(None),
                     Some(e) if e.is_expired(now) => Value::BulkString(None),
                     Some(e) => match &e.value {
@@ -4676,7 +4771,7 @@ impl KeyValueStore {
                     // if it really is a JSON document, so a null patch cannot be
                     // used to delete a string or a hash.
                     let mut wrong_type = false;
-                    self.data.remove_if(&key, |_, e| {
+                    self.data.remove_if(key.as_str(), |_, e| {
                         let ok = e.is_expired(now) || matches!(e.value, EntryValue::Json(_));
                         wrong_type = !ok;
                         ok
@@ -4757,19 +4852,19 @@ impl KeyValueStore {
                 // needed an "ERR rate limiter vanished mid-check" arm for the
                 // case where the key was deleted in between. It cannot happen
                 // now, so that error is gone.
-                let mut entry = match self.data.entry(key) {
-                    DashEntry::Vacant(v) => match fresh_limiter(v.key()) {
-                        Ok(e) => v.insert(e),
+                let mut entry = match write_slot(&self.data, key) {
+                    WriteSlot::Vacant(v) => match fresh_limiter(v.key()) {
+                        Ok(e) => v.insert(Box::new(e)),
                         Err(err) => return err,
                     },
-                    DashEntry::Occupied(mut o) => {
-                        if o.get().is_expired(now) {
+                    WriteSlot::Occupied(mut o) => {
+                        if o.value().is_expired(now) {
                             match fresh_limiter(o.key()) {
-                                Ok(e) => *o.get_mut() = e,
+                                Ok(e) => **o.value_mut() = e,
                                 Err(err) => return err,
                             }
                         }
-                        o.into_ref()
+                        o
                     }
                 };
                 let EntryValue::RateLimiter(rl) = &mut entry.value else {
@@ -5253,7 +5348,7 @@ fn entry_size(key: &str, e: &Entry) -> usize {
     key.len() + val_size + 64
 }
 
-fn incr_by(data: &DashMap<String, Entry>, key: String, delta: i64) -> Value {
+fn incr_by(data: &Keyspace, key: String, delta: i64) -> Value {
     let now = now_ms();
     typed_entry!(entry, s, data, key, now, EntryValue::Str, Blob::from("0"));
     // A non-UTF-8 value fails here exactly as non-numeric text does: the bytes
@@ -5270,9 +5365,9 @@ fn incr_by(data: &DashMap<String, Entry>, key: String, delta: i64) -> Value {
     }
 }
 
-fn set_expiry(data: &DashMap<String, Entry>, key: String, ts_ms: u64) -> Value {
+fn set_expiry(data: &Keyspace, key: String, ts_ms: u64) -> Value {
     let now = now_ms();
-    match data.get_mut(&key) {
+    match data.get_mut(key.as_str()) {
         None => Value::Integer(0),
         Some(e) if e.is_expired(now) => Value::Integer(0),
         Some(mut e) => {
@@ -5374,18 +5469,14 @@ fn set_to_value(mut result: IndexSet<String>) -> Value {
     ))
 }
 
-fn set_inter(
-    data: &DashMap<String, Entry>,
-    keys: &[String],
-    now: u64,
-) -> Result<IndexSet<String>, Value> {
+fn set_inter(data: &Keyspace, keys: &[String], now: u64) -> Result<IndexSet<String>, Value> {
     if keys.is_empty() {
         return Ok(IndexSet::new());
     }
     let mut sets: Vec<Option<IndexSet<String>>> = Vec::with_capacity(keys.len());
     for k in keys {
         let cloned = {
-            let entry = data.get(k);
+            let entry = data.get(k.as_str());
             match entry {
                 None => None,
                 Some(e) if e.is_expired(now) => None,
@@ -5408,15 +5499,11 @@ fn set_inter(
     Ok(result)
 }
 
-fn set_union(
-    data: &DashMap<String, Entry>,
-    keys: &[String],
-    now: u64,
-) -> Result<IndexSet<String>, Value> {
+fn set_union(data: &Keyspace, keys: &[String], now: u64) -> Result<IndexSet<String>, Value> {
     let mut result: IndexSet<String> = IndexSet::new();
     for k in keys {
         let s_clone = {
-            let entry = data.get(k);
+            let entry = data.get(k.as_str());
             match entry {
                 None => None,
                 Some(e) if e.is_expired(now) => None,
@@ -5433,15 +5520,11 @@ fn set_union(
     Ok(result)
 }
 
-fn set_diff(
-    data: &DashMap<String, Entry>,
-    keys: &[String],
-    now: u64,
-) -> Result<IndexSet<String>, Value> {
+fn set_diff(data: &Keyspace, keys: &[String], now: u64) -> Result<IndexSet<String>, Value> {
     if keys.is_empty() {
         return Ok(IndexSet::new());
     }
-    let mut result: IndexSet<String> = match data.get(&keys[0]) {
+    let mut result: IndexSet<String> = match data.get(keys[0].as_str()) {
         None => IndexSet::new(),
         Some(e) if e.is_expired(now) => IndexSet::new(),
         Some(e) => match &e.value {
@@ -5451,7 +5534,7 @@ fn set_diff(
     };
     for k in &keys[1..] {
         let s_clone = {
-            let entry = data.get(k);
+            let entry = data.get(k.as_str());
             match entry {
                 None => None,
                 Some(e) if e.is_expired(now) => None,
@@ -5468,7 +5551,7 @@ fn set_diff(
     Ok(result)
 }
 
-fn hash_incr_int(data: &DashMap<String, Entry>, key: String, field: String, delta: i64) -> Value {
+fn hash_incr_int(data: &Keyspace, key: String, field: String, delta: i64) -> Value {
     let now = now_ms();
     typed_entry!(
         entry,
@@ -5498,7 +5581,7 @@ fn hash_incr_int(data: &DashMap<String, Entry>, key: String, field: String, delt
     }
 }
 
-fn hash_incr_float(data: &DashMap<String, Entry>, key: String, field: String, delta: f64) -> Value {
+fn hash_incr_float(data: &Keyspace, key: String, field: String, delta: f64) -> Value {
     let now = now_ms();
     typed_entry!(
         entry,
@@ -5595,7 +5678,7 @@ fn empty_scan() -> Value {
     scan_reply(0, vec![])
 }
 
-fn zset_read<F>(data: &DashMap<String, Entry>, key: &str, f: F) -> Value
+fn zset_read<F>(data: &Keyspace, key: &str, f: F) -> Value
 where
     F: FnOnce(&ZSetInner) -> Result<Value, Value>,
 {
@@ -9807,7 +9890,7 @@ mod eviction_sampling_tests {
         // Touch everything except k0, making it the oldest.
         let now = now_ms() + 1_000;
         for i in 1..5 {
-            if let Some(e) = store.data.get(&format!("k{i}")) {
+            if let Some(e) = store.data.get(format!("k{i}").as_str()) {
                 e.touch(now);
             }
         }
@@ -9878,10 +9961,10 @@ mod eviction_sampling_tests {
             let store = KeyValueStore::with_config(None, None, EvictionPolicy::AllKeysRandom);
             fill(&store, 20);
             let before: std::collections::HashSet<String> =
-                store.data.iter().map(|r| r.key().clone()).collect();
+                store.data.iter().map(|r| r.key().to_string()).collect();
             store.evict_one(now_ms());
             let after: std::collections::HashSet<String> =
-                store.data.iter().map(|r| r.key().clone()).collect();
+                store.data.iter().map(|r| r.key().to_string()).collect();
             seen.extend(before.difference(&after).cloned());
         }
         assert!(

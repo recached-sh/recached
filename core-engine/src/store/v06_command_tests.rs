@@ -573,6 +573,46 @@ fn per_entry_layout_does_not_regrow() {
         "Entry is {} bytes",
         size_of::<Entry>()
     );
+    // 6G: the map's table is open addressing, so every slot it has, used or
+    // not, costs this much. It was 80 (`String` + inline `Entry`); a pointer
+    // slot is what keeps empty buckets cheap.
+    assert_eq!(size_of::<(Key, Slot)>(), 24, "keyspace slot");
+}
+
+#[test]
+fn the_key_index_shares_the_maps_key_allocation() {
+    // 6G: every key used to be allocated twice, once as the map's `String`
+    // and once as the index's `Arc<str>`. Now a key the write path indexes is
+    // the map's own allocation. This checks the sharing directly: a copy would
+    // still pass every behavioural test while costing ~32 bytes a key.
+    let s = KeyValueStore::new();
+    for i in 0..64 {
+        set(&s, &format!("plain:{i}"), "v");
+        s.execute(Command::SetEx(format!("volatile:{i}"), 100, "v".into()));
+        s.execute(Command::HSet(
+            format!("hash:{i}"),
+            vec![("f".into(), "v".into())],
+        ));
+    }
+    // An overwrite and a TTL change must not swap in a fresh copy either.
+    set(&s, "plain:1", "w");
+    s.execute(Command::Expire("plain:2".into(), 100));
+    let index = s.index.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(index.ordered.len(), 64 * 3);
+    for indexed in &index.ordered {
+        let entry = s.data.get(&**indexed).expect("indexed key is in the map");
+        assert!(
+            Arc::ptr_eq(indexed, entry.key()),
+            "{indexed} is indexed as a copy of the map's key"
+        );
+    }
+    for volatile in &index.volatile.keys {
+        let ordered = index
+            .ordered
+            .get(&**volatile)
+            .expect("volatile key is ordered");
+        assert!(Arc::ptr_eq(volatile, ordered), "{volatile} volatile copy");
+    }
 }
 
 #[test]
