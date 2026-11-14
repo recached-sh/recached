@@ -1,6 +1,6 @@
 # recached-edge
 
-The browser WebAssembly client for [Recached](https://github.com/recached-sh/recached), a local-first cache and real-time sync engine powered by Rust. It runs the same cache engine as the server and the Kotlin, Swift, and embedded Rust clients. Reads use local WebAssembly memory; writes and server updates travel over WebSocket when connected.
+The browser WebAssembly client for [Recached](https://github.com/recached-sh/recached), a Rust-powered in-memory cache with built-in real-time synchronization. It runs the same cache engine as the server and the Kotlin, Swift, and embedded Rust clients. Reads use local WebAssembly memory; writes and server updates travel over WebSocket when connected.
 
 ## Install
 

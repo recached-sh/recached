@@ -1,8 +1,8 @@
 <div align="center">
   <img src="brand/banner.svg" alt="Recached — Cache locally. Sync everywhere." width="100%" />
   <h1>Recached</h1>
-  <p><b>A local-first cache and real-time sync engine, powered by Rust.</b></p>
-  <p>Cache locally. Sync everywhere.</p>
+  <p><b>More than a cache. Built to sync.</b></p>
+  <p>A Rust-powered in-memory cache with built-in real-time synchronization.</p>
 
   <a href="https://recached.dev"><img src="https://img.shields.io/badge/Docs-recached.dev-FBBF24.svg?labelColor=171C2B" alt="Docs"></a>
   <a href="https://www.npmjs.com/package/recached-edge"><img src="https://img.shields.io/npm/v/recached-edge?label=npm&color=FBBF24&labelColor=171C2B" alt="npm"></a>
@@ -13,7 +13,9 @@
 
 ---
 
-Recached keeps shared cache data close to your application. One Rust cache engine runs in the server, in browsers as WebAssembly, inside native Android and Apple apps, and in embedded Rust services. Clients read cached values from local memory while updates synchronize between connected clients over WebSocket. Your backend writes to the server with existing Redis clients, using the supported RESP command subset.
+**Recached is a Rust-powered caching engine with real-time synchronization built in.** Keep cached data close to your applications, read locally, and synchronize updates across connected clients.
+
+At its core is an in-memory key-value cache server. Your backend reads and writes it with existing Redis clients, using the supported RESP command subset. Synchronization is part of the same engine rather than a separate service: the Rust cache engine also runs in browsers as WebAssembly, inside native Android and Apple apps, and in embedded Rust services. Those clients keep the keys they watch in local memory and receive updates over WebSocket.
 
 ## Why Recached
 
@@ -21,11 +23,11 @@ When a browser, mobile app, or second service needs the data your backend caches
 
 The difference is *where the cache runs*, not a claim about server throughput.
 
+- **In-memory caching.** The server is a key-value cache with expiry, counters, collections, and JSON documents. Connect ioredis, node-redis, redis-py, or `redis-cli` over RESP for the supported command subset. No Recached-specific backend driver is required.
+- **Real-time sync, built in.** Subscribe to key patterns with `liveQuery` in the browser or `watch` on mobile and in Rust. Clients receive a snapshot, then later changes, and reconcile after reconnecting. [Sync scopes](https://recached.dev/server/sync-scopes) limit which keys each connection may read and write.
 - **Local reads.** Read cached values from application memory instead of making a remote request for every read.
-- **Real-time sync.** Subscribe to key patterns with `liveQuery` in the browser or `watch` on mobile and in Rust. Clients receive a snapshot, then later changes, and reconcile after reconnecting. [Sync scopes](https://recached.dev/server/sync-scopes) limit which keys each connection may read and write.
-- **One Rust foundation.** The server and every client run the same `core-engine`; browser, mobile, and Rust clients share the `sync-client` state machine. Each platform supplies its own transport, persistence, and reactive API.
 - **Offline-capable caching.** Browser clients can persist to IndexedDB. Kotlin and Swift clients save data and queued writes to SQLite and restore them after an app restart. Writes made while disconnected queue and replay on reconnect, within [outbox limits](https://recached.dev/guide/client-support#write-durability-and-replay).
-- **Familiar backend integration.** Connect ioredis, node-redis, redis-py, or `redis-cli` over RESP. No Recached-specific backend driver is required.
+- **One Rust foundation.** The server and every client run the same `core-engine`; browser, mobile, and Rust clients share the `sync-client` state machine. Each platform supplies its own transport, persistence, and reactive API.
 
 Runtimes do not share identical APIs or guarantees. Persistence, write durability, and the size of the API surface differ by client:
 
@@ -47,7 +49,7 @@ The server executes commands across worker threads over a sharded keyspace. Scal
 
 ## What Recached is — and isn't
 
-**Recached is** a cache and synchronization engine: an in-memory key-value cache server, a local cache runtime for browser, mobile, and Rust clients, and the real-time sync layer between them. Its client caches keep working offline.
+**Recached is** an in-memory caching engine with synchronization built in: a key-value cache server, a local cache runtime for browser, mobile, and Rust clients, and the real-time sync layer between them. Its client caches keep working offline.
 
 **Recached is not** a system of record. It does not replace PostgreSQL or MySQL, is not a local SQL database, and does not implement all of Redis. It is not a general CRDT collaboration engine, it does not synchronize SQL tables in either direction, and its client write queue is not a durable business transaction queue.
 
@@ -215,7 +217,7 @@ Recached overlaps with several established projects. This summarizes what each i
 | Project | Designed for | How Recached differs |
 |---|---|---|
 | Redis / Valkey | Mature centralized cache servers with broad command coverage and a large operational ecosystem. Both support server-assisted client-side caching (`CLIENT TRACKING`). | Recached ships its own client runtimes for browsers, Android, Apple platforms, and Rust. They hydrate watched keys, receive value updates, and replay queued writes after reconnecting; browser and mobile clients also persist locally. Recached implements a smaller command subset. |
-| Dragonfly | A multithreaded, Redis- and Memcached-compatible server focused on server-side performance. | Recached's focus is the client cache and its sync path, not server throughput. |
+| Dragonfly | A multithreaded, Redis- and Memcached-compatible server focused on server-side performance. | Recached pairs its cache server with client runtimes and a built-in sync path. It does not compete on server throughput. |
 | ElectricSQL | Synchronizing subsets of PostgreSQL data to clients. | Recached synchronizes a cache keyspace, not database tables. You publish database-derived state into it. |
 | PowerSync | Synchronizing backend database data into an on-device SQLite database, with client writes uploaded through your backend. | Recached's client store is a key-value cache, not a local SQL database. |
 
