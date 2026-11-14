@@ -6681,6 +6681,7 @@ mod sync_reliability;
 mod commands_v06;
 mod multitenant;
 mod replication_dedup;
+mod security_v06_regressions;
 
 #[tokio::test]
 async fn empty_lines_between_commands_are_ignored_like_redis() {

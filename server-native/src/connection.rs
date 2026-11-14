@@ -235,7 +235,10 @@ pub(crate) fn process_auth(
     match expected.as_ref() {
         // Constant-time compare so a network attacker can't recover the password
         // byte-by-byte from response-timing differences.
-        Some(pwd) if ct_eq_bytes(provided.as_bytes(), pwd.as_bytes()) => {
+        // An empty configured password matches nothing. Startup never
+        // configures one (`credential_from_env`); this keeps `AUTH ""` from
+        // unlocking the port if a caller ever does.
+        Some(pwd) if !pwd.is_empty() && ct_eq_bytes(provided.as_bytes(), pwd.as_bytes()) => {
             *is_authenticated = true;
             *failures = 0;
             (false, b"+OK\r\n".to_vec())

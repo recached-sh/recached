@@ -266,7 +266,8 @@ async fn run(
     }
 
     // ── auth ──────────────────────────────────────────────────────────────
-    let password = std::env::var("RECACHED_PASSWORD").ok();
+    let password =
+        credential_from_env("RECACHED_PASSWORD", std::env::var("RECACHED_PASSWORD").ok());
     let global_password = Arc::new(password);
 
     if global_password.is_some() {
@@ -559,7 +560,10 @@ async fn run(
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(6381);
-    let repl_password: Option<String> = std::env::var("RECACHED_REPL_PASSWORD").ok();
+    let repl_password: Option<String> = credential_from_env(
+        "RECACHED_REPL_PASSWORD",
+        std::env::var("RECACHED_REPL_PASSWORD").ok(),
+    );
     let repl_channel_capacity: usize = std::env::var("RECACHED_REPL_BUFFER")
         .ok()
         .and_then(|v| v.parse().ok())
