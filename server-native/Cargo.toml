@@ -47,5 +47,15 @@ rand.workspace                     = true
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator.workspace        = true
 
+# jemalloc's background purging thread, on by default where it exists (Linux
+# with glibc; jemalloc does not support it on macOS or musl and warns at start).
+# Without it an idle server kept every page it had freed: after DEL of 1M keys
+# and the table reclaim, RSS stayed 55 B/key above idle; with it, 8 B/key
+# (6G Linux baseline). Redis enables the same thread (`jemalloc-bg-thread
+# yes`). A compile-time default only: `_RJEM_MALLOC_CONF=background_thread:false`
+# turns it off at run time.
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+tikv-jemallocator = { workspace = true, features = ["background_threads"] }
+
 [lints]
 workspace = true
