@@ -536,7 +536,14 @@ impl<'de> Deserialize<'de> for Blob {
 
 // ── Compact hash encoding ─────────────────────────────────────────────────────
 
-const INLINE_HASH_FIELDS: usize = 2;
+/// A small hash is packed while it has at most this many fields…
+const PACKED_HASH_FIELDS: usize = 32;
+/// …and no field name or value longer than this. The same two limits as Redis's
+/// `hash-max-listpack-entries` / `-value` (128 / 64 by default); the field
+/// count is lower because a lookup scans the packed bytes, and the 6G
+/// measurements put the scan's crossover with a hash table near 32 fields.
+const PACKED_HASH_LEN: usize = 64;
+const _: () = assert!(PACKED_HASH_LEN <= u8::MAX as usize);
 
 /// A hash plus a running byte total.
 ///
@@ -555,24 +562,96 @@ struct CompactHash {
     bytes: usize,
 }
 
+/// How a hash is stored.
+///
+/// `Packed` is Redis's listpack idea in safe Rust: every field and value in
+/// one exact-size byte buffer, `[len][field][len][value]` repeated, with one
+/// length byte each (both are at most [`PACKED_HASH_LEN`]). A 3-field hash of
+/// 32-byte values is one ~110-byte allocation, where a `HashMap<String, Blob>`
+/// was a table plus a heap allocation per field name and per value — ~360
+/// more bytes (v0.6 6G layout audit). Lookups scan, which is why the field
+/// count is capped; past either cap the hash becomes a `Table` for good.
 #[derive(Clone)]
 enum CompactHashRepr {
-    Inline(SmallVec<[(String, Blob); INLINE_HASH_FIELDS]>),
+    Packed { buf: Vec<u8>, fields: u32 },
     Table(HashMap<String, Blob>),
+}
+
+/// One packed record: where its value starts and ends, and where the next
+/// record begins. `None` at the end of the buffer or on a malformed length,
+/// which only a bug in this module could write.
+fn packed_record(
+    buf: &[u8],
+    at: usize,
+) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let field_len = usize::from(*buf.get(at)?);
+    let field = at + 1..at + 1 + field_len;
+    let value_len = usize::from(*buf.get(field.end)?);
+    let value = field.end + 1..field.end + 1 + value_len;
+    (value.end <= buf.len()).then_some((field, value))
+}
+
+/// Byte offsets of `key`'s record: (record start, field range, value range).
+fn packed_find(
+    buf: &[u8],
+    key: &[u8],
+) -> Option<(usize, std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let mut at = 0;
+    while let Some((field, value)) = packed_record(buf, at) {
+        if buf.get(field.clone()) == Some(key) {
+            return Some((at, field, value));
+        }
+        at = value.end;
+    }
+    None
+}
+
+fn packs(field: &[u8], value: &[u8]) -> bool {
+    field.len() <= PACKED_HASH_LEN && value.len() <= PACKED_HASH_LEN
+}
+
+/// Append one record. Callers have checked `packs`, so both lengths fit a
+/// byte; exact reservation keeps the buffer at its real size.
+fn packed_push(buf: &mut Vec<u8>, field: &[u8], value: &[u8]) {
+    let (Ok(field_len), Ok(value_len)) = (u8::try_from(field.len()), u8::try_from(value.len()))
+    else {
+        return;
+    };
+    buf.reserve_exact(2 + field.len() + value.len());
+    buf.push(field_len);
+    buf.extend_from_slice(field);
+    buf.push(value_len);
+    buf.extend_from_slice(value);
 }
 
 impl CompactHash {
     fn new() -> Self {
         Self {
-            repr: CompactHashRepr::Inline(SmallVec::new()),
+            repr: CompactHashRepr::Packed {
+                buf: Vec::new(),
+                fields: 0,
+            },
             bytes: 0,
         }
     }
 
     fn from_map(map: HashMap<String, Blob>) -> Self {
         let bytes = map.iter().map(|(key, value)| key.len() + value.len()).sum();
-        let repr = if map.len() <= INLINE_HASH_FIELDS {
-            CompactHashRepr::Inline(map.into_iter().collect())
+        let repr = if map.len() <= PACKED_HASH_FIELDS
+            && map.iter().all(|(k, v)| packs(k.as_bytes(), v.as_slice()))
+        {
+            let mut buf = Vec::with_capacity(
+                map.iter()
+                    .map(|(k, v)| 2 + k.len() + v.len())
+                    .sum::<usize>(),
+            );
+            for (key, value) in &map {
+                packed_push(&mut buf, key.as_bytes(), value.as_slice());
+            }
+            CompactHashRepr::Packed {
+                buf,
+                fields: u32::try_from(map.len()).unwrap_or(u32::MAX),
+            }
         } else {
             CompactHashRepr::Table(map)
         };
@@ -586,13 +665,13 @@ impl CompactHash {
 
     fn to_map(&self) -> HashMap<String, Blob> {
         self.iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
+            .map(|(key, value)| (key.to_string(), Blob::from(value)))
             .collect()
     }
 
     fn len(&self) -> usize {
         match &self.repr {
-            CompactHashRepr::Inline(fields) => fields.len(),
+            CompactHashRepr::Packed { fields, .. } => *fields as usize,
             CompactHashRepr::Table(fields) => fields.len(),
         }
     }
@@ -601,30 +680,67 @@ impl CompactHash {
         self.get(key).is_some()
     }
 
-    fn get(&self, key: &str) -> Option<&Blob> {
+    fn get(&self, key: &str) -> Option<&[u8]> {
         match &self.repr {
-            CompactHashRepr::Inline(fields) => fields
-                .iter()
-                .find_map(|(field, value)| (field == key).then_some(value)),
-            CompactHashRepr::Table(fields) => fields.get(key),
+            CompactHashRepr::Packed { buf, .. } => {
+                let (_, _, value) = packed_find(buf, key.as_bytes())?;
+                buf.get(value)
+            }
+            CompactHashRepr::Table(fields) => fields.get(key).map(Blob::as_slice),
         }
     }
 
-    fn insert(&mut self, key: String, value: Blob) -> Option<Blob> {
+    /// Set `key` to `value`. Returns whether the field is new.
+    fn insert(&mut self, key: String, value: Vec<u8>) -> bool {
         let (key_len, value_len) = (key.len(), value.len());
-        let old = match &mut self.repr {
-            CompactHashRepr::Inline(fields) => {
-                if let Some((_, slot)) = fields.iter_mut().find(|(field, _)| field == &key) {
-                    Some(std::mem::replace(slot, value))
-                } else if fields.len() < INLINE_HASH_FIELDS {
-                    fields.push((key, value));
-                    None
-                } else {
-                    let mut table = HashMap::with_capacity(fields.len() + 1);
-                    table.extend(fields.drain(..));
-                    let old = table.insert(key, value);
-                    self.repr = CompactHashRepr::Table(table);
-                    old
+        let previous_len = match &mut self.repr {
+            CompactHashRepr::Packed { buf, fields } => {
+                match packed_find(buf, key.as_bytes()) {
+                    Some((_, _, old)) if value.len() <= PACKED_HASH_LEN => {
+                        // Overwrite in place: replace the value bytes and its
+                        // length byte; the buffer is resized exactly.
+                        let old_len = old.len();
+                        if let Ok(len_byte) = u8::try_from(value.len())
+                            && let Some(slot) =
+                                old.start.checked_sub(1).and_then(|i| buf.get_mut(i))
+                        {
+                            *slot = len_byte;
+                            // Reserve exactly first, or `splice` grows the
+                            // buffer by doubling and a shrink has to follow.
+                            buf.reserve_exact(value.len().saturating_sub(old_len));
+                            buf.splice(old, value);
+                            if buf.capacity() > buf.len() {
+                                buf.shrink_to_fit();
+                            }
+                        }
+                        Some(old_len)
+                    }
+                    found => {
+                        let new_field = found.is_none();
+                        let count = (*fields as usize).saturating_add(usize::from(new_field));
+                        if count <= PACKED_HASH_FIELDS && packs(key.as_bytes(), &value) {
+                            packed_push(buf, key.as_bytes(), &value);
+                            *fields = fields.saturating_add(1);
+                            None
+                        } else {
+                            // Too many fields, or a field or value too long to
+                            // pack: become a table for good.
+                            let mut table = HashMap::with_capacity(count);
+                            let mut at = 0;
+                            while let Some((f, v)) = packed_record(buf, at) {
+                                if let (Some(f), Some(v)) = (buf.get(f), buf.get(v.clone())) {
+                                    table.insert(
+                                        String::from_utf8_lossy(f).into_owned(),
+                                        Blob::from(v),
+                                    );
+                                }
+                                at = v.end;
+                            }
+                            let old = table.insert(key, Blob::from(value)).map(|b| b.len());
+                            self.repr = CompactHashRepr::Table(table);
+                            old
+                        }
+                    }
                 }
             }
             // Replace in place when the field exists. `HashMap::insert`
@@ -634,66 +750,83 @@ impl CompactHash {
             // overwrite, +228 live bytes per hash (measured: 1M small hashes
             // went from 732 to 960 B/key of live heap after one HSET pass).
             CompactHashRepr::Table(fields) => match fields.get_mut(key.as_str()) {
-                Some(slot) => Some(std::mem::replace(slot, value)),
-                None => fields.insert(key, value),
+                Some(slot) => Some(std::mem::replace(slot, Blob::from(value)).len()),
+                None => fields.insert(key, Blob::from(value)).map(|b| b.len()),
             },
         };
-        match &old {
+        match previous_len {
             // Overwrite: the field name is already counted, only the value moved.
             Some(previous) => {
                 self.bytes = self
                     .bytes
                     .saturating_add(value_len)
-                    .saturating_sub(previous.len());
+                    .saturating_sub(previous);
+                false
             }
-            None => self.bytes = self.bytes.saturating_add(key_len + value_len),
+            None => {
+                self.bytes = self.bytes.saturating_add(key_len + value_len);
+                true
+            }
         }
-        old
     }
 
-    fn insert_if_absent(&mut self, key: String, value: Blob) -> bool {
+    fn insert_if_absent(&mut self, key: String, value: Vec<u8>) -> bool {
         if self.contains_key(&key) {
             false
         } else {
-            self.insert(key, value);
-            true
+            self.insert(key, value)
         }
     }
 
-    fn remove(&mut self, key: &str) -> Option<Blob> {
+    /// Remove `key`. Returns whether it was present.
+    fn remove(&mut self, key: &str) -> bool {
         let removed = match &mut self.repr {
-            CompactHashRepr::Inline(fields) => fields
-                .iter()
-                .position(|(field, _)| field == key)
-                .map(|position| fields.swap_remove(position).1),
-            CompactHashRepr::Table(fields) => fields.remove(key),
+            CompactHashRepr::Packed { buf, fields } => match packed_find(buf, key.as_bytes()) {
+                Some((start, _, value)) => {
+                    let len = value.len();
+                    buf.drain(start..value.end);
+                    buf.shrink_to_fit();
+                    *fields = fields.saturating_sub(1);
+                    Some(len)
+                }
+                None => None,
+            },
+            CompactHashRepr::Table(fields) => fields.remove(key).map(|b| b.len()),
         };
-        if let Some(ref value) = removed {
-            self.bytes = self.bytes.saturating_sub(key.len() + value.len());
+        if let Some(value_len) = removed {
+            self.bytes = self.bytes.saturating_sub(key.len() + value_len);
         }
-        removed
+        removed.is_some()
     }
 
     fn iter(&self) -> CompactHashIter<'_> {
         match &self.repr {
-            CompactHashRepr::Inline(fields) => CompactHashIter::Inline(fields.iter()),
+            CompactHashRepr::Packed { buf, .. } => CompactHashIter::Packed { buf, at: 0 },
             CompactHashRepr::Table(fields) => CompactHashIter::Table(fields.iter()),
         }
     }
 }
 
 enum CompactHashIter<'a> {
-    Inline(std::slice::Iter<'a, (String, Blob)>),
+    Packed { buf: &'a [u8], at: usize },
     Table(std::collections::hash_map::Iter<'a, String, Blob>),
 }
 
 impl<'a> Iterator for CompactHashIter<'a> {
-    type Item = (&'a String, &'a Blob);
+    type Item = (&'a str, &'a [u8]);
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::Inline(iter) => iter.next().map(|(key, value)| (key, value)),
-            Self::Table(iter) => iter.next(),
+            Self::Packed { buf, at } => {
+                let (field, value) = packed_record(buf, *at)?;
+                *at = value.end;
+                // Packed field names were written from `String`s, so this
+                // validation cannot fail; if it ever did, stopping is better
+                // than handing out bytes that are not a field name.
+                let name = std::str::from_utf8(buf.get(field)?).ok()?;
+                Some((name, buf.get(value)?))
+            }
+            Self::Table(iter) => iter.next().map(|(k, v)| (k.as_str(), v.as_slice())),
         }
     }
 }
@@ -2264,11 +2397,16 @@ impl KeyValueStore {
         match value {
             EntryValue::Str(s) => Value::BulkString(Some(s.clone().into_bytes())),
             EntryValue::Hash(m) => {
-                let mut fields: Vec<(&String, &Blob)> = m.iter().collect();
+                let mut fields: Vec<(&str, &[u8])> = m.iter().collect();
                 fields.sort_by(|a, b| a.0.cmp(b.0));
                 let items = fields
                     .into_iter()
-                    .flat_map(|(f, v)| [bulk(f), blob(v)])
+                    .flat_map(|(f, v)| {
+                        [
+                            Value::BulkString(Some(f.as_bytes().to_vec())),
+                            Value::BulkString(Some(v.to_vec())),
+                        ]
+                    })
                     .collect();
                 tagged("hash", items)
             }
@@ -3798,13 +3936,14 @@ impl KeyValueStore {
                     EntryValue::Hash,
                     Box::new(CompactHash::new())
                 );
+                // Counted from the inserts themselves, so a field named twice
+                // in one command counts once — as in Redis. Checking
+                // presence for every pair first counted it twice.
                 let new_count = pairs
-                    .iter()
-                    .filter(|(f, _)| !h.contains_key(f.as_str()))
+                    .into_iter()
+                    .map(|(field, val)| h.insert(field, val))
+                    .filter(|&added| added)
                     .count();
-                for (field, val) in pairs {
-                    h.insert(field, val.into());
-                }
                 Value::Integer(new_count as i64)
             }
 
@@ -3832,7 +3971,7 @@ impl KeyValueStore {
                         EntryValue::Hash(h) => {
                             e.touch(now);
                             h.get(&field)
-                                .map(|v| Value::BulkString(Some(v.clone().into_bytes())))
+                                .map(|v| Value::BulkString(Some(v.to_vec())))
                                 .unwrap_or(Value::BulkString(None))
                         }
                         _ => Value::Error(WRONGTYPE.to_string()),
@@ -3848,15 +3987,14 @@ impl KeyValueStore {
                     Some(e) => match &e.value {
                         EntryValue::Hash(h) => {
                             e.touch(now);
-                            let mut pairs: Vec<(&str, &Blob)> =
-                                h.iter().map(|(f, v)| (f.as_str(), v)).collect();
+                            let mut pairs: Vec<(&str, &[u8])> = h.iter().collect();
                             pairs.sort_unstable_by_key(|(f, _)| *f);
                             let out = pairs
                                 .into_iter()
                                 .flat_map(|(f, v)| {
                                     [
                                         Value::BulkString(Some(f.as_bytes().to_vec())),
-                                        Value::BulkString(Some(v.as_slice().to_vec())),
+                                        Value::BulkString(Some(v.to_vec())),
                                     ]
                                 })
                                 .collect();
@@ -3874,8 +4012,7 @@ impl KeyValueStore {
                     Some(e) if e.is_expired(now) => Value::Integer(0),
                     Some(mut e) => match &mut e.value {
                         EntryValue::Hash(h) => {
-                            let count =
-                                fields.into_iter().filter(|f| h.remove(f).is_some()).count();
+                            let count = fields.into_iter().filter(|f| h.remove(f)).count();
                             Value::Integer(count as i64)
                         }
                         _ => Value::Error(WRONGTYPE.to_string()),
@@ -3890,8 +4027,7 @@ impl KeyValueStore {
                     Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
                     Some(e) => match &e.value {
                         EntryValue::Hash(h) => {
-                            let mut keys: Vec<&str> =
-                                h.iter().map(|(field, _)| field.as_str()).collect();
+                            let mut keys: Vec<&str> = h.iter().map(|(field, _)| field).collect();
                             keys.sort_unstable();
                             Value::Array(Some(
                                 keys.into_iter()
@@ -3913,11 +4049,8 @@ impl KeyValueStore {
                         EntryValue::Hash(h) => {
                             e.touch(now);
                             let pat = args.pattern.as_deref().unwrap_or("*");
-                            let mut fields: Vec<(&str, &Blob)> = h
-                                .iter()
-                                .filter(|(f, _)| glob_match(pat, f))
-                                .map(|(f, v)| (f.as_str(), v))
-                                .collect();
+                            let mut fields: Vec<(&str, &[u8])> =
+                                h.iter().filter(|(f, _)| glob_match(pat, f)).collect();
                             fields.sort_unstable_by_key(|(f, _)| *f);
                             let (page, next) = scan_page(&fields, args.cursor, args.count);
                             let out = page
@@ -3927,7 +4060,7 @@ impl KeyValueStore {
                                     if args.novalues {
                                         vec![field]
                                     } else {
-                                        vec![field, Value::BulkString(Some(v.as_slice().to_vec()))]
+                                        vec![field, Value::BulkString(Some(v.to_vec()))]
                                     }
                                 })
                                 .collect();
@@ -3945,13 +4078,12 @@ impl KeyValueStore {
                     Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
                     Some(e) => match &e.value {
                         EntryValue::Hash(h) => {
-                            let mut pairs: Vec<(&str, &Blob)> =
-                                h.iter().map(|(f, v)| (f.as_str(), v)).collect();
+                            let mut pairs: Vec<(&str, &[u8])> = h.iter().collect();
                             pairs.sort_unstable_by_key(|(f, _)| *f);
                             Value::Array(Some(
                                 pairs
                                     .into_iter()
-                                    .map(|(_, v)| Value::BulkString(Some(v.as_slice().to_vec())))
+                                    .map(|(_, v)| Value::BulkString(Some(v.to_vec())))
                                     .collect(),
                             ))
                         }
@@ -4003,11 +4135,7 @@ impl KeyValueStore {
                     EntryValue::Hash,
                     Box::new(CompactHash::new())
                 );
-                Value::Integer(if h.insert_if_absent(field, val.into()) {
-                    1
-                } else {
-                    0
-                })
+                Value::Integer(if h.insert_if_absent(field, val) { 1 } else { 0 })
             }
 
             Command::HMGet(key, fields) => {
@@ -4025,7 +4153,7 @@ impl KeyValueStore {
                                 .iter()
                                 .map(|f| {
                                     h.get(f)
-                                        .map(|v| Value::BulkString(Some(v.clone().into_bytes())))
+                                        .map(|v| Value::BulkString(Some(v.to_vec())))
                                         .unwrap_or(Value::BulkString(None))
                                 })
                                 .collect(),
@@ -5827,7 +5955,10 @@ fn hash_incr_int(data: &Keyspace, key: String, field: String, delta: i64) -> Val
     // `HINCRBY` silently overwrite `not-a-number` with the increment.
     let cur: i64 = match h.get(&field) {
         None => 0,
-        Some(existing) => match existing.parse_as() {
+        Some(existing) => match std::str::from_utf8(existing)
+            .ok()
+            .and_then(|t| t.parse().ok())
+        {
             Some(n) => n,
             None => return Value::Error("ERR hash value is not an integer".to_string()),
         },
@@ -5855,7 +5986,10 @@ fn hash_incr_float(data: &Keyspace, key: String, field: String, delta: f64) -> V
     // As in `hash_incr_int`: absence is zero, anything else must parse.
     let cur: f64 = match h.get(&field) {
         None => 0.0,
-        Some(existing) => match existing.parse_as::<f64>() {
+        Some(existing) => match std::str::from_utf8(existing)
+            .ok()
+            .and_then(|t| t.parse::<f64>().ok())
+        {
             Some(n) if !n.is_nan() => n,
             _ => return Value::Error("ERR hash value is not a float".to_string()),
         },
@@ -11351,12 +11485,19 @@ mod storage_regression_tests {
         assert!(!payload.0.spilled());
 
         let mut hash = CompactHash::new();
-        for i in 0..INLINE_HASH_FIELDS {
-            hash.insert(format!("f{i}"), Blob::from("v"));
+        for i in 0..PACKED_HASH_FIELDS {
+            hash.insert(format!("f{i}"), b"v".to_vec());
         }
-        assert!(matches!(hash.repr, CompactHashRepr::Inline(_)));
-        hash.insert("spill".into(), Blob::from("v"));
+        assert!(matches!(hash.repr, CompactHashRepr::Packed { .. }));
+        hash.insert("spill".into(), b"v".to_vec());
         assert!(matches!(hash.repr, CompactHashRepr::Table(_)));
+        // A value longer than a packed record allows converts at once.
+        let mut long = CompactHash::new();
+        long.insert("f".into(), b"v".to_vec());
+        long.insert("g".into(), vec![b'x'; PACKED_HASH_LEN + 1]);
+        assert!(matches!(long.repr, CompactHashRepr::Table(_)));
+        assert_eq!(long.get("f"), Some(&b"v"[..]));
+        assert_eq!(long.get("g").map(<[u8]>::len), Some(PACKED_HASH_LEN + 1));
 
         let mut set = CompactSet::new();
         for i in 0..INLINE_SET_MEMBERS {
@@ -11371,35 +11512,101 @@ mod storage_regression_tests {
     /// every small hash's table double on its first `HSET` overwrite.
     #[test]
     fn overwriting_fields_does_not_grow_a_full_table() {
+        // A long first value makes the hash a table at one field, sized for
+        // it: 4 buckets, capacity 3. Three fields fill it exactly.
         let mut hash = CompactHash::new();
-        for i in 0..=INLINE_HASH_FIELDS {
-            hash.insert(format!("f{i}"), Blob::from("v"));
-        }
+        hash.insert("f0".into(), vec![b'L'; PACKED_HASH_LEN + 1]);
+        hash.insert("f1".into(), b"v".to_vec());
+        hash.insert("f2".into(), b"v".to_vec());
         let CompactHashRepr::Table(table) = &hash.repr else {
-            panic!(
-                "{} fields should have spilled to a table",
-                INLINE_HASH_FIELDS + 1
-            );
+            panic!("a long value should have made a table");
         };
         let capacity = table.capacity();
         assert_eq!(table.len(), capacity, "precondition: the table is full");
         for _ in 0..3 {
-            for i in 0..=INLINE_HASH_FIELDS {
-                assert!(hash.insert(format!("f{i}"), Blob::from("w")).is_some());
+            for i in 0..3 {
+                assert!(!hash.insert(format!("f{i}"), b"w".to_vec()), "overwrite");
             }
         }
         let CompactHashRepr::Table(table) = &hash.repr else {
             panic!("still a table");
         };
         assert_eq!(table.capacity(), capacity, "overwrites grew the table");
-        assert_eq!(hash.len(), INLINE_HASH_FIELDS + 1);
-        assert_eq!(
-            hash.heap_bytes(),
-            (INLINE_HASH_FIELDS + 1) * ("f0".len() + 1)
-        );
+        assert_eq!(hash.len(), 3);
+        assert_eq!(hash.heap_bytes(), 3 * ("f0".len() + 1));
         // A genuinely new field still inserts.
-        assert!(hash.insert("new".into(), Blob::from("v")).is_none());
-        assert_eq!(hash.len(), INLINE_HASH_FIELDS + 2);
+        assert!(hash.insert("new".into(), b"v".to_vec()));
+        assert_eq!(hash.len(), 4);
+    }
+
+    /// 6G: the packed form against a `HashMap` model, across both conversion
+    /// thresholds (field count and record length), binary values included.
+    /// Every operation's result and the whole observable state are compared
+    /// after each step.
+    #[test]
+    fn packed_hashes_behave_exactly_like_a_map() {
+        let mut state = 0x243F_6A88_85A3_08D3u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for round in 0..200 {
+            let mut hash = CompactHash::new();
+            let mut model: HashMap<String, Vec<u8>> = HashMap::new();
+            // Half the rounds stay small enough to remain packed throughout.
+            let field_space = if round % 2 == 0 { 24 } else { 48 };
+            for _ in 0..300 {
+                let n = next();
+                let field = format!("f{}", n % field_space);
+                match n % 7 {
+                    0..=3 => {
+                        // Lengths around the packed limit, bytes 0..=255.
+                        let len = (n >> 8) as usize % (PACKED_HASH_LEN + 8);
+                        let len = if round % 4 == 0 {
+                            len.min(PACKED_HASH_LEN)
+                        } else {
+                            len
+                        };
+                        let value: Vec<u8> = (0..len).map(|i| (n >> (i % 56)) as u8).collect();
+                        let fresh = model.insert(field.clone(), value.clone()).is_none();
+                        assert_eq!(hash.insert(field, value), fresh, "insert result");
+                    }
+                    4 | 5 => {
+                        assert_eq!(hash.remove(&field), model.remove(&field).is_some());
+                    }
+                    _ => {
+                        assert_eq!(hash.get(&field), model.get(&field).map(Vec::as_slice));
+                    }
+                }
+                assert_eq!(hash.len(), model.len());
+                assert_eq!(
+                    hash.heap_bytes(),
+                    model.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
+                );
+            }
+            let mut seen: Vec<(String, Vec<u8>)> = hash
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_vec()))
+                .collect();
+            seen.sort();
+            let mut want: Vec<(String, Vec<u8>)> = model.clone().into_iter().collect();
+            want.sort();
+            assert_eq!(seen, want, "iteration, round {round}");
+            // Snapshot round trip preserves everything and re-packs when it fits.
+            let restored = CompactHash::from_map(hash.to_map());
+            assert_eq!(restored.len(), model.len());
+            for (k, v) in &model {
+                assert_eq!(restored.get(k), Some(v.as_slice()));
+            }
+            if let CompactHashRepr::Packed { buf, .. } = &hash.repr {
+                // Exact size: no growth slack is kept.
+                let used: usize = model.iter().map(|(k, v)| 2 + k.len() + v.len()).sum();
+                assert_eq!(buf.len(), used);
+                assert_eq!(buf.capacity(), used, "packed buffer keeps slack");
+            }
+        }
     }
 }
 

@@ -227,6 +227,21 @@ fn cases() -> Vec<(&'static str, Vec<Vec<&'static str>>)> {
             ],
         ),
         (
+            // 6G: a field named twice in one HSET counts once, last value wins.
+            // Recached up to 6F replied 2 to the first command.
+            "hset-repeated-field",
+            vec![
+                c("HSET hd f a f b"),
+                c("HGET hd f"),
+                c("HSET hd f c g d g e"),
+                c("HGETALL hd"),
+                c("HLEN hd"),
+                c("HSETNX hd g z"),
+                c("HDEL hd f f"),
+                c("HLEN hd"),
+            ],
+        ),
+        (
             "hstrlen",
             vec![
                 c("HSET hh f1 v1 e x"),

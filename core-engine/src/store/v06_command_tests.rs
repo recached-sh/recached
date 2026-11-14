@@ -574,6 +574,9 @@ fn per_entry_layout_does_not_regrow() {
     assert_eq!(size_of::<StrValue>(), 48, "StrValue");
     assert_eq!(size_of::<EntryValue>(), 48, "EntryValue");
     assert_eq!(size_of::<Entry>(), 64, "Entry");
+    // A hash's box: 136 bytes with the old two-field inline SmallVec, which a
+    // spilled hash kept paying for; packed, it fits jemalloc's 64-byte class.
+    assert!(size_of::<CompactHash>() <= 64, "CompactHash");
     // 6G: the map's table is open addressing, so every slot it has, used or
     // not, costs this much. It was 80 (`String` + inline `Entry`); a pointer
     // slot is what keeps empty buckets cheap.
@@ -796,4 +799,35 @@ fn reclaiming_leaves_a_well_filled_keyspace_alone() {
         assert!(!s.reclaim_capacity_step());
     }
     assert_eq!(keyspace_buckets(&s), buckets);
+}
+
+#[test]
+fn hset_counts_a_field_named_twice_once() {
+    // Redis 7.2.5: `HSET k f a f b` -> 1 and f = "b"; `HSET k f c g d g e` -> 1.
+    // Recached up to 6F counted presence before inserting, so it said 2.
+    let s = KeyValueStore::new();
+    let pairs = |p: &[(&str, &str)]| -> Vec<(String, Vec<u8>)> {
+        p.iter()
+            .map(|(f, v)| (f.to_string(), v.as_bytes().to_vec()))
+            .collect()
+    };
+    assert_eq!(
+        s.execute(Command::HSet("k".into(), pairs(&[("f", "a"), ("f", "b")]))),
+        int(1)
+    );
+    assert_eq!(
+        s.execute(Command::HGet("k".into(), "f".into())),
+        Value::BulkString(Some(b"b".to_vec()))
+    );
+    assert_eq!(
+        s.execute(Command::HSet(
+            "k".into(),
+            pairs(&[("f", "c"), ("g", "d"), ("g", "e")])
+        )),
+        int(1)
+    );
+    assert_eq!(
+        s.execute(Command::HGet("k".into(), "g".into())),
+        Value::BulkString(Some(b"e".to_vec()))
+    );
 }
