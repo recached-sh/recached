@@ -262,3 +262,7 @@ without the `SAVE` refuses to start rather than skip the records it cannot read.
 written as by 0.5.0, so either version can follow the other. On startup 0.5.1 truncates an
 incomplete record at the end of the AOF (left by a crash mid-append) instead of only skipping it;
 0.5.0 left it in place, which made the following restart fail.
+
+**0.5.1 → 0.6.** Snapshot and AOF formats are unchanged; replicas must be upgraded before the
+primary, and tokens with claims are refused by 0.5 servers. The full procedure, including rollback,
+is in [Upgrading to 0.6](/server/upgrading-0.6).

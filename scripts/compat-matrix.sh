@@ -14,13 +14,18 @@
 #   AOF       old AOF replayed by the new server (upgrade); a new AOF holding
 #             DEDUP records offered to the old server (must refuse to start,
 #             not skip them); the same after SAVE (the documented downgrade)
+#   snapshot  an old snapshot (every value type, a TTL) loaded by the new server
+#   tokens    sync tokens of each form against each server
+#             (scripts/compat-tokens.mjs: two-segment, claims, expired, forged,
+#             cross-tenant, renewal, subject change, expiry on a live socket)
 #
 # Client failures are compared with scripts/compat-expected-failures.txt. A
 # failure not listed there fails the run; a listed one that passes is reported
 # as stale so the list cannot quietly outlive the limitation it records.
 #
 # The old ref is built in a git worktree under $COMPAT_DIR (default
-# target/compat), so repeated runs reuse its build. Needs redis-cli and nc.
+# target/compat), so repeated runs reuse its build. Needs redis-cli, nc and
+# Node 22+ (the token checks use its built-in WebSocket).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,7 +38,7 @@ RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/recached-compat.XXXXXX")"
 LOG_DIR="${COMPAT_LOG_DIR:-$RUN_DIR/logs}"
 mkdir -p "$LOG_DIR"
 
-for tool in redis-cli nc cargo git; do
+for tool in redis-cli nc cargo git node; do
   command -v "$tool" >/dev/null || { echo "compat-matrix: '$tool' is required" >&2; exit 2; }
 done
 
@@ -82,8 +87,15 @@ server_bin() { if [ "$1" = old ]; then echo "$OLD_DIR/target/debug/recached-serv
 # Never compare a build with itself.
 old_version="$("$(server_bin old)" --version)"
 new_version="$("$(server_bin new)" --version)"
-if [ "$old_version" != "recached-server ${OLD_REF#v}" ] || [ "$old_version" = "$new_version" ]; then
+if [ "$old_version" != "recached-server ${OLD_REF#v}" ]; then
   echo "compat-matrix: expected old=recached-server ${OLD_REF#v}, got old='$old_version' new='$new_version'" >&2
+  exit 2
+fi
+# Identity is the source, not the version string: between releases the
+# checkout still reports the last released version (the bump lands with the
+# release), so equal versions are expected against the newest tag.
+if [ "$(git -C "$ROOT" rev-parse HEAD)" = "$old_commit" ] && git -C "$ROOT" diff --quiet HEAD; then
+  echo "compat-matrix: this checkout is $OLD_REF itself; nothing to compare" >&2
   exit 2
 fi
 say "old: $old_version, new: $new_version"
@@ -249,10 +261,41 @@ refuses_old_replica() {
   stop_server "$ppid"
 }
 
+# A 0.6 primary with DEDUP replication off streams COPY verbatim, and an older
+# replica does not know it. It must not skip it and diverge: it drops the
+# stream on the unknown command and recovers by full synchronization.
+copy_reaches_old_replica() {
+  local ptcp=$port pws=$((port + 1)) prepl=$((port + 2)) rtcp=$((port + 3)) rws=$((port + 4))
+  port=$((port + 10))
+  local ppid rpid got=""
+  ppid="$(start_server new repl-primary-copy "$ptcp" "$pws" RECACHED_REPL_ENABLE=1 RECACHED_REPL_PORT="$prepl" RECACHED_REPL_DEDUP=off)"
+  rpid="$(start_server old repl-replica-copy "$rtcp" "$rws" RECACHED_REPLICAOF="127.0.0.1:$prepl")"
+  cli "$ptcp" SET compat:repl:copy:src v >/dev/null
+  cli "$ptcp" COPY compat:repl:copy:src compat:repl:copy:dst >/dev/null
+  cli "$ptcp" SET compat:repl:copy:after w >/dev/null
+  for _ in $(seq 1 100); do
+    got="$(cli "$rtcp" GET compat:repl:copy:dst)/$(cli "$rtcp" GET compat:repl:copy:after)"
+    [ "$got" = v/w ] && break
+    sleep 0.1
+  done
+  if [ "$got" = v/w ]; then
+    ok "COPY reaches an old replica (it resynchronized: $(grep -c 'full snapshot loaded' "$LOG_DIR/server-repl-replica-copy.log") full syncs)"
+    printf 'replication new(dedup off)->old COPY converged\n' >>"$SUMMARY"
+  else
+    fail "COPY to an old replica: replica has '$got' (logs: $LOG_DIR/server-repl-*copy*)"
+    printf 'replication new(dedup off)->old COPY DIVERGED\n' >>"$SUMMARY"
+  fi
+  stop_server "$rpid"
+  stop_server "$ppid"
+}
+
 say "replication"
 replicate new old RECACHED_REPL_DEDUP=off
+copy_reaches_old_replica
 refuses_old_replica
 replicate old new
+# Both sides new: DEDUP replication negotiated (the primary's default).
+replicate new new
 
 # ── AOF upgrade and downgrade ────────────────────────────────────────────────
 
@@ -278,35 +321,72 @@ else
 fi
 stop_server "$pid"
 
-# Downgrade without SAVE: the new AOF holds DEDUP records the old server cannot
-# replay. It must refuse to start, not start without them.
+# try_old_on <name> <tcp> <ws>: start the old server on the new server's AOF
+# in $RUN_DIR/<name>. Sets STARTED (1 if it came up) and OLD_PID; does not stop it.
+try_old_on() {
+  local name="$1" tcp="$2" ws="$3" dir="$RUN_DIR/$1"
+  # shellcheck disable=SC2046
+  (cd "$dir" && exec env RECACHED_BIND=127.0.0.1 RECACHED_PORT="$tcp" RECACHED_WS_PORT="$ws" RECACHED_METRICS_PORT=0 \
+    RECACHED_SAVE_INTERVAL=0 RECACHED_SAVE_PATH="$dir/dump.rdb" $(aof_env "$name") \
+    "$(server_bin old)") >"$LOG_DIR/server-$name-old.log" 2>&1 </dev/null &
+  OLD_PID=$!
+  echo "$OLD_PID" >>"$PIDFILE"
+  STARTED=0
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$OLD_PID" 2>/dev/null; then break; fi
+    if nc -z 127.0.0.1 "$tcp" 2>/dev/null; then STARTED=1; break; fi
+    sleep 0.1
+  done
+}
+
+# Downgrade without SAVE, DEDUP records only. 0.5 introduced them, so a 0.5
+# server replays them; 0.4 cannot and must refuse to start, not skip them.
+case "$OLD_REF" in v0.[0-4].*) old_reads_dedup=0 ;; *) old_reads_dedup=1 ;; esac
+tcp=$port ws=$((port + 1)); port=$((port + 10))
+mkdir -p "$RUN_DIR/aof-dedup"
+# shellcheck disable=SC2046
+pid="$(start_server new aof-dedup "$tcp" "$ws" $(aof_env aof-dedup))"
+cli "$tcp" DEDUP compat-client 1 SET compat:aof:dedup v >/dev/null
+cli "$tcp" DEDUP compat-client 2 INCRBY compat:aof:dedup:n 7 >/dev/null
+kill9_server "$pid"
+try_old_on aof-dedup "$tcp" "$ws"
+if [ "$old_reads_dedup" = 1 ]; then
+  if [ "$STARTED" = 1 ] && [ "$(cli "$tcp" GET compat:aof:dedup)" = v ] && [ "$(cli "$tcp" GET compat:aof:dedup:n)" = 7 ]; then
+    ok "$OLD_REF replays the new server's DEDUP records"
+    echo "aof new->old (DEDUP records, no SAVE) ok" >>"$SUMMARY"
+  else
+    fail "$OLD_REF on an AOF of DEDUP records: started=$STARTED (log: $LOG_DIR/server-aof-dedup-old.log)"
+    echo "aof new->old (DEDUP records, no SAVE) FAILED" >>"$SUMMARY"
+  fi
+elif [ "$STARTED" = 1 ]; then
+  fail "$OLD_REF started on an AOF holding DEDUP records (got '$(cli "$tcp" GET compat:aof:dedup)')"
+  echo "aof new->old (DEDUP records, no SAVE) STARTED — unsafe" >>"$SUMMARY"
+else
+  ok "$OLD_REF refuses to start on an AOF holding DEDUP records"
+  echo "aof new->old (DEDUP records, no SAVE) refused to start" >>"$SUMMARY"
+fi
+stop_server "$OLD_PID"
+
+# Downgrade without SAVE, with a 0.6 command logged verbatim. Every 0.6 write
+# but COPY is logged as a primitive older servers know; COPY is not, so an
+# older server must refuse to start rather than skip it.
 tcp=$port ws=$((port + 1)); port=$((port + 10))
 mkdir -p "$RUN_DIR/aof-down"
 # shellcheck disable=SC2046
 pid="$(start_server new aof-down "$tcp" "$ws" $(aof_env aof-down))"
 cli "$tcp" DEDUP compat-client 1 SET compat:aof:down v >/dev/null
 cli "$tcp" DEDUP compat-client 2 INCRBY compat:aof:down:n 7 >/dev/null
+cli "$tcp" COPY compat:aof:down compat:aof:down:copy >/dev/null
+cli "$tcp" GETDEL compat:aof:down:gone >/dev/null
 kill9_server "$pid"
-dir="$RUN_DIR/aof-down"
-# shellcheck disable=SC2046
-(cd "$dir" && exec env RECACHED_BIND=127.0.0.1 RECACHED_PORT="$tcp" RECACHED_WS_PORT="$ws" RECACHED_METRICS_PORT=0 \
-  RECACHED_SAVE_INTERVAL=0 RECACHED_SAVE_PATH="$dir/dump.rdb" $(aof_env aof-down) \
-  "$(server_bin old)") >"$LOG_DIR/server-aof-down-old.log" 2>&1 </dev/null &
-pid=$!
-echo "$pid" >>"$PIDFILE"
-started=0
-for _ in $(seq 1 50); do
-  if ! kill -0 "$pid" 2>/dev/null; then break; fi
-  if nc -z 127.0.0.1 "$tcp" 2>/dev/null; then started=1; break; fi
-  sleep 0.1
-done
-if [ "$started" = 1 ]; then
-  fail "$OLD_REF started on an AOF holding DEDUP records (got '$(cli "$tcp" GET compat:aof:down)')"
-  echo "aof new->old (no SAVE) STARTED — unsafe" >>"$SUMMARY"
-  stop_server "$pid"
+try_old_on aof-down "$tcp" "$ws"
+if [ "$STARTED" = 1 ]; then
+  fail "$OLD_REF started on an AOF holding COPY (got '$(cli "$tcp" GET compat:aof:down:copy)')"
+  echo "aof new->old (COPY, no SAVE) STARTED — unsafe" >>"$SUMMARY"
+  stop_server "$OLD_PID"
 else
-  ok "$OLD_REF refuses to start on an AOF holding DEDUP records"
-  echo "aof new->old (no SAVE) refused to start" >>"$SUMMARY"
+  ok "$OLD_REF refuses to start on an AOF holding COPY, and says why"
+  echo "aof new->old (COPY, no SAVE) refused to start" >>"$SUMMARY"
 fi
 
 # Downgrade with SAVE, as documented: SAVE truncates the AOF, and the old
@@ -317,7 +397,8 @@ cli "$tcp" SAVE >/dev/null
 stop_server "$pid"
 # shellcheck disable=SC2046
 pid="$(start_server old aof-down "$tcp" "$ws" $(aof_env aof-down))"
-if [ "$(cli "$tcp" GET compat:aof:down)" = v ] && [ "$(cli "$tcp" GET compat:aof:down:n)" = 7 ]; then
+if [ "$(cli "$tcp" GET compat:aof:down)" = v ] && [ "$(cli "$tcp" GET compat:aof:down:n)" = 7 ] &&
+  [ "$(cli "$tcp" GET compat:aof:down:copy)" = v ]; then
   ok "after SAVE, $OLD_REF starts with the new server's data"
   echo "aof new->old (after SAVE) ok" >>"$SUMMARY"
 else
@@ -325,6 +406,52 @@ else
   echo "aof new->old (after SAVE) FAILED" >>"$SUMMARY"
 fi
 stop_server "$pid"
+
+# ── snapshot upgrade ─────────────────────────────────────────────────────────
+
+say "snapshot"
+# Every value type and a TTL, written by the old server, SAVEd, and loaded by
+# the new one with no AOF: the snapshot alone must carry them across.
+tcp=$port ws=$((port + 1)); port=$((port + 10))
+pid="$(start_server old snap-up "$tcp" "$ws")"
+cli "$tcp" SET compat:snap:s v >/dev/null
+cli "$tcp" SET compat:snap:ttl v EX 3600 >/dev/null
+cli "$tcp" HSET compat:snap:h f1 a f2 b >/dev/null
+cli "$tcp" RPUSH compat:snap:l x y z >/dev/null
+cli "$tcp" SADD compat:snap:set m1 m2 >/dev/null
+cli "$tcp" ZADD compat:snap:z 1 one 2 two >/dev/null
+cli "$tcp" SAVE >/dev/null
+stop_server "$pid"
+pid="$(start_server new snap-up "$tcp" "$ws")"
+snap_got="$(cli "$tcp" GET compat:snap:s)|$(cli "$tcp" HGET compat:snap:h f2)|$(cli "$tcp" LRANGE compat:snap:l 0 -1 | tr '\n' ,)|$(cli "$tcp" SCARD compat:snap:set)|$(cli "$tcp" ZSCORE compat:snap:z two)"
+snap_ttl="$(cli "$tcp" TTL compat:snap:ttl)"
+if [ "$snap_got" = "v|b|x,y,z,|2|2" ] && [ "$snap_ttl" -gt 3500 ] 2>/dev/null; then
+  ok "an $OLD_REF snapshot loads on the new server (all types, TTL $snap_ttl s)"
+  echo "snapshot old->new ok" >>"$SUMMARY"
+else
+  fail "an $OLD_REF snapshot on the new server: got '$snap_got', TTL '$snap_ttl'"
+  echo "snapshot old->new FAILED" >>"$SUMMARY"
+fi
+stop_server "$pid"
+
+# ── sync tokens ──────────────────────────────────────────────────────────────
+
+say "tokens"
+TOKEN_SECRET="compat-matrix-secret-0123456789abcdef"
+for server in old new; do
+  tcp=$port ws=$((port + 1)); port=$((port + 10))
+  pid="$(start_server "$server" "tokens-$server" "$tcp" "$ws" RECACHED_SYNC_SECRET="$TOKEN_SECRET")"
+  if node "$ROOT/scripts/compat-tokens.mjs" "ws://127.0.0.1:$ws" "$TOKEN_SECRET" "$server" \
+    >"$LOG_DIR/tokens-$server.log" 2>&1; then
+    ok "sync tokens against the $server server ($(grep -c '^ok' "$LOG_DIR/tokens-$server.log") checks)"
+    echo "tokens server=$server ok" >>"$SUMMARY"
+  else
+    grep '^FAIL' "$LOG_DIR/tokens-$server.log" || true
+    fail "sync tokens against the $server server (see $LOG_DIR/tokens-$server.log)"
+    echo "tokens server=$server FAILED" >>"$SUMMARY"
+  fi
+  stop_server "$pid"
+done
 
 say "summary (old=$OLD_REF, new=$(git -C "$ROOT" rev-parse --short HEAD)$(git -C "$ROOT" diff --quiet || echo -dirty)); logs in $LOG_DIR"
 echo "client server suite  result"

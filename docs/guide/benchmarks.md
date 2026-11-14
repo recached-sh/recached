@@ -123,6 +123,22 @@ Measured with [`scripts/bench-redis-valkey.sh`](https://github.com/recached-sh/r
 RSS left behind after `FLUSHDB` of 100k 1 KiB keys fell from 99% to 38% of what loading had added.
 These are Recached-only numbers on one host; re-measure on yours.
 
+The same change measured as **live heap**, exactly, with a counting allocator linked to the engine
+and every command parsed from RESP bytes as the server does
+([`benchmarks/v0.6.0/hash-memory-20261114`](https://github.com/recached-sh/recached/tree/main/benchmarks/v0.6.0/hash-memory-20261114)).
+This excludes allocator size classes and fragmentation, so it sits below RSS:
+
+| 1M keys, 32-byte values | v0.5.1 | v0.6 |
+|---|---:|---:|
+| strings | 434.8 B/key | 282.2 B/key |
+| strings with a TTL | 557.1 B/key | 351.4 B/key |
+| hashes of 3 fields, after one overwrite | 1,192.8 B/key | 732.2 B/key |
+
+The hash row includes a fix in 0.6: through 0.5.1, the first overwrite of a field in a hash whose
+field table was exactly full (3, 7, 14 … fields) doubled that table, adding 260 bytes per 3-field
+hash. Hash RSS figures taken on the test host before the fix were distorted by macOS memory
+compression and are not published.
+
 ### The comparison harness
 
 `scripts/bench-redis-valkey.sh` runs identical RESP workloads against Recached, Redis and Valkey —

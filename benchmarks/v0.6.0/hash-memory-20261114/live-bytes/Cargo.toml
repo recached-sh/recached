@@ -1,0 +1,13 @@
+# Standalone on purpose: a counting allocator needs `unsafe`, which the
+# workspace forbids. The empty [workspace] keeps Cargo from treating this as a
+# member of the repository's workspace.
+[package]
+name = "hash-live-bytes"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+core-engine = { path = "../../../../core-engine" }
+
+[workspace]
