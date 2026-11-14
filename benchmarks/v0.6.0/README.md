@@ -50,3 +50,17 @@ laptop; server and load generator pinned to disjoint vCPUs.
 | `6g-cpu-c4/` | native A/B of the ephemeral write-path fix; `presence*.csv` = with 20k claims held | `presence*`: **use** (440× effect). `abab.csv`: noise |
 | `6g-perf/` | Linux `perf` flat profiles of the final build (SET P16 1 worker; hot INCR 1 and 4 workers) | Use for shares, not absolute rates |
 | `6g-hotpath-x1/` | partial ABAB, stopped early: its X1 build predates `write_slot` | Do not use |
+
+## Phase 6H (2026-11-14/15) — request path and hot keys
+
+Reports: `docs/reports/v0.6.0/V0.6H-*.md`. Same laptop and Docker Desktop VM as 6G. `base`/`6g` =
+dev `42e5ca8` (6G merged; the 6G Linux binary reused), `6h` = `eafd080`, `nospin` = 6H with the
+store-stripe spin disabled.
+
+| Directory | What | Trust |
+|---|---|---|
+| `6h-request-path/` | in-process request path (`server-native/src/tests/request_path.rs`): ns and allocations per pipelined command through the real `handle_tcp`, and hot-key scaling at 1/2/4 workers; macOS, step builds `base`, `a1`…`a6`; `abba-n.sh` (forward + backward interleaving), `summarize.py` | **Use for relative change** between steps. Allocation counts exact. Host load noted per run (2–27) |
+| `6h-linux/inproc/` | the same two benchmarks on Linux (VM): `base`, `nospin`, `6h` | **Use** — the primary evidence for the decoder, by-reference writes and the stripe spin |
+| `6h-linux/tput/rep-1..5/` | memtier matrix, 6G vs 6H vs Redis 7.2.5 vs Valkey 9.1.0, single and 4-worker; each repetition started only at host load < 5 (`gated.sh`); summary `throughput-summary.md`; raw JSON `tput-json.tar.gz` | **Indicative only** — non-dedicated host, per-cell spread ±15–25% |
+| `6h-linux/mem/` | 6G memory script, 6G vs 6H, 3 shapes × 3 reps | **Use** |
+| `6h-linux/*.sh` | `build-test-bin.sh` (Linux server + test binaries), `run.sh`, `gated.sh`, `inproc.sh` | — |

@@ -31,6 +31,15 @@ All notable changes to Recached are documented here.
 ### Performance — server
 - **Writes no longer slow down with the number of connected presence users.** Every write scanned every `ESET`/`EADD` claim under two process-wide locks: with 20,000 presence keys held, `SET` on unrelated keys ran at about 1,100 per second (4 workers). It is now unaffected by them (~490,000 per second on the same host), and a server that never uses `ESET`/`EADD` takes neither lock on a write
 - `SADD` no longer copies every member it inserts (+6.7% throughput, −5.6% CPU per request, single worker, pipelined)
+- **About a third less CPU per command on the request path.** Measured through the real connection loop in process (RESP in, RESP out, no sockets; Linux VM, one worker, pipelined, best of interleaved runs against the 6G build): `SET` −39%, `HSET` −35%, `MSET` −35%, `INCR` −28%, `GET` −26%, `HGET` −24%. Allocations per pipelined `SET` 15 → 3, `GET` 7 → 2, `INCR` 15 → 2. How:
+  - each request frame is decoded in one pass, straight into the command, instead of twice with an intermediate tree, a per-argument buffer and an upper-cased copy of the command name; errors and incomplete-frame handling are unchanged (differentially tested against the old path)
+  - a write no longer copies its key and value so the server can log and push it afterwards: the store runs it by reference, and its ordering keys are borrowed
+  - per-command latency histograms are looked up once, not per command; `INCR` no longer formats through a temporary string; `MSET` overwrites existing keys in place
+- **One hot key now scales across workers instead of collapsing.** In process, Linux VM, 16 connections all incrementing one key: 6G managed 486k `INCR`/s on one worker and 144k on four; this build 954k on one and 1.40M on four. Two causes, both removed:
+  - every write took a fair async lock for its replication ordering even when nothing — no AOF, replica, browser client, `WATCH` or presence key — could observe that order; such writes now skip it, through a handshake that makes any consumer, snapshot, `EXEC` or replica attach wait for writes already in flight (see the concurrency model in the commands reference)
+  - the store's per-key write lock slept on contention for what is a few-hundred-nanosecond hold; it now spins briefly first
+- Reads of one key from several workers no longer write to that key's memory on every `GET` (the access time is stored only when it changes), and a write that leaves a value's size unchanged no longer updates the store-wide memory counter
+- Checking whether any browser client is connected no longer takes the broadcast channel's lock on every write
 
 ### Fixed — commands
 - **`HSET` counts a field named twice in one command once**, as Redis does: `HSET k f a f b` on a new key replied `2` (the value stored was already the last one). Covered by the Redis differential test
