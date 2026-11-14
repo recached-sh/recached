@@ -30,8 +30,10 @@
 //! always belongs in the other.
 
 // jemalloc isn't available under MSVC (see Cargo.toml); fall back to the
-// system allocator there.
-#[cfg(not(target_env = "msvc"))]
+// system allocator there. Test builds install a counting wrapper around the
+// same allocator instead (`tests/request_path.rs`), which is how allocations
+// per request are measured and held to a budget.
+#[cfg(all(not(target_env = "msvc"), not(test)))]
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -66,12 +68,14 @@ use watch::*;
 
 use core_engine::catalog;
 use core_engine::cmd::{Command, GetExOption, SetCondition, SetExpiry, SetOptions, ZAddCondition};
+use core_engine::request::RequestDecoder;
 use core_engine::resp::{MAX_BULK_STRING_BYTES, Value};
 use core_engine::store::{
     EvictionPolicy, KeyValueStore, KeyspaceSample, SnapshotEntry, SnapshotValue, glob_match,
 };
 use futures_util::{SinkExt, StreamExt};
 use metrics::{counter, gauge, histogram};
+use smallvec::SmallVec;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::ErrorKind;
 use std::net::IpAddr;

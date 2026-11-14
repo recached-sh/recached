@@ -284,6 +284,9 @@ pub(crate) async fn handle_tcp<S>(
     let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024, raw_writer);
     let mut buf = Vec::<u8>::new();
     let mut read_pos: usize = 0;
+    // Reused for every frame on this connection: holds argument offsets
+    // into `buf`, never borrowed data.
+    let mut decoder = RequestDecoder::new();
     // Bytes the in-flight frame needs before another parse attempt can
     // possibly succeed; 0 means "try now". See the gate in the read arm.
     let mut need: usize = 0;
@@ -374,43 +377,18 @@ pub(crate) async fn handle_tcp<S>(
                                     _ => break,
                                 }
                             }
-                            // Completeness is decided by the non-allocating
-                            // measure. `Value::parse` restarts from the first
-                            // byte every call, so asking *it* whether a frame
-                            // had arrived meant rebuilding — and reallocating —
-                            // every element received so far, once per segment,
-                            // and discarding all of it. `frame_len` walks the
-                            // headers and steps over payloads; `parse` below
-                            // then runs once, on a frame known to be whole.
-                            match Value::frame_len(&buf[read_pos..]) {
-                                Ok(_) => {}
-                                Err(e) if e.is_incomplete() => {
-                                    // Measured from `read_pos`, and compaction
-                                    // moves that to 0, so the bound stays valid.
-                                    need = e.needed();
-                                    // Compact: drop already-parsed bytes.
-                                    buf.drain(..read_pos);
-                                    read_pos = 0;
-                                    break 'parse;
-                                }
-                                Err(e) => {
-                                    // Close, as Redis does. Carrying on after
-                                    // clearing the buffer answered one error
-                                    // for however many pipelined commands it
-                                    // held, so every later reply was matched
-                                    // to the wrong request by the client.
-                                    warn!("TCP protocol error: {}; closing the connection", e);
-                                    let _ = writer
-                                        .write_all(format!("-ERR Protocol error: {e}\r\n").as_bytes())
-                                        .await;
-                                    let _ = writer.flush().await;
-                                    break 'outer;
-                                }
-                            }
-                            match Value::parse(&buf[read_pos..]) {
-                                Ok((value, consumed)) => {
+                            // One walk per frame: `decode` checks completeness
+                            // and builds the command from slices of `buf`,
+                            // falling back to the `Value` parser for anything
+                            // but an array of bulk strings — so errors, the
+                            // incomplete-frame bound and every reply are what
+                            // `Value::parse` + `Command::from_value` gave. The
+                            // command owns its data; nothing borrowed from
+                            // `buf` survives into the compaction below.
+                            match decoder.decode(&buf[read_pos..]) {
+                                Ok((decoded, consumed)) => {
                                     read_pos += consumed;
-                                    let cmd = match Command::from_value(value) {
+                                    let cmd = match decoded {
                                         Ok(c) => c,
                                         Err(e) => {
                                             // A frame that will not parse (bad arity,
@@ -740,6 +718,11 @@ pub(crate) async fn handle_tcp<S>(
                                                 if writer.write_all(b"-ERR watch limit per connection reached\r\n").await.is_err() { break 'outer; }
                                             } else {
                                                 {
+                                                    // A watcher is a write consumer: register it
+                                                    // with the unordered fast path closed, so a
+                                                    // write either finishes before this WATCH
+                                                    // takes effect or sees the watch and notifies.
+                                                    let _closed = state.replicas.unordered.close().await;
                                                     let mut reg = watch_registry.map.lock().await;
                                                     for key in &keys {
                                                         if watched_keys.insert(key.clone()) {
@@ -1088,7 +1071,11 @@ pub(crate) async fn handle_ws<S>(
     };
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
-    let mut rx = tx.subscribe();
+    // Subscribing makes this socket a consumer of every write's push, so it
+    // happens with the unordered fast path closed (see `UnorderedGate`): every
+    // write either completed before the subscription or sees the receiver.
+    let (mut rx, _push_receiver) = state.replicas.subscribe_pushes(&tx).await;
+    let mut ws_decoder = RequestDecoder::new();
     // Strict mode (RECACHED_SYNC_SECRET set): no pushes and no key commands
     // until a signed token is presented. Without a secret, scopes are an
     // opt-in bandwidth filter (legacy fan-out of everything when None).
@@ -1219,13 +1206,18 @@ pub(crate) async fn handle_ws<S>(
                                 Err(broadcast::error::TryRecvError::Closed) => break 'outer,
                             }
                         }
-                        let raw: Vec<u8> = match &frame {
-                            Message::Text(t) => t.as_bytes().to_vec(),
-                            Message::Binary(b) => b.to_vec(),
+                        // Borrowed, not copied: the decoder reads the message
+                        // in place and the command it returns owns its data.
+                        let raw: &[u8] = match &frame {
+                            Message::Text(t) => t.as_bytes(),
+                            Message::Binary(b) => b,
                             _ => unreachable!("pattern restricts to text and binary"),
                         };
-                        let (value, _) = match Value::parse(&raw) {
-                            Ok(v) => v,
+                        // Same decoder as the TCP loop; for a frame that is not
+                        // an array of bulk strings it is `Value::parse` +
+                        // `Command::from_value`, errors included.
+                        let decoded = match ws_decoder.decode(raw) {
+                            Ok((decoded, _)) => decoded,
                             Err(e) => {
                                 let err = Value::Error(format!("ERR Protocol error: {}", e)).serialize();
                                 ws_send!(&err);
@@ -1233,7 +1225,7 @@ pub(crate) async fn handle_ws<S>(
                             }
                         };
 
-                        let cmd = match Command::from_value(value) {
+                        let cmd = match decoded {
                             Ok(c) => c,
                             Err(e) => {
                                 // A frame that will not parse inside an open MULTI

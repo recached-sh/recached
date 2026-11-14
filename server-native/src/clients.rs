@@ -326,6 +326,27 @@ pub(crate) static CMD_COUNTERS: std::sync::LazyLock<HashMap<&'static str, metric
             .collect()
     });
 
+/// Per-command latency histogram handles, cached for the same reason as
+/// [`CMD_COUNTERS`]: `histogram!` with a label builds the label list (one
+/// allocation) and looks the series up in the recorder's registry on every
+/// call. Same series, same observations; one lookup at first use instead.
+pub(crate) static CMD_DURATIONS: std::sync::LazyLock<HashMap<&'static str, metrics::Histogram>> =
+    std::sync::LazyLock::new(|| {
+        core_engine::catalog::CATALOG
+            .iter()
+            .map(|spec| {
+                (
+                    spec.name,
+                    histogram!("recached_command_duration_seconds", "command" => spec.name),
+                )
+            })
+            .chain(std::iter::once((
+                UNKNOWN_COMMAND,
+                histogram!("recached_command_duration_seconds", "command" => UNKNOWN_COMMAND),
+            )))
+            .collect()
+    });
+
 /// Label used for a command the parser did not recognise. Not a catalog row, so
 /// it is registered alongside them.
 pub(crate) const UNKNOWN_COMMAND: &str = "unknown";
@@ -367,8 +388,37 @@ pub(crate) fn execute_and_record_with_evictions(
     let is_get = matches!(cmd, Command::Get(_));
     let started = std::time::Instant::now();
     let (response, evicted) = store.execute_reporting(cmd);
-    histogram!("recached_command_duration_seconds", "command" => name)
-        .record(started.elapsed().as_secs_f64());
+    record_outcome(store, name, is_write, is_get, started, response, evicted)
+}
+
+/// [`execute_and_record_with_evictions`] for a write whose command the caller
+/// still needs — the propagation path, which logs, replicates and pushes it
+/// afterwards. The store runs it by reference instead of from a clone.
+pub(crate) fn execute_and_record_ref(store: &KeyValueStore, cmd: &Command) -> (Value, Vec<String>) {
+    let name = command_name(cmd);
+    let is_write = is_write_command(cmd);
+    let is_get = matches!(cmd, Command::Get(_));
+    let started = std::time::Instant::now();
+    let (response, evicted) = store.execute_reporting_ref(cmd);
+    record_outcome(store, name, is_write, is_get, started, response, evicted)
+}
+
+fn record_outcome(
+    store: &KeyValueStore,
+    name: &'static str,
+    is_write: bool,
+    is_get: bool,
+    started: std::time::Instant,
+    response: Value,
+    evicted: Vec<String>,
+) -> (Value, Vec<String>) {
+    let elapsed = started.elapsed().as_secs_f64();
+    match CMD_DURATIONS.get(name) {
+        Some(histogram) => histogram.record(elapsed),
+        // Not in the catalog: `command_name_labels_are_all_pre_registered`
+        // keeps this a backstop, as for `CMD_COUNTERS`.
+        None => histogram!("recached_command_duration_seconds", "command" => name).record(elapsed),
+    }
     record_command(name);
     if matches!(response, Value::Error(_)) {
         counter!("recached_command_errors_total", "command" => name).increment(1);

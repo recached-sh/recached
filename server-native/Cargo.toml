@@ -41,6 +41,7 @@ hmac.workspace                     = true
 sha2.workspace                     = true
 base64.workspace                   = true
 rand.workspace                     = true
+smallvec.workspace                 = true
 
 # jemalloc does not build under MSVC (its C build needs a Unix-like toolchain),
 # so it is only pulled in off-MSVC; Windows MSVC uses the system allocator.
