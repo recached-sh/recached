@@ -124,7 +124,11 @@ jobs:
       # functions (scope classification, wire encoding, config parsing), not to
       # chase a number the I/O layer cannot reach.
       - name: Enforce recached (server) coverage floor (65%)
-        run: cargo llvm-cov -p recached --summary-only --fail-under-lines 65 -- --include-ignored
+        # new_commands_match_redis needs a Redis (RECACHED_DIFF_REDIS); it runs
+        # in the redis-compat job instead.
+        run: >-
+          cargo llvm-cov -p recached --summary-only --fail-under-lines 65 --
+          --include-ignored --skip new_commands_match_redis
 
   # ---------------------------------------------------------------------------
   # Browser tests — the IndexedDB persistence layer and the engine's behaviour
@@ -439,6 +443,7 @@ jobs:
           cargo test -p recached -- --include-ignored
           --skip dedup_write_throughput_over_websocket
           --skip sync_paths
+          --skip new_commands_match_redis
         timeout-minutes: 5
 
   typecheck-js:

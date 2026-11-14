@@ -191,12 +191,13 @@ done
 
 # ── replication ──────────────────────────────────────────────────────────────
 
-replicate() { # <primary-version> <replica-version>
+replicate() { # <primary-version> <replica-version> [primary env...]
   local p="$1" r="$2"
+  shift 2
   local ptcp=$port pws=$((port + 1)) prepl=$((port + 2)) rtcp=$((port + 3)) rws=$((port + 4))
   port=$((port + 10))
   local ppid rpid key="compat:repl:$p-to-$r"
-  ppid="$(start_server "$p" "repl-primary-$p" "$ptcp" "$pws" RECACHED_REPL_ENABLE=1 RECACHED_REPL_PORT="$prepl")"
+  ppid="$(start_server "$p" "repl-primary-$p" "$ptcp" "$pws" RECACHED_REPL_ENABLE=1 RECACHED_REPL_PORT="$prepl" "$@")"
   rpid="$(start_server "$r" "repl-replica-$r" "$rtcp" "$rws" RECACHED_REPLICAOF="127.0.0.1:$prepl")"
   cli "$ptcp" SET "$key" before >/dev/null
   cli "$ptcp" INCRBY "$key:n" 5 >/dev/null
@@ -224,8 +225,33 @@ replicate() { # <primary-version> <replica-version>
   stop_server "$ppid"
 }
 
+# Since 0.6 a primary replicates DEDUP identities by default and refuses a
+# replica that cannot read them, rather than stream frames it would misread.
+# An older replica follows only a primary that keeps the old stream.
+refuses_old_replica() {
+  local ptcp=$port pws=$((port + 1)) prepl=$((port + 2)) rtcp=$((port + 3)) rws=$((port + 4))
+  port=$((port + 10))
+  local ppid rpid key="compat:repl:refused"
+  ppid="$(start_server new repl-primary-dedup "$ptcp" "$pws" RECACHED_REPL_ENABLE=1 RECACHED_REPL_PORT="$prepl")"
+  rpid="$(start_server old repl-replica-refused "$rtcp" "$rws" RECACHED_REPLICAOF="127.0.0.1:$prepl")"
+  cli "$ptcp" SET "$key" v >/dev/null
+  sleep 3
+  local got
+  got="$(cli "$rtcp" GET "$key")"
+  if [ -z "$got" ] && grep -q "does not support it" "$LOG_DIR/server-repl-primary-dedup.log"; then
+    ok "new primary (DEDUP replication on) refuses an old replica, and says why"
+    printf 'replication new(dedup)->old refused (expected)\n' >>"$SUMMARY"
+  else
+    fail "new primary with DEDUP replication on: old replica got '$got', or no refusal was logged (logs: $LOG_DIR/server-repl-*)"
+    printf 'replication new(dedup)->old NOT refused\n' >>"$SUMMARY"
+  fi
+  stop_server "$rpid"
+  stop_server "$ppid"
+}
+
 say "replication"
-replicate new old
+replicate new old RECACHED_REPL_DEDUP=off
+refuses_old_replica
 replicate old new
 
 # ── AOF upgrade and downgrade ────────────────────────────────────────────────
