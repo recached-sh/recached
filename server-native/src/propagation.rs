@@ -593,6 +593,47 @@ pub(crate) fn try_execute_borrowed(
     Some(())
 }
 
+/// One second's active expiry, in chunks; returns the keys removed.
+///
+/// Each chunk examines the next [`EXPIRY_CHUNK`] keys of the TTL-only dense
+/// index (so a large persistent keyspace costs nothing here) and takes the
+/// all-write barrier it shares with snapshots and QSUB's initial state, so a
+/// removal and its notification are one observable step; writers run between
+/// chunks.
+///
+/// One chunk per second used to be all there was: an expiry rate above 256
+/// keys/s accumulated expired entries without bound, since reads only mask
+/// them (6I: a `SET … EX 1` load grew the keyspace ~3,000 entries/s while
+/// Redis stayed flat). As Redis does, this keeps sweeping while the last
+/// sample was at least a quarter expired, within [`EXPIRY_TICK_BUDGET`].
+pub(crate) async fn sweep_expired_tick(
+    store: &KeyValueStore,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+) -> usize {
+    let started = std::time::Instant::now();
+    let mut total = 0usize;
+    loop {
+        let examined = store.volatile_key_count().min(EXPIRY_CHUNK);
+        if examined == 0 {
+            return total;
+        }
+        let removed = {
+            let _write_guards = state.replicas.lock_all_writes().await;
+            let expired = store.sweep_expired_reporting_budget(EXPIRY_CHUNK);
+            state.forget_ephemeral_keys(expired.iter().map(String::as_str));
+            if !watch_registry.is_empty() {
+                notify_removed(watch_registry, &expired).await;
+            }
+            expired.len()
+        };
+        total = total.saturating_add(removed);
+        if removed.saturating_mul(4) < examined || started.elapsed() >= EXPIRY_TICK_BUDGET {
+            return total;
+        }
+    }
+}
+
 /// Test-only: turn the borrowed path off, so a test can compare the replies
 /// of the two paths over the same input. Global, but harmless to tests
 /// running alongside: the owned path answers identically, which is what the

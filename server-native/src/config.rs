@@ -119,6 +119,15 @@ pub(crate) const MAX_AUTH_FAILURES: u32 = 5;
 
 pub(crate) const EVICTION_INTERVAL_SECS: u64 = 1;
 
+/// Volatile keys one active-expiry chunk examines.
+pub(crate) const EXPIRY_CHUNK: usize = 256;
+
+/// Longest the active-expiry loop keeps sweeping in one tick
+/// (`EVICTION_INTERVAL_SECS`): 2.5% of each second, in chunks that each hold
+/// the write barrier only for themselves. At ~1 µs per examined key that is
+/// on the order of 25,000 expirations per second, against 256 before.
+pub(crate) const EXPIRY_TICK_BUDGET: std::time::Duration = std::time::Duration::from_millis(25);
+
 pub(crate) const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 
 /// Longest replication auth line accepted, in bytes.

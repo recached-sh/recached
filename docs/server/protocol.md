@@ -183,7 +183,7 @@ with an error, which changes nothing: the client keeps receiving bare values.
 
 ### Server-initiated removal
 
-Not every removal follows a client command. Reads mask an expired key immediately, while a background task checks at most 256 TTL-indexed keys per one-second tick and actively removes expired entries. The server announces each removal as a keychange with a nil value.
+Not every removal follows a client command. Reads mask an expired key immediately, while a background task actively removes expired entries: each one-second tick examines TTL-indexed keys 256 at a time and keeps going while at least a quarter of a sample has expired, for up to 25 ms per tick. The server announces each removal as a keychange with a nil value.
 
 Capacity eviction is also propagated as an ordered `DEL`. AOF replay, replicas, browser peers, and key watchers therefore remove the same victim as the primary.
 
