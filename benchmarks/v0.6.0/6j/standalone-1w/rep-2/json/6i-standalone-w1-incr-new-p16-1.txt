@@ -1,0 +1,18 @@
+Json file /out/json/6i-standalone-w1-incr-new-p16-1.json created...
+Writing results to stdout
+[RUN #1] Preparing benchmark client...
+[RUN #1] Launching threads now...
+[RUN #1 10%,   1 secs]  4 threads:      153648 ops,  153647 (avg:  153647) ops/sec, 5.07MB/sec (avg: 5.07MB/sec),  4.95 (avg:  4.95) msec latency[RUN #1 20%,   2 secs]  4 threads:      288592 ops,  134865 (avg:  144253) ops/sec, 4.45MB/sec (avg: 4.76MB/sec),  5.71 (avg:  5.31) msec latency[RUN #1 30%,   3 secs]  4 threads:      431264 ops,  142211 (avg:  143571) ops/sec, 4.69MB/sec (avg: 4.73MB/sec),  5.40 (avg:  5.34) msec latency[RUN #1 40%,   4 secs]  4 threads:      574944 ops,  143535 (avg:  143562) ops/sec, 4.73MB/sec (avg: 4.73MB/sec),  5.34 (avg:  5.34) msec latency[RUN #1 50%,   5 secs]  4 threads:      684448 ops,  109438 (avg:  136740) ops/sec, 3.61MB/sec (avg: 4.51MB/sec),  7.00 (avg:  5.60) msec latency[RUN #1 60%,   6 secs]  4 threads:      823248 ops,  138731 (avg:  137072) ops/sec, 4.57MB/sec (avg: 4.52MB/sec),  5.53 (avg:  5.59) msec latency[RUN #1 70%,   7 secs]  4 threads:      957968 ops,  134637 (avg:  136724) ops/sec, 4.44MB/sec (avg: 4.51MB/sec),  5.69 (avg:  5.60) msec latency[RUN #1 80%,   8 secs]  4 threads:     1087008 ops,  128893 (avg:  135745) ops/sec, 4.25MB/sec (avg: 4.48MB/sec),  5.95 (avg:  5.65) msec latency[RUN #1 90%,   9 secs]  4 threads:     1220464 ops,  133378 (avg:  135482) ops/sec, 4.40MB/sec (avg: 4.47MB/sec),  5.75 (avg:  5.66) msec latency[RUN #1 100%,  10 secs]  2 threads:     1350656 ops,  133378 (avg:  134993) ops/sec, 4.40MB/sec (avg: 4.45MB/sec),  5.75 (avg:  5.68) msec latency[RUN #1 100%,  10 secs]  0 threads:     1350736 ops,  133378 (avg:  135000) ops/sec, 4.40MB/sec (avg: 4.45MB/sec),  5.75 (avg:  5.68) msec latency
+
+Json file closed.
+4         Threads
+12        Connections per thread
+10        Seconds
+
+
+ALL STATS
+==================================================================================================
+Type         Ops/sec    Avg. Latency     p50 Latency     p99 Latency   p99.9 Latency       KB/sec 
+--------------------------------------------------------------------------------------------------
+Incrs      135019.31         5.67953         5.66300        14.33500        25.72700      4559.26 
+Totals     135019.31         5.67953         5.66300        14.33500        25.72700      9118.52 

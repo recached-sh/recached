@@ -1,0 +1,18 @@
+Json file /out/json/6j-b-standalone-w1-hget-p16-1.json created...
+Writing results to stdout
+[RUN #1] Preparing benchmark client...
+[RUN #1] Launching threads now...
+[RUN #1 10%,   1 secs]  4 threads:      259600 ops,  259592 (avg:  259592) ops/sec, 18.29MB/sec (avg: 18.29MB/sec),  2.94 (avg:  2.94) msec latency[RUN #1 20%,   2 secs]  4 threads:      532618 ops,  272011 (avg:  265813) ops/sec, 19.17MB/sec (avg: 18.73MB/sec),  2.81 (avg:  2.88) msec latency[RUN #1 30%,   3 secs]  4 threads:      805148 ops,  272343 (avg:  267988) ops/sec, 19.19MB/sec (avg: 18.88MB/sec),  2.81 (avg:  2.85) msec latency[RUN #1 40%,   4 secs]  4 threads:     1045120 ops,  239057 (avg:  260743) ops/sec, 16.85MB/sec (avg: 18.37MB/sec),  3.17 (avg:  2.93) msec latency[RUN #1 50%,   5 secs]  4 threads:     1285184 ops,  239803 (avg:  256558) ops/sec, 16.90MB/sec (avg: 18.08MB/sec),  3.22 (avg:  2.98) msec latency[RUN #1 60%,   6 secs]  4 threads:     1554432 ops,  269139 (avg:  258652) ops/sec, 18.97MB/sec (avg: 18.23MB/sec),  2.84 (avg:  2.96) msec latency[RUN #1 70%,   7 secs]  4 threads:     1827520 ops,  272968 (avg:  260695) ops/sec, 19.23MB/sec (avg: 18.37MB/sec),  2.80 (avg:  2.93) msec latency[RUN #1 80%,   8 secs]  4 threads:     2101920 ops,  274239 (avg:  262387) ops/sec, 19.32MB/sec (avg: 18.49MB/sec),  2.79 (avg:  2.92) msec latency[RUN #1 90%,   9 secs]  4 threads:     2378848 ops,  276745 (avg:  263981) ops/sec, 19.50MB/sec (avg: 18.60MB/sec),  2.77 (avg:  2.90) msec latency[RUN #1 100%,  10 secs]  0 threads:     2658256 ops,  276745 (avg:  265759) ops/sec, 19.50MB/sec (avg: 18.73MB/sec),  2.77 (avg:  2.88) msec latency
+
+Json file closed.
+4         Threads
+12        Connections per thread
+10        Seconds
+
+
+ALL STATS
+==================================================================================================
+Type         Ops/sec    Avg. Latency     p50 Latency     p99 Latency   p99.9 Latency       KB/sec 
+--------------------------------------------------------------------------------------------------
+Hgets      295287.46         2.87997         2.92700         4.73500        12.35100     21307.12 
+Totals     295287.46         2.87997         2.92700         4.73500        12.35100     42614.25 
