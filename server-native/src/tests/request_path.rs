@@ -247,6 +247,10 @@ pub(super) struct Shared {
 
 impl Shared {
     pub(super) fn new(with_sync_receiver: bool) -> Shared {
+        Shared::with_aof(with_sync_receiver, None)
+    }
+
+    pub(super) fn with_aof(with_sync_receiver: bool, aof: Option<Arc<AofWriter>>) -> Shared {
         let (tx, _) = broadcast::channel::<SyncMsg>(1024);
         let state = Arc::new(ServerState {
             snap: Arc::new(SnapshotConfig {
@@ -255,7 +259,7 @@ impl Shared {
                 last_save: AtomicI64::new(now_unix_secs()),
                 checkpoint_id: AtomicU64::new(0),
             }),
-            aof: None,
+            aof,
             replicas: ReplHub::new(),
             is_replica: AtomicBool::new(false),
             dedup: std::sync::Mutex::new(HashMap::new()),
@@ -451,6 +455,77 @@ pub(super) fn allocation_budgets() -> Vec<(Workload, f64)> {
         (Workload::HSet, 16.0),
         (Workload::HGet, 16.0),
     ]
+}
+
+// ── AOF-gated replies ─────────────────────────────────────────────────────────
+
+/// With the AOF on, a pipelined write's wait for its `write(2)` is deferred
+/// to the moment its connection next sends anything — but nothing may reach
+/// the client before the AOF writes of the commands it answers. Whenever the
+/// client has `k` SET replies, the file must already hold `k` SET frames:
+/// whole or fragmented input, small replies batched in the buffered writer
+/// and a large one written straight through it.
+#[test]
+fn no_reply_precedes_the_aof_write_of_its_command() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    for chunk in [0usize, 5] {
+        let path = std::env::temp_dir().join(format!(
+            "recached_gated_aof_{}_{chunk}.aof",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        rt.block_on(async {
+            let aof = Arc::new(AofWriter::open(path.clone(), AofSync::EverySec).await.unwrap());
+            let shared = Shared::with_aof(false, Some(Arc::clone(&aof)));
+            let mut frames = Vec::new();
+            encode(&[b"SET", b"big", &vec![b'B'; 100_000]], &mut frames);
+            for i in 0..300 {
+                encode(&[b"SET", format!("k{i}").as_bytes(), b"v"], &mut frames);
+                if i == 150 {
+                    encode(&[b"GET", b"big"], &mut frames);
+                }
+            }
+            let (client, server) = tokio::io::duplex(1 << 20);
+            let server = tokio::spawn(shared.serve(server));
+            let (mut rd, mut wr) = tokio::io::split(client);
+            let writer = tokio::spawn(async move {
+                if chunk == 0 {
+                    wr.write_all(&frames).await.unwrap();
+                } else {
+                    for part in frames.chunks(chunk * 1000) {
+                        wr.write_all(part).await.unwrap();
+                        tokio::task::yield_now().await;
+                    }
+                }
+                wr
+            });
+            let mut got = Vec::new();
+            let mut buf = vec![0u8; 64 * 1024];
+            let mut oks = 0;
+            while oks < 301 {
+                let n = rd.read(&mut buf).await.unwrap();
+                assert!(n > 0, "server closed early");
+                got.extend_from_slice(&buf[..n]);
+                oks = got.windows(5).filter(|w| w == b"+OK\r\n").count();
+                let on_disk = std::fs::read(&path).unwrap_or_default();
+                let logged = on_disk.windows(7).filter(|w| w == b"$3\r\nSET").count();
+                assert!(
+                    logged >= oks,
+                    "chunk {chunk}: {oks} SET replies received but only {logged} SETs in the AOF ({} bytes: {:?})",
+                    on_disk.len(),
+                    String::from_utf8_lossy(&on_disk[..on_disk.len().min(80)])
+                );
+            }
+            drop(writer.await.unwrap());
+            drop(rd);
+            let _ = server.await;
+        });
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 // ── A/B benchmark ─────────────────────────────────────────────────────────────

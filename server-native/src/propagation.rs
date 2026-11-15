@@ -1039,7 +1039,9 @@ async fn apply_write_effects_identified(
         return;
     };
     if needs_log {
-        state.on_write_identified(&msg, dedup).await;
+        state
+            .on_write_logged(&msg, dedup, !has_ws && !has_watch)
+            .await;
     }
     if has_watch {
         if matches!(cmd, Command::FlushDb) {

@@ -593,9 +593,29 @@ impl ServerState {
     /// One frame carries both, so a replica can never hold the write without
     /// its mark. With it off they get the bare mutation, as before 0.6.
     pub(crate) async fn on_write_identified(&self, resp: &[u8], dedup: Option<(&str, u64)>) {
+        self.on_write_logged(resp, dedup, false).await;
+    }
+
+    /// [`on_write_identified`](Self::on_write_identified); `may_defer` lets
+    /// a client write leave its AOF wait to its connection (see
+    /// `AofGatedWriter`), which is only allowed when nothing else will see the
+    /// write before that wait: no replica stream (fanned out right after
+    /// this), and — the caller's part — no push receiver or watcher. Those
+    /// keep seeing a write only once it is in the AOF, as before.
+    pub(crate) async fn on_write_logged(
+        &self,
+        resp: &[u8],
+        dedup: Option<(&str, u64)>,
+        may_defer: bool,
+    ) {
         let wrapped = dedup.map(|(client, id)| dedup_wrap(client, id, resp));
         if let Some(aof) = &self.aof {
-            let result = aof.append(wrapped.as_deref().unwrap_or(resp)).await;
+            let frame = wrapped.as_deref().unwrap_or(resp);
+            let result = if may_defer && !self.replicas.is_enabled() {
+                aof.append_client_write(frame).await
+            } else {
+                aof.append(frame).await
+            };
             if let Err(e) = result {
                 self.record_persistence_failure("aof_append", &e);
             }

@@ -281,7 +281,11 @@ pub(crate) async fn handle_tcp<S>(
     );
     let _guard = ConnectionGuard::new("tcp", client_meta.clone());
     let (mut reader, raw_writer) = tokio::io::split(socket);
-    let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024, raw_writer);
+    // Replies leave only once the AOF writes of the commands before them
+    // have: see `AofGatedWriter`. Without an AOF it holds nothing back.
+    let gated = AofGatedWriter::new(raw_writer, Arc::clone(&state));
+    let deferral = gated.deferral();
+    let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024, gated);
     let mut buf = Vec::<u8>::new();
     let mut read_pos: usize = 0;
     // Reused for every frame on this connection: holds argument offsets
@@ -320,6 +324,7 @@ pub(crate) async fn handle_tcp<S>(
         Arc::new(AtomicBool::new(false)),
     );
 
+    with_deferred_aof(deferral, async {
     'outer: loop {
         let is_subscribed = !subscribed_channels.is_empty() || !subscribed_patterns.is_empty();
         // Republish only when the counts moved: CLIENT LIST has to see live
@@ -956,6 +961,11 @@ pub(crate) async fn handle_tcp<S>(
             }
         }
     }
+
+    })
+    .await;
+    // The socket is gone; queued AOF batches are written regardless.
+    drop(writer);
 
     if !subscribed_channels.is_empty() || !subscribed_patterns.is_empty() {
         pubsub.lock().await.unsubscribe_all(conn_id);
