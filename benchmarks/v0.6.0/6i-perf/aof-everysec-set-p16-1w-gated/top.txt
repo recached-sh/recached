@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 7K of event 'cpu-clock:pppH'
+# Event count (approx.): 7917917910
+#
+# Overhead  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         IPC   [IPC Coverage]
+# ........  .............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................  ....................
+#
+    33.36%  [k] _raw_spin_unlock_irqrestore                                                                                                                                                                                                                                                                                                                                                                                                                                                                -      -            
+            |          
+             --32.93%--sock_def_readable
+                       |          
+                        --32.91%--tcp_rcv_established
+                                  tcp_v4_do_rcv
+                                  tcp_v4_rcv
+                                  ip_protocol_deliver_rcu
+                                  ip_local_deliver_finish
+                                  __netif_receive_skb_one_core
+                                  process_backlog
+                                  __napi_poll
+                                  net_rx_action
+                                  handle_softirqs
+                                  do_softirq
+                                  __local_bh_enable_ip
+                                  __dev_queue_xmit
+                                  ip_finish_output2
+                                  ip_output
+                                  __ip_queue_xmit
+                                  __tcp_transmit_skb
+                                  tcp_write_xmit
+                                  __tcp_push_pending_frames
+                                  tcp_sendmsg_locked
+                                  tcp_sendmsg
+                                  __sys_sendto
+                                  __x64_sys_sendto
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  __send
+     2.36%  [.] recached_server::connection::handle_tcp::<tokio::net::tcp::stream::TcpStream>::{closure#0}::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                    -      -            
+            |          
+             --0.81%--0
+     2.14%  [.] <dashmap::DashMap<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>> as dashmap::t::Map<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>, std::hash::random::RandomState>>::_get_mut::<str>                                                                                                                                                                                                                                                           -      -            
+            |          
+             --0.53%--0x4b4f
+     2.14%  [.] __vdso_clock_gettime                                                                                                                                                                                                                                                                                                                                                                                                                                                                       -      -            
+            |          
+             --2.09%--clock_gettime
+                       |          
+                        --0.57%--recached_server::propagation::apply_write_effects_identified::{closure#0}
+     1.73%  [.] <recached_server::server_state::ServerState>::on_write_logged::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                                 -      -            
+            |          
+             --1.45%--0x7f6475812080
+     1.31%  [.] do_rallocx                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 -      -            
+            |          
+             --1.23%--<alloc::raw_vec::RawVecInner>::finish_grow
+     1.25%  [.] _rjem_je_arena_ralloc                                                                                                                                                                                                                                                                                                                                                                                                                                                                      -      -            
+            |          
+             --1.20%--do_rallocx
+                       <alloc::raw_vec::RawVecInner>::finish_grow
+     1.11%  [.] 0x0000000000152a80                                                                                                                                                                                                                                                                                                                                                                                                                                                                         -      -            
+     1.10%  [.] alloc::fmt::format::format_inner                                                                                                                                                                                                                                                                                                                                                                                                                                                           -      -            
+            |          
+             --0.94%--recached_server::propagation::resp_push
+     1.01%  [.] _rjem_je_arena_ralloc_no_move                                                                                                                                                                                                                                                                                                                                                                                                                                                              -      -            
+            |          
+             --0.92%--_rjem_je_arena_ralloc
+                       do_rallocx
+                       <alloc::raw_vec::RawVecInner>::finish_grow
+     1.01%  [.] recached_server::propagation::execute_ordered_write::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                                           -      -            
+            |          
+             --0.95%--0x2
+     0.97%  [.] <core_engine::request::RequestDecoder>::decode_any                                                                                                                                                                                                                                                                                                                                                                                                                                         -      -            
+     0.94%  [.] <core_engine::store::KeyValueStore>::execute_reporting_ref                                                                                                                                                                                                                                                                                                                                                                                                                                 -      -            
+     0.90%  [.] recached_server::run::{closure#0}::{closure#28}::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                                               -      -            
+     0.88%  [.] <recached_server::replication::ReplHub>::lock_stripes::<core::iter::sources::empty::Empty<&str>>::{closure#0}                                                                                                                                                                                                                                                                                                                                                                              -      -            
+            |          
+             --0.77%--0x7f64743fddd8
+     0.88%  [.] core::fmt::write                                                                                                                                                                                                                                                                                                                                                                                                                                                                           -      -            
+            |          
+             --0.83%--alloc::fmt::format::format_inner
+                       recached_server::propagation::resp_push
+     0.81%  [.] _rjem_malloc                                                                                                                                                                                                                                                                                                                                                                                                                                                                               -      -            
+     0.75%  [.] recached_server::clients::record_metrics                                                                                                                                                                                                                                                                                                                                                                                                                                                   -      -            
+     0.71%  [.] <core_engine::store::KeyValueStore>::set::<&str, &[u8]>                                                                                                                                                                                                                                                                                                                                                                                                                                    -      -            
+            |          
+             --0.51%--0x7878787878787878
+     0.71%  [.] recached_server::propagation::resp_push                                                                                                                                                                                                                                                                                                                                                                                                                                                    -      -            
+     0.70%  [.] __send                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     -      -            
+     0.66%  [.] <alloc::string::String as core::fmt::Write>::write_str                                                                                                                                                                                                                                                                                                                                                                                                                                     -      -            
+     0.64%  [.] <tokio::sync::mpsc::list::Rx<()>>::pop                                                                                                                                                                                                                                                                                                                                                                                                                                                     -      -            
+     0.64%  [k] rep_movs_alternative                                                                                                                                                                                                                                                                                                                                                                                                                                                                       -      -            
+     0.63%  [.] _rjem_sdallocx                                                                                                                                                                                                                                                                                                                                                                                                                                                                             -      -            
+     0.63%  [.] 0x0000000000152619                                                                                                                                                                                                                                                                                                                                                                                                                                                                         -      -            
+     0.62%  [k] memset_orig                                                                                                                                                                                                                                                                                                                                                                                                                                                                                -      -            
+            |
+            ---zero_user_segments
+               ext4_block_write_begin
+               ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               do_iter_readv_writev
+               vfs_iter_write
+               backing_file_write_iter
+               ovl_write_iter
+               vfs_write
+               ksys_write
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               write
+               0
+               std::sys::io::error::unix::decode_error_kind
+               0xffe78948fe89f689
+     0.61%  [.] recached_server::propagation::apply_write_effects_identified::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                                  -      -            
+     0.61%  [.] 0x0000000000152ab0                                                                                                                                                                                                                                                                                                                                                                                                                                                                         -      -            
+     0.57%  [.] <tokio::sync::batch_semaphore::Acquire as core::future::future::Future>::poll                                                                                                                                                                                                                                                                                                                                                                                                              -      -            
+     0.56%  [.] clock_gettime                                                                                                                                                                                                                                                                                                                                                                                                                                                                              -      -            
+     0.54%  [.] recached_server::clients::record_command                                                                                                                                                                                                                                                                                                                                                                                                                                                   -      -            

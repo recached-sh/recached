@@ -1,0 +1,3096 @@
+diff --git a/core-engine/src/request.rs b/core-engine/src/request.rs
+index 857b125..cfab1b3 100644
+--- a/core-engine/src/request.rs
++++ b/core-engine/src/request.rs
+@@ -32,6 +32,7 @@
+ 
+ use crate::cmd::{Command, SetOptions, validate_key};
+ use crate::resp::{MAX_BULK_STRING_BYTES, MAX_TOTAL_MESSAGE_BYTES, ParseError, Value};
++use smallvec::SmallVec;
+ use std::ops::Range;
+ 
+ /// Most arguments a frame may have and still take the single-walk scan.
+@@ -51,6 +52,80 @@ pub struct RequestDecoder {
+ /// bytes of the buffer it occupied.
+ pub type Decoded = (Result<Command, String>, usize);
+ 
++/// One of the hot commands, its arguments borrowed from the read buffer.
++///
++/// Built by [`RequestDecoder::decode_any`] for exactly the frames the owned
++/// builder accepts for the same commands — the owned command *is*
++/// [`to_command`](Self::to_command) of this — so a server can run it without
++/// copying its key and value out of the buffer, and fall back to the owned
++/// command when it cannot. It borrows the buffer: it must be run, or turned
++/// into a `Command`, before the buffer is compacted or reused.
++#[derive(Debug, Clone, PartialEq)]
++pub enum CommandRef<'a> {
++    Get(&'a str),
++    Set(&'a str, &'a [u8]),
++    Incr(&'a str),
++    Decr(&'a str),
++    /// HGET does not validate its key on the general path either.
++    HGet(&'a str, &'a str),
++    HSet(&'a str, SmallVec<[(&'a str, &'a [u8]); 2]>),
++    MGet(SmallVec<[&'a str; 8]>),
++}
++
++impl CommandRef<'_> {
++    /// The owned command, exactly as the owned decoder builds it.
++    #[must_use]
++    pub fn to_command(&self) -> Command {
++        match self {
++            CommandRef::Get(key) => Command::Get((*key).to_owned()),
++            CommandRef::Set(key, val) => {
++                Command::Set((*key).to_owned(), val.to_vec(), SetOptions::default())
++            }
++            CommandRef::Incr(key) => Command::Incr((*key).to_owned()),
++            CommandRef::Decr(key) => Command::Decr((*key).to_owned()),
++            CommandRef::HGet(key, field) => Command::HGet((*key).to_owned(), (*field).to_owned()),
++            CommandRef::HSet(key, pairs) => Command::HSet(
++                (*key).to_owned(),
++                pairs
++                    .iter()
++                    .map(|(field, val)| ((*field).to_owned(), val.to_vec()))
++                    .collect(),
++            ),
++            CommandRef::MGet(keys) => Command::MGet(keys.iter().map(|k| (*k).to_owned()).collect()),
++        }
++    }
++
++    /// Whether this command writes.
++    #[must_use]
++    pub fn is_write(&self) -> bool {
++        matches!(
++            self,
++            CommandRef::Set(..) | CommandRef::Incr(_) | CommandRef::Decr(_) | CommandRef::HSet(..)
++        )
++    }
++
++    /// The key a write mutates (every borrowed write names exactly one).
++    #[must_use]
++    pub fn write_key(&self) -> Option<&str> {
++        match self {
++            CommandRef::Set(key, _)
++            | CommandRef::Incr(key)
++            | CommandRef::Decr(key)
++            | CommandRef::HSet(key, _) => Some(key),
++            _ => None,
++        }
++    }
++}
++
++/// What [`RequestDecoder::decode_any`] found at the start of the buffer.
++#[derive(Debug)]
++pub enum DecodedAny<'a> {
++    /// A hot command, borrowed, and the bytes its frame occupied.
++    Borrowed(CommandRef<'a>, usize),
++    /// Anything else, exactly as [`RequestDecoder::decode`] returns it.
++    Owned(Result<Decoded, ParseError>),
++}
++
+ impl RequestDecoder {
+     #[must_use]
+     pub fn new() -> RequestDecoder {
+@@ -66,14 +141,34 @@ impl RequestDecoder {
+     /// protocol violation. A frame that parses but is not a valid command is
+     /// `Ok` with an `Err` command, as from [`Command::from_value`].
+     pub fn decode(&mut self, buf: &[u8]) -> Result<Decoded, ParseError> {
++        match self.decode_any(buf) {
++            DecodedAny::Borrowed(command, consumed) => Ok((Ok(command.to_command()), consumed)),
++            DecodedAny::Owned(decoded) => decoded,
++        }
++    }
++
++    /// Decode the frame at the start of `buf` in one walk, borrowing the
++    /// arguments of a hot command instead of copying them.
++    ///
++    /// For every input, turning a `Borrowed` result into a command with
++    /// [`CommandRef::to_command`] gives exactly what [`decode`](Self::decode)
++    /// returns; `Owned` is `decode`'s own result.
++    pub fn decode_any<'a>(&'a mut self, buf: &'a [u8]) -> DecodedAny<'a> {
+         if let Some(consumed) = self.scan(buf) {
+             let args = Args {
+                 buf,
+                 spans: &self.spans,
+             };
++            if let Some(command) = build_ref(args) {
++                return DecodedAny::Borrowed(command, consumed);
++            }
+             let command = build(args).unwrap_or_else(|| args.general());
+-            return Ok((command, consumed));
++            return DecodedAny::Owned(Ok((command, consumed)));
+         }
++        DecodedAny::Owned(Self::decode_general(buf))
++    }
++
++    fn decode_general(buf: &[u8]) -> Result<Decoded, ParseError> {
+         // Measured first, as the connection loop always did: an incomplete
+         // frame is answered without allocating a single element.
+         Value::frame_len(buf)?;
+@@ -149,9 +244,14 @@ impl<'a> Args<'a> {
+ 
+     /// A key: text that also passes the general path's key validation.
+     fn key(&self, i: usize) -> Option<String> {
++        self.key_ref(i).map(str::to_owned)
++    }
++
++    /// [`key`](Self::key), borrowed.
++    fn key_ref(&self, i: usize) -> Option<&'a str> {
+         let key = self.text(i)?;
+         validate_key(key).ok()?;
+-        Some(key.to_owned())
++        Some(key)
+     }
+ 
+     fn bytes(&self, i: usize) -> Option<Vec<u8>> {
+@@ -185,31 +285,47 @@ impl<'a> Args<'a> {
+ /// same result. Looser shapes the general path tolerates (`GET k extra`),
+ /// options (`SET k v EX 10`), and every error case go there instead, so the
+ /// two can only agree.
+-fn build(args: Args<'_>) -> Option<Result<Command, String>> {
++/// The borrowed hot shapes: `None` for anything else, including any frame
++/// of these commands that the owned builder would not accept directly.
++fn build_ref(args: Args<'_>) -> Option<CommandRef<'_>> {
+     let name = args.get(0)?;
+     let n = args.len();
+     // Dispatch on length first: one integer compare rejects most names
+     // before any byte comparison.
+-    let command = match (name.len(), n) {
+-        (3, 2) if args.name_is("GET") => Command::Get(args.key(1)?),
+-        (3, 3) if args.name_is("SET") => {
+-            Command::Set(args.key(1)?, args.bytes(2)?, SetOptions::default())
+-        }
+-        (4, 2) if args.name_is("INCR") => Command::Incr(args.key(1)?),
+-        (4, 2) if args.name_is("DECR") => Command::Decr(args.key(1)?),
+-        (4, 3) if args.name_is("HGET") => {
+-            // HGET does not validate its key in the general path either.
+-            Command::HGet(args.text(1)?.to_owned(), args.text(2)?.to_owned())
+-        }
++    Some(match (name.len(), n) {
++        (3, 2) if args.name_is("GET") => CommandRef::Get(args.key_ref(1)?),
++        (3, 3) if args.name_is("SET") => CommandRef::Set(args.key_ref(1)?, args.get(2)?),
++        (4, 2) if args.name_is("INCR") => CommandRef::Incr(args.key_ref(1)?),
++        (4, 2) if args.name_is("DECR") => CommandRef::Decr(args.key_ref(1)?),
++        // HGET does not validate its key in the general path either.
++        (4, 3) if args.name_is("HGET") => CommandRef::HGet(args.text(1)?, args.text(2)?),
+         (4, _) if n >= 4 && (n - 2).is_multiple_of(2) && args.name_is("HSET") => {
+-            let key = args.key(1)?;
+-            let mut pairs = Vec::with_capacity((n - 2) / 2);
++            let key = args.key_ref(1)?;
++            let mut pairs = SmallVec::with_capacity((n - 2) / 2);
+             for i in (2..n).step_by(2) {
+-                pairs.push((args.text(i)?.to_owned(), args.bytes(i + 1)?));
++                pairs.push((args.text(i)?, args.get(i + 1)?));
+             }
+-            Command::HSet(key, pairs)
++            CommandRef::HSet(key, pairs)
+         }
+-        (4, _) if n >= 2 && args.name_is("MGET") => Command::MGet(keys(args, 1)?),
++        (4, _) if n >= 2 && args.name_is("MGET") => CommandRef::MGet(
++            (1..n)
++                .map(|i| args.key_ref(i))
++                .collect::<Option<SmallVec<_>>>()?,
++        ),
++        _ => return None,
++    })
++}
++
++/// The owned shapes not covered by [`build_ref`] — whose arguments the
++/// store takes ownership of anyway, or which are rare — plus, for the
++/// envelope's inner command, every borrowed shape turned owned.
++fn build(args: Args<'_>) -> Option<Result<Command, String>> {
++    if let Some(command) = build_ref(args) {
++        return Some(Ok(command.to_command()));
++    }
++    let name = args.get(0)?;
++    let n = args.len();
++    let command = match (name.len(), n) {
+         (3, _) if n >= 2 && args.name_is("DEL") => Command::Del(keys(args, 1)?),
+         (4, _) if n >= 3 && (n - 1).is_multiple_of(2) && args.name_is("MSET") => {
+             let mut pairs = Vec::with_capacity((n - 1) / 2);
+diff --git a/core-engine/src/resp.rs b/core-engine/src/resp.rs
+index f9987fb..8108a83 100644
+--- a/core-engine/src/resp.rs
++++ b/core-engine/src/resp.rs
+@@ -140,6 +140,64 @@ pub enum Value {
+     Map(Vec<(Value, Value)>),
+ }
+ 
++/// `n` in decimal, written into the end of `buf`.
++///
++/// On the stack: `write!` goes through the formatting machinery, which cost
++/// more than the rest of encoding an integer reply or a length header.
++pub(crate) fn format_i64(n: i64, buf: &mut [u8; 20]) -> &[u8] {
++    let mut at = buf.len();
++    // Work on the magnitude as u64 so i64::MIN does not overflow.
++    let mut rest = n.unsigned_abs();
++    loop {
++        at -= 1;
++        buf[at] = b'0' + (rest % 10) as u8;
++        rest /= 10;
++        if rest == 0 {
++            break;
++        }
++    }
++    if n < 0 {
++        at -= 1;
++        buf[at] = b'-';
++    }
++    &buf[at..]
++}
++
++/// `<tag><n>\r\n` — an integer reply or an aggregate/bulk header.
++fn write_header(out: &mut Vec<u8>, tag: u8, n: i64) {
++    out.push(tag);
++    out.extend_from_slice(format_i64(n, &mut [0u8; 20]));
++    out.extend_from_slice(b"\r\n");
++}
++
++/// A length as a header value. Lengths fit `i64` on every supported target.
++fn len_i64(len: usize) -> i64 {
++    i64::try_from(len).unwrap_or(i64::MAX)
++}
++
++/// Appends a RESP integer reply, as `Value::Integer(n)` encodes.
++pub fn write_integer(out: &mut Vec<u8>, n: i64) {
++    write_header(out, b':', n);
++}
++
++/// Appends a RESP bulk string reply (`None` = nil), as
++/// `Value::BulkString(data)` encodes.
++pub fn write_bulk(out: &mut Vec<u8>, data: Option<&[u8]>) {
++    match data {
++        None => out.extend_from_slice(b"$-1\r\n"),
++        Some(data) => {
++            write_header(out, b'$', len_i64(data.len()));
++            out.extend_from_slice(data);
++            out.extend_from_slice(b"\r\n");
++        }
++    }
++}
++
++/// Appends a RESP array header for `len` elements.
++pub fn write_array_header(out: &mut Vec<u8>, len: usize) {
++    write_header(out, b'*', len_i64(len));
++}
++
+ impl Value {
+     /// Serializes the Value back into RESP format.
+     pub fn serialize(&self) -> Vec<u8> {
+@@ -164,22 +222,13 @@ impl Value {
+                 out.extend_from_slice(s.as_bytes());
+                 out.extend_from_slice(b"\r\n");
+             }
+-            Value::Integer(i) => {
+-                let _ = write!(out, ":{}\r\n", i);
+-            }
+-            Value::BulkString(None) => {
+-                out.extend_from_slice(b"$-1\r\n");
+-            }
+-            Value::BulkString(Some(data)) => {
+-                let _ = write!(out, "${}\r\n", data.len());
+-                out.extend_from_slice(data);
+-                out.extend_from_slice(b"\r\n");
+-            }
++            Value::Integer(i) => write_integer(out, *i),
++            Value::BulkString(data) => write_bulk(out, data.as_deref()),
+             Value::Array(None) => {
+                 out.extend_from_slice(b"*-1\r\n");
+             }
+             Value::Array(Some(arr)) => {
+-                let _ = write!(out, "*{}\r\n", arr.len());
++                write_array_header(out, arr.len());
+                 for v in arr {
+                     v.serialize_into(out);
+                 }
+diff --git a/core-engine/src/store.rs b/core-engine/src/store.rs
+index 0fa6f9c..dd9ace6 100644
+--- a/core-engine/src/store.rs
++++ b/core-engine/src/store.rs
+@@ -1,5 +1,6 @@
+ use crate::cmd::{Command, GetExOption, SetCondition, SetExpiry, SetOptions, ZAddOptions};
+-use crate::resp::Value;
++use crate::request::CommandRef;
++use crate::resp::{Value, format_i64, write_array_header, write_bulk};
+ use dashmap::DashMap;
+ // Aliased: this module has its own `Entry` (the stored value + TTL + recency).
+ use dashmap::mapref::entry::Entry as DashEntry;
+@@ -1809,8 +1810,142 @@ pub fn format_score(s: f64) -> String {
+ /// Where a write to one key lands: its existing entry under the shard's write
+ /// guard, or the vacant slot for it.
+ enum WriteSlot<'a> {
+-    Occupied(RefMut<'a, Key, Slot>),
+-    Vacant(dashmap::mapref::entry::VacantEntry<'a, Key, Slot>),
++    Occupied(SlotRef<'a>),
++    Vacant(SlotVacant<'a>),
++}
++
++/// The size and key-index state of the one key a single-key write touched,
++/// recorded under the shard guard that performed the write.
++///
++/// A write's accounting needs the key's size and TTL state before and after
++/// it. `run_write` used to read them with a lookup of its own on each side of
++/// the command — three keyspace probes per `SET` where the command itself
++/// needs one. A probed write records both while it already holds the entry:
++/// "before" when it takes the slot, "after" when it releases it. The write's
++/// key stripe is held throughout, as before, so no other accounted writer can
++/// change the key between the two.
++#[derive(Default)]
++struct KeyProbe {
++    /// The key's state when the write first took its slot — size, and
++    /// present-with-TTL-or-not (`None` = absent) — or `None` if it never did.
++    before: std::cell::Cell<Option<(usize, Option<bool>)>>,
++    /// The key's state when the write last released its slot.
++    after: std::cell::RefCell<Option<ProbedState>>,
++}
++
++/// A key's state as a probed write left it.
++struct ProbedState {
++    size: usize,
++    /// Present (with or without a TTL), or `None` when absent — including a
++    /// collection the write emptied, which `run_write` then removes.
++    ttl: Option<bool>,
++    emptied: bool,
++    /// The map's own key, when the index has to change and so needs it.
++    shared: Option<Key>,
++}
++
++impl KeyProbe {
++    /// Record the state at the first slot taken; a later slot on the same
++    /// key keeps the first "before".
++    fn record_before(&self, state: (usize, Option<bool>)) {
++        if self.before.get().is_none() {
++            self.before.set(Some(state));
++        }
++    }
++
++    fn record_after(&self, key: &Key, entry: &Entry) {
++        let was = self.before.get().and_then(|(_, ttl)| ttl);
++        let emptied = entry.value.is_empty_collection();
++        let (size, ttl) = if emptied {
++            (0, None)
++        } else {
++            (entry_size(key, entry), Some(entry.deadline.get().is_some()))
++        };
++        let shared = (!emptied && index_changes(was, ttl)).then(|| Arc::clone(key));
++        *self.after.borrow_mut() = Some(ProbedState {
++            size,
++            ttl,
++            emptied,
++            shared,
++        });
++    }
++
++    fn record_absent(&self) {
++        *self.after.borrow_mut() = Some(ProbedState {
++            size: 0,
++            ttl: None,
++            emptied: false,
++            shared: None,
++        });
++    }
++}
++
++/// An occupied write slot: the entry under its shard's write guard, plus the
++/// probe (if any) that records the entry's state when the guard is released.
++struct SlotRef<'a> {
++    guard: RefMut<'a, Key, Slot>,
++    probe: Option<&'a KeyProbe>,
++}
++
++impl<'a> std::ops::Deref for SlotRef<'a> {
++    type Target = RefMut<'a, Key, Slot>;
++
++    fn deref(&self) -> &Self::Target {
++        &self.guard
++    }
++}
++
++impl std::ops::DerefMut for SlotRef<'_> {
++    fn deref_mut(&mut self) -> &mut Self::Target {
++        &mut self.guard
++    }
++}
++
++impl Drop for SlotRef<'_> {
++    /// Runs before the guard itself is released, so the state recorded is
++    /// the state the write committed, seen by no one else in between.
++    fn drop(&mut self) {
++        if let Some(probe) = self.probe {
++            probe.record_after(self.guard.key(), self.guard.value());
++        }
++    }
++}
++
++/// A vacant write slot (the shard's write guard is held while it exists).
++struct SlotVacant<'a> {
++    vacant: Option<dashmap::mapref::entry::VacantEntry<'a, Key, Slot>>,
++    probe: Option<&'a KeyProbe>,
++}
++
++impl<'a> SlotVacant<'a> {
++    fn key(&self) -> &Key {
++        self.vacant
++            .as_ref()
++            .expect("a SlotVacant holds its entry until it is consumed")
++            .key()
++    }
++
++    fn insert(mut self, slot: Slot) -> SlotRef<'a> {
++        let vacant = self
++            .vacant
++            .take()
++            .expect("a SlotVacant holds its entry until this consuming insert");
++        SlotRef {
++            guard: vacant.insert(slot),
++            probe: self.probe.take(),
++        }
++    }
++}
++
++impl Drop for SlotVacant<'_> {
++    /// Released without an insert: the key stayed absent.
++    fn drop(&mut self) {
++        if self.vacant.is_some()
++            && let Some(probe) = self.probe
++        {
++            probe.record_absent();
++        }
++    }
+ }
+ 
+ /// [`DashMap::entry`] for a command's key — owned (`String`) or borrowed
+@@ -1822,13 +1957,37 @@ enum WriteSlot<'a> {
+ /// the write guard, as before; only a miss allocates the key and probes again.
+ /// A key inserted by another writer between the two probes is seen by
+ /// `entry` as occupied, so the result is exactly what `entry` alone returns.
+-fn write_slot<K: AsRef<str> + Into<Key>>(data: &Keyspace, key: K) -> WriteSlot<'_> {
++///
++/// With a `probe`, the key's state is recorded as the slot is taken and again
++/// as it is released (see [`KeyProbe`]).
++fn write_slot<'a, K: AsRef<str> + Into<Key>>(
++    data: &'a Keyspace,
++    key: K,
++    probe: Option<&'a KeyProbe>,
++) -> WriteSlot<'a> {
++    let occupied = |guard: RefMut<'a, Key, Slot>| {
++        if let Some(probe) = probe {
++            probe.record_before((
++                entry_size(guard.key(), guard.value()),
++                Some(guard.value().deadline.get().is_some()),
++            ));
++        }
++        WriteSlot::Occupied(SlotRef { guard, probe })
++    };
+     if let Some(existing) = data.get_mut(key.as_ref()) {
+-        return WriteSlot::Occupied(existing);
++        return occupied(existing);
+     }
+     match data.entry(key.into()) {
+-        DashEntry::Occupied(occupied) => WriteSlot::Occupied(occupied.into_ref()),
+-        DashEntry::Vacant(vacant) => WriteSlot::Vacant(vacant),
++        DashEntry::Occupied(entry) => occupied(entry.into_ref()),
++        DashEntry::Vacant(vacant) => {
++            if let Some(probe) = probe {
++                probe.record_before((0, None));
++            }
++            WriteSlot::Vacant(SlotVacant {
++                vacant: Some(vacant),
++                probe,
++            })
++        }
+     }
+ }
+ 
+@@ -1852,7 +2011,10 @@ fn write_slot<K: AsRef<str> + Into<Key>>(data: &Keyspace, key: K) -> WriteSlot<'
+ /// mutating command instead of one.
+ macro_rules! typed_entry {
+     ($guard:ident, $inner:ident, $data:expr, $key:expr, $now:expr, $variant:path, $default:expr) => {
+-        let mut $guard = match write_slot(&$data, $key) {
++        typed_entry!($guard, $inner, $data, $key, $now, $variant, $default, None);
++    };
++    ($guard:ident, $inner:ident, $data:expr, $key:expr, $now:expr, $variant:path, $default:expr, $probe:expr) => {
++        let mut $guard = match write_slot(&$data, $key, $probe) {
+             WriteSlot::Occupied(existing) => existing,
+             WriteSlot::Vacant(vacant) => vacant.insert(Box::new(Entry {
+                 value: $variant($default),
+@@ -1872,6 +2034,20 @@ macro_rules! typed_entry {
+     };
+ }
+ 
++/// A read found the key holding another type.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++struct WrongType;
++
++/// What [`KeyValueStore::execute_ref_into`] did, for the caller's metrics.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[non_exhaustive]
++pub struct RefOutcome {
++    /// The reply was an error.
++    pub error: bool,
++    /// For `GET`: whether it found a live key (keyspace hit or miss).
++    pub hit: Option<bool>,
++}
++
+ // ── KeyspaceSample ────────────────────────────────────────────────────────────
+ 
+ /// Incrementally maintained keyspace totals reported to metrics and `INFO`.
+@@ -3036,7 +3212,9 @@ impl KeyValueStore {
+         };
+         match scope {
+             None => (self.execute_inner(cmd), Vec::new()),
+-            Some(scope) => self.run_write(scope, cmd, |store, cmd| store.execute_inner(cmd)),
++            Some(scope) => self.run_write(scope, cmd, |store, cmd, probe| {
++                store.execute_inner_probed(cmd, probe)
++            }),
+         }
+     }
+ 
+@@ -3058,41 +3236,136 @@ impl KeyValueStore {
+             MutationScope::All => WriteScope::All,
+             MutationScope::Keys(keys) => WriteScope::Keys(keys),
+         };
+-        self.run_write(scope, cmd, |store, cmd| {
++        self.run_write(scope, cmd, |store, cmd, probe| {
+             store
+-                .execute_inner_ref(cmd)
++                .execute_inner_ref(cmd, probe)
+                 .unwrap_or_else(|| store.execute_inner(cmd.clone()))
+         })
+     }
+ 
++    /// [`execute_reporting_ref`](Self::execute_reporting_ref) for a write the
++    /// caller wants to run only if it can neither evict nor be refused for
++    /// capacity: `None`, having changed nothing, when it might.
++    ///
++    /// An eviction removes a key the command did not name, and the server
++    /// propagates that removal; to keep it in order with writes to the victim
++    /// it takes every replication-order stripe for each write on a capped
++    /// store. Nearly every write to a store well under its cap cannot evict,
++    /// and this lets the server know so before paying for all of them. The
++    /// check runs under the capacity gate and the write in the same hold, so
++    /// no other capped write can use up the headroom in between. On an
++    /// uncapped store this is `execute_reporting_ref`.
++    pub fn execute_reporting_ref_within_capacity(
++        &self,
++        cmd: &Command,
++    ) -> Option<(Value, Vec<String>)> {
++        if !self.has_capacity_limits() {
++            return Some(self.execute_reporting_ref(cmd));
++        }
++        let gate = self
++            .capacity_gate
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner());
++        if !self.fits_without_eviction(cmd) {
++            return None;
++        }
++        let scope = match mutation_scope(cmd) {
++            MutationScope::ReadOnly => return Some((self.execute_inner(cmd.clone()), Vec::new())),
++            // Whole-keyspace writes rebuild metadata and may evict anywhere.
++            MutationScope::All => return None,
++            MutationScope::Keys(keys) => WriteScope::Keys(keys),
++        };
++        Some(
++            self.run_write_gated(scope, cmd, Some(gate), |store, cmd, probe| {
++                store
++                    .execute_inner_ref(cmd, probe)
++                    .unwrap_or_else(|| store.execute_inner(cmd.clone()))
++            }),
++        )
++    }
++
++    /// Whether `cmd` certainly fits under the caps as they stand: it creates
++    /// no key past the key cap (so none has to be evicted or swept to make
++    /// room) and its worst-case growth leaves memory at or below the point
++    /// where eviction starts. A write whose growth has no bound does not fit.
++    fn fits_without_eviction(&self, cmd: &Command) -> bool {
++        if let Some(max) = self.max_keys {
++            let mut new_keys = creating_keys(cmd);
++            new_keys.sort_unstable();
++            new_keys.dedup();
++            new_keys.retain(|key| !self.data.contains_key(*key));
++            if self.data.len().saturating_add(new_keys.len()) > max {
++                return false;
++            }
++        }
++        if let Some(limit) = self.max_memory_bytes {
++            let target = limit - limit / EVICTION_HEADROOM_DIVISOR;
++            match growth_bound(cmd) {
++                Some(bound) if self.approximate_memory_bytes().saturating_add(bound) <= target => {}
++                _ => return false,
++            }
++        }
++        true
++    }
++
+     /// Run a mutating command under its write-order stripes with size, index
+     /// and capacity accounting around it. `K` is whatever owns the scope's
+-    /// keys and `C` whatever owns the command; `exec` consumes `C`.
++    /// keys and `C` whatever owns the command; `exec` consumes `C`, and passes
++    /// the probe it is given to the command's one slot (see
++    /// [`execute_inner_probed`](Self::execute_inner_probed)).
+     fn run_write<K, C>(
+         &self,
+         scope: WriteScope<K>,
+         cmd: C,
+-        exec: impl FnOnce(&Self, C) -> Value,
++        exec: impl FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
+     ) -> (Value, Vec<String>)
+     where
+         K: AsRef<str> + Ord,
+         C: std::borrow::Borrow<Command>,
+     {
++        self.run_write_gated(scope, cmd, None, exec)
++    }
++
++    /// [`run_write`](Self::run_write) with the capacity gate possibly already
++    /// held by the caller (`gate`), which it then keeps for the write.
++    fn run_write_gated<K, C>(
++        &self,
++        scope: WriteScope<K>,
++        cmd: C,
++        gate: Option<std::sync::MutexGuard<'_, ()>>,
++        exec: impl FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
++    ) -> (Value, Vec<String>)
++    where
++        K: AsRef<str> + Ord,
++        C: std::borrow::Borrow<Command>,
++    {
++        // The common write — one key, an uncapped store, a command that
++        // takes exactly one slot — is accounted from what the command saw
++        // under its own shard guard, with no lookups of its own.
++        if let WriteScope::Keys(keys) = &scope
++            && let [key] = keys.as_slice()
++            && !self.has_capacity_limits()
++            && probe_eligible(cmd.borrow())
++        {
++            return (self.run_probed_write(key.as_ref(), cmd, exec), Vec::new());
++        }
+         let mut evicted = Vec::new();
+ 
+         // Capacity checks and eviction choose across keys, so capped stores use
+         // one short synchronous gate. Uncapped stores retain DashMap's normal
+         // per-shard concurrency.
+-        let _capacity_guard = self.has_capacity_limits().then(|| {
+-            self.capacity_gate
+-                .lock()
+-                .unwrap_or_else(|poisoned| poisoned.into_inner())
++        let _capacity_guard = gate.or_else(|| {
++            self.has_capacity_limits().then(|| {
++                self.capacity_gate
++                    .lock()
++                    .unwrap_or_else(|poisoned| poisoned.into_inner())
++            })
+         });
+ 
+         let out = match scope {
+             WriteScope::All => {
+                 let _order = self.order_all();
+-                let out = exec(self, cmd);
++                let out = exec(self, cmd, None);
+                 self.rebuild_metadata();
+                 if self.max_memory_bytes.is_some() {
+                     self.try_evict_for_memory_inner(&mut evicted);
+@@ -3147,7 +3420,7 @@ impl KeyValueStore {
+                     .map(|key| self.entry_state(key.as_ref()))
+                     .collect();
+                 let before = before_states.iter().map(|(size, _)| size).sum();
+-                let out = exec(self, cmd);
++                let out = exec(self, cmd, None);
+                 // One lookup per key, not two. Reading the post-write size and
+                 // reading the key's TTL state both need the same entry, and
+                 // hash lookups are the largest single cost on the write path
+@@ -3266,6 +3539,61 @@ impl KeyValueStore {
+         (out, evicted)
+     }
+ 
++    /// [`run_write`](Self::run_write) for one key of an uncapped store, by a
++    /// [`probe_eligible`] command.
++    ///
++    /// Same lock, same bookkeeping, same results as the general path; what
++    /// differs is where the key's before and after states come from. The
++    /// general path reads them with a keyspace lookup on each side of the
++    /// command — the command's own lookup in between makes three. Here the
++    /// command records them while it holds the entry ([`KeyProbe`]), so a
++    /// `SET` or `INCR` probes the map once. Nothing else changes:
++    ///
++    /// - the key's write-order stripe is held across the command and its
++    ///   accounting, so no accounted writer (or the expiry sweeper) touches
++    ///   the key between the recorded states and the counters updated from
++    ///   them;
++    /// - the index is updated only when the key's presence or TTL-ness
++    ///   changed, under the index lock, after the shard guard is released —
++    ///   the order every other path uses;
++    /// - an uncapped store has nothing to evict or refuse, which is why the
++    ///   capacity paths are not needed here.
++    ///
++    /// A command that never took its slot (refused before reaching the map)
++    /// changed nothing, and nothing is accounted.
++    fn run_probed_write<C>(
++        &self,
++        key: &str,
++        cmd: C,
++        exec: impl FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
++    ) -> Value {
++        let _order = self.order_keys(std::slice::from_ref(&key));
++        let probe = KeyProbe::default();
++        let out = exec(self, cmd, Some(&probe));
++        let Some((before, was)) = probe.before.get() else {
++            return out;
++        };
++        let after = probe.after.into_inner().unwrap_or(ProbedState {
++            size: 0,
++            ttl: None,
++            emptied: false,
++            shared: None,
++        });
++        if after.emptied {
++            // As on the general path: an emptied collection does not exist.
++            self.data
++                .remove_if(key, |_, entry| entry.value.is_empty_collection());
++        }
++        if index_changes(was, after.ttl) {
++            self.index
++                .lock()
++                .unwrap_or_else(|poisoned| poisoned.into_inner())
++                .sync(key, after.ttl.zip(after.shared.as_ref()));
++        }
++        self.adjust_memory(before, after.size);
++        out
++    }
++
+     /// Make room under the key-count cap for every key `cmd` may create,
+     /// or refuse the write.
+     ///
+@@ -3376,7 +3704,7 @@ impl KeyValueStore {
+ 
+     /// `SET`, for an owned or a borrowed command: `key` and `val` are moved
+     /// into the entry when owned and copied when borrowed.
+-    fn set<K, V>(&self, key: K, val: V, opts: &SetOptions) -> Value
++    fn set<K, V>(&self, key: K, val: V, opts: &SetOptions, probe: Option<&KeyProbe>) -> Value
+     where
+         K: AsRef<str> + Into<Key>,
+         V: Into<StrValue>,
+@@ -3402,7 +3730,7 @@ impl KeyValueStore {
+         // The condition check, optional old-value read, and replacement
+         // all happen under one DashMap entry guard. Two concurrent NX
+         // writers can therefore never both succeed.
+-        match write_slot(&self.data, key) {
++        match write_slot(&self.data, key, probe) {
+             WriteSlot::Occupied(mut occupied) => {
+                 let live = !occupied.value().is_expired(now);
+                 let existing_ttl = live.then_some(occupied.value().deadline.get()).flatten();
+@@ -3482,14 +3810,18 @@ impl KeyValueStore {
+     /// primitives the owned arms of `execute_inner` call, given borrowed
+     /// arguments. `None` for a command without one, which the caller then
+     /// clones and runs owned.
+-    fn execute_inner_ref(&self, cmd: &Command) -> Option<Value> {
++    ///
++    /// `probe` is passed to the one slot each [`probe_eligible`] command
++    /// takes; every such command must have an arm here and in
++    /// [`execute_inner_probed`](Self::execute_inner_probed).
++    fn execute_inner_ref(&self, cmd: &Command, probe: Option<&KeyProbe>) -> Option<Value> {
+         Some(match cmd {
+-            Command::Set(key, val, opts) => self.set(key.as_str(), val.as_slice(), opts),
+-            Command::Incr(key) => incr_by(&self.data, key.as_str(), 1),
+-            Command::Decr(key) => incr_by(&self.data, key.as_str(), -1),
+-            Command::IncrBy(key, delta) => incr_by(&self.data, key.as_str(), *delta),
++            Command::Set(key, val, opts) => self.set(key.as_str(), val.as_slice(), opts, probe),
++            Command::Incr(key) => incr_by(&self.data, key.as_str(), 1, probe),
++            Command::Decr(key) => incr_by(&self.data, key.as_str(), -1, probe),
++            Command::IncrBy(key, delta) => incr_by(&self.data, key.as_str(), *delta, probe),
+             Command::DecrBy(key, delta) => match delta.checked_neg() {
+-                Some(delta) => incr_by(&self.data, key.as_str(), delta),
++                Some(delta) => incr_by(&self.data, key.as_str(), delta, probe),
+                 None => Value::Error("ERR increment or decrement would overflow".to_string()),
+             },
+             Command::HSet(key, pairs) => self.hset(
+@@ -3497,7 +3829,12 @@ impl KeyValueStore {
+                 pairs
+                     .iter()
+                     .map(|(field, val)| (field.as_str(), val.as_slice())),
++                probe,
+             ),
++            Command::Append(key, suffix) => self.append(key.as_str(), suffix, probe),
++            Command::HIncrBy(key, field, delta) => {
++                hash_incr_int(&self.data, key.as_str(), field.as_str(), *delta, probe)
++            }
+             Command::MSet(pairs) => self.mset(
+                 pairs
+                     .iter()
+@@ -3507,8 +3844,183 @@ impl KeyValueStore {
+         })
+     }
+ 
++    /// `GET`'s read of one key, handed to `f` while the entry is held (a
++    /// shard read guard: `f` must not block). `Ok(None)` for a missing or
++    /// expired key. The one definition of what `GET` and `MGET` see, whether
++    /// the caller copies the value into a `Value` or straight into a reply.
++    fn read_str<R>(&self, key: &str, f: impl FnOnce(Result<Option<&[u8]>, WrongType>) -> R) -> R {
++        let now = now_ms();
++        match self.data.get(key) {
++            Some(e) if !e.is_expired(now) => match &e.value {
++                EntryValue::Str(s) => {
++                    e.touch(now);
++                    f(Ok(Some(s.as_slice())))
++                }
++                _ => f(Err(WrongType)),
++            },
++            _ => f(Ok(None)),
++        }
++    }
++
++    /// `HGET`'s read, as [`read_str`](Self::read_str) is `GET`'s.
++    fn read_hash_field<R>(
++        &self,
++        key: &str,
++        field: &str,
++        f: impl FnOnce(Result<Option<&[u8]>, WrongType>) -> R,
++    ) -> R {
++        let now = now_ms();
++        match self.data.get(key) {
++            Some(e) if !e.is_expired(now) => match &e.value {
++                EntryValue::Hash(h) => {
++                    e.touch(now);
++                    f(Ok(h.get(field)))
++                }
++                _ => f(Err(WrongType)),
++            },
++            _ => f(Ok(None)),
++        }
++    }
++
++    /// Run a borrowed hot command and append its RESP reply to `out` — the
++    /// bytes `execute_reporting(cmd.to_command())` would serialize to — with
++    /// no copy of its key or value into a `Command` and no `Value` built for
++    /// a read's reply: `GET`'s value goes from the entry into `out` under the
++    /// shard's read guard.
++    ///
++    /// `None`, having run nothing and written nothing, on a capped store:
++    /// capacity accounting needs the owned command (the caller runs that).
++    /// Writes take the same primitives, stripe and accounting as the owned
++    /// path ([`run_probed_write`](Self::run_probed_write)).
++    pub fn execute_ref_into(&self, cmd: &CommandRef<'_>, out: &mut Vec<u8>) -> Option<RefOutcome> {
++        let error = |out: &mut Vec<u8>| {
++            out.push(b'-');
++            out.extend_from_slice(WRONGTYPE.as_bytes());
++            out.extend_from_slice(b"\r\n");
++            RefOutcome {
++                error: true,
++                hit: None,
++            }
++        };
++        let write = |value: Value, out: &mut Vec<u8>| {
++            value.serialize_into(out);
++            RefOutcome {
++                error: matches!(value, Value::Error(_)),
++                hit: None,
++            }
++        };
++        if cmd.is_write() && self.has_capacity_limits() {
++            return None;
++        }
++        Some(match cmd {
++            CommandRef::Get(key) => self.read_str(key, |read| match read {
++                Ok(value) => {
++                    write_bulk(out, value);
++                    RefOutcome {
++                        error: false,
++                        hit: Some(value.is_some()),
++                    }
++                }
++                Err(WrongType) => error(out),
++            }),
++            CommandRef::HGet(key, field) => self.read_hash_field(key, field, |read| match read {
++                Ok(value) => {
++                    write_bulk(out, value);
++                    RefOutcome {
++                        error: false,
++                        hit: None,
++                    }
++                }
++                Err(WrongType) => error(out),
++            }),
++            CommandRef::MGet(keys) => {
++                write_array_header(out, keys.len());
++                for key in keys {
++                    self.read_str(key, |read| write_bulk(out, read.ok().flatten()));
++                }
++                RefOutcome {
++                    error: false,
++                    hit: None,
++                }
++            }
++            CommandRef::Set(key, val) => write(
++                self.run_probed_write(key, (), |store, (), probe| {
++                    store.set(*key, *val, &SetOptions::default(), probe)
++                }),
++                out,
++            ),
++            CommandRef::Incr(key) => write(
++                self.run_probed_write(key, (), |store, (), probe| {
++                    incr_by(&store.data, *key, 1, probe)
++                }),
++                out,
++            ),
++            CommandRef::Decr(key) => write(
++                self.run_probed_write(key, (), |store, (), probe| {
++                    incr_by(&store.data, *key, -1, probe)
++                }),
++                out,
++            ),
++            CommandRef::HSet(key, pairs) => write(
++                self.run_probed_write(key, (), |store, (), probe| {
++                    store.hset(*key, pairs.iter().copied(), probe)
++                }),
++                out,
++            ),
++        })
++    }
++
++    /// [`execute_inner`](Self::execute_inner) for a [`probe_eligible`]
++    /// command, passing `probe` to the one slot it takes. Owned arguments
++    /// move into the store as on the unprobed path.
++    fn execute_inner_probed(&self, cmd: Command, probe: Option<&KeyProbe>) -> Value {
++        match cmd {
++            Command::Set(key, val, opts) => self.set(key, val, &opts, probe),
++            Command::Incr(key) => incr_by(&self.data, key, 1, probe),
++            Command::Decr(key) => incr_by(&self.data, key, -1, probe),
++            Command::IncrBy(key, delta) => incr_by(&self.data, key, delta, probe),
++            Command::DecrBy(key, delta) => match delta.checked_neg() {
++                Some(delta) => incr_by(&self.data, key, delta, probe),
++                None => Value::Error("ERR increment or decrement would overflow".to_string()),
++            },
++            Command::HSet(key, pairs) => self.hset(key, pairs.into_iter(), probe),
++            Command::Append(key, suffix) => self.append(key, &suffix, probe),
++            Command::HIncrBy(key, field, delta) => {
++                hash_incr_int(&self.data, key, field, delta, probe)
++            }
++            other => self.execute_inner(other),
++        }
++    }
++
++    /// `APPEND`.
++    fn append<K: AsRef<str> + Into<Key>>(
++        &self,
++        key: K,
++        suffix: &[u8],
++        probe: Option<&KeyProbe>,
++    ) -> Value {
++        let now = now_ms();
++        typed_entry!(
++            entry,
++            s,
++            self.data,
++            key,
++            now,
++            EntryValue::Str,
++            StrValue::default(),
++            probe
++        );
++        s.extend(suffix);
++        Value::Integer(s.len() as i64)
++    }
++
+     /// `HSET`, for owned or borrowed fields and values.
+-    fn hset<K, F, V>(&self, key: K, pairs: impl Iterator<Item = (F, V)>) -> Value
++    fn hset<K, F, V>(
++        &self,
++        key: K,
++        pairs: impl Iterator<Item = (F, V)>,
++        probe: Option<&KeyProbe>,
++    ) -> Value
+     where
+         K: AsRef<str> + Into<Key>,
+         F: AsRef<str> + Into<String>,
+@@ -3522,7 +4034,8 @@ impl KeyValueStore {
+             key,
+             now,
+             EntryValue::Hash,
+-            Box::new(CompactHash::new())
++            Box::new(CompactHash::new()),
++            probe
+         );
+         // Counted from the inserts themselves, so a field named twice
+         // in one command counts once — as in Redis. Checking
+@@ -3551,7 +4064,7 @@ impl KeyValueStore {
+                 deadline: Deadline::NONE,
+                 last_access_ms: AtomicU64::new(now),
+             };
+-            match write_slot(&self.data, key) {
++            match write_slot(&self.data, key, None) {
+                 WriteSlot::Occupied(mut occupied) => {
+                     let replaced = std::mem::replace(&mut **occupied.value_mut(), entry);
+                     // Free the old value outside the shard guard.
+@@ -3619,21 +4132,12 @@ impl KeyValueStore {
+             ),
+ 
+             // ── Strings ───────────────────────────────────────────────────────
+-            Command::Set(key, val, opts) => self.set(key, val, &opts),
++            Command::Set(key, val, opts) => self.set(key, val, &opts, None),
+ 
+-            Command::Get(key) => {
+-                let now = now_ms();
+-                match self.data.get(key.as_str()) {
+-                    Some(e) if !e.is_expired(now) => match &e.value {
+-                        EntryValue::Str(s) => {
+-                            e.touch(now);
+-                            Value::BulkString(Some(s.clone().into_bytes()))
+-                        }
+-                        _ => Value::Error(WRONGTYPE.to_string()),
+-                    },
+-                    _ => Value::BulkString(None),
+-                }
+-            }
++            Command::Get(key) => self.read_str(&key, |read| match read {
++                Ok(value) => Value::BulkString(value.map(<[u8]>::to_vec)),
++                Err(WrongType) => Value::Error(WRONGTYPE.to_string()),
++            }),
+ 
+             Command::Del(keys) | Command::Unlink(keys) => {
+                 let now = now_ms();
+@@ -3648,20 +4152,7 @@ impl KeyValueStore {
+                 Value::Integer(count as i64)
+             }
+ 
+-            Command::Append(key, suffix) => {
+-                let now = now_ms();
+-                typed_entry!(
+-                    entry,
+-                    s,
+-                    self.data,
+-                    key,
+-                    now,
+-                    EntryValue::Str,
+-                    StrValue::default()
+-                );
+-                s.extend(&suffix);
+-                Value::Integer(s.len() as i64)
+-            }
++            Command::Append(key, suffix) => self.append(key, &suffix, None),
+ 
+             Command::Strlen(key) => {
+                 let now = now_ms();
+@@ -3700,7 +4191,7 @@ impl KeyValueStore {
+                 // update in the one command whose entire purpose is an atomic
+                 // read-and-replace. Redis gets that atomicity for free from
+                 // executing on one thread; here it has to be asked for.
+-                match write_slot(&self.data, key) {
++                match write_slot(&self.data, key, None) {
+                     WriteSlot::Occupied(mut occupied) => {
+                         let old = if occupied.value().is_expired(now) {
+                             Value::BulkString(None)
+@@ -3724,29 +4215,22 @@ impl KeyValueStore {
+                 }
+             }
+ 
+-            Command::MGet(keys) => {
+-                let now = now_ms();
+-                let results = keys
+-                    .iter()
+-                    .map(|k| match self.data.get(k.as_str()) {
+-                        Some(e) if !e.is_expired(now) => match &e.value {
+-                            EntryValue::Str(s) => {
+-                                e.touch(now);
+-                                Value::BulkString(Some(s.clone().into_bytes()))
+-                            }
+-                            _ => Value::BulkString(None),
+-                        },
+-                        _ => Value::BulkString(None),
++            Command::MGet(keys) => Value::Array(Some(
++                keys.iter()
++                    .map(|k| {
++                        // MGET answers nil for a key of another type.
++                        self.read_str(k, |read| {
++                            Value::BulkString(read.ok().flatten().map(<[u8]>::to_vec))
++                        })
+                     })
+-                    .collect();
+-                Value::Array(Some(results))
+-            }
++                    .collect(),
++            )),
+ 
+             Command::MSet(pairs) => self.mset(pairs.into_iter()),
+ 
+             Command::SetNx(key, val) => {
+                 let now = now_ms();
+-                match write_slot(&self.data, key) {
++                match write_slot(&self.data, key, None) {
+                     WriteSlot::Vacant(vacant) => {
+                         vacant.insert(Box::new(Entry::new_str(val)));
+                         Value::Integer(1)
+@@ -3775,11 +4259,11 @@ impl KeyValueStore {
+                 Value::SimpleString("OK".to_string())
+             }
+ 
+-            Command::Incr(key) => incr_by(&self.data, key, 1),
+-            Command::Decr(key) => incr_by(&self.data, key, -1),
+-            Command::IncrBy(key, delta) => incr_by(&self.data, key, delta),
++            Command::Incr(key) => incr_by(&self.data, key, 1, None),
++            Command::Decr(key) => incr_by(&self.data, key, -1, None),
++            Command::IncrBy(key, delta) => incr_by(&self.data, key, delta, None),
+             Command::DecrBy(key, delta) => match delta.checked_neg() {
+-                Some(delta) => incr_by(&self.data, key, delta),
++                Some(delta) => incr_by(&self.data, key, delta, None),
+                 None => Value::Error("ERR increment or decrement would overflow".to_string()),
+             },
+ 
+@@ -4119,7 +4603,7 @@ impl KeyValueStore {
+             }
+ 
+             // ── Hash ──────────────────────────────────────────────────────────
+-            Command::HSet(key, pairs) => self.hset(key, pairs.into_iter()),
++            Command::HSet(key, pairs) => self.hset(key, pairs.into_iter(), None),
+ 
+             Command::HStrLen(key, field) => {
+                 let now = now_ms();
+@@ -4136,22 +4620,10 @@ impl KeyValueStore {
+                 }
+             }
+ 
+-            Command::HGet(key, field) => {
+-                let now = now_ms();
+-                match self.data.get(key.as_str()) {
+-                    None => Value::BulkString(None),
+-                    Some(e) if e.is_expired(now) => Value::BulkString(None),
+-                    Some(e) => match &e.value {
+-                        EntryValue::Hash(h) => {
+-                            e.touch(now);
+-                            h.get(&field)
+-                                .map(|v| Value::BulkString(Some(v.to_vec())))
+-                                .unwrap_or(Value::BulkString(None))
+-                        }
+-                        _ => Value::Error(WRONGTYPE.to_string()),
+-                    },
+-                }
+-            }
++            Command::HGet(key, field) => self.read_hash_field(&key, &field, |read| match read {
++                Ok(value) => Value::BulkString(value.map(<[u8]>::to_vec)),
++                Err(WrongType) => Value::Error(WRONGTYPE.to_string()),
++            }),
+ 
+             Command::HGetAll(key) => {
+                 let now = now_ms();
+@@ -4278,7 +4750,9 @@ impl KeyValueStore {
+                 }
+             }
+ 
+-            Command::HIncrBy(key, field, delta) => hash_incr_int(&self.data, key, field, delta),
++            Command::HIncrBy(key, field, delta) => {
++                hash_incr_int(&self.data, key, field, delta, None)
++            }
+ 
+             Command::HIncrByFloat(key, field, delta) => {
+                 hash_incr_float(&self.data, key, field, delta)
+@@ -4981,7 +5455,7 @@ impl KeyValueStore {
+                 // first (as this used to) let the destination be retyped in
+                 // between, after which the member was silently dropped and the
+                 // reply still claimed a successful move.
+-                let mut dst_entry = match write_slot(&self.data, dst) {
++                let mut dst_entry = match write_slot(&self.data, dst, None) {
+                     WriteSlot::Occupied(existing) => existing,
+                     WriteSlot::Vacant(vacant) => vacant.insert(Box::new(Entry {
+                         value: EntryValue::Set(Box::new(CompactSet::new())),
+@@ -5243,7 +5717,7 @@ impl KeyValueStore {
+                 // writer create the key between the test and the insert. The
+                 // path is checked against the document before anything is
+                 // created or reset, so a refused write changes nothing.
+-                let mut entry = match write_slot(&self.data, key) {
++                let mut entry = match write_slot(&self.data, key, None) {
+                     WriteSlot::Vacant(v) => {
+                         if leading_index {
+                             return Value::Error(NOT_AN_ARRAY.to_string());
+@@ -5409,7 +5883,7 @@ impl KeyValueStore {
+                 // needed an "ERR rate limiter vanished mid-check" arm for the
+                 // case where the key was deleted in between. It cannot happen
+                 // now, so that error is gone.
+-                let mut entry = match write_slot(&self.data, key) {
++                let mut entry = match write_slot(&self.data, key, None) {
+                     WriteSlot::Vacant(v) => match fresh_limiter(v.key()) {
+                         Ok(e) => v.insert(Box::new(e)),
+                         Err(err) => return err,
+@@ -5504,6 +5978,25 @@ enum WriteScope<K> {
+     All,
+ }
+ 
++/// Commands [`KeyValueStore::run_probed_write`] may account: each mutates one
++/// key through exactly one write slot, which it takes with the probe. Adding
++/// a command here needs an arm in both `execute_inner_probed` and
++/// `execute_inner_ref` that passes the probe on;
++/// `probed_writes_account_exactly_like_the_general_path` checks every one.
++fn probe_eligible(cmd: &Command) -> bool {
++    matches!(
++        cmd,
++        Command::Set(..)
++            | Command::Incr(_)
++            | Command::Decr(_)
++            | Command::IncrBy(..)
++            | Command::DecrBy(..)
++            | Command::HSet(..)
++            | Command::Append(..)
++            | Command::HIncrBy(..)
++    )
++}
++
+ fn mutation_scope<'c>(cmd: &'c Command) -> MutationScope<'c> {
+     if let Command::Dedup(_, _, inner) = cmd {
+         return mutation_scope(inner);
+@@ -5912,27 +6405,12 @@ fn entry_size(key: &str, e: &Entry) -> usize {
+     key.len() + val_size + 64
+ }
+ 
+-/// `n` in decimal, written into `buf`.
+-fn format_i64(n: i64, buf: &mut [u8; 20]) -> &[u8] {
+-    let mut at = buf.len();
+-    // Work on the magnitude as u64 so i64::MIN does not overflow.
+-    let mut rest = n.unsigned_abs();
+-    loop {
+-        at -= 1;
+-        buf[at] = b'0' + (rest % 10) as u8;
+-        rest /= 10;
+-        if rest == 0 {
+-            break;
+-        }
+-    }
+-    if n < 0 {
+-        at -= 1;
+-        buf[at] = b'-';
+-    }
+-    &buf[at..]
+-}
+-
+-fn incr_by<K: AsRef<str> + Into<Key>>(data: &Keyspace, key: K, delta: i64) -> Value {
++fn incr_by<K: AsRef<str> + Into<Key>>(
++    data: &Keyspace,
++    key: K,
++    delta: i64,
++    probe: Option<&KeyProbe>,
++) -> Value {
+     let now = now_ms();
+     typed_entry!(
+         entry,
+@@ -5941,7 +6419,8 @@ fn incr_by<K: AsRef<str> + Into<Key>>(data: &Keyspace, key: K, delta: i64) -> Va
+         key,
+         now,
+         EntryValue::Str,
+-        StrValue::from("0")
++        StrValue::from("0"),
++        probe
+     );
+     // A non-UTF-8 value fails here exactly as non-numeric text does: the bytes
+     // are stored faithfully, they are simply not a number.
+@@ -6146,7 +6625,17 @@ fn set_diff(data: &Keyspace, keys: &[String], now: u64) -> Result<IndexSet<Strin
+     Ok(result)
+ }
+ 
+-fn hash_incr_int(data: &Keyspace, key: String, field: String, delta: i64) -> Value {
++fn hash_incr_int<K, F>(
++    data: &Keyspace,
++    key: K,
++    field: F,
++    delta: i64,
++    probe: Option<&KeyProbe>,
++) -> Value
++where
++    K: AsRef<str> + Into<Key>,
++    F: AsRef<str> + Into<String>,
++{
+     let now = now_ms();
+     typed_entry!(
+         entry,
+@@ -6155,12 +6644,13 @@ fn hash_incr_int(data: &Keyspace, key: String, field: String, delta: i64) -> Val
+         key,
+         now,
+         EntryValue::Hash,
+-        Box::new(CompactHash::new())
++        Box::new(CompactHash::new()),
++        probe
+     );
+     // Only an absent field counts as zero. A present field that is not an
+     // integer is an error and stays as it is; folding the two together let
+     // `HINCRBY` silently overwrite `not-a-number` with the increment.
+-    let cur: i64 = match h.get(&field) {
++    let cur: i64 = match h.get(field.as_ref()) {
+         None => 0,
+         Some(existing) => match std::str::from_utf8(existing)
+             .ok()
+@@ -6173,7 +6663,8 @@ fn hash_incr_int(data: &Keyspace, key: String, field: String, delta: i64) -> Val
+     match cur.checked_add(delta) {
+         None => Value::Error("ERR increment or decrement would overflow".to_string()),
+         Some(new) => {
+-            h.insert(field, new.to_string().into_bytes());
++            // Formatted on the stack, as `INCR` does.
++            h.insert(field, format_i64(new, &mut [0u8; 20]));
+             Value::Integer(new)
+         }
+     }
+@@ -12443,3 +12934,9 @@ mod v06_command_tests;
+ 
+ #[cfg(test)]
+ mod ref_exec_tests;
++
++#[cfg(test)]
++mod probe_tests;
++
++#[cfg(test)]
++mod borrowed_tests;
+diff --git a/server-native/src/clients.rs b/server-native/src/clients.rs
+index a1be60e..e940f42 100644
+--- a/server-native/src/clients.rs
++++ b/server-native/src/clients.rs
+@@ -296,7 +296,7 @@ pub(crate) fn command_name(cmd: &Command) -> &'static str {
+     }
+ }
+ 
+-/// Per-command counter handles, resolved through the metrics registry once and
++/// Per-command metric handles, resolved through the metrics registry once and
+ /// then reused — the registry lookup (key construction + shard lock) is too
+ /// expensive to pay on every command. Keyed by the `&'static str` from
+ /// `command_name`.
+@@ -309,43 +309,32 @@ pub(crate) fn command_name(cmd: &Command) -> &'static str {
+ /// and `.unwrap()`ed the lock, so a single panic anywhere holding it would
+ /// poison the lock and make every subsequent command panic for the life of the
+ /// process. An immutable map needs no lock and cannot be poisoned.
+-pub(crate) static CMD_COUNTERS: std::sync::LazyLock<HashMap<&'static str, metrics::Counter>> =
++pub(crate) static CMD_METRICS: std::sync::LazyLock<HashMap<&'static str, CommandMetrics>> =
+     std::sync::LazyLock::new(|| {
+         core_engine::catalog::CATALOG
+             .iter()
+-            .map(|spec| {
++            .map(|spec| spec.name)
++            .chain(std::iter::once(UNKNOWN_COMMAND))
++            .map(|name| {
+                 (
+-                    spec.name,
+-                    counter!("recached_commands_total", "command" => spec.name),
++                    name,
++                    CommandMetrics {
++                        count: counter!("recached_commands_total", "command" => name),
++                        duration: histogram!("recached_command_duration_seconds", "command" => name),
++                    },
+                 )
+             })
+-            .chain(std::iter::once((
+-                UNKNOWN_COMMAND,
+-                counter!("recached_commands_total", "command" => UNKNOWN_COMMAND),
+-            )))
+             .collect()
+     });
+ 
+-/// Per-command latency histogram handles, cached for the same reason as
+-/// [`CMD_COUNTERS`]: `histogram!` with a label builds the label list (one
+-/// allocation) and looks the series up in the recorder's registry on every
+-/// call. Same series, same observations; one lookup at first use instead.
+-pub(crate) static CMD_DURATIONS: std::sync::LazyLock<HashMap<&'static str, metrics::Histogram>> =
+-    std::sync::LazyLock::new(|| {
+-        core_engine::catalog::CATALOG
+-            .iter()
+-            .map(|spec| {
+-                (
+-                    spec.name,
+-                    histogram!("recached_command_duration_seconds", "command" => spec.name),
+-                )
+-            })
+-            .chain(std::iter::once((
+-                UNKNOWN_COMMAND,
+-                histogram!("recached_command_duration_seconds", "command" => UNKNOWN_COMMAND),
+-            )))
+-            .collect()
+-    });
++/// One command's metric handles: its `recached_commands_total` counter and
++/// its `recached_command_duration_seconds` histogram. Kept together so a
++/// command pays one map lookup for both — it paid one each, on every
++/// command, metrics enabled or not. Same series, same observations.
++pub(crate) struct CommandMetrics {
++    count: metrics::Counter,
++    duration: metrics::Histogram,
++}
+ 
+ /// Label used for a command the parser did not recognise. Not a catalog row, so
+ /// it is registered alongside them.
+@@ -353,8 +342,8 @@ pub(crate) const UNKNOWN_COMMAND: &str = "unknown";
+ 
+ pub(crate) fn record_command(name: &'static str) {
+     STAT_COMMANDS_TOTAL.fetch_add(1, Ordering::Relaxed);
+-    match CMD_COUNTERS.get(name) {
+-        Some(c) => c.increment(1),
++    match CMD_METRICS.get(name) {
++        Some(handles) => handles.count.increment(1),
+         // A name `command_name` can produce but the catalog does not list.
+         // `command_name_labels_are_all_pre_registered` fails CI if that ever
+         // happens, so this is a correctness backstop, not a routine path.
+@@ -403,6 +392,23 @@ pub(crate) fn execute_and_record_ref(store: &KeyValueStore, cmd: &Command) -> (V
+     record_outcome(store, name, is_write, is_get, started, response, evicted)
+ }
+ 
++/// [`execute_and_record_ref`] for a write that may run only if it cannot
++/// evict (see `KeyValueStore::execute_reporting_ref_within_capacity`); a
++/// declined write records nothing.
++pub(crate) fn execute_and_record_ref_within_capacity(
++    store: &KeyValueStore,
++    cmd: &Command,
++) -> Option<(Value, Vec<String>)> {
++    let name = command_name(cmd);
++    let is_write = is_write_command(cmd);
++    let is_get = matches!(cmd, Command::Get(_));
++    let started = std::time::Instant::now();
++    let (response, evicted) = store.execute_reporting_ref_within_capacity(cmd)?;
++    Some(record_outcome(
++        store, name, is_write, is_get, started, response, evicted,
++    ))
++}
++
+ fn record_outcome(
+     store: &KeyValueStore,
+     name: &'static str,
+@@ -412,36 +418,81 @@ fn record_outcome(
+     response: Value,
+     evicted: Vec<String>,
+ ) -> (Value, Vec<String>) {
++    let hit = match (is_get, &response) {
++        (true, Value::BulkString(found)) => Some(found.is_some()),
++        _ => None,
++    };
++    record_metrics(
++        store,
++        name,
++        is_write,
++        started,
++        matches!(response, Value::Error(_)),
++        hit,
++        !evicted.is_empty(),
++    );
++    (response, evicted)
++}
++
++/// The metrics and dirty count of one executed command: its duration, its
++/// count, an error, a `GET`'s keyspace hit or miss (`hit`), and — for a write
++/// that succeeded, or an error that still evicted — one dirty write. Shared
++/// by the owned and the borrowed execution paths, so both count the same.
++pub(crate) fn record_metrics(
++    store: &KeyValueStore,
++    name: &'static str,
++    is_write: bool,
++    started: std::time::Instant,
++    is_error: bool,
++    hit: Option<bool>,
++    evicted: bool,
++) {
+     let elapsed = started.elapsed().as_secs_f64();
+-    match CMD_DURATIONS.get(name) {
+-        Some(histogram) => histogram.record(elapsed),
++    STAT_COMMANDS_TOTAL.fetch_add(1, Ordering::Relaxed);
++    match CMD_METRICS.get(name) {
++        Some(handles) => {
++            handles.duration.record(elapsed);
++            handles.count.increment(1);
++        }
+         // Not in the catalog: `command_name_labels_are_all_pre_registered`
+-        // keeps this a backstop, as for `CMD_COUNTERS`.
+-        None => histogram!("recached_command_duration_seconds", "command" => name).record(elapsed),
++        // fails CI if that can happen, so this is a correctness backstop.
++        None => {
++            histogram!("recached_command_duration_seconds", "command" => name).record(elapsed);
++            counter!("recached_commands_total", "command" => name).increment(1);
++        }
+     }
+-    record_command(name);
+-    if matches!(response, Value::Error(_)) {
++    if is_error {
+         counter!("recached_command_errors_total", "command" => name).increment(1);
+-        if !evicted.is_empty() {
++        if evicted {
+             store.mark_dirty();
+         }
+     } else if is_write {
+         store.mark_dirty();
+     }
+-    if is_get {
+-        match &response {
+-            Value::BulkString(Some(_)) => {
+-                KEYSPACE_HITS.increment(1);
+-                STAT_KEYSPACE_HITS.fetch_add(1, Ordering::Relaxed);
+-            }
+-            Value::BulkString(None) => {
+-                KEYSPACE_MISSES.increment(1);
+-                STAT_KEYSPACE_MISSES.fetch_add(1, Ordering::Relaxed);
+-            }
+-            _ => {}
++    match hit {
++        Some(true) => {
++            KEYSPACE_HITS.increment(1);
++            STAT_KEYSPACE_HITS.fetch_add(1, Ordering::Relaxed);
+         }
++        Some(false) => {
++            KEYSPACE_MISSES.increment(1);
++            STAT_KEYSPACE_MISSES.fetch_add(1, Ordering::Relaxed);
++        }
++        None => {}
++    }
++}
++
++/// [`command_name`] of a borrowed command — the label its owned form gets.
++pub(crate) fn command_ref_name(cmd: &CommandRef<'_>) -> &'static str {
++    match cmd {
++        CommandRef::Get(_) => "get",
++        CommandRef::Set(..) => "set",
++        CommandRef::Incr(_) => "incr",
++        CommandRef::Decr(_) => "decr",
++        CommandRef::HGet(..) => "hget",
++        CommandRef::HSet(..) => "hset",
++        CommandRef::MGet(_) => "mget",
+     }
+-    (response, evicted)
+ }
+ 
+ // ── TCP listeners ─────────────────────────────────────────────────────────────
+diff --git a/server-native/src/connection.rs b/server-native/src/connection.rs
+index 549855d..ddfc0a9 100644
+--- a/server-native/src/connection.rs
++++ b/server-native/src/connection.rs
+@@ -260,6 +260,13 @@ pub(crate) fn process_auth(
+ 
+ // ── main ─────────────────────────────────────────────────────────────────────
+ 
++/// A frame the TCP loop answered on the borrowed path (and its length), or
++/// the decoded frame for the ordinary path.
++enum Answered {
++    Borrowed(usize),
++    Not(Result<core_engine::request::Decoded, core_engine::resp::ParseError>),
++}
++
+ #[allow(clippy::too_many_arguments)]
+ pub(crate) async fn handle_tcp<S>(
+     socket: S,
+@@ -281,7 +288,11 @@ pub(crate) async fn handle_tcp<S>(
+     );
+     let _guard = ConnectionGuard::new("tcp", client_meta.clone());
+     let (mut reader, raw_writer) = tokio::io::split(socket);
+-    let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024, raw_writer);
++    // Replies leave only once the AOF writes of the commands before them
++    // have: see `AofGatedWriter`. Without an AOF it holds nothing back.
++    let gated = AofGatedWriter::new(raw_writer, Arc::clone(&state));
++    let deferral = gated.deferral();
++    let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024, gated);
+     let mut buf = Vec::<u8>::new();
+     let mut read_pos: usize = 0;
+     // Reused for every frame on this connection: holds argument offsets
+@@ -320,6 +331,7 @@ pub(crate) async fn handle_tcp<S>(
+         Arc::new(AtomicBool::new(false)),
+     );
+ 
++    with_deferred_aof(deferral, async {
+     'outer: loop {
+         let is_subscribed = !subscribed_channels.is_empty() || !subscribed_patterns.is_empty();
+         // Republish only when the counts moved: CLIENT LIST has to see live
+@@ -385,7 +397,51 @@ pub(crate) async fn handle_tcp<S>(
+                             // `Value::parse` + `Command::from_value` gave. The
+                             // command owns its data; nothing borrowed from
+                             // `buf` survives into the compaction below.
+-                            match decoder.decode(&buf[read_pos..]) {
++                            // A hot command is decoded borrowed and, when it
++                            // can be (see `try_execute_borrowed`), run from
++                            // the buffer with its reply written in place — no
++                            // copy of its key or value, no reply `Value`. The
++                            // borrow ends inside this block, before the
++                            // buffer is touched again. Otherwise it is made
++                            // owned, without a second walk of the frame, and
++                            // takes the ordinary path below.
++                            let frame = match decoder.decode_any(&buf[read_pos..]) {
++                                DecodedAny::Borrowed(cmd, consumed) => {
++                                    // The ordinary path's gates for these
++                                    // commands, in its order: auth, MULTI
++                                    // queueing, subscribe mode. Anything
++                                    // they would intercept goes there.
++                                    resp_buf.clear();
++                                    let answered = is_authenticated
++                                        && multi_queue.is_none()
++                                        && !is_subscribed
++                                        && try_execute_borrowed(
++                                            &cmd,
++                                            &state,
++                                            &watch_registry,
++                                            &store,
++                                            &mut resp_buf,
++                                        )
++                                        .is_some();
++                                    if answered {
++                                        Answered::Borrowed(consumed)
++                                    } else {
++                                        Answered::Not(Ok((Ok(cmd.to_command()), consumed)))
++                                    }
++                                }
++                                DecodedAny::Owned(decoded) => Answered::Not(decoded),
++                            };
++                            let frame = match frame {
++                                Answered::Not(frame) => frame,
++                                Answered::Borrowed(consumed) => {
++                                    read_pos += consumed;
++                                    if writer.write_all(&resp_buf).await.is_err() {
++                                        break 'outer;
++                                    }
++                                    continue 'parse;
++                                }
++                            };
++                            match frame {
+                                 Ok((decoded, consumed)) => {
+                                     read_pos += consumed;
+                                     let cmd = match decoded {
+@@ -957,6 +1013,11 @@ pub(crate) async fn handle_tcp<S>(
+         }
+     }
+ 
++    })
++    .await;
++    // The socket is gone; queued AOF batches are written regardless.
++    drop(writer);
++
+     if !subscribed_channels.is_empty() || !subscribed_patterns.is_empty() {
+         pubsub.lock().await.unsubscribe_all(conn_id);
+     }
+diff --git a/server-native/src/main.rs b/server-native/src/main.rs
+index 82d7397..c59c101 100644
+--- a/server-native/src/main.rs
++++ b/server-native/src/main.rs
+@@ -68,7 +68,7 @@ use watch::*;
+ 
+ use core_engine::catalog;
+ use core_engine::cmd::{Command, GetExOption, SetCondition, SetExpiry, SetOptions, ZAddCondition};
+-use core_engine::request::RequestDecoder;
++use core_engine::request::{CommandRef, DecodedAny, RequestDecoder};
+ use core_engine::resp::{MAX_BULK_STRING_BYTES, Value};
+ use core_engine::store::{
+     EvictionPolicy, KeyValueStore, KeyspaceSample, SnapshotEntry, SnapshotValue, glob_match,
+diff --git a/server-native/src/persistence.rs b/server-native/src/persistence.rs
+index 9c7afb3..ffe27e7 100644
+--- a/server-native/src/persistence.rs
++++ b/server-native/src/persistence.rs
+@@ -200,11 +200,369 @@ pub(crate) enum AofSync {
+     No,
+ }
+ 
++/// The append-only file, written in batches by whichever appender finds no
++/// write in progress.
++///
++/// Every write the server acknowledges is first appended here, so this is on
++/// the path of every write of an AOF deployment. It used to hold a
++/// `tokio::fs::File` behind an async mutex: tokio runs each file operation on
++/// its blocking pool and completes it before accepting the next, so every
++/// append paid a thread-pool round trip while holding the process-wide lock,
++/// and `always` paid one `fdatasync` per write. Measured on the 6I production
++/// benchmark (1 worker, pipelined `SET`): ~5,000 writes/s with `everysec`
++/// against Redis's ~220,000, and ~350–700/s with `always`.
++///
++/// Appends join an open *batch* — bytes in append order plus one shared
++/// completion. A batch is performed by the *leader*: the appender that finds
++/// no write in progress takes the oldest batch and writes it, then the next,
++/// until none is queued; appends arriving meanwhile join the next batch and
++/// wait for it. Under `everysec` and `no` the leader writes inline, in its own
++/// task, as Redis's event loop does: a page-cache `write(2)`, no thread
++/// hand-off (a first version handed every batch to a writer thread, and on
++/// one worker the futex wake-ups each way cost more than the write — 26% of
++/// the worker's samples). A batch that must reach the disk — every batch
++/// under `always`, and a truncation — is drained on the blocking pool
++/// instead, where an `fdatasync` covers every append in it (group commit, as
++/// Redis does once per event-loop iteration).
++///
++/// What each call guarantees is unchanged:
++///
++/// - `append` returns once its bytes were handed to the OS (`write(2)`), and
++///   under `always` once they were `fdatasync`ed. A process crash after an
++///   acknowledged write therefore loses nothing; `everysec` loses at most the
++///   last second to a power cut.
++/// - The file holds appends in the order they were made. Callers append
++///   while holding the replication-order stripes of the write, so for
++///   conflicting writes the AOF order is still the store order.
++/// - `flush` returns once everything appended before it is durable: it waits
++///   for those appends to be written, then `fdatasync`s on the blocking pool,
++///   so — as with Redis's background fsync — appends keep being written while
++///   it runs instead of queueing behind a disk barrier once a second.
++/// - `truncate` empties the file after everything appended before it was
++///   written, and before anything appended after it.
++/// - An I/O failure is reported to exactly the appends of the batch it hit,
++///   and is not sticky: the next batch tries the file again, so a later
++///   `SAVE` can recover persistence as before.
++/// - Cancellation-safe: the inline leader performs a batch with no `.await`
++///   in between, and a blocking-pool drain completes and hands over on its
++///   own, so a dropped append (a client disconnecting) never strands the
++///   batches queued behind it.
++///
++/// Memory is bounded by the callers: every append waits for its batch, so at
++/// most one frame per in-flight write is ever buffered.
+ pub(crate) struct AofWriter {
+     #[allow(dead_code)]
+     pub(crate) path: PathBuf,
+-    pub(crate) file: tokio::sync::Mutex<tokio::fs::File>,
+     pub(crate) sync: AofSync,
++    shared: Arc<AofShared>,
++}
++
++/// State shared between appenders and whoever is writing.
++struct AofShared {
++    queue: std::sync::Mutex<AofQueue>,
++    file: std::fs::File,
++    policy: AofSync,
++}
++
++#[derive(Default)]
++struct AofQueue {
++    /// Batches not yet taken, oldest first. Only the last can still be
++    /// joined, and only while not `sealed`.
++    batches: std::collections::VecDeque<AofBatch>,
++    /// A leader is performing a batch: everyone else only queues.
++    busy: bool,
++}
++
++struct AofBatch {
++    bytes: Vec<u8>,
++    /// Empty the file before writing this batch's bytes.
++    truncate: bool,
++    /// No further appends may join (a flush or truncate is anchored to it).
++    sealed: bool,
++    done: Arc<AofDone>,
++}
++
++/// One batch's outcome, shared by every append in it.
++#[derive(Default)]
++struct AofDone {
++    result: std::sync::OnceLock<Result<(), (ErrorKind, String)>>,
++    notify: tokio::sync::Notify,
++}
++
++impl AofDone {
++    async fn wait(&self) -> std::io::Result<()> {
++        loop {
++            let notified = self.notify.notified();
++            tokio::pin!(notified);
++            // Registered before the check, so a completion between the check
++            // and the await is not missed.
++            notified.as_mut().enable();
++            if let Some(result) = self.result.get() {
++                return result
++                    .clone()
++                    .map_err(|(kind, message)| std::io::Error::new(kind, message));
++            }
++            notified.await;
++        }
++    }
++
++    fn complete(&self, result: std::io::Result<()>) {
++        let _ = self
++            .result
++            .set(result.map_err(|e| (e.kind(), e.to_string())));
++        self.notify.notify_waiters();
++    }
++}
++
++impl AofBatch {
++    fn new() -> Self {
++        AofBatch {
++            bytes: Vec::new(),
++            truncate: false,
++            sealed: false,
++            done: Arc::new(AofDone::default()),
++        }
++    }
++
++    /// Whether performing this batch waits on the disk, and so must not run
++    /// on an async worker.
++    fn needs_disk(&self, policy: AofSync) -> bool {
++        self.truncate || (policy == AofSync::Always && !self.bytes.is_empty())
++    }
++}
++
++impl AofShared {
++    fn lock(&self) -> std::sync::MutexGuard<'_, AofQueue> {
++        self.queue
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++    }
++
++    fn perform(&self, batch: &AofBatch) -> std::io::Result<()> {
++        use std::io::Write as _;
++        let mut file = &self.file;
++        if batch.truncate {
++            file.set_len(0)?;
++            file.sync_all()?;
++        }
++        if !batch.bytes.is_empty() {
++            file.write_all(&batch.bytes)?;
++        }
++        // `always`: the appends of this batch are acknowledged only once
++        // durable, so the fsync belongs here — one per batch.
++        if self.policy == AofSync::Always && !batch.bytes.is_empty() {
++            file.sync_data()?;
++        }
++        Ok(())
++    }
++
++    /// Lead: perform queued batches until none is left. Inline batches run
++    /// here; the first that needs the disk hands the rest of the drain to
++    /// the blocking pool.
++    fn lead(self: &Arc<Self>) {
++        loop {
++            let batch = {
++                let mut queue = self.lock();
++                if queue.busy {
++                    return;
++                }
++                let Some(front) = queue.batches.front() else {
++                    return;
++                };
++                if front.needs_disk(self.policy) {
++                    // Claimed before the task exists, so no inline leader
++                    // can start meanwhile; released by the task itself.
++                    queue.busy = true;
++                    drop(queue);
++                    let shared = Arc::clone(self);
++                    tokio::task::spawn_blocking(move || shared.drain_blocking());
++                    return;
++                }
++                queue.busy = true;
++                queue
++                    .batches
++                    .pop_front()
++                    .expect("the front batch was seen two lines above")
++            };
++            let result = self.perform(&batch);
++            self.lock().busy = false;
++            batch.done.complete(result);
++        }
++    }
++
++    /// The blocking-pool drain: holds the writer role from its spawn until
++    /// the queue is empty, completing each batch itself.
++    fn drain_blocking(&self) {
++        loop {
++            let batch = {
++                let mut queue = self.lock();
++                match queue.batches.pop_front() {
++                    Some(batch) => batch,
++                    None => {
++                        queue.busy = false;
++                        return;
++                    }
++                }
++            };
++            let result = self.perform(&batch);
++            batch.done.complete(result);
++        }
++    }
++}
++
++tokio::task_local! {
++    /// The AOF batches a TCP connection has queued and not yet waited for;
++    /// set for the connection's task by [`AofGatedWriter::scope`].
++    static AOF_DEFERRED: Arc<DeferredAof>;
++}
++
++/// Run a connection's future with its client writes deferring their AOF
++/// waits to the [`AofGatedWriter`] that `deferral` came from.
++pub(crate) async fn with_deferred_aof<F: std::future::Future>(
++    deferral: Arc<DeferredAof>,
++    fut: F,
++) -> F::Output {
++    AOF_DEFERRED.scope(deferral, fut).await
++}
++
++/// A connection's queued-but-unwaited AOF batches, oldest first.
++#[derive(Default)]
++pub(crate) struct DeferredAof {
++    tickets: std::sync::Mutex<VecDeque<(Arc<AofShared>, Arc<AofDone>)>>,
++}
++
++impl DeferredAof {
++    fn push(&self, shared: &Arc<AofShared>, done: Arc<AofDone>) {
++        let mut tickets = self
++            .tickets
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner());
++        // Consecutive appends usually share a batch: wait for it once.
++        if tickets
++            .back()
++            .is_some_and(|(_, last)| Arc::ptr_eq(last, &done))
++        {
++            return;
++        }
++        tickets.push_back((Arc::clone(shared), done));
++    }
++
++    fn pop(&self) -> Option<(Arc<AofShared>, Arc<AofDone>)> {
++        self.tickets
++            .lock()
++            .unwrap_or_else(|poisoned| poisoned.into_inner())
++            .pop_front()
++    }
++}
++
++/// A connection's socket, holding back every write until the AOF batches its
++/// commands queued are written.
++///
++/// Redis writes the AOF once per event-loop iteration and sends replies
++/// after it; a TCP connection here used to wait for each command's own
++/// `write(2)` before running the next, so a pipeline of 16 `SET`s was 16
++/// writes. With this gate under the connection's buffered writer, the
++/// pipeline's appends queue as they run and the first byte headed for the
++/// socket — a buffered flush, a large reply written through, anything —
++/// first leads and waits for them. No reply can therefore precede the AOF
++/// write of any command before it on the connection, which is what an
++/// acknowledgement promised before.
++pub(crate) struct AofGatedWriter<W> {
++    inner: W,
++    deferred: Arc<DeferredAof>,
++    state: Arc<ServerState>,
++    waiting:
++        Option<std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>>,
++}
++
++impl<W> AofGatedWriter<W> {
++    pub(crate) fn new(inner: W, state: Arc<ServerState>) -> Self {
++        AofGatedWriter {
++            inner,
++            deferred: Arc::new(DeferredAof::default()),
++            state,
++            waiting: None,
++        }
++    }
++
++    /// The handle [`with_deferred_aof`] needs to route this connection's
++    /// client writes here.
++    pub(crate) fn deferral(&self) -> Arc<DeferredAof> {
++        Arc::clone(&self.deferred)
++    }
++
++    fn poll_settled(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
++        use std::task::Poll;
++        loop {
++            if let Some(waiting) = &mut self.waiting {
++                match waiting.as_mut().poll(cx) {
++                    Poll::Pending => return Poll::Pending,
++                    Poll::Ready(result) => {
++                        self.waiting = None;
++                        if let Err(e) = result {
++                            self.state.record_persistence_failure("aof_append", &e);
++                        }
++                    }
++                }
++            }
++            let Some((shared, done)) = self.deferred.pop() else {
++                return Poll::Ready(());
++            };
++            // Nobody may be writing yet: queued appends do not lead.
++            shared.lead();
++            self.waiting = Some(Box::pin(async move { done.wait().await }));
++        }
++    }
++}
++
++impl<W> Drop for AofGatedWriter<W> {
++    /// A connection that closes with batches queued still gets them
++    /// written: lead them, without waiting.
++    fn drop(&mut self) {
++        while let Some((shared, _)) = self.deferred.pop() {
++            shared.lead();
++        }
++    }
++}
++
++impl<W: AsyncWrite + Unpin> AsyncWrite for AofGatedWriter<W> {
++    fn poll_write(
++        mut self: std::pin::Pin<&mut Self>,
++        cx: &mut std::task::Context<'_>,
++        buf: &[u8],
++    ) -> std::task::Poll<std::io::Result<usize>> {
++        std::task::ready!(self.poll_settled(cx));
++        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
++    }
++
++    fn poll_flush(
++        mut self: std::pin::Pin<&mut Self>,
++        cx: &mut std::task::Context<'_>,
++    ) -> std::task::Poll<std::io::Result<()>> {
++        std::task::ready!(self.poll_settled(cx));
++        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
++    }
++
++    fn poll_shutdown(
++        mut self: std::pin::Pin<&mut Self>,
++        cx: &mut std::task::Context<'_>,
++    ) -> std::task::Poll<std::io::Result<()>> {
++        std::task::ready!(self.poll_settled(cx));
++        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
++    }
++
++    fn poll_write_vectored(
++        mut self: std::pin::Pin<&mut Self>,
++        cx: &mut std::task::Context<'_>,
++        bufs: &[std::io::IoSlice<'_>],
++    ) -> std::task::Poll<std::io::Result<usize>> {
++        std::task::ready!(self.poll_settled(cx));
++        std::pin::Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
++    }
++
++    fn is_write_vectored(&self) -> bool {
++        self.inner.is_write_vectored()
++    }
+ }
+ 
+ impl AofWriter {
+@@ -218,37 +576,103 @@ impl AofWriter {
+         // on open, since `mode()` only applies to files this call creates.
+         #[cfg(unix)]
+         restrict_permissions(&file).await;
++        let file = file.into_std().await;
+         Ok(Self {
+             path,
+-            file: tokio::sync::Mutex::new(file),
+             sync,
++            shared: Arc::new(AofShared {
++                queue: std::sync::Mutex::new(AofQueue::default()),
++                file,
++                policy: sync,
++            }),
+         })
+     }
+ 
++    /// Queue work onto the open batch — or, when `fresh`, onto a new batch
++    /// after it — lead if no one is writing, and return the batch's
++    /// completion. Queueing is one lock, so nothing can be appended between
++    /// sealing the open batch and starting the fresh one.
++    fn enqueue(&self, fresh: bool, edit: impl FnOnce(&mut AofBatch)) -> Arc<AofDone> {
++        let done = self.queue_only(fresh, edit);
++        self.shared.lead();
++        done
++    }
++
++    /// [`enqueue`](Self::enqueue) without leading.
++    fn queue_only(&self, fresh: bool, edit: impl FnOnce(&mut AofBatch)) -> Arc<AofDone> {
++        {
++            let mut queue = self.shared.lock();
++            let batch = match queue.batches.back_mut() {
++                Some(open) if !open.sealed && !fresh => open,
++                open => {
++                    if let Some(open) = open {
++                        open.sealed = true;
++                    }
++                    queue.batches.push_back(AofBatch::new());
++                    queue
++                        .batches
++                        .back_mut()
++                        .expect("a batch was pushed on the line above")
++                }
++            };
++            edit(batch);
++            Arc::clone(&batch.done)
++        }
++    }
++
+     pub(crate) async fn append(&self, resp: &[u8]) -> std::io::Result<()> {
+-        let mut f = self.file.lock().await;
+-        f.write_all(resp).await?;
+-        if self.sync == AofSync::Always {
+-            f.flush().await?;
+-            f.sync_data().await?;
++        self.enqueue(false, |batch| batch.bytes.extend_from_slice(resp))
++            .wait()
++            .await
++    }
++
++    /// [`append`](Self::append) for a client write, which may *defer* the
++    /// wait: inside a connection that gates its socket on the AOF
++    /// ([`AofGatedWriter`]), the frame is queued — its place in the file
++    /// fixed now, under the caller's ordering stripes — and the connection
++    /// waits for it, once for its whole pipeline, before any reply reaches
++    /// the socket. Elsewhere it is `append`.
++    ///
++    /// A deferred append reports `Ok`; a write failure is recorded by the
++    /// connection when it settles. Either way the client's reply is the
++    /// same: an AOF failure never changed it, only latched persistence
++    /// unhealthy for later writes.
++    pub(crate) async fn append_client_write(&self, resp: &[u8]) -> std::io::Result<()> {
++        let deferred = AOF_DEFERRED.try_with(Arc::clone).ok();
++        match deferred {
++            Some(deferred) => {
++                let done = self.queue_only(false, |batch| batch.bytes.extend_from_slice(resp));
++                deferred.push(&self.shared, done);
++                Ok(())
++            }
++            None => self.append(resp).await,
+         }
+-        Ok(())
+     }
+ 
+-    /// Flush and fsync. Called on the `everysec` ticker and before shutdown.
++    /// Make everything appended so far durable. Called on the `everysec`
++    /// ticker, by checkpoints and before shutdown.
+     ///
+     /// `sync_data` rather than `sync_all`: the AOF is append-only, so its
+     /// metadata beyond the length carries nothing worth an extra barrier.
+     pub(crate) async fn flush(&self) -> std::io::Result<()> {
+-        let mut f = self.file.lock().await;
+-        f.flush().await?;
+-        f.sync_data().await
++        // Everything appended so far is written once this sealed batch is.
++        self.enqueue(false, |batch| batch.sealed = true)
++            .wait()
++            .await?;
++        let shared = Arc::clone(&self.shared);
++        tokio::task::spawn_blocking(move || shared.file.sync_data())
++            .await
++            .map_err(|e| std::io::Error::other(format!("AOF fsync task failed: {e}")))?
+     }
+ 
++    /// Empty the file after everything appended so far, before anything
++    /// appended later.
+     pub(crate) async fn truncate(&self) -> std::io::Result<()> {
+-        let f = self.file.lock().await;
+-        f.set_len(0).await?;
+-        f.sync_all().await?;
++        // A batch of its own, so it cannot erase appends made before it;
++        // appends made after it join it and are written after the truncation.
++        self.enqueue(true, |batch| batch.truncate = true)
++            .wait()
++            .await?;
+         info!("AOF truncated after snapshot save");
+         Ok(())
+     }
+@@ -687,6 +1111,143 @@ mod durability_tests {
+         let _ = tokio::fs::remove_dir_all(&dir).await;
+     }
+ 
++    /// Concurrent appenders share batches. Whatever the interleaving, every
++    /// byte must be in the file, each appender's frames in the order it made
++    /// them, and no frame torn by another — under every policy.
++    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
++    async fn concurrent_appends_are_all_written_whole_and_in_each_writers_order() {
++        for (name, policy) in [
++            ("no", AofSync::No),
++            ("everysec", AofSync::EverySec),
++            ("always", AofSync::Always),
++        ] {
++            let dir = scratch(&format!("aof_concurrent_{name}"));
++            let path = dir.join("d.aof");
++            let w = Arc::new(AofWriter::open(path.clone(), policy).await.unwrap());
++            let mut tasks = Vec::new();
++            for writer in 0..8u32 {
++                let w = Arc::clone(&w);
++                tasks.push(tokio::spawn(async move {
++                    for seq in 0..200u32 {
++                        let body = format!("{writer}:{seq}");
++                        let frame = format!("*1\r\n${}\r\n{body}\r\n", body.len());
++                        w.append(frame.as_bytes()).await.unwrap();
++                    }
++                }));
++            }
++            for task in tasks {
++                task.await.unwrap();
++            }
++            // Every append already returned, so its bytes are in the file
++            // before any flush.
++            let on_disk = String::from_utf8(tokio::fs::read(&path).await.unwrap()).unwrap();
++            let mut next = [0u32; 8];
++            let mut frames = 0;
++            let mut rest = on_disk.as_str();
++            while !rest.is_empty() {
++                let (value, used) = Value::parse(rest.as_bytes()).expect("whole frames only");
++                let Value::Array(Some(items)) = value else {
++                    panic!("unexpected frame {value:?}")
++                };
++                let Some(Value::BulkString(Some(body))) = items.first() else {
++                    panic!("unexpected frame body")
++                };
++                let body = String::from_utf8(body.clone()).unwrap();
++                let (writer, seq) = body.split_once(':').unwrap();
++                let (writer, seq): (usize, u32) = (writer.parse().unwrap(), seq.parse().unwrap());
++                assert_eq!(seq, next[writer], "{name}: writer {writer} out of order");
++                next[writer] += 1;
++                frames += 1;
++                rest = &rest[used..];
++            }
++            assert_eq!(frames, 8 * 200, "{name}: every append is in the file");
++            drop(w);
++            let _ = tokio::fs::remove_dir_all(&dir).await;
++        }
++    }
++
++    /// An append whose caller goes away mid-write (a client disconnecting)
++    /// must not strand the appends queued behind it: the batch still
++    /// completes and the next appends are written.
++    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++    async fn a_cancelled_append_strands_nothing() {
++        for (name, policy) in [("always", AofSync::Always), ("everysec", AofSync::EverySec)] {
++            let dir = scratch(&format!("aof_cancel_{name}"));
++            let path = dir.join("f.aof");
++            let w = Arc::new(AofWriter::open(path.clone(), policy).await.unwrap());
++            for _ in 0..50 {
++                let w2 = Arc::clone(&w);
++                let task = tokio::spawn(async move { w2.append(b"*1\r\n$1\r\nX\r\n").await });
++                task.abort();
++                let _ = task.await;
++            }
++            tokio::time::timeout(
++                std::time::Duration::from_secs(10),
++                w.append(b"*1\r\n$4\r\nLAST\r\n"),
++            )
++            .await
++            .expect("an append after cancelled ones completes")
++            .unwrap();
++            w.flush().await.unwrap();
++            let on_disk = tokio::fs::read(&path).await.unwrap();
++            assert!(on_disk.ends_with(b"*1\r\n$4\r\nLAST\r\n"), "{name}");
++            // Whatever the aborted appends got to queue is whole frames.
++            let before_last = &on_disk[..on_disk.len() - b"*1\r\n$4\r\nLAST\r\n".len()];
++            assert!(
++                before_last.chunks(11).all(|f| f == b"*1\r\n$1\r\nX\r\n"),
++                "{name}: torn frames"
++            );
++            drop(w);
++            let _ = tokio::fs::remove_dir_all(&dir).await;
++        }
++    }
++
++    /// A truncate erases exactly what was appended before it: an append that
++    /// completed first is gone, one made after it survives, and a flush
++    /// after both makes the survivor durable.
++    #[tokio::test]
++    async fn truncate_orders_against_appends_on_both_sides() {
++        let dir = scratch("aof_trunc_order");
++        let path = dir.join("e.aof");
++        let w = AofWriter::open(path.clone(), AofSync::EverySec)
++            .await
++            .unwrap();
++        for _ in 0..50 {
++            w.append(b"*1\r\n$6\r\nBEFORE\r\n").await.unwrap();
++        }
++        let (truncated, after) = tokio::join!(w.truncate(), async {
++            // Starts once the truncate is queued: join polls in order.
++            w.append(b"*1\r\n$5\r\nAFTER\r\n").await
++        });
++        truncated.unwrap();
++        after.unwrap();
++        w.flush().await.unwrap();
++        assert_eq!(
++            tokio::fs::read(&path).await.unwrap(),
++            b"*1\r\n$5\r\nAFTER\r\n"
++        );
++        drop(w);
++        let _ = tokio::fs::remove_dir_all(&dir).await;
++    }
++
++    /// A failed write is reported to its appender, as before; Linux only,
++    /// where `/dev/full` fails every write with ENOSPC.
++    #[cfg(target_os = "linux")]
++    #[tokio::test]
++    async fn a_failed_write_is_reported_to_the_append() {
++        let w = AofWriter::open(PathBuf::from("/dev/full"), AofSync::No)
++            .await
++            .unwrap();
++        let err = w.append(b"*1\r\n$4\r\nPING\r\n").await.unwrap_err();
++        // Rebuilt from kind and message for every appender of the batch, so
++        // the OS code survives only in the text the failure log prints.
++        assert_eq!(err.kind(), ErrorKind::StorageFull, "ENOSPC, got {err:?}");
++        assert!(err.to_string().contains("os error 28"), "{err}");
++        // Not sticky: the next batch tries the file again (and fails the
++        // same way here) rather than replaying a remembered error.
++        assert!(w.append(b"*1\r\n$4\r\nPING\r\n").await.is_err());
++    }
++
+     #[tokio::test]
+     async fn aof_everysec_flush_is_idempotent_and_lossless() {
+         // The everysec ticker calls flush() on a cadence, including when nothing
+diff --git a/server-native/src/propagation.rs b/server-native/src/propagation.rs
+index c1a5736..747d946 100644
+--- a/server-native/src/propagation.rs
++++ b/server-native/src/propagation.rs
+@@ -396,9 +396,31 @@ pub(crate) async fn execute_ordered_write(
+         return response;
+     }
+ 
+-    // Capacity eviction may choose any key, so capped stores already serialize
+-    // their core writes and reserve every propagation ordering domain here.
+-    // Uncapped stores retain per-key concurrency.
++    // Capacity eviction may choose any key, and its DEL must reach replicas
++    // in order with writes to that key, so a write that may evict reserves
++    // every propagation ordering domain. One that cannot — the store says so
++    // under its capacity gate, and runs it in the same hold — needs only its
++    // own keys' domains, like a write to an uncapped store. Taking all 256
++    // stripes (and closing the unordered gate) for every write on a capped
++    // store serialized every writer of every multitenant deployment.
++    if store.has_capacity_limits() && !matches!(effective, Command::ESet(..) | Command::EAdd(..)) {
++        let guards = state.replicas.lock_write(effective).await;
++        if let Some(response) = execute_locked_write_within_capacity(
++            effective,
++            dedup,
++            tx,
++            origin,
++            state,
++            watch_registry,
++            store,
++        )
++        .await
++        {
++            drop(guards);
++            commit_dedup_outcome(state, dedup, &response).await;
++            return response;
++        }
++    }
+     let _guards = if store.has_capacity_limits() {
+         state.replicas.lock_all_writes().await
+     } else if matches!(effective, Command::ESet(..) | Command::EAdd(..)) {
+@@ -415,13 +437,53 @@ pub(crate) async fn execute_ordered_write(
+     let response =
+         execute_locked_write_identified(effective, dedup, tx, origin, state, watch_registry, store)
+             .await;
++    commit_dedup_outcome(state, dedup, &response).await;
++    response
++}
++
++/// A DEDUP write's outcome: its refusal remembered, or its mark committed.
++async fn commit_dedup_outcome(state: &ServerState, dedup: Option<(&str, u64)>, response: &Value) {
+     if let Some((client, id)) = dedup {
+-        match &response {
++        match response {
+             Value::Error(error) => record_dedup_refusal(state, client, id, error).await,
+             _ => state.commit_dedup(client, id),
+         }
+     }
+-    response
++}
++
++/// [`execute_locked_write_identified`] on a capped store for a write that
++/// cannot evict, under only its own keys' ordering guards; `None`, having
++/// run and propagated nothing, when it might evict — the caller then takes
++/// every guard and runs it the ordinary way. With no eviction the write's
++/// effects are its own, exactly as on an uncapped store.
++async fn execute_locked_write_within_capacity(
++    cmd: &Command,
++    dedup: Option<(&str, u64)>,
++    tx: &broadcast::Sender<SyncMsg>,
++    origin: u64,
++    state: &ServerState,
++    watch_registry: &WatchRegistry,
++    store: &KeyValueStore,
++) -> Option<Value> {
++    let claimable_members = claimable_eadd_members(cmd, state, store);
++    let (response, evicted) = execute_and_record_ref_within_capacity(store, cmd)?;
++    debug_assert!(
++        evicted.is_empty(),
++        "a write within capacity evicted {evicted:?}"
++    );
++    apply_write_effects_identified(
++        cmd,
++        &response,
++        dedup,
++        tx,
++        origin,
++        state,
++        watch_registry,
++        store,
++    )
++    .await;
++    reconcile_ephemeral_state(cmd, &response, &claimable_members, origin, state);
++    Some(response)
+ }
+ 
+ /// Run a write with no replication-order stripe when nothing can observe the
+@@ -455,7 +517,24 @@ pub(crate) fn try_execute_unordered(
+     {
+         return None;
+     }
+-    let _pass = state.replicas.unordered.try_enter()?;
++    let _pass = enter_unordered(state, watch_registry)?;
++    #[cfg(test)]
++    unordered_pause::pause(|| primary_key_refs(cmd));
++    let (response, evicted) = execute_and_record_ref(store, cmd);
++    // An uncapped store never evicts; nothing to propagate either way.
++    debug_assert!(evicted.is_empty(), "uncapped store evicted {evicted:?}");
++    Some(response)
++}
++
++/// Enter the unordered gate, then check that nothing observes write order
++/// (see [`UnorderedGate`]: the checks must follow the entry). `None` when the
++/// write has to take the ordered path. The caller checks the store is
++/// uncapped and holds the pass only across synchronous code.
++fn enter_unordered<'a>(
++    state: &'a ServerState,
++    watch_registry: &WatchRegistry,
++) -> Option<UnorderedPass<'a>> {
++    let pass = state.replicas.unordered.try_enter()?;
+     // `has_push_receivers`, not `tx.receiver_count()`: the latter locks the
+     // broadcast channel's tail mutex — a process-wide lock on every write.
+     if state.replicas.unordered.has_push_receivers()
+@@ -465,12 +544,62 @@ pub(crate) fn try_execute_unordered(
+     {
+         return None;
+     }
++    Some(pass)
++}
++
++/// Run a borrowed hot command straight from the read buffer, appending its
++/// reply to `out`; `None` (nothing run, nothing written) when it must take
++/// the owned path instead.
++///
++/// A read always can. A write can exactly when the owned write would take
++/// the unordered path: persistence healthy, a primary, an uncapped store, and
++/// nothing observing write order — so it has no effects beyond the store, and
++/// running it from borrowed arguments changes nothing but the copies. Its
++/// metrics and dirty count are recorded as the owned path records them.
++pub(crate) fn try_execute_borrowed(
++    cmd: &CommandRef<'_>,
++    state: &ServerState,
++    watch_registry: &WatchRegistry,
++    store: &KeyValueStore,
++    out: &mut Vec<u8>,
++) -> Option<()> {
+     #[cfg(test)]
+-    unordered_pause::pause(cmd);
+-    let (response, evicted) = execute_and_record_ref(store, cmd);
+-    // An uncapped store never evicts; nothing to propagate either way.
+-    debug_assert!(evicted.is_empty(), "uncapped store evicted {evicted:?}");
+-    Some(response)
++    if borrowed_switch::OFF.load(Ordering::Relaxed) {
++        return None;
++    }
++    let started = std::time::Instant::now();
++    let is_write = cmd.is_write();
++    let outcome = if is_write {
++        if !state.persistence_is_healthy() || state.is_replica() || store.has_capacity_limits() {
++            return None;
++        }
++        let _pass = enter_unordered(state, watch_registry)?;
++        #[cfg(test)]
++        unordered_pause::pause(|| cmd.write_key().into_iter().collect());
++        store.execute_ref_into(cmd, out)?
++    } else {
++        store.execute_ref_into(cmd, out)?
++    };
++    record_metrics(
++        store,
++        command_ref_name(cmd),
++        is_write,
++        started,
++        outcome.error,
++        outcome.hit,
++        false,
++    );
++    Some(())
++}
++
++/// Test-only: turn the borrowed path off, so a test can compare the replies
++/// of the two paths over the same input. Global, but harmless to tests
++/// running alongside: the owned path answers identically, which is what the
++/// comparison checks.
++#[cfg(test)]
++pub(crate) mod borrowed_switch {
++    pub(crate) static OFF: std::sync::atomic::AtomicBool =
++        std::sync::atomic::AtomicBool::new(false);
+ }
+ 
+ /// Test-only fault injection: stall an unordered write on one key between
+@@ -498,13 +627,16 @@ pub(crate) mod unordered_pause {
+         *PAUSE.lock().unwrap_or_else(|p| p.into_inner()) = None;
+     }
+ 
+-    pub(super) fn pause(cmd: &Command) {
++    /// `written` lists the write's keys; it is only called when armed, so
++    /// an unarmed hook costs the benchmarks (which run in test builds) no
++    /// allocation.
++    pub(super) fn pause<'k>(written: impl FnOnce() -> SmallVec<[&'k str; 2]>) {
+         if !ARMED.load(Ordering::Relaxed) {
+             return;
+         }
+         let armed = PAUSE.lock().unwrap_or_else(|p| p.into_inner()).clone();
+         if let Some((key, pause)) = armed
+-            && primary_key_refs(cmd).contains(&key.as_str())
++            && written().contains(&key.as_str())
+         {
+             std::thread::sleep(pause);
+         }
+@@ -1039,7 +1171,9 @@ async fn apply_write_effects_identified(
+         return;
+     };
+     if needs_log {
+-        state.on_write_identified(&msg, dedup).await;
++        state
++            .on_write_logged(&msg, dedup, !has_ws && !has_watch)
++            .await;
+     }
+     if has_watch {
+         if matches!(cmd, Command::FlushDb) {
+diff --git a/server-native/src/replication.rs b/server-native/src/replication.rs
+index c23ebc5..1fe39bf 100644
+--- a/server-native/src/replication.rs
++++ b/server-native/src/replication.rs
+@@ -79,6 +79,14 @@ pub(crate) struct ReplHub {
+ 
+ const WRITE_ORDER_STRIPES: usize = 256;
+ 
++/// Most replication frames a primary writes before one flush.
++const REPL_SEND_BATCH_FRAMES: usize = 512;
++/// Send buffer per replica connection; a burst larger than this is written
++/// in several syscalls but still flushed once.
++const REPL_SEND_BUFFER_BYTES: usize = 64 * 1024;
++/// Receive buffer on a replica's stream from its primary.
++const REPL_RECV_BUFFER_BYTES: usize = 64 * 1024;
++
+ /// In-flight counters for [`UnorderedGate`], one per cache line so writers on
+ /// different workers do not contend on one counter.
+ const UNORDERED_SLOTS: usize = 16;
+@@ -733,6 +741,12 @@ pub(crate) async fn run_repl_server(
+     loop {
+         match listener.accept().await {
+             Ok((socket, addr)) => {
++                // Frames and acknowledgements are small writes. With Nagle's
++                // algorithm on, each waited for the peer's ACK of the last —
++                // which Linux delays by up to 40 ms — so every replicated write
++                // reached the replica ~41 ms late (6I probe lag p50, every
++                // workload). The client ports already set this.
++                let _ = socket.set_nodelay(true);
+                 // The IP allowlist and the connection limit were previously
+                 // applied on the RESP and WebSocket listeners only, so neither
+                 // constrained the one port that streams the whole keyspace.
+@@ -1029,13 +1043,32 @@ where
+     // now writes back a cumulative count of applied frames; `sent - acked` is
+     // the lag. Reading and writing are selected over so a replica that stops
+     // acknowledging cannot stall the write side, and vice versa.
+-    let (mut rd, mut wr) = tokio::io::split(socket);
++    let (mut rd, wr) = tokio::io::split(socket);
++    // Buffered, and flushed once per burst: a frame used to cost three
++    // unbuffered writes and a flush — four syscalls per replicated write — so
++    // a pipelined primary out-ran its replica's link and the replica fell
++    // seconds behind (6I production benchmark: probe lag p99 2.8 s).
++    let mut wr = tokio::io::BufWriter::with_capacity(REPL_SEND_BUFFER_BYTES, wr);
+     let mut ack_buf = [0u8; 8];
+     loop {
+         tokio::select! {
+             frame = rx.recv() => {
+                 let Some(queued) = frame else { break };
+                 write_repl_frame(&mut wr, &queued.frame).await?;
++                // Everything already queued goes out in the same flush, up to
++                // a bound so a busy primary still flushes regularly. Frames
++                // leave the queue only once written, as before, so the byte
++                // accounting of `QueuedReplFrame` is unchanged.
++                let mut batched = 1;
++                while batched < REPL_SEND_BATCH_FRAMES {
++                    match rx.try_recv() {
++                        Ok(queued) => {
++                            write_repl_frame(&mut wr, &queued.frame).await?;
++                            batched += 1;
++                        }
++                        Err(_) => break,
++                    }
++                }
+                 wr.flush().await?;
+             }
+             res = rd.read_exact(&mut ack_buf) => {
+@@ -1124,6 +1157,9 @@ pub(crate) async fn run_repl_client(
+             }
+             Ok(socket) => {
+                 backoff_secs = 2;
++                // As on the primary's side: no Nagle delay on small frames
++                // and acknowledgements.
++                let _ = socket.set_nodelay(true);
+ 
+                 // TLS is what makes the primary's *identity* checked, not just
+                 // the channel encrypted: without it a DNS hijack or an on-path
+@@ -1374,10 +1410,20 @@ where
+     resume.run_id = primary_run_id;
+     resume.offset = boundary;
+     socket.write_all(&boundary.to_le_bytes()).await?;
++    socket.flush().await?;
+ 
+-    // 2. Stream write commands from primary, acknowledging each applied offset.
++    // 2. Stream write commands from primary, acknowledging applied offsets.
++    //
++    // Read through a buffer: each frame used to take three `read_exact`
++    // calls on the bare socket, plus an 8-byte acknowledgement write — four
++    // syscalls per replicated write, which capped how fast a replica could
++    // follow a pipelined primary. Nothing was read from the socket before
++    // this point beyond what the handshake consumed exactly, so no bytes are
++    // stranded by wrapping it here.
++    let (rd, mut wr) = tokio::io::split(socket);
++    let mut rd = tokio::io::BufReader::with_capacity(REPL_RECV_BUFFER_BYTES, rd);
+     loop {
+-        let (offset, cmd_bytes) = read_repl_frame(socket).await?;
++        let (offset, cmd_bytes) = read_repl_frame(&mut rd).await?;
+         let expected = resume.offset.saturating_add(1);
+         if offset != expected {
+             return Err(std::io::Error::new(
+@@ -1388,9 +1434,14 @@ where
+         apply_repl_frame(store, state, tx, &cmd_bytes).await?;
+         resume.offset = offset;
+ 
+-        // Acknowledge on the same socket. TcpStream is unbuffered, so this is a
+-        // single 8-byte write with no flush.
+-        socket.write_all(&offset.to_le_bytes()).await?;
++        // The acknowledgement is cumulative (the primary keeps the maximum),
++        // so one per burst says as much as one per frame: acknowledge when
++        // the buffer holds no further frame, i.e. before waiting on the
++        // socket again. Lag is then reported at most one burst late.
++        if rd.buffer().is_empty() {
++            wr.write_all(&offset.to_le_bytes()).await?;
++            wr.flush().await?;
++        }
+     }
+ }
+ 
+@@ -1472,14 +1523,24 @@ async fn apply_repl_frame(
+     };
+     let cmd = Command::from_value(normalised)
+         .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
+-    let push = SyncPush::for_command(0, &cmd, push_keys(&cmd), bytes.to_vec());
+-    if let Value::Error(error) = store.execute(cmd) {
++    if let (Value::Error(error), _) = store.execute_reporting_ref(&cmd) {
+         return Err(std::io::Error::new(
+             ErrorKind::InvalidData,
+             format!("replicated command failed: {error}"),
+         ));
+     }
+-    let _ = tx.send(Arc::new(push));
++    // Built only when a browser can receive it: the push copies the frame,
++    // which every replicated write paid for even with no WebSocket client.
++    // Checked after the write, so a client that subscribed before it is
++    // pushed it and one that subscribes later reads it from the store.
++    if state.replicas.unordered.has_push_receivers() {
++        let _ = tx.send(Arc::new(SyncPush::for_command(
++            0,
++            &cmd,
++            push_keys(&cmd),
++            bytes.to_vec(),
++        )));
++    }
+     state.on_write(bytes).await;
+     Ok(())
+ }
+diff --git a/server-native/src/server_state.rs b/server-native/src/server_state.rs
+index e5f3fb8..3734a65 100644
+--- a/server-native/src/server_state.rs
++++ b/server-native/src/server_state.rs
+@@ -593,9 +593,29 @@ impl ServerState {
+     /// One frame carries both, so a replica can never hold the write without
+     /// its mark. With it off they get the bare mutation, as before 0.6.
+     pub(crate) async fn on_write_identified(&self, resp: &[u8], dedup: Option<(&str, u64)>) {
++        self.on_write_logged(resp, dedup, false).await;
++    }
++
++    /// [`on_write_identified`](Self::on_write_identified); `may_defer` lets
++    /// a client write leave its AOF wait to its connection (see
++    /// `AofGatedWriter`), which is only allowed when nothing else will see the
++    /// write before that wait: no replica stream (fanned out right after
++    /// this), and — the caller's part — no push receiver or watcher. Those
++    /// keep seeing a write only once it is in the AOF, as before.
++    pub(crate) async fn on_write_logged(
++        &self,
++        resp: &[u8],
++        dedup: Option<(&str, u64)>,
++        may_defer: bool,
++    ) {
+         let wrapped = dedup.map(|(client, id)| dedup_wrap(client, id, resp));
+         if let Some(aof) = &self.aof {
+-            let result = aof.append(wrapped.as_deref().unwrap_or(resp)).await;
++            let frame = wrapped.as_deref().unwrap_or(resp);
++            let result = if may_defer && !self.replicas.is_enabled() {
++                aof.append_client_write(frame).await
++            } else {
++                aof.append(frame).await
++            };
+             if let Err(e) = result {
+                 self.record_persistence_failure("aof_append", &e);
+             }
+diff --git a/server-native/src/tests.rs b/server-native/src/tests.rs
+index ecb7318..837818a 100644
+--- a/server-native/src/tests.rs
++++ b/server-native/src/tests.rs
+@@ -4616,7 +4616,7 @@ fn command_name_labels_are_all_pre_registered() {
+     ];
+     let missing: Vec<&str> = labels
+         .into_iter()
+-        .filter(|l| !CMD_COUNTERS.contains_key(l))
++        .filter(|l| !CMD_METRICS.contains_key(l))
+         .collect();
+     assert!(
+         missing.is_empty(),
+diff --git a/server-native/src/tests/request_path.rs b/server-native/src/tests/request_path.rs
+index 20c79e2..b602d2d 100644
+--- a/server-native/src/tests/request_path.rs
++++ b/server-native/src/tests/request_path.rs
+@@ -129,10 +129,18 @@ pub(super) enum Workload {
+     MGet4,
+     HotIncr,
+     SetEx,
++    /// 6I-F: INCR on counters that all exist (prefilled `cnt:`), so the
++    /// numeric update alone, with no key creation.
++    IncrExisting,
++    /// 6I-F: INCR that creates its key every time (`new:<n>`, never seen):
++    /// key creation, entry allocation and the key-index insert.
++    IncrNew,
++    /// 6I-F: INCR on existing counters that carry a TTL.
++    IncrTtl,
+ }
+ 
+ impl Workload {
+-    const ALL: [Workload; 9] = [
++    const ALL: [Workload; 12] = [
+         Workload::Set,
+         Workload::Get,
+         Workload::Incr,
+@@ -142,6 +150,9 @@ impl Workload {
+         Workload::MGet4,
+         Workload::HotIncr,
+         Workload::SetEx,
++        Workload::IncrExisting,
++        Workload::IncrNew,
++        Workload::IncrTtl,
+     ];
+ 
+     fn name(self) -> &'static str {
+@@ -155,6 +166,9 @@ impl Workload {
+             Workload::MGet4 => "MGET x4",
+             Workload::HotIncr => "INCR hot key",
+             Workload::SetEx => "SET EX",
++            Workload::IncrExisting => "INCR existing",
++            Workload::IncrNew => "INCR new key",
++            Workload::IncrTtl => "INCR with TTL",
+         }
+     }
+ 
+@@ -201,6 +215,11 @@ impl Workload {
+                     );
+                 }
+                 Workload::HotIncr => encode(&[b"INCR", b"hot:counter"], &mut out),
++                Workload::IncrExisting => encode(&[b"INCR", k(i, "cnt").as_bytes()], &mut out),
++                Workload::IncrNew => {
++                    encode(&[b"INCR", format!("new:{j:07}").as_bytes()], &mut out);
++                }
++                Workload::IncrTtl => encode(&[b"INCR", k(i, "vol").as_bytes()], &mut out),
+                 Workload::SetEx => {
+                     let _ = j;
+                     encode(
+@@ -231,6 +250,21 @@ fn prefill(store: &KeyValueStore) {
+         );
+         let (v, _) = Value::parse(&frames).expect("valid frame");
+         store.execute(core_engine::cmd::Command::from_value(v).expect("valid command"));
++        // Counters for the 6I-F INCR workloads: plain, and with a TTL.
++        for (prefix, ttl) in [("cnt", false), ("vol", true)] {
++            frames.clear();
++            let key = format!("{prefix}:{i:06}");
++            if ttl {
++                encode(
++                    &[b"SET", key.as_bytes(), b"0", b"EX", b"86400"],
++                    &mut frames,
++                );
++            } else {
++                encode(&[b"SET", key.as_bytes(), b"0"], &mut frames);
++            }
++            let (v, _) = Value::parse(&frames).expect("valid frame");
++            store.execute(core_engine::cmd::Command::from_value(v).expect("valid command"));
++        }
+     }
+ }
+ 
+@@ -247,6 +281,10 @@ pub(super) struct Shared {
+ 
+ impl Shared {
+     pub(super) fn new(with_sync_receiver: bool) -> Shared {
++        Shared::with_aof(with_sync_receiver, None)
++    }
++
++    pub(super) fn with_aof(with_sync_receiver: bool, aof: Option<Arc<AofWriter>>) -> Shared {
+         let (tx, _) = broadcast::channel::<SyncMsg>(1024);
+         let state = Arc::new(ServerState {
+             snap: Arc::new(SnapshotConfig {
+@@ -255,7 +293,7 @@ impl Shared {
+                 last_save: AtomicI64::new(now_unix_secs()),
+                 checkpoint_id: AtomicU64::new(0),
+             }),
+-            aof: None,
++            aof,
+             replicas: ReplHub::new(),
+             is_replica: AtomicBool::new(false),
+             dedup: std::sync::Mutex::new(HashMap::new()),
+@@ -453,6 +491,221 @@ pub(super) fn allocation_budgets() -> Vec<(Workload, f64)> {
+     ]
+ }
+ 
++// ── borrowed path equivalence ─────────────────────────────────────────────────
++
++/// A pipeline that exercises the borrowed hot commands next to the commands
++/// that must not take it, in every state the TCP loop distinguishes for
++/// them: plain, inside MULTI (queued, then run by EXEC), wrong types, binary,
++/// empty, Unicode and large values, error-producing arguments, DEDUP.
++fn equivalence_stream() -> Vec<u8> {
++    let big = vec![b'B'; 100_000];
++    let mut out = Vec::new();
++    let cmds: Vec<Vec<&[u8]>> = vec![
++        vec![b"GET", b"missing"],
++        vec![b"SET", b"s", b"v"],
++        vec![b"get", b"s"],
++        vec![b"SET", b"empty", b""],
++        vec![b"GET", b"empty"],
++        vec![b"SET", b"bin", b"\x00\xff\r\n*1\r\n"],
++        vec![b"GET", b"bin"],
++        vec!["SET".as_bytes(), "ключ".as_bytes(), "🔑".as_bytes()],
++        vec!["GET".as_bytes(), "ключ".as_bytes()],
++        vec![b"SET", b"big", &big],
++        vec![b"GET", b"big"],
++        vec![b"INCR", b"n"],
++        vec![b"DECR", b"n"],
++        vec![b"INCR", b"s"],
++        vec![b"SET", b"\xff\xfe", b"not utf-8 key"],
++        vec![b"GET", b""],
++        vec![b"GET", b"a", b"extra"],
++        vec![b"HSET", b"h", b"f", b"1", b"g", b"2"],
++        vec![b"HSET", b"h", b"f"],
++        vec![b"HGET", b"h", b"f"],
++        vec![b"HGET", b"s", b"f"],
++        vec![b"GET", b"h"],
++        vec![b"MGET", b"s", b"h", b"n", b"missing"],
++        vec![b"SET", b"k", b"v", b"EX", b"100"],
++        vec![b"TTL", b"k"],
++        vec![b"MSET", b"m1", b"1", b"m2", b"2"],
++        vec![b"MULTI"],
++        vec![b"SET", b"tx", b"1"],
++        vec![b"INCR", b"tx"],
++        vec![b"GET", b"tx"],
++        vec![b"HSET", b"txh", b"f", b"v"],
++        vec![b"EXEC"],
++        vec![b"MULTI"],
++        vec![b"GET", b"s", b"extra"],
++        vec![b"SET", b"never", b"1"],
++        vec![b"EXEC"],
++        vec![b"GET", b"never"],
++        vec![b"DEDUP", b"c1", b"1", b"INCR", b"d"],
++        vec![b"DEDUP", b"c1", b"1", b"INCR", b"d"],
++        vec![b"GET", b"d"],
++        vec![b"DEL", b"s", b"h"],
++        vec![b"GET", b"s"],
++        vec![b"PING"],
++    ];
++    for c in cmds {
++        encode(&c, &mut out);
++    }
++    out
++}
++
++/// Replies of one connection fed `frames` in chunks of `chunk` bytes (0 =
++/// whole), on a fresh server.
++fn replies_for(frames: &[u8], chunk: usize, with_sync_receiver: bool) -> Vec<u8> {
++    let shared = Shared::new(with_sync_receiver);
++    let (client, server) = tokio::io::duplex(1 << 20);
++    let fut = shared.serve(server);
++    let rt = tokio::runtime::Builder::new_current_thread()
++        .enable_all()
++        .build()
++        .expect("runtime");
++    let frames = frames.to_vec();
++    rt.block_on(async move {
++        let server = tokio::spawn(fut);
++        let (mut rd, mut wr) = tokio::io::split(client);
++        let writer = async move {
++            let mut sizes = [1usize, 7, 3, 5, 2].iter().cycle();
++            let mut at = 0;
++            while at < frames.len() {
++                let n = if chunk == 0 {
++                    frames.len()
++                } else {
++                    *sizes.next().expect("cycle")
++                };
++                let end = (at + n).min(frames.len());
++                wr.write_all(&frames[at..end]).await.expect("write");
++                at = end;
++                tokio::task::yield_now().await;
++            }
++            wr.shutdown().await.expect("shutdown");
++            wr
++        };
++        let reader = async move {
++            let mut out = Vec::new();
++            rd.read_to_end(&mut out).await.expect("read");
++            out
++        };
++        let (_wr, out) = tokio::join!(writer, reader);
++        let _ = server.await;
++        out
++    })
++}
++
++/// The borrowed path is invisible on the wire: for the same input, every
++/// byte of every reply is what the owned path sends — whole or fragmented
++/// input, with and without a sync receiver (which sends writes down the
++/// ordered path while reads stay borrowed).
++#[test]
++fn borrowed_and_owned_paths_send_identical_replies() {
++    let frames = equivalence_stream();
++    for &(chunk, receiver) in &[(0, false), (1, false), (0, true), (1, true)] {
++        crate::propagation::borrowed_switch::OFF.store(true, Ordering::SeqCst);
++        let owned = replies_for(&frames, chunk, receiver);
++        crate::propagation::borrowed_switch::OFF.store(false, Ordering::SeqCst);
++        let borrowed = replies_for(&frames, chunk, receiver);
++        assert_eq!(
++            String::from_utf8_lossy(&borrowed),
++            String::from_utf8_lossy(&owned),
++            "chunk {chunk}, sync receiver {receiver}"
++        );
++        // And the stream really exercised both paths' answers.
++        assert!(owned.len() > 100_000 && owned.windows(9).any(|w| w == b"WRONGTYPE"));
++    }
++}
++
++/// A malformed frame after borrowed commands closes the connection with the
++/// same protocol error, having answered exactly the commands before it.
++#[test]
++fn a_malformed_frame_after_borrowed_commands_closes_identically() {
++    let mut frames = Vec::new();
++    encode(&[b"SET", b"a", b"1"], &mut frames);
++    encode(&[b"GET", b"a"], &mut frames);
++    frames.extend_from_slice(b"*2\r\n$3\r\nGET\r\n$x\r\n");
++    encode(&[b"GET", b"a"], &mut frames);
++    crate::propagation::borrowed_switch::OFF.store(true, Ordering::SeqCst);
++    let owned = replies_for(&frames, 0, false);
++    crate::propagation::borrowed_switch::OFF.store(false, Ordering::SeqCst);
++    let borrowed = replies_for(&frames, 0, false);
++    assert_eq!(borrowed, owned);
++    assert!(
++        owned.starts_with(b"+OK\r\n$1\r\n1\r\n-ERR Protocol error"),
++        "{owned:?}"
++    );
++}
++
++// ── AOF-gated replies ─────────────────────────────────────────────────────────
++
++/// With the AOF on, a pipelined write's wait for its `write(2)` is deferred
++/// to the moment its connection next sends anything — but nothing may reach
++/// the client before the AOF writes of the commands it answers. Whenever the
++/// client has `k` SET replies, the file must already hold `k` SET frames:
++/// whole or fragmented input, small replies batched in the buffered writer
++/// and a large one written straight through it.
++#[test]
++fn no_reply_precedes_the_aof_write_of_its_command() {
++    let rt = tokio::runtime::Builder::new_multi_thread()
++        .worker_threads(2)
++        .enable_all()
++        .build()
++        .expect("runtime");
++    for chunk in [0usize, 5] {
++        let path = std::env::temp_dir().join(format!(
++            "recached_gated_aof_{}_{chunk}.aof",
++            std::process::id()
++        ));
++        let _ = std::fs::remove_file(&path);
++        rt.block_on(async {
++            let aof = Arc::new(AofWriter::open(path.clone(), AofSync::EverySec).await.unwrap());
++            let shared = Shared::with_aof(false, Some(Arc::clone(&aof)));
++            let mut frames = Vec::new();
++            encode(&[b"SET", b"big", &vec![b'B'; 100_000]], &mut frames);
++            for i in 0..300 {
++                encode(&[b"SET", format!("k{i}").as_bytes(), b"v"], &mut frames);
++                if i == 150 {
++                    encode(&[b"GET", b"big"], &mut frames);
++                }
++            }
++            let (client, server) = tokio::io::duplex(1 << 20);
++            let server = tokio::spawn(shared.serve(server));
++            let (mut rd, mut wr) = tokio::io::split(client);
++            let writer = tokio::spawn(async move {
++                if chunk == 0 {
++                    wr.write_all(&frames).await.unwrap();
++                } else {
++                    for part in frames.chunks(chunk * 1000) {
++                        wr.write_all(part).await.unwrap();
++                        tokio::task::yield_now().await;
++                    }
++                }
++                wr
++            });
++            let mut got = Vec::new();
++            let mut buf = vec![0u8; 64 * 1024];
++            let mut oks = 0;
++            while oks < 301 {
++                let n = rd.read(&mut buf).await.unwrap();
++                assert!(n > 0, "server closed early");
++                got.extend_from_slice(&buf[..n]);
++                oks = got.windows(5).filter(|w| w == b"+OK\r\n").count();
++                let on_disk = std::fs::read(&path).unwrap_or_default();
++                let logged = on_disk.windows(7).filter(|w| w == b"$3\r\nSET").count();
++                assert!(
++                    logged >= oks,
++                    "chunk {chunk}: {oks} SET replies received but only {logged} SETs in the AOF ({} bytes: {:?})",
++                    on_disk.len(),
++                    String::from_utf8_lossy(&on_disk[..on_disk.len().min(80)])
++                );
++            }
++            drop(writer.await.unwrap());
++            drop(rd);
++            let _ = server.await;
++        });
++        let _ = std::fs::remove_file(&path);
++    }
++}
++
+ // ── A/B benchmark ─────────────────────────────────────────────────────────────
+ 
+ #[test]
+@@ -466,10 +719,20 @@ fn request_path_bench() {
+     let label = std::env::var("BENCH_LABEL").unwrap_or_else(|_| "this".to_string());
+     let sync = std::env::var("BENCH_SYNC").is_ok_and(|v| v == "1");
+     let only = std::env::var("BENCH_ONLY").ok();
++    // `BENCH_METRICS=1`: the Prometheus recorder the shipped server installs
++    // by default (RECACHED_METRICS_PORT unset), without its HTTP listener.
++    // Installed before any command runs: the per-command handles are cached
++    // on first use, so a recorder installed later would never see them.
++    let metrics = std::env::var("BENCH_METRICS").is_ok_and(|v| v == "1");
++    let handle = metrics.then(|| {
++        metrics_exporter_prometheus::PrometheusBuilder::new()
++            .install_recorder()
++            .expect("install the Prometheus recorder")
++    });
+     let mut csv = String::new();
+     println!(
+-        "{:<14} {:>10} {:>10} {:>10} {:>11}   (label {label}, sync receiver {sync}, {reps} reps x {N})",
+-        "workload", "min ns", "median ns", "allocs", "bytes"
++        "{:<14} {:>10} {:>10} {:>10} {:>11} {:>10}   (label {label}, sync receiver {sync}, metrics {metrics}, {reps} reps x {N})",
++        "workload", "min ns", "median ns", "allocs", "bytes", "upkeep ns"
+     );
+     for workload in Workload::ALL {
+         if let Some(only) = &only
+@@ -482,20 +745,36 @@ fn request_path_bench() {
+         let mut ns: Vec<f64> = Vec::with_capacity(reps);
+         let mut allocs = 0.0;
+         let mut bytes = 0.0;
++        let mut upkeep: Vec<f64> = Vec::with_capacity(reps);
+         for _ in 0..reps {
+             let run = measure(workload, N, sync);
+             ns.push(run.elapsed.as_nanos() as f64 / N as f64);
+             allocs = run.allocs as f64 / N as f64;
+             bytes = run.bytes as f64 / N as f64;
++            // The exporter drains histogram samples into its summaries on
++            // upkeep (every 5 s in the server, on its own thread): CPU the
++            // server pays per command, but outside the connection's time.
++            if let Some(handle) = &handle {
++                let started = Instant::now();
++                handle.run_upkeep();
++                upkeep.push(started.elapsed().as_nanos() as f64 / N as f64);
++            }
+         }
+         ns.sort_by(f64::total_cmp);
++        upkeep.sort_by(f64::total_cmp);
+         let (min, median) = (ns[0], ns[reps / 2]);
++        let upkeep = upkeep.get(reps / 2).copied().unwrap_or(0.0);
+         println!(
+-            "{:<14} {min:>10.1} {median:>10.1} {allocs:>10.2} {bytes:>11.1}",
++            "{:<14} {min:>10.1} {median:>10.1} {allocs:>10.2} {bytes:>11.1} {upkeep:>10.1}",
+             workload.name()
+         );
++        let label = if metrics {
++            format!("{label}+metrics")
++        } else {
++            label.clone()
++        };
+         csv.push_str(&format!(
+-            "{label},{},{sync},{min:.1},{median:.1},{allocs:.2},{bytes:.1},{}\n",
++            "{label},{},{sync},{min:.1},{median:.1},{allocs:.2},{bytes:.1},{upkeep:.1},{}\n",
+             workload.name(),
+             ns.iter()
+                 .map(|v| format!("{v:.1}"))

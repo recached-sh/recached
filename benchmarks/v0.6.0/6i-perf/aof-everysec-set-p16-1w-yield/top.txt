@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 5K of event 'cpu-clock:pppH'
+# Event count (approx.): 5328328323
+#
+# Overhead  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         IPC   [IPC Coverage]
+# ........  .............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................  ....................
+#
+    18.92%  [k] _raw_spin_unlock_irqrestore                                                                                                                                                                                                                                                                                                                                                                                                                                                                -      -            
+            |          
+             --18.45%--sock_def_readable
+                       |          
+                       |--17.53%--tcp_rcv_established
+                       |          tcp_v4_do_rcv
+                       |          tcp_v4_rcv
+                       |          ip_protocol_deliver_rcu
+                       |          ip_local_deliver_finish
+                       |          __netif_receive_skb_one_core
+                       |          process_backlog
+                       |          __napi_poll
+                       |          net_rx_action
+                       |          handle_softirqs
+                       |          do_softirq
+                       |          __local_bh_enable_ip
+                       |          __dev_queue_xmit
+                       |          ip_finish_output2
+                       |          ip_output
+                       |          __ip_queue_xmit
+                       |          __tcp_transmit_skb
+                       |          tcp_write_xmit
+                       |          __tcp_push_pending_frames
+                       |          tcp_sendmsg_locked
+                       |          tcp_sendmsg
+                       |          __sys_sendto
+                       |          __x64_sys_sendto
+                       |          do_syscall_64
+                       |          entry_SYSCALL_64_after_hwframe
+                       |          __send
+                       |          
+                        --0.92%--tcp_data_queue
+                                  tcp_rcv_established
+                                  tcp_v4_do_rcv
+                                  tcp_v4_rcv
+                                  ip_protocol_deliver_rcu
+                                  ip_local_deliver_finish
+                                  __netif_receive_skb_one_core
+                                  process_backlog
+                                  __napi_poll
+                                  net_rx_action
+                                  handle_softirqs
+                                  do_softirq
+                                  __local_bh_enable_ip
+                                  __dev_queue_xmit
+                                  ip_finish_output2
+                                  ip_output
+                                  __ip_queue_xmit
+                                  __tcp_transmit_skb
+                                  tcp_write_xmit
+                                  __tcp_push_pending_frames
+                                  tcp_sendmsg_locked
+                                  tcp_sendmsg
+                                  __sys_sendto
+                                  __x64_sys_sendto
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  __send
+     5.79%  [k] memset_orig                                                                                                                                                                                                                                                                                                                                                                                                                                                                                -      -            
+            |          
+             --5.71%--zero_user_segments
+                       ext4_block_write_begin
+                       ext4_da_write_begin
+                       generic_perform_write
+                       ext4_buffered_write_iter
+                       do_iter_readv_writev
+                       vfs_iter_write
+                       backing_file_write_iter
+                       ovl_write_iter
+                       vfs_write
+                       ksys_write
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       write
+                       0
+                       std::sys::io::error::unix::decode_error_kind
+                       0xa0ec8148535441
+     2.61%  [.] write                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      -      -            
+            |
+            ---0
+               std::sys::io::error::unix::decode_error_kind
+               0xa0ec8148535441
+     2.55%  [.] recached_server::connection::handle_tcp::<tokio::net::tcp::stream::TcpStream>::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                 -      -            
+            |          
+             --2.24%--0x7f3f6adfcdd8
+     1.84%  [.] <dashmap::DashMap<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>> as dashmap::t::Map<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>, std::hash::random::RandomState>>::_get_mut::<str>                                                                                                                                                                                                                                                           -      -            
+     1.65%  [k] do_syscall_64                                                                                                                                                                                                                                                                                                                                                                                                                                                                              -      -            
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+                --1.37%--write
+                          0
+                          std::sys::io::error::unix::decode_error_kind
+                          0xa0ec8148535441
+     1.32%  [.] __vdso_clock_gettime                                                                                                                                                                                                                                                                                                                                                                                                                                                                       -      -            
+            |          
+             --1.24%--clock_gettime
+     1.22%  [.] recached_server::propagation::execute_ordered_write::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                                           -      -            
+            |          
+             --1.11%--0x2
+     1.15%  [.] do_rallocx                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 -      -            
+            |          
+             --1.07%--<alloc::raw_vec::RawVecInner>::finish_grow
+     1.13%  [.] recached_server::propagation::apply_write_effects_identified::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                                  -      -            
+            |          
+             --0.64%--0x2
+     1.05%  [.] <recached_server::persistence::AofWriter>::append::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                                             -      -            
+            |          
+             --0.56%--0x1

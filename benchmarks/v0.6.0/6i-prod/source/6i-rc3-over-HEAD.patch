@@ -1,0 +1,173 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index a5084af..87ce87a 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -28,7 +28,16 @@ All notable changes to Recached are documented here.
+ - On Linux (glibc) the server runs jemalloc's background purge threads, as Redis does by default (`jemalloc-bg-thread`). Set `_RJEM_MALLOC_CONF=background_thread:false` to turn them off
+ - **Overwriting a field of a small hash no longer grows it.** `HashMap::insert` reserves room before it finds an existing key, so the first `HSET` overwrite of a hash whose field table was exactly full (3, 7, 14 … fields) doubled the table: +228 bytes of live heap per 3-field hash, which is why overwriting 1M small hashes appeared to double RSS. Measured with a counting allocator: 1M three-field hashes stay at 732 bytes/key of live heap across repeated overwrites, instead of rising to 960. Present since hashes became compact (0.3.4)
+ 
++### Performance — production paths
++Measured with persistence, replication, a memory cap and browser clients switched on — the configurations earlier v0.6 benchmarks (memory-only, no consumer) never ran. Docker Desktop Linux VM on a shared laptop, one worker, memtier pipeline 16: indicative, see `benchmarks/v0.6.0/README.md`.
++- **AOF writes are 15–30× faster.** `everysec` went from ~5,000 writes/s (Redis ~230,000) to ~130,000; `always` from ~350–700/s to ~90,000. The AOF file was a `tokio::fs::File` behind an async lock — a thread-pool round trip per write, and one `fsync` per write under `always`. Appends now share batches (one `write`, and under `always` one `fsync`, for every append waiting), and a TCP connection waits for its pipeline's AOF writes once, just before its replies leave, instead of once per command. Nothing is acknowledged earlier than before: no reply reaches a client before the AOF write of the commands it answers, and with a replica, browser client or watcher attached each write still waits before anyone else sees it. The `everysec` fsync no longer stalls appends while it runs
++- **Replicas keep up.** Replica lag under a pipelined write load was 41 ms at the median and up to 6 s at p99; it is now a few milliseconds. The replication sockets lacked `TCP_NODELAY` (a 40 ms delayed-ACK stall on every small frame), and each replicated write cost four system calls on each side; frames are now buffered and acknowledged per burst
++- **A memory or key cap no longer serializes every write.** With `RECACHED_MAX_MEMORY` or `RECACHED_MAX_KEYS` set — required by `RECACHED_SECURITY=multitenant` — every write took the all-write barrier, cap reached or not: ~12,600 `SET`/s. A write that cannot evict now takes only its own key's ordering (~119,000/s); one that might still takes the barrier, as eviction needs
++- **Browser clients are no longer disconnected by unrelated write traffic.** A WebSocket connection handled one broadcast mutation per wake-up, so a write load on keys none of its scopes covers could outrun it: with 10 connected browsers and ~25,000 writes/s, all 10 were closed with `4001` (sync stream gap) within seconds. It now forwards everything queued per wake-up — 0 disconnects at 10 and 100 browsers in the same test. Every write is still delivered to every connection to be scope-filtered, so the server's cost grows with the number of connected browsers
++
+ ### Performance — server
++- **Hot commands run straight from the read buffer.** `GET`, `SET`, `INCR`, `DECR`, `HGET`, `HSET` and `MGET` no longer copy their key and value into a command: a read's value goes from the entry into the reply buffer, and a write is accounted from what it saw under its own lock (one keyspace lookup instead of three). In process (Linux VM, one worker, pipelined, against the 6H build): `SET` −19%, `GET` −16%, `HSET` −24%, `HGET` −15%, `MGET` −19%, one hot `INCR` −30%; allocations per command `SET` 3 → 1, `GET` 2 → 0, `HSET` 4 → 0, `MGET`×4 10 → 0. Replies are byte-for-byte those of the general path (differentially tested, whole and fragmented input)
++- Each command looks up its metric handles once instead of twice
+ - **Writes no longer slow down with the number of connected presence users.** Every write scanned every `ESET`/`EADD` claim under two process-wide locks: with 20,000 presence keys held, `SET` on unrelated keys ran at about 1,100 per second (4 workers). It is now unaffected by them (~490,000 per second on the same host), and a server that never uses `ESET`/`EADD` takes neither lock on a write
+ - `SADD` no longer copies every member it inserts (+6.7% throughput, −5.6% CPU per request, single worker, pipelined)
+ - **About a third less CPU per command on the request path.** Measured through the real connection loop in process (RESP in, RESP out, no sockets; Linux VM, one worker, pipelined, best of interleaved runs against the 6G build): `SET` −39%, `HSET` −35%, `MSET` −35%, `INCR` −28%, `GET` −26%, `HGET` −24%. Allocations per pipelined `SET` 15 → 3, `GET` 7 → 2, `INCR` 15 → 2. How:
+diff --git a/server-native/src/config.rs b/server-native/src/config.rs
+index 178d8e3..cbac613 100644
+--- a/server-native/src/config.rs
++++ b/server-native/src/config.rs
+@@ -119,6 +119,15 @@ pub(crate) const MAX_AUTH_FAILURES: u32 = 5;
+ 
+ pub(crate) const EVICTION_INTERVAL_SECS: u64 = 1;
+ 
++/// Volatile keys one active-expiry chunk examines.
++pub(crate) const EXPIRY_CHUNK: usize = 256;
++
++/// Longest the active-expiry loop keeps sweeping in one tick
++/// (`EVICTION_INTERVAL_SECS`): 2.5% of each second, in chunks that each hold
++/// the write barrier only for themselves. At ~1 µs per examined key that is
++/// on the order of 25,000 expirations per second, against 256 before.
++pub(crate) const EXPIRY_TICK_BUDGET: std::time::Duration = std::time::Duration::from_millis(25);
++
+ pub(crate) const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+ 
+ /// Longest replication auth line accepted, in bytes.
+diff --git a/server-native/src/main.rs b/server-native/src/main.rs
+index c59c101..ae53e95 100644
+--- a/server-native/src/main.rs
++++ b/server-native/src/main.rs
+@@ -856,19 +856,10 @@ async fn run(
+                 if store_sweep.volatile_key_count() == 0 && !memory_over_limit {
+                     continue;
+                 }
+-                // Active expiry and eviction can remove keys no client named.
+-                // Share the all-write barrier with snapshots and QSUB initial
+-                // state so removal plus notification is one observable step.
+-                let _write_guards = state_sweep.replicas.lock_all_writes().await;
+-                // Bound maintenance work per tick. The cursor advances through
+-                // the TTL-only dense index, so large persistent keyspaces cost
+-                // nothing here and large volatile keyspaces are amortized.
+-                let expired = store_sweep.sweep_expired_reporting_budget(256);
+-                state_sweep.forget_ephemeral_keys(expired.iter().map(String::as_str));
+-                if !registry_sweep.is_empty() {
+-                    notify_removed(&registry_sweep, &expired).await;
+-                }
++                sweep_expired_tick(&store_sweep, &state_sweep, &registry_sweep).await;
+                 if store_sweep.max_memory_bytes().is_some() {
++                    // Eviction too can remove keys no client named.
++                    let _write_guards = state_sweep.replicas.lock_all_writes().await;
+                     let (_, evicted) = store_sweep.try_evict_for_memory_reporting();
+                     if !evicted.is_empty() {
+                         store_sweep.mark_dirty();
+diff --git a/server-native/src/propagation.rs b/server-native/src/propagation.rs
+index fbe2c94..06e092a 100644
+--- a/server-native/src/propagation.rs
++++ b/server-native/src/propagation.rs
+@@ -593,6 +593,47 @@ pub(crate) fn try_execute_borrowed(
+     Some(())
+ }
+ 
++/// One second's active expiry, in chunks; returns the keys removed.
++///
++/// Each chunk examines the next [`EXPIRY_CHUNK`] keys of the TTL-only dense
++/// index (so a large persistent keyspace costs nothing here) and takes the
++/// all-write barrier it shares with snapshots and QSUB's initial state, so a
++/// removal and its notification are one observable step; writers run between
++/// chunks.
++///
++/// One chunk per second used to be all there was: an expiry rate above 256
++/// keys/s accumulated expired entries without bound, since reads only mask
++/// them (6I: a `SET … EX 1` load grew the keyspace ~3,000 entries/s while
++/// Redis stayed flat). As Redis does, this keeps sweeping while the last
++/// sample was at least a quarter expired, within [`EXPIRY_TICK_BUDGET`].
++pub(crate) async fn sweep_expired_tick(
++    store: &KeyValueStore,
++    state: &ServerState,
++    watch_registry: &WatchRegistry,
++) -> usize {
++    let started = std::time::Instant::now();
++    let mut total = 0usize;
++    loop {
++        let examined = store.volatile_key_count().min(EXPIRY_CHUNK);
++        if examined == 0 {
++            return total;
++        }
++        let removed = {
++            let _write_guards = state.replicas.lock_all_writes().await;
++            let expired = store.sweep_expired_reporting_budget(EXPIRY_CHUNK);
++            state.forget_ephemeral_keys(expired.iter().map(String::as_str));
++            if !watch_registry.is_empty() {
++                notify_removed(watch_registry, &expired).await;
++            }
++            expired.len()
++        };
++        total = total.saturating_add(removed);
++        if removed.saturating_mul(4) < examined || started.elapsed() >= EXPIRY_TICK_BUDGET {
++            return total;
++        }
++    }
++}
++
+ /// Test-only: turn the borrowed path off, so a test can compare the replies
+ /// of the two paths over the same input. Global, but harmless to tests
+ /// running alongside: the owned path answers identically, which is what the
+diff --git a/server-native/src/tests/write_gate.rs b/server-native/src/tests/write_gate.rs
+index 0385f7e..75c116d 100644
+--- a/server-native/src/tests/write_gate.rs
++++ b/server-native/src/tests/write_gate.rs
+@@ -357,3 +357,48 @@ async fn concurrent_hot_key_writes_and_cas_stay_exact() {
+         bulk(&(committed + 500).to_string())
+     );
+ }
++
++/// Active expiry keeps up with more than one chunk of expired keys per tick
++/// (it used to remove at most 256 a second, so a TTL-churn load grew the
++/// keyspace without bound), and stops after one chunk when a sample shows
++/// little to remove.
++#[tokio::test]
++async fn one_expiry_tick_removes_far_more_than_one_chunk() {
++    use core_engine::cmd::{SetExpiry, SetOptions};
++    let shared = Shared::new(false);
++    let px = |ms| SetOptions {
++        expiry: Some(SetExpiry::Px(ms)),
++        ..SetOptions::default()
++    };
++    for i in 0..5_000 {
++        shared
++            .store
++            .execute(Command::Set(format!("gone:{i}"), b"v".to_vec(), px(1)));
++    }
++    for i in 0..1_000 {
++        shared
++            .store
++            .execute(Command::Set(format!("live:{i}"), b"v".to_vec(), px(3_600_000)));
++    }
++    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
++    let removed = sweep_expired_tick(&shared.store, &shared.state, &shared.watch_registry).await;
++    assert!(
++        removed > 10 * EXPIRY_CHUNK,
++        "one tick removed only {removed} of 5,000 expired keys"
++    );
++    assert_eq!(shared.store.key_count(), 6_000 - removed);
++
++    // Only live TTL keys left: one chunk, nothing removed, then stop.
++    let mut ticks = 0;
++    while shared.store.key_count() > 1_000 && ticks < 10 {
++        sweep_expired_tick(&shared.store, &shared.state, &shared.watch_registry).await;
++        ticks += 1;
++    }
++    assert_eq!(shared.store.key_count(), 1_000);
++    let started = std::time::Instant::now();
++    assert_eq!(
++        sweep_expired_tick(&shared.store, &shared.state, &shared.watch_registry).await,
++        0
++    );
++    assert!(started.elapsed() < EXPIRY_TICK_BUDGET, "a fruitless tick ran its whole budget");
++}

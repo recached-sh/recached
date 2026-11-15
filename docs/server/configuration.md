@@ -197,21 +197,29 @@ From 0.2.4 these modes genuinely `fsync`. Before that they only flushed to the o
 they were all roughly the speed of `no` and none of them survived a power cut — if you benchmarked
 `always` on an earlier version, that number was measuring the wrong thing.
 
-| Mode | Worst-case loss on power cut | Measured append cost |
+| Mode | Worst-case loss on power cut | What a write waits for |
 |---|---|---|
-| `no` | Everything the OS has not written back | ~40–50 µs |
-| `everysec` | Up to one second of writes | ~40–50 µs |
-| `always` | Nothing | **~20 ms** |
+| `no` | Everything the OS has not written back | its `write` to the OS |
+| `everysec` | Up to one second of writes | its `write` to the OS; a background `fsync` runs once a second |
+| `always` | Nothing | an `fsync` covering it |
 
-::: danger `always` costs roughly 400× more per write
-The fsync happens while the AOF lock is held, so *every* writer in the process queues behind one disk
-barrier. Measured on macOS/APFS that is around 20 ms per append — **tens of writes per second, not
-tens of thousands.** The server logs a warning at startup when you select it.
+In every mode a write is acknowledged only after its AOF write has reached the operating system,
+and under `always` only after it is on disk. Since 0.6, writes arriving together share one `write`
+and — under `always` — one `fsync` (group commit, as Redis does once per event-loop iteration),
+and a pipelining client waits once for its whole pipeline rather than once per command. No reply
+leaves the server before the AOF write of the commands it answers.
+
+::: danger `always` is bounded by your disk's fsync rate
+Each `fsync` waits for the device. Group commit spreads one `fsync` over every write waiting at that
+moment, so throughput depends on how many writes are in flight: a single client writing one command
+at a time gets one `fsync` per write — **tens to hundreds of writes per second** on many disks —
+while many concurrent or pipelining clients share each `fsync`. (Before 0.6 every write paid its own
+`fsync` under a process-wide lock: about 20 ms per write measured on macOS/APFS.) The server logs a
+warning at startup when you select it.
 
 Choose `always` only when losing one second of acknowledged writes is genuinely unacceptable and you
-have measured the throughput on your own hardware. `everysec` is the default because it costs nothing
-measurable and bounds the loss to a second. Linux with ext4 or xfs is typically far faster than APFS
-here, so measure rather than assuming these numbers transfer.
+have measured the throughput on your own hardware and concurrency. `everysec` is the default: it
+bounds the loss to a second at a small fraction of the cost.
 
 Note also that on macOS `fsync()` asks the OS to write back but does not force the drive to flush its
 own cache — `F_FULLFSYNC` is required for that, and Recached does not currently issue it. So on macOS
