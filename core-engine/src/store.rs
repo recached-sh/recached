@@ -9,7 +9,7 @@ use indexmap::IndexSet;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::BuildHasher;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -2143,6 +2143,10 @@ impl DenseKeys {
     }
 }
 
+/// Most `SCAN` sessions the server keeps a cursor for (documented as the cap
+/// on abandoned cursors).
+const MAX_SCAN_CURSORS: usize = 4096;
+
 /// Secondary indexes over the keyspace.
 ///
 /// Every key used to be copied into each structure as its own `String`: four
@@ -2270,7 +2274,11 @@ pub struct KeyValueStore {
     /// update only the keys they touched.
     memory_bytes: Arc<AtomicUsize>,
     index: Arc<std::sync::Mutex<KeyIndex>>,
-    scan_cursors: Arc<std::sync::Mutex<HashMap<u64, String>>>,
+    /// Live `SCAN` sessions: cursor token → the last key that session was
+    /// returned. Tokens are issued in increasing order, so the map's first
+    /// entry is the session that was last advanced longest ago (a session's
+    /// cursor is replaced by a fresh token on every page).
+    scan_cursors: Arc<std::sync::Mutex<BTreeMap<u64, String>>>,
     next_scan_cursor: Arc<AtomicU64>,
     expiry_cursor: Arc<AtomicUsize>,
     /// Next keyspace shard [`Self::reclaim_capacity_step`] looks at.
@@ -2370,7 +2378,7 @@ impl KeyValueStore {
             evicted: Arc::new(AtomicU64::new(0)),
             memory_bytes: Arc::new(AtomicUsize::new(0)),
             index: Arc::new(std::sync::Mutex::new(KeyIndex::new(false))),
-            scan_cursors: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            scan_cursors: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
             reclaim_cursor: Arc::new(AtomicUsize::new(0)),
@@ -2390,7 +2398,7 @@ impl KeyValueStore {
             evicted: Arc::new(AtomicU64::new(0)),
             memory_bytes: Arc::new(AtomicUsize::new(0)),
             index: Arc::new(std::sync::Mutex::new(KeyIndex::new(false))),
-            scan_cursors: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            scan_cursors: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
             reclaim_cursor: Arc::new(AtomicUsize::new(0)),
@@ -2416,7 +2424,7 @@ impl KeyValueStore {
             index: Arc::new(std::sync::Mutex::new(KeyIndex::new(tracks_all_keys(
                 eviction_policy,
             )))),
-            scan_cursors: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            scan_cursors: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
             reclaim_cursor: Arc::new(AtomicUsize::new(0)),
@@ -4471,10 +4479,15 @@ impl KeyValueStore {
                         .scan_cursors
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    if cursors.len() >= 4096
-                        && let Some(oldest) = cursors.keys().next().copied()
-                    {
-                        cursors.remove(&oldest);
+                    // At the cap, give up the session idle longest. This
+                    // used to be `HashMap::keys().next()` — an arbitrary
+                    // entry — so once abandoned cursors filled the table
+                    // (`redis-cli --scan | head`, a crashed job), each new
+                    // page could end a *live* iteration: its next call was
+                    // answered `0, []` and the client stopped short, having
+                    // missed keys, with no error.
+                    if cursors.len() >= MAX_SCAN_CURSORS {
+                        cursors.pop_first();
                     }
                     cursors.insert(token, last);
                     token
@@ -8024,6 +8037,51 @@ mod tests {
             }
             _ => panic!("expected array"),
         }
+    }
+
+    #[test]
+    fn a_live_scan_survives_thousands_of_abandoned_ones() {
+        // Regression (6J-B audit): at 4,096 cursors the table evicted an
+        // arbitrary one, so a live iteration could be answered `0, []` early
+        // and miss keys. Now the session idle longest goes; one that keeps
+        // advancing is never it.
+        let s = store();
+        for i in 0..50 {
+            s.execute(Command::Set(
+                format!("k{i:02}"),
+                "v".into(),
+                SetOptions::default(),
+            ));
+        }
+        let page = |cursor: u64| match s.execute(Command::Scan(cursor, None, Some(1))) {
+            Value::Array(Some(parts)) => {
+                let Some(Value::BulkString(Some(c))) = parts.first() else {
+                    panic!("cursor")
+                };
+                let next: u64 = String::from_utf8_lossy(c).parse().unwrap_or(0);
+                let n = match parts.get(1) {
+                    Some(Value::Array(Some(keys))) => keys.len(),
+                    _ => 0,
+                };
+                (next, n)
+            }
+            other => panic!("{other:?}"),
+        };
+        let (mut live, mut seen) = page(0);
+        let mut abandoned = 0;
+        while live != 0 {
+            // 200 iterations started and abandoned between each live page:
+            // 10,000 in all, far past the cap.
+            for _ in 0..200 {
+                page(0);
+                abandoned += 1;
+            }
+            let (next, n) = page(live);
+            seen += n;
+            live = next;
+        }
+        assert!(abandoned > 2 * MAX_SCAN_CURSORS);
+        assert_eq!(seen, 50, "the live iteration was cut short");
     }
 
     #[test]
