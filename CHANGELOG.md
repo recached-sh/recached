@@ -63,6 +63,9 @@ Measured with persistence, replication, a memory cap and browser clients switche
 ### Fixed — browser sync
 - **The browser whose write caused an eviction is told about it.** A capacity eviction is pushed as a `DEL` of the victim, but it carried the id of the connection whose write triggered it, and a connection is never pushed its own writes — so that one browser kept the evicted key in its local copy. Evictions are now pushed as the server's own writes. Present before 0.6
 
+### Fixed — SCAN
+- **A `SCAN` in progress is no longer cut short by abandoned ones.** The server keeps up to 4,096 cursors; past that it dropped an *arbitrary* one, so once abandoned iterations (`redis-cli --scan | head`, a crashed job) filled the table, any new page could end a live iteration — its next call was answered `0` with no keys, and the client stopped believing it had seen everything. The session that has gone longest without a call is now the one dropped. Present before 0.6
+
 ### Fixed — RESP port
 - **Replicas, the AOF and browser peers get the primary's exact expiry deadline.** A relative expiry (`SET … EX/PX`, `SETEX`, `PSETEX`, `EXPIRE`, `PEXPIRE`, `GETEX … EX/PX`) was propagated as a deadline recomputed from a second clock reading taken after the store's, so about 3% of such writes reached replicas a millisecond or more later than the primary held them. The propagated deadline is now read back from the store under the write's key guard
 - **`redis-cli --pipe` works.** It ends a mass insert with an empty line and `ECHO <20 random bytes>`; Recached answered the empty line with a protocol error and refused `ECHO` (unknown, and its binary argument), so the tool never saw its marker and timed out. Empty lines between commands are now ignored, as in Redis
