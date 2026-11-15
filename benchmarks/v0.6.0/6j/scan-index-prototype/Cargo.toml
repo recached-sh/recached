@@ -1,0 +1,24 @@
+# Phase 6J-B prototype: the ordered SCAN index's alternatives, measured side by
+# side against a model of the real keyspace (DashMap<Arc<str>, Box<entry>>).
+#
+# Standalone, like ../../6g-layout-prototype: the counting allocator needs
+# `unsafe`, which the workspace denies. The empty [workspace] keeps Cargo from
+# treating this as a member of the repository's workspace.
+[package]
+name = "scan-index-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+dashmap = { version = "~6.1", features = ["raw-api"] }
+tikv-jemallocator = "0.6"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+overflow-checks = true
+
+[workspace]
