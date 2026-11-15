@@ -125,6 +125,10 @@ fn ws_message(bytes: &[u8]) -> Message {
 /// Re-tag a top-level RESP array as a RESP3 push (`*` → `>`) when the
 /// connection asked for push framing. The two share one layout below the
 /// type byte, so nothing is re-encoded.
+/// Most queued pushes a WebSocket connection forwards per wake-up of its
+/// event loop before polling its other inputs again.
+const PUSH_DRAIN_BATCH: usize = 256;
+
 pub(crate) fn as_push_if(mut frame: Vec<u8>, push: bool) -> Vec<u8> {
     if push && frame.first() == Some(&b'*') {
         frame[0] = b'>';
@@ -2114,6 +2118,41 @@ pub(crate) async fn handle_ws<S>(
                     Ok(push) => {
                         if forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns) {
                             ws_send!(&push.resp);
+                        }
+                        // Take whatever else is already queued in this one
+                        // wake-up. One push per `select!` cycle made every
+                        // connection pay a full poll of all its arms for every
+                        // write on the server — including the writes its
+                        // scopes filter out — so a writer at 25k/s on keys no
+                        // browser could see lagged and disconnected all ten
+                        // connected browsers (6I Mode 4). Bounded, so the
+                        // other arms still run under a sustained stream.
+                        for _ in 0..PUSH_DRAIN_BATCH {
+                            match rx.try_recv() {
+                                Ok(push) => {
+                                    if forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns)
+                                        && ws_sender.send(ws_message(&push.resp)).await.is_err()
+                                    {
+                                        break 'outer;
+                                    }
+                                }
+                                Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                                    warn!(
+                                        "WS conn {} lagged, missed {} mutations; closing so the client resynchronises",
+                                        conn_id, n
+                                    );
+                                    counter!("recached_sync_lag_disconnects_total").increment(1);
+                                    let _ = ws_sender
+                                        .send(Message::Close(Some(CloseFrame {
+                                            code: CloseCode::Library(WS_CLOSE_SYNC_GAP),
+                                            reason: "sync stream gap; reconnect to resynchronise".into(),
+                                        })))
+                                        .await;
+                                    break 'outer;
+                                }
+                                Err(broadcast::error::TryRecvError::Empty) => break,
+                                Err(broadcast::error::TryRecvError::Closed) => break 'outer,
+                            }
                         }
                     }
                     // The fan-out overran this connection. Resubscribing here
