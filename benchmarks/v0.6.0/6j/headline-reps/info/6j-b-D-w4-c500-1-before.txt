@@ -1,0 +1,68 @@
+# Server
+redis_version:6.2.0
+recached_version:0.6.0
+redis_mode:standalone
+os:linux
+arch_bits:64
+process_id:776
+run_id:beba62e738d1e1331980faeb9a9f5a3dfc6ba2e6
+tcp_port:7700
+recached_ws_port:7701
+recached_tls_enabled:0
+recached_auth_enabled:0
+uptime_in_seconds:2
+uptime_in_days:0
+
+# Clients
+connected_clients:501
+maxclients:20000
+blocked_clients:0
+
+# Memory
+used_memory:0
+used_memory_human:0B
+maxmemory:0
+maxmemory_human:0B
+maxmemory_policy:noeviction
+recached_max_keys:0
+
+# Persistence
+loading:0
+rdb_changes_since_last_save:0
+rdb_last_save_time:1794749929
+rdb_bgsave_in_progress:0
+aof_enabled:0
+
+# Stats
+total_connections_received:502
+total_commands_processed:1
+keyspace_hits:0
+keyspace_misses:0
+evicted_keys:0
+
+# Replication
+role:master
+connected_slaves:0
+connected_replicas:0
+recached_replication_queue_depth:0
+recached_replication_lag_frames:0
+
+# Cluster
+cluster_enabled:0
+
+# Keyspace
+
+# Recached
+live_queries:0
+watched_keys:0
+sync_subscribers:500
+sync_routed_subscribers:500
+sync_route_broad:0
+sync_route_exact_keys:0
+sync_route_prefixes:1000
+sync_route_events:0
+sync_route_candidates:0
+sync_route_skipped:0
+sync_pushes_forwarded:0
+sync_pushes_filtered:0
+
