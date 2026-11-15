@@ -2014,12 +2014,12 @@ async fn spawn_ws_server() -> TestServer {
 
 /// Like `spawn_ws_server`, with an optional sync-scope secret (strict mode).
 async fn spawn_ws_server_cfg(sync_secret: Option<String>) -> TestServer {
-    spawn_ws_server_full(sync_secret, None).await
+    spawn_ws_server_full(sync_secret, None, None).await
 }
 
 /// Like `spawn_ws_server`, with an origin allowlist in force.
 async fn spawn_ws_server_origins(origins: Vec<String>) -> TestServer {
-    spawn_ws_server_full(None, Some(origins)).await
+    spawn_ws_server_full(None, Some(origins), None).await
 }
 
 /// Open a WebSocket to `addr`, optionally sending an `Origin` header, and
@@ -2037,6 +2037,247 @@ async fn ws_connect_with_origin(
         .await
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ws_unauthenticated_socket_is_pushed_nothing() {
+    // A WebSocket is pushed nothing until it has authenticated, and is pushed
+    // mutations normally once it has.
+    //
+    // `cmd` skips push frames while waiting for its reply, so every "nothing
+    // was pushed" check here reads raw frames, text and binary alike.
+    let srv = spawn_ws_server_full(None, None, Some("pw".to_string())).await;
+    let mut anon = WsClient::connect(srv.tcp_addr).await;
+    assert!(
+        matches!(anon.cmd(&["GET", "secret"]).await, Value::Error(e) if e.starts_with("NOAUTH"))
+    );
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(writer.cmd(&["AUTH", "pw"]).await, ok());
+    assert_eq!(writer.cmd(&["SET", "secret", "v1"]).await, ok());
+    assert_eq!(writer.cmd(&["SET", "secret", "v2"]).await, ok());
+    assert_eq!(
+        anon.recv_frame(300).await,
+        None,
+        "a socket that has not authenticated must not be sent anything"
+    );
+    // Wrong password: the refusal is the only frame, then still nothing.
+    anon.send(&["AUTH", "nope"]).await;
+    assert_eq!(
+        anon.recv_frame(1_000).await.as_deref(),
+        Some(&b"-ERR invalid password\r\n"[..])
+    );
+    assert_eq!(writer.cmd(&["SET", "secret", "v3"]).await, ok());
+    assert_eq!(
+        anon.recv_frame(300).await,
+        None,
+        "sent a frame after a failed AUTH"
+    );
+
+    // Authenticating starts the stream: normal sync is unaffected.
+    assert_eq!(anon.cmd(&["AUTH", "pw"]).await, ok());
+    assert_eq!(writer.cmd(&["SET", "secret", "v4"]).await, ok());
+    let push = anon
+        .recv_push(2_000)
+        .await
+        .expect("an authenticated socket is pushed mutations");
+    assert!(push.contains("secret") && push.contains("v4"), "{push}");
+}
+
+/// The RESP encoding of `SET <key> <value>` with a raw byte value.
+fn resp_set_bytes(key: &str, value: &[u8]) -> Vec<u8> {
+    let mut raw = format!(
+        "*3\r\n$3\r\nSET\r\n${}\r\n{key}\r\n${}\r\n",
+        key.len(),
+        value.len()
+    )
+    .into_bytes();
+    raw.extend_from_slice(value);
+    raw.extend_from_slice(b"\r\n");
+    raw
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ws_unauthenticated_socket_is_sent_no_binary_push() {
+    // A mutation whose bytes are not UTF-8 is pushed as a binary frame, a
+    // separate path from the text frames above. Neither may reach a socket
+    // before AUTH, and both must reach it after.
+    let srv = spawn_ws_server_full(None, None, Some("pw".to_string())).await;
+    let mut anon = WsClient::connect(srv.tcp_addr).await;
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(writer.cmd(&["AUTH", "pw"]).await, ok());
+
+    let value = [0xff, 0xfe, b'x'];
+    assert_eq!(
+        writer.cmd_binary(resp_set_bytes("bin:1", &value)).await,
+        ok()
+    );
+    assert_eq!(writer.cmd(&["SET", "txt:1", "plain"]).await, ok());
+    assert_eq!(
+        anon.recv_frame(300).await,
+        None,
+        "a frame reached a socket before AUTH"
+    );
+
+    assert_eq!(anon.cmd(&["AUTH", "pw"]).await, ok());
+    assert_eq!(
+        writer.cmd_binary(resp_set_bytes("bin:2", &value)).await,
+        ok()
+    );
+    let frame = anon
+        .recv_frame(2_000)
+        .await
+        .expect("an authenticated socket is pushed binary mutations");
+    assert!(
+        frame.windows(5).any(|w| w == b"bin:2") && frame.windows(3).any(|w| w == value),
+        "{frame:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ws_auth_during_a_write_stream_sends_nothing_before_its_reply() {
+    // Writes keep arriving while the socket is unauthenticated and while it
+    // authenticates. Every frame it receives before the AUTH reply is the
+    // reply to one of its own commands; mutations follow the reply.
+    let srv = spawn_ws_server_full(None, None, Some("pw".to_string())).await;
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(writer.cmd(&["AUTH", "pw"]).await, ok());
+    let writing = {
+        let stop = Arc::clone(&stop);
+        tokio::spawn(async move {
+            let mut i = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                let (key, val) = (format!("stream:{i}"), format!("val{i}"));
+                assert_eq!(writer.cmd(&["SET", &key, &val]).await, ok());
+                i += 1;
+                tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+            }
+            i
+        })
+    };
+
+    let mut anon = WsClient::connect(srv.tcp_addr).await;
+    for _ in 0..50 {
+        anon.send(&["GET", "stream:0"]).await;
+        let frame = anon.recv_frame(1_000).await.expect("a reply to GET");
+        assert!(
+            frame.starts_with(b"-NOAUTH"),
+            "expected only the NOAUTH reply, got {:?}",
+            String::from_utf8_lossy(&frame)
+        );
+        tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
+    }
+    anon.send(&["AUTH", "pw"]).await;
+    assert_eq!(
+        anon.recv_frame(1_000).await.as_deref(),
+        Some(&b"+OK\r\n"[..]),
+        "the first frame after AUTH must be its reply"
+    );
+    let push = anon
+        .recv_push(2_000)
+        .await
+        .expect("mutations are pushed once authenticated");
+    assert!(push.contains("stream:"), "{push}");
+
+    stop.store(true, Ordering::Relaxed);
+    let written = writing.await.unwrap();
+    assert!(written > 10, "the writer barely ran ({written} writes)");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ws_authentication_does_not_survive_a_reconnect() {
+    // Authentication belongs to the connection: a client that authenticated,
+    // disconnected and came back must authenticate again before it is pushed
+    // anything.
+    let srv = spawn_ws_server_full(None, None, Some("pw".to_string())).await;
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(writer.cmd(&["AUTH", "pw"]).await, ok());
+
+    let mut client = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(client.cmd(&["AUTH", "pw"]).await, ok());
+    assert_eq!(writer.cmd(&["SET", "r", "1"]).await, ok());
+    assert!(client.recv_push(2_000).await.is_some());
+    client.ws.close(None).await.unwrap();
+    drop(client);
+
+    let mut again = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(writer.cmd(&["SET", "r", "2"]).await, ok());
+    assert_eq!(
+        again.recv_frame(300).await,
+        None,
+        "a reconnect inherited AUTH"
+    );
+    assert_eq!(again.cmd(&["AUTH", "pw"]).await, ok());
+    assert_eq!(writer.cmd(&["SET", "r", "3"]).await, ok());
+    let push = again.recv_push(2_000).await.expect("pushed after re-AUTH");
+    assert!(push.contains('3'), "{push}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ws_strict_mode_with_a_password_needs_auth_and_a_token() {
+    // Strict sync mode with a password: a socket needs both AUTH and a token,
+    // and the token's scope still bounds what it is pushed.
+    let secret = "s3cret";
+    let srv = spawn_ws_server_full(Some(secret.to_string()), None, Some("pw".to_string())).await;
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(writer.cmd(&["AUTH", "pw"]).await, ok());
+    let wtok = mint_sync_token(secret, "cart:*,other:*");
+    assert_eq!(
+        writer.cmd(&["SYNC", "TOKEN", &wtok]).await,
+        arr(&["rw=cart:*", "rw=other:*"])
+    );
+
+    let mut client = WsClient::connect(srv.tcp_addr).await;
+    let tok = mint_sync_token(secret, "cart:*");
+    // A token without AUTH is refused and grants nothing.
+    assert!(
+        matches!(client.cmd(&["SYNC", "TOKEN", &tok]).await, Value::Error(e) if e.starts_with("NOAUTH"))
+    );
+    assert_eq!(writer.cmd(&["SET", "cart:1", "a"]).await, ok());
+    assert_eq!(client.recv_frame(300).await, None, "pushed before AUTH");
+
+    // AUTH without a token: strict mode still pushes nothing.
+    assert_eq!(client.cmd(&["AUTH", "pw"]).await, ok());
+    assert_eq!(writer.cmd(&["SET", "cart:2", "b"]).await, ok());
+    assert_eq!(client.recv_frame(300).await, None, "pushed without a token");
+
+    // AUTH and a token: in-scope writes only.
+    assert_eq!(
+        client.cmd(&["SYNC", "TOKEN", &tok]).await,
+        arr(&["rw=cart:*"])
+    );
+    assert_eq!(writer.cmd(&["SET", "other:3", "hidden"]).await, ok());
+    assert_eq!(writer.cmd(&["SET", "cart:3", "c"]).await, ok());
+    let push = client.recv_push(2_000).await.expect("in-scope push");
+    assert!(push.contains("cart:3"), "{push}");
+    assert!(
+        !push.contains("other:3") && !push.contains("hidden"),
+        "{push}"
+    );
+    assert_eq!(
+        client.recv_frame(300).await,
+        None,
+        "out-of-scope push leaked"
+    );
+}
+
+#[tokio::test]
+async fn ws_without_a_password_is_still_pushed_mutations() {
+    // Open mode without a password: a socket is authenticated from the start
+    // and is pushed mutations without AUTH.
+    let srv = spawn_ws_server_full(None, None, None).await;
+    let mut reader = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(
+        reader.cmd(&["PING"]).await,
+        Value::SimpleString("PONG".into())
+    );
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(writer.cmd(&["SET", "k", "v"]).await, ok());
+    let push = reader
+        .recv_push(2_000)
+        .await
+        .expect("pushed without AUTH when no password is set");
+    assert!(push.contains('k'), "{push}");
 }
 
 #[tokio::test]
@@ -2235,6 +2476,7 @@ async fn ws_closes_a_client_whose_mutation_stream_developed_a_gap() {
 async fn spawn_ws_server_full(
     sync_secret: Option<String>,
     allowed_origins: Option<Vec<String>>,
+    password: Option<String>,
 ) -> TestServer {
     let store = Arc::new(KeyValueStore::new());
     let (tx, _rx) = broadcast::channel::<SyncMsg>(256);
@@ -2266,13 +2508,14 @@ async fn spawn_ws_server_full(
     let state2 = Arc::clone(&state);
     let secret = Arc::new(sync_secret);
     let origins = Arc::new(allowed_origins);
+    let password = Arc::new(password);
 
     let task = tokio::spawn(async move {
         loop {
             let Ok((socket, _)) = listener.accept().await else {
                 return;
             };
-            let (s, t, ps, wr, st, ss, ao) = (
+            let (s, t, ps, wr, st, ss, ao, pw) = (
                 Arc::clone(&store2),
                 tx.clone(),
                 Arc::clone(&pubsub),
@@ -2280,6 +2523,7 @@ async fn spawn_ws_server_full(
                 Arc::clone(&state2),
                 Arc::clone(&secret),
                 Arc::clone(&origins),
+                Arc::clone(&password),
             );
             let id = next_conn_id();
             let peer = socket
@@ -2287,7 +2531,7 @@ async fn spawn_ws_server_full(
                 .map(|a| a.to_string())
                 .unwrap_or_default();
             tokio::spawn(async move {
-                handle_ws(socket, s, t, Arc::new(None), id, ps, wr, st, ss, ao, peer).await;
+                handle_ws(socket, s, t, pw, id, ps, wr, st, ss, ao, peer).await;
             });
         }
     });
@@ -2319,6 +2563,36 @@ impl WsClient {
         }
         self.ws.send(Message::Text(req.into())).await.unwrap();
         self.next_reply().await
+    }
+
+    /// Send a command without reading anything back.
+    async fn send(&mut self, args: &[&str]) {
+        let mut req = format!("*{}\r\n", args.len());
+        for a in args {
+            req.push_str(&format!("${}\r\n{}\r\n", a.len(), a));
+        }
+        self.ws.send(Message::Text(req.into())).await.unwrap();
+    }
+
+    /// Wait up to `ms` for the next text *or binary* frame and return its
+    /// bytes unparsed. `None` when nothing arrives in time. Unlike `cmd`,
+    /// `recv_push` and `recv_any`, this skips nothing, so it is what a
+    /// "this socket was sent nothing" check must use.
+    async fn recv_frame(&mut self, ms: u64) -> Option<Vec<u8>> {
+        let fut = async {
+            loop {
+                match self.ws.next().await {
+                    Some(Ok(Message::Text(t))) => return Some(t.as_bytes().to_vec()),
+                    Some(Ok(Message::Binary(b))) => return Some(b.to_vec()),
+                    Some(Ok(_)) => continue,
+                    _ => return None,
+                }
+            }
+        };
+        tokio::time::timeout(tokio::time::Duration::from_millis(ms), fut)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Send pre-encoded RESP bytes in a *binary* frame. Text frames must be

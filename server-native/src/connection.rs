@@ -1127,7 +1127,10 @@ pub(crate) async fn handle_ws<S>(
                         loop {
                             match rx.try_recv() {
                                 Ok(push) => {
-                                    if forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns)
+                                    // Nothing is pushed to a connection before
+                                    // it has authenticated.
+                                    if is_authenticated
+                                        && forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns)
                                         && ws_sender.send(ws_message(&push.resp)).await.is_err()
                                     {
                                         break 'outer;
@@ -1898,7 +1901,9 @@ pub(crate) async fn handle_ws<S>(
             result = rx.recv() => {
                 match result {
                     Ok(push) => {
-                        if forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns) {
+                        if is_authenticated
+                            && forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns)
+                        {
                             ws_send!(&push.resp);
                         }
                     }
