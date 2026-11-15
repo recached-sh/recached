@@ -296,7 +296,7 @@ pub(crate) fn command_name(cmd: &Command) -> &'static str {
     }
 }
 
-/// Per-command counter handles, resolved through the metrics registry once and
+/// Per-command metric handles, resolved through the metrics registry once and
 /// then reused — the registry lookup (key construction + shard lock) is too
 /// expensive to pay on every command. Keyed by the `&'static str` from
 /// `command_name`.
@@ -309,43 +309,32 @@ pub(crate) fn command_name(cmd: &Command) -> &'static str {
 /// and `.unwrap()`ed the lock, so a single panic anywhere holding it would
 /// poison the lock and make every subsequent command panic for the life of the
 /// process. An immutable map needs no lock and cannot be poisoned.
-pub(crate) static CMD_COUNTERS: std::sync::LazyLock<HashMap<&'static str, metrics::Counter>> =
+pub(crate) static CMD_METRICS: std::sync::LazyLock<HashMap<&'static str, CommandMetrics>> =
     std::sync::LazyLock::new(|| {
         core_engine::catalog::CATALOG
             .iter()
-            .map(|spec| {
+            .map(|spec| spec.name)
+            .chain(std::iter::once(UNKNOWN_COMMAND))
+            .map(|name| {
                 (
-                    spec.name,
-                    counter!("recached_commands_total", "command" => spec.name),
+                    name,
+                    CommandMetrics {
+                        count: counter!("recached_commands_total", "command" => name),
+                        duration: histogram!("recached_command_duration_seconds", "command" => name),
+                    },
                 )
             })
-            .chain(std::iter::once((
-                UNKNOWN_COMMAND,
-                counter!("recached_commands_total", "command" => UNKNOWN_COMMAND),
-            )))
             .collect()
     });
 
-/// Per-command latency histogram handles, cached for the same reason as
-/// [`CMD_COUNTERS`]: `histogram!` with a label builds the label list (one
-/// allocation) and looks the series up in the recorder's registry on every
-/// call. Same series, same observations; one lookup at first use instead.
-pub(crate) static CMD_DURATIONS: std::sync::LazyLock<HashMap<&'static str, metrics::Histogram>> =
-    std::sync::LazyLock::new(|| {
-        core_engine::catalog::CATALOG
-            .iter()
-            .map(|spec| {
-                (
-                    spec.name,
-                    histogram!("recached_command_duration_seconds", "command" => spec.name),
-                )
-            })
-            .chain(std::iter::once((
-                UNKNOWN_COMMAND,
-                histogram!("recached_command_duration_seconds", "command" => UNKNOWN_COMMAND),
-            )))
-            .collect()
-    });
+/// One command's metric handles: its `recached_commands_total` counter and
+/// its `recached_command_duration_seconds` histogram. Kept together so a
+/// command pays one map lookup for both — it paid one each, on every
+/// command, metrics enabled or not. Same series, same observations.
+pub(crate) struct CommandMetrics {
+    count: metrics::Counter,
+    duration: metrics::Histogram,
+}
 
 /// Label used for a command the parser did not recognise. Not a catalog row, so
 /// it is registered alongside them.
@@ -353,8 +342,8 @@ pub(crate) const UNKNOWN_COMMAND: &str = "unknown";
 
 pub(crate) fn record_command(name: &'static str) {
     STAT_COMMANDS_TOTAL.fetch_add(1, Ordering::Relaxed);
-    match CMD_COUNTERS.get(name) {
-        Some(c) => c.increment(1),
+    match CMD_METRICS.get(name) {
+        Some(handles) => handles.count.increment(1),
         // A name `command_name` can produce but the catalog does not list.
         // `command_name_labels_are_all_pre_registered` fails CI if that ever
         // happens, so this is a correctness backstop, not a routine path.
@@ -429,36 +418,81 @@ fn record_outcome(
     response: Value,
     evicted: Vec<String>,
 ) -> (Value, Vec<String>) {
+    let hit = match (is_get, &response) {
+        (true, Value::BulkString(found)) => Some(found.is_some()),
+        _ => None,
+    };
+    record_metrics(
+        store,
+        name,
+        is_write,
+        started,
+        matches!(response, Value::Error(_)),
+        hit,
+        !evicted.is_empty(),
+    );
+    (response, evicted)
+}
+
+/// The metrics and dirty count of one executed command: its duration, its
+/// count, an error, a `GET`'s keyspace hit or miss (`hit`), and — for a write
+/// that succeeded, or an error that still evicted — one dirty write. Shared
+/// by the owned and the borrowed execution paths, so both count the same.
+pub(crate) fn record_metrics(
+    store: &KeyValueStore,
+    name: &'static str,
+    is_write: bool,
+    started: std::time::Instant,
+    is_error: bool,
+    hit: Option<bool>,
+    evicted: bool,
+) {
     let elapsed = started.elapsed().as_secs_f64();
-    match CMD_DURATIONS.get(name) {
-        Some(histogram) => histogram.record(elapsed),
+    STAT_COMMANDS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    match CMD_METRICS.get(name) {
+        Some(handles) => {
+            handles.duration.record(elapsed);
+            handles.count.increment(1);
+        }
         // Not in the catalog: `command_name_labels_are_all_pre_registered`
-        // keeps this a backstop, as for `CMD_COUNTERS`.
-        None => histogram!("recached_command_duration_seconds", "command" => name).record(elapsed),
+        // fails CI if that can happen, so this is a correctness backstop.
+        None => {
+            histogram!("recached_command_duration_seconds", "command" => name).record(elapsed);
+            counter!("recached_commands_total", "command" => name).increment(1);
+        }
     }
-    record_command(name);
-    if matches!(response, Value::Error(_)) {
+    if is_error {
         counter!("recached_command_errors_total", "command" => name).increment(1);
-        if !evicted.is_empty() {
+        if evicted {
             store.mark_dirty();
         }
     } else if is_write {
         store.mark_dirty();
     }
-    if is_get {
-        match &response {
-            Value::BulkString(Some(_)) => {
-                KEYSPACE_HITS.increment(1);
-                STAT_KEYSPACE_HITS.fetch_add(1, Ordering::Relaxed);
-            }
-            Value::BulkString(None) => {
-                KEYSPACE_MISSES.increment(1);
-                STAT_KEYSPACE_MISSES.fetch_add(1, Ordering::Relaxed);
-            }
-            _ => {}
+    match hit {
+        Some(true) => {
+            KEYSPACE_HITS.increment(1);
+            STAT_KEYSPACE_HITS.fetch_add(1, Ordering::Relaxed);
         }
+        Some(false) => {
+            KEYSPACE_MISSES.increment(1);
+            STAT_KEYSPACE_MISSES.fetch_add(1, Ordering::Relaxed);
+        }
+        None => {}
     }
-    (response, evicted)
+}
+
+/// [`command_name`] of a borrowed command — the label its owned form gets.
+pub(crate) fn command_ref_name(cmd: &CommandRef<'_>) -> &'static str {
+    match cmd {
+        CommandRef::Get(_) => "get",
+        CommandRef::Set(..) => "set",
+        CommandRef::Incr(_) => "incr",
+        CommandRef::Decr(_) => "decr",
+        CommandRef::HGet(..) => "hget",
+        CommandRef::HSet(..) => "hset",
+        CommandRef::MGet(_) => "mget",
+    }
 }
 
 // ── TCP listeners ─────────────────────────────────────────────────────────────

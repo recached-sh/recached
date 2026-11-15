@@ -457,6 +457,150 @@ pub(super) fn allocation_budgets() -> Vec<(Workload, f64)> {
     ]
 }
 
+// ── borrowed path equivalence ─────────────────────────────────────────────────
+
+/// A pipeline that exercises the borrowed hot commands next to the commands
+/// that must not take it, in every state the TCP loop distinguishes for
+/// them: plain, inside MULTI (queued, then run by EXEC), wrong types, binary,
+/// empty, Unicode and large values, error-producing arguments, DEDUP.
+fn equivalence_stream() -> Vec<u8> {
+    let big = vec![b'B'; 100_000];
+    let mut out = Vec::new();
+    let cmds: Vec<Vec<&[u8]>> = vec![
+        vec![b"GET", b"missing"],
+        vec![b"SET", b"s", b"v"],
+        vec![b"get", b"s"],
+        vec![b"SET", b"empty", b""],
+        vec![b"GET", b"empty"],
+        vec![b"SET", b"bin", b"\x00\xff\r\n*1\r\n"],
+        vec![b"GET", b"bin"],
+        vec!["SET".as_bytes(), "ключ".as_bytes(), "🔑".as_bytes()],
+        vec!["GET".as_bytes(), "ключ".as_bytes()],
+        vec![b"SET", b"big", &big],
+        vec![b"GET", b"big"],
+        vec![b"INCR", b"n"],
+        vec![b"DECR", b"n"],
+        vec![b"INCR", b"s"],
+        vec![b"SET", b"\xff\xfe", b"not utf-8 key"],
+        vec![b"GET", b""],
+        vec![b"GET", b"a", b"extra"],
+        vec![b"HSET", b"h", b"f", b"1", b"g", b"2"],
+        vec![b"HSET", b"h", b"f"],
+        vec![b"HGET", b"h", b"f"],
+        vec![b"HGET", b"s", b"f"],
+        vec![b"GET", b"h"],
+        vec![b"MGET", b"s", b"h", b"n", b"missing"],
+        vec![b"SET", b"k", b"v", b"EX", b"100"],
+        vec![b"TTL", b"k"],
+        vec![b"MSET", b"m1", b"1", b"m2", b"2"],
+        vec![b"MULTI"],
+        vec![b"SET", b"tx", b"1"],
+        vec![b"INCR", b"tx"],
+        vec![b"GET", b"tx"],
+        vec![b"HSET", b"txh", b"f", b"v"],
+        vec![b"EXEC"],
+        vec![b"MULTI"],
+        vec![b"GET", b"s", b"extra"],
+        vec![b"SET", b"never", b"1"],
+        vec![b"EXEC"],
+        vec![b"GET", b"never"],
+        vec![b"DEDUP", b"c1", b"1", b"INCR", b"d"],
+        vec![b"DEDUP", b"c1", b"1", b"INCR", b"d"],
+        vec![b"GET", b"d"],
+        vec![b"DEL", b"s", b"h"],
+        vec![b"GET", b"s"],
+        vec![b"PING"],
+    ];
+    for c in cmds {
+        encode(&c, &mut out);
+    }
+    out
+}
+
+/// Replies of one connection fed `frames` in chunks of `chunk` bytes (0 =
+/// whole), on a fresh server.
+fn replies_for(frames: &[u8], chunk: usize, with_sync_receiver: bool) -> Vec<u8> {
+    let shared = Shared::new(with_sync_receiver);
+    let (client, server) = tokio::io::duplex(1 << 20);
+    let fut = shared.serve(server);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let frames = frames.to_vec();
+    rt.block_on(async move {
+        let server = tokio::spawn(fut);
+        let (mut rd, mut wr) = tokio::io::split(client);
+        let writer = async move {
+            let mut sizes = [1usize, 7, 3, 5, 2].iter().cycle();
+            let mut at = 0;
+            while at < frames.len() {
+                let n = if chunk == 0 {
+                    frames.len()
+                } else {
+                    *sizes.next().expect("cycle")
+                };
+                let end = (at + n).min(frames.len());
+                wr.write_all(&frames[at..end]).await.expect("write");
+                at = end;
+                tokio::task::yield_now().await;
+            }
+            wr.shutdown().await.expect("shutdown");
+            wr
+        };
+        let reader = async move {
+            let mut out = Vec::new();
+            rd.read_to_end(&mut out).await.expect("read");
+            out
+        };
+        let (_wr, out) = tokio::join!(writer, reader);
+        let _ = server.await;
+        out
+    })
+}
+
+/// The borrowed path is invisible on the wire: for the same input, every
+/// byte of every reply is what the owned path sends — whole or fragmented
+/// input, with and without a sync receiver (which sends writes down the
+/// ordered path while reads stay borrowed).
+#[test]
+fn borrowed_and_owned_paths_send_identical_replies() {
+    let frames = equivalence_stream();
+    for &(chunk, receiver) in &[(0, false), (1, false), (0, true), (1, true)] {
+        crate::propagation::borrowed_switch::OFF.store(true, Ordering::SeqCst);
+        let owned = replies_for(&frames, chunk, receiver);
+        crate::propagation::borrowed_switch::OFF.store(false, Ordering::SeqCst);
+        let borrowed = replies_for(&frames, chunk, receiver);
+        assert_eq!(
+            String::from_utf8_lossy(&borrowed),
+            String::from_utf8_lossy(&owned),
+            "chunk {chunk}, sync receiver {receiver}"
+        );
+        // And the stream really exercised both paths' answers.
+        assert!(owned.len() > 100_000 && owned.windows(9).any(|w| w == b"WRONGTYPE"));
+    }
+}
+
+/// A malformed frame after borrowed commands closes the connection with the
+/// same protocol error, having answered exactly the commands before it.
+#[test]
+fn a_malformed_frame_after_borrowed_commands_closes_identically() {
+    let mut frames = Vec::new();
+    encode(&[b"SET", b"a", b"1"], &mut frames);
+    encode(&[b"GET", b"a"], &mut frames);
+    frames.extend_from_slice(b"*2\r\n$3\r\nGET\r\n$x\r\n");
+    encode(&[b"GET", b"a"], &mut frames);
+    crate::propagation::borrowed_switch::OFF.store(true, Ordering::SeqCst);
+    let owned = replies_for(&frames, 0, false);
+    crate::propagation::borrowed_switch::OFF.store(false, Ordering::SeqCst);
+    let borrowed = replies_for(&frames, 0, false);
+    assert_eq!(borrowed, owned);
+    assert!(
+        owned.starts_with(b"+OK\r\n$1\r\n1\r\n-ERR Protocol error"),
+        "{owned:?}"
+    );
+}
+
 // ── AOF-gated replies ─────────────────────────────────────────────────────────
 
 /// With the AOF on, a pipelined write's wait for its `write(2)` is deferred

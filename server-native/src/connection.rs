@@ -264,6 +264,13 @@ pub(crate) fn process_auth(
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
+/// A frame the TCP loop answered on the borrowed path (and its length), or
+/// the decoded frame for the ordinary path.
+enum Answered {
+    Borrowed(usize),
+    Not(Result<core_engine::request::Decoded, core_engine::resp::ParseError>),
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_tcp<S>(
     socket: S,
@@ -394,7 +401,51 @@ pub(crate) async fn handle_tcp<S>(
                             // `Value::parse` + `Command::from_value` gave. The
                             // command owns its data; nothing borrowed from
                             // `buf` survives into the compaction below.
-                            match decoder.decode(&buf[read_pos..]) {
+                            // A hot command is decoded borrowed and, when it
+                            // can be (see `try_execute_borrowed`), run from
+                            // the buffer with its reply written in place — no
+                            // copy of its key or value, no reply `Value`. The
+                            // borrow ends inside this block, before the
+                            // buffer is touched again. Otherwise it is made
+                            // owned, without a second walk of the frame, and
+                            // takes the ordinary path below.
+                            let frame = match decoder.decode_any(&buf[read_pos..]) {
+                                DecodedAny::Borrowed(cmd, consumed) => {
+                                    // The ordinary path's gates for these
+                                    // commands, in its order: auth, MULTI
+                                    // queueing, subscribe mode. Anything
+                                    // they would intercept goes there.
+                                    resp_buf.clear();
+                                    let answered = is_authenticated
+                                        && multi_queue.is_none()
+                                        && !is_subscribed
+                                        && try_execute_borrowed(
+                                            &cmd,
+                                            &state,
+                                            &watch_registry,
+                                            &store,
+                                            &mut resp_buf,
+                                        )
+                                        .is_some();
+                                    if answered {
+                                        Answered::Borrowed(consumed)
+                                    } else {
+                                        Answered::Not(Ok((Ok(cmd.to_command()), consumed)))
+                                    }
+                                }
+                                DecodedAny::Owned(decoded) => Answered::Not(decoded),
+                            };
+                            let frame = match frame {
+                                Answered::Not(frame) => frame,
+                                Answered::Borrowed(consumed) => {
+                                    read_pos += consumed;
+                                    if writer.write_all(&resp_buf).await.is_err() {
+                                        break 'outer;
+                                    }
+                                    continue 'parse;
+                                }
+                            };
+                            match frame {
                                 Ok((decoded, consumed)) => {
                                     read_pos += consumed;
                                     let cmd = match decoded {

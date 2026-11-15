@@ -68,7 +68,7 @@ use watch::*;
 
 use core_engine::catalog;
 use core_engine::cmd::{Command, GetExOption, SetCondition, SetExpiry, SetOptions, ZAddCondition};
-use core_engine::request::RequestDecoder;
+use core_engine::request::{CommandRef, DecodedAny, RequestDecoder};
 use core_engine::resp::{MAX_BULK_STRING_BYTES, Value};
 use core_engine::store::{
     EvictionPolicy, KeyValueStore, KeyspaceSample, SnapshotEntry, SnapshotValue, glob_match,

@@ -518,7 +518,24 @@ pub(crate) fn try_execute_unordered(
     {
         return None;
     }
-    let _pass = state.replicas.unordered.try_enter()?;
+    let _pass = enter_unordered(state, watch_registry)?;
+    #[cfg(test)]
+    unordered_pause::pause(|| primary_key_refs(cmd));
+    let (response, evicted) = execute_and_record_ref(store, cmd);
+    // An uncapped store never evicts; nothing to propagate either way.
+    debug_assert!(evicted.is_empty(), "uncapped store evicted {evicted:?}");
+    Some(response)
+}
+
+/// Enter the unordered gate, then check that nothing observes write order
+/// (see [`UnorderedGate`]: the checks must follow the entry). `None` when the
+/// write has to take the ordered path. The caller checks the store is
+/// uncapped and holds the pass only across synchronous code.
+fn enter_unordered<'a>(
+    state: &'a ServerState,
+    watch_registry: &WatchRegistry,
+) -> Option<UnorderedPass<'a>> {
+    let pass = state.replicas.unordered.try_enter()?;
     // `has_push_receivers`, not `tx.receiver_count()`: the latter locks the
     // broadcast channel's tail mutex — a process-wide lock on every write.
     if state.replicas.unordered.has_push_receivers()
@@ -528,12 +545,62 @@ pub(crate) fn try_execute_unordered(
     {
         return None;
     }
+    Some(pass)
+}
+
+/// Run a borrowed hot command straight from the read buffer, appending its
+/// reply to `out`; `None` (nothing run, nothing written) when it must take
+/// the owned path instead.
+///
+/// A read always can. A write can exactly when the owned write would take
+/// the unordered path: persistence healthy, a primary, an uncapped store, and
+/// nothing observing write order — so it has no effects beyond the store, and
+/// running it from borrowed arguments changes nothing but the copies. Its
+/// metrics and dirty count are recorded as the owned path records them.
+pub(crate) fn try_execute_borrowed(
+    cmd: &CommandRef<'_>,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+    out: &mut Vec<u8>,
+) -> Option<()> {
     #[cfg(test)]
-    unordered_pause::pause(cmd);
-    let (response, evicted) = execute_and_record_ref(store, cmd);
-    // An uncapped store never evicts; nothing to propagate either way.
-    debug_assert!(evicted.is_empty(), "uncapped store evicted {evicted:?}");
-    Some(response)
+    if borrowed_switch::OFF.load(Ordering::Relaxed) {
+        return None;
+    }
+    let started = std::time::Instant::now();
+    let is_write = cmd.is_write();
+    let outcome = if is_write {
+        if !state.persistence_is_healthy() || state.is_replica() || store.has_capacity_limits() {
+            return None;
+        }
+        let _pass = enter_unordered(state, watch_registry)?;
+        #[cfg(test)]
+        unordered_pause::pause(|| cmd.write_key().into_iter().collect());
+        store.execute_ref_into(cmd, out)?
+    } else {
+        store.execute_ref_into(cmd, out)?
+    };
+    record_metrics(
+        store,
+        command_ref_name(cmd),
+        is_write,
+        started,
+        outcome.error,
+        outcome.hit,
+        false,
+    );
+    Some(())
+}
+
+/// Test-only: turn the borrowed path off, so a test can compare the replies
+/// of the two paths over the same input. Global, but harmless to tests
+/// running alongside: the owned path answers identically, which is what the
+/// comparison checks.
+#[cfg(test)]
+pub(crate) mod borrowed_switch {
+    pub(crate) static OFF: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
 }
 
 /// Test-only fault injection: stall an unordered write on one key between
@@ -561,13 +628,16 @@ pub(crate) mod unordered_pause {
         *PAUSE.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
 
-    pub(super) fn pause(cmd: &Command) {
+    /// `written` lists the write's keys; it is only called when armed, so
+    /// an unarmed hook costs the benchmarks (which run in test builds) no
+    /// allocation.
+    pub(super) fn pause<'k>(written: impl FnOnce() -> SmallVec<[&'k str; 2]>) {
         if !ARMED.load(Ordering::Relaxed) {
             return;
         }
         let armed = PAUSE.lock().unwrap_or_else(|p| p.into_inner()).clone();
         if let Some((key, pause)) = armed
-            && primary_key_refs(cmd).contains(&key.as_str())
+            && written().contains(&key.as_str())
         {
             std::thread::sleep(pause);
         }
