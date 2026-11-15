@@ -450,13 +450,17 @@ jobs:
       # measure rather than check, take minutes in a debug build (dedup_bench
       # alone 1-4 min depending on the runner), and are compared in release
       # with RECACHED_TEST_SERVER_BIN instead. Skipped by name, so a new
-      # ignored test elsewhere still runs here.
+      # ignored test elsewhere still runs here — which is also why every new
+      # benchmark must be added to this list: 6H's in-process request-path
+      # benchmarks ran here unskipped and timed the job out.
       - name: Run load & chaos tests
         run: >-
           cargo test -p recached -- --include-ignored
           --skip dedup_write_throughput_over_websocket
           --skip sync_paths
           --skip new_commands_match_redis
+          --skip request_path_bench
+          --skip hot_key_scaling_bench
         timeout-minutes: 5
 
   typecheck-js:
