@@ -21,14 +21,20 @@ args=(--key-minimum=1 --key-maximum=100000 -d 32 --key-prefix=k: --pipeline=16)
 case ${CELL:-set-p16} in
   set-p16) args+=(--ratio=1:0) ;;
   get-p16) args+=(--ratio=0:1) ;;
+  # 6I-F: INCR that creates its key nearly every time (50M-key range).
+  incr-new-p16) args=(--pipeline=16 --key-minimum=1 --key-maximum=50000000 --key-prefix=n:
+                      --command="incr __key__" --command-key-pattern=R) ;;
+  incr-existing-p16) for i in $(seq 1 1000); do echo "SET c:$i 0"; done | redis-cli -p $PORT >/dev/null
+                     args=(--pipeline=16 --key-minimum=1 --key-maximum=1000 --key-prefix=c:
+                           --command="incr __key__" --command-key-pattern=R) ;;
 esac
-taskset -c 4-7 memtier_benchmark -s 127.0.0.1 -p $PORT --protocol=redis -t 4 -c 12 --hide-histogram \
+taskset -c 4-7 memtier_benchmark -s 127.0.0.1 -p $PORT --protocol=redis -t 4 -c 12 --hide-histogram --distinct-client-seed \
   "${args[@]}" --test-time=$((SECS + 4)) >/out/memtier.txt 2>&1 &
 mt=$!
 sleep 2
 perf record -F 999 -g -p $pid -o /out/perf.data -- sleep $SECS >/out/perf-record.log 2>&1
 wait $mt || true
-perf report -i /out/perf.data --no-children --sort symbol --stdio 2>/dev/null | grep -v "^$" | head -120 >/out/top.txt
+perf report -i /out/perf.data --no-children --sort symbol --stdio 2>/dev/null | grep -v "^$" | head -400 >/out/top.txt
 perf report -i /out/perf.data --children --sort symbol --stdio 2>/dev/null | grep -E "^ +[0-9]" | head -80 >/out/children.txt
 kill -9 $pid 2>/dev/null || true
 tail -3 /out/memtier.txt
