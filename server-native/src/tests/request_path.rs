@@ -129,10 +129,18 @@ pub(super) enum Workload {
     MGet4,
     HotIncr,
     SetEx,
+    /// 6I-F: INCR on counters that all exist (prefilled `cnt:`), so the
+    /// numeric update alone, with no key creation.
+    IncrExisting,
+    /// 6I-F: INCR that creates its key every time (`new:<n>`, never seen):
+    /// key creation, entry allocation and the key-index insert.
+    IncrNew,
+    /// 6I-F: INCR on existing counters that carry a TTL.
+    IncrTtl,
 }
 
 impl Workload {
-    const ALL: [Workload; 9] = [
+    const ALL: [Workload; 12] = [
         Workload::Set,
         Workload::Get,
         Workload::Incr,
@@ -142,6 +150,9 @@ impl Workload {
         Workload::MGet4,
         Workload::HotIncr,
         Workload::SetEx,
+        Workload::IncrExisting,
+        Workload::IncrNew,
+        Workload::IncrTtl,
     ];
 
     fn name(self) -> &'static str {
@@ -155,6 +166,9 @@ impl Workload {
             Workload::MGet4 => "MGET x4",
             Workload::HotIncr => "INCR hot key",
             Workload::SetEx => "SET EX",
+            Workload::IncrExisting => "INCR existing",
+            Workload::IncrNew => "INCR new key",
+            Workload::IncrTtl => "INCR with TTL",
         }
     }
 
@@ -201,6 +215,11 @@ impl Workload {
                     );
                 }
                 Workload::HotIncr => encode(&[b"INCR", b"hot:counter"], &mut out),
+                Workload::IncrExisting => encode(&[b"INCR", k(i, "cnt").as_bytes()], &mut out),
+                Workload::IncrNew => {
+                    encode(&[b"INCR", format!("new:{j:07}").as_bytes()], &mut out);
+                }
+                Workload::IncrTtl => encode(&[b"INCR", k(i, "vol").as_bytes()], &mut out),
                 Workload::SetEx => {
                     let _ = j;
                     encode(
@@ -231,6 +250,21 @@ fn prefill(store: &KeyValueStore) {
         );
         let (v, _) = Value::parse(&frames).expect("valid frame");
         store.execute(core_engine::cmd::Command::from_value(v).expect("valid command"));
+        // Counters for the 6I-F INCR workloads: plain, and with a TTL.
+        for (prefix, ttl) in [("cnt", false), ("vol", true)] {
+            frames.clear();
+            let key = format!("{prefix}:{i:06}");
+            if ttl {
+                encode(
+                    &[b"SET", key.as_bytes(), b"0", b"EX", b"86400"],
+                    &mut frames,
+                );
+            } else {
+                encode(&[b"SET", key.as_bytes(), b"0"], &mut frames);
+            }
+            let (v, _) = Value::parse(&frames).expect("valid frame");
+            store.execute(core_engine::cmd::Command::from_value(v).expect("valid command"));
+        }
     }
 }
 
@@ -685,10 +719,20 @@ fn request_path_bench() {
     let label = std::env::var("BENCH_LABEL").unwrap_or_else(|_| "this".to_string());
     let sync = std::env::var("BENCH_SYNC").is_ok_and(|v| v == "1");
     let only = std::env::var("BENCH_ONLY").ok();
+    // `BENCH_METRICS=1`: the Prometheus recorder the shipped server installs
+    // by default (RECACHED_METRICS_PORT unset), without its HTTP listener.
+    // Installed before any command runs: the per-command handles are cached
+    // on first use, so a recorder installed later would never see them.
+    let metrics = std::env::var("BENCH_METRICS").is_ok_and(|v| v == "1");
+    let handle = metrics.then(|| {
+        metrics_exporter_prometheus::PrometheusBuilder::new()
+            .install_recorder()
+            .expect("install the Prometheus recorder")
+    });
     let mut csv = String::new();
     println!(
-        "{:<14} {:>10} {:>10} {:>10} {:>11}   (label {label}, sync receiver {sync}, {reps} reps x {N})",
-        "workload", "min ns", "median ns", "allocs", "bytes"
+        "{:<14} {:>10} {:>10} {:>10} {:>11} {:>10}   (label {label}, sync receiver {sync}, metrics {metrics}, {reps} reps x {N})",
+        "workload", "min ns", "median ns", "allocs", "bytes", "upkeep ns"
     );
     for workload in Workload::ALL {
         if let Some(only) = &only
@@ -701,20 +745,36 @@ fn request_path_bench() {
         let mut ns: Vec<f64> = Vec::with_capacity(reps);
         let mut allocs = 0.0;
         let mut bytes = 0.0;
+        let mut upkeep: Vec<f64> = Vec::with_capacity(reps);
         for _ in 0..reps {
             let run = measure(workload, N, sync);
             ns.push(run.elapsed.as_nanos() as f64 / N as f64);
             allocs = run.allocs as f64 / N as f64;
             bytes = run.bytes as f64 / N as f64;
+            // The exporter drains histogram samples into its summaries on
+            // upkeep (every 5 s in the server, on its own thread): CPU the
+            // server pays per command, but outside the connection's time.
+            if let Some(handle) = &handle {
+                let started = Instant::now();
+                handle.run_upkeep();
+                upkeep.push(started.elapsed().as_nanos() as f64 / N as f64);
+            }
         }
         ns.sort_by(f64::total_cmp);
+        upkeep.sort_by(f64::total_cmp);
         let (min, median) = (ns[0], ns[reps / 2]);
+        let upkeep = upkeep.get(reps / 2).copied().unwrap_or(0.0);
         println!(
-            "{:<14} {min:>10.1} {median:>10.1} {allocs:>10.2} {bytes:>11.1}",
+            "{:<14} {min:>10.1} {median:>10.1} {allocs:>10.2} {bytes:>11.1} {upkeep:>10.1}",
             workload.name()
         );
+        let label = if metrics {
+            format!("{label}+metrics")
+        } else {
+            label.clone()
+        };
         csv.push_str(&format!(
-            "{label},{},{sync},{min:.1},{median:.1},{allocs:.2},{bytes:.1},{}\n",
+            "{label},{},{sync},{min:.1},{median:.1},{allocs:.2},{bytes:.1},{upkeep:.1},{}\n",
             workload.name(),
             ns.iter()
                 .map(|v| format!("{v:.1}"))
