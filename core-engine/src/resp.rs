@@ -140,6 +140,64 @@ pub enum Value {
     Map(Vec<(Value, Value)>),
 }
 
+/// `n` in decimal, written into the end of `buf`.
+///
+/// On the stack: `write!` goes through the formatting machinery, which cost
+/// more than the rest of encoding an integer reply or a length header.
+pub(crate) fn format_i64(n: i64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut at = buf.len();
+    // Work on the magnitude as u64 so i64::MIN does not overflow.
+    let mut rest = n.unsigned_abs();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    if n < 0 {
+        at -= 1;
+        buf[at] = b'-';
+    }
+    &buf[at..]
+}
+
+/// `<tag><n>\r\n` — an integer reply or an aggregate/bulk header.
+fn write_header(out: &mut Vec<u8>, tag: u8, n: i64) {
+    out.push(tag);
+    out.extend_from_slice(format_i64(n, &mut [0u8; 20]));
+    out.extend_from_slice(b"\r\n");
+}
+
+/// A length as a header value. Lengths fit `i64` on every supported target.
+fn len_i64(len: usize) -> i64 {
+    i64::try_from(len).unwrap_or(i64::MAX)
+}
+
+/// Appends a RESP integer reply, as `Value::Integer(n)` encodes.
+pub fn write_integer(out: &mut Vec<u8>, n: i64) {
+    write_header(out, b':', n);
+}
+
+/// Appends a RESP bulk string reply (`None` = nil), as
+/// `Value::BulkString(data)` encodes.
+pub fn write_bulk(out: &mut Vec<u8>, data: Option<&[u8]>) {
+    match data {
+        None => out.extend_from_slice(b"$-1\r\n"),
+        Some(data) => {
+            write_header(out, b'$', len_i64(data.len()));
+            out.extend_from_slice(data);
+            out.extend_from_slice(b"\r\n");
+        }
+    }
+}
+
+/// Appends a RESP array header for `len` elements.
+pub fn write_array_header(out: &mut Vec<u8>, len: usize) {
+    write_header(out, b'*', len_i64(len));
+}
+
 impl Value {
     /// Serializes the Value back into RESP format.
     pub fn serialize(&self) -> Vec<u8> {
@@ -164,22 +222,13 @@ impl Value {
                 out.extend_from_slice(s.as_bytes());
                 out.extend_from_slice(b"\r\n");
             }
-            Value::Integer(i) => {
-                let _ = write!(out, ":{}\r\n", i);
-            }
-            Value::BulkString(None) => {
-                out.extend_from_slice(b"$-1\r\n");
-            }
-            Value::BulkString(Some(data)) => {
-                let _ = write!(out, "${}\r\n", data.len());
-                out.extend_from_slice(data);
-                out.extend_from_slice(b"\r\n");
-            }
+            Value::Integer(i) => write_integer(out, *i),
+            Value::BulkString(data) => write_bulk(out, data.as_deref()),
             Value::Array(None) => {
                 out.extend_from_slice(b"*-1\r\n");
             }
             Value::Array(Some(arr)) => {
-                let _ = write!(out, "*{}\r\n", arr.len());
+                write_array_header(out, arr.len());
                 for v in arr {
                     v.serialize_into(out);
                 }

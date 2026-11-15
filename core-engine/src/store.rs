@@ -1,5 +1,6 @@
 use crate::cmd::{Command, GetExOption, SetCondition, SetExpiry, SetOptions, ZAddOptions};
-use crate::resp::Value;
+use crate::request::CommandRef;
+use crate::resp::{Value, format_i64, write_array_header, write_bulk};
 use dashmap::DashMap;
 // Aliased: this module has its own `Entry` (the stored value + TTL + recency).
 use dashmap::mapref::entry::Entry as DashEntry;
@@ -1809,8 +1810,142 @@ pub fn format_score(s: f64) -> String {
 /// Where a write to one key lands: its existing entry under the shard's write
 /// guard, or the vacant slot for it.
 enum WriteSlot<'a> {
-    Occupied(RefMut<'a, Key, Slot>),
-    Vacant(dashmap::mapref::entry::VacantEntry<'a, Key, Slot>),
+    Occupied(SlotRef<'a>),
+    Vacant(SlotVacant<'a>),
+}
+
+/// The size and key-index state of the one key a single-key write touched,
+/// recorded under the shard guard that performed the write.
+///
+/// A write's accounting needs the key's size and TTL state before and after
+/// it. `run_write` used to read them with a lookup of its own on each side of
+/// the command — three keyspace probes per `SET` where the command itself
+/// needs one. A probed write records both while it already holds the entry:
+/// "before" when it takes the slot, "after" when it releases it. The write's
+/// key stripe is held throughout, as before, so no other accounted writer can
+/// change the key between the two.
+#[derive(Default)]
+struct KeyProbe {
+    /// The key's state when the write first took its slot — size, and
+    /// present-with-TTL-or-not (`None` = absent) — or `None` if it never did.
+    before: std::cell::Cell<Option<(usize, Option<bool>)>>,
+    /// The key's state when the write last released its slot.
+    after: std::cell::RefCell<Option<ProbedState>>,
+}
+
+/// A key's state as a probed write left it.
+struct ProbedState {
+    size: usize,
+    /// Present (with or without a TTL), or `None` when absent — including a
+    /// collection the write emptied, which `run_write` then removes.
+    ttl: Option<bool>,
+    emptied: bool,
+    /// The map's own key, when the index has to change and so needs it.
+    shared: Option<Key>,
+}
+
+impl KeyProbe {
+    /// Record the state at the first slot taken; a later slot on the same
+    /// key keeps the first "before".
+    fn record_before(&self, state: (usize, Option<bool>)) {
+        if self.before.get().is_none() {
+            self.before.set(Some(state));
+        }
+    }
+
+    fn record_after(&self, key: &Key, entry: &Entry) {
+        let was = self.before.get().and_then(|(_, ttl)| ttl);
+        let emptied = entry.value.is_empty_collection();
+        let (size, ttl) = if emptied {
+            (0, None)
+        } else {
+            (entry_size(key, entry), Some(entry.deadline.get().is_some()))
+        };
+        let shared = (!emptied && index_changes(was, ttl)).then(|| Arc::clone(key));
+        *self.after.borrow_mut() = Some(ProbedState {
+            size,
+            ttl,
+            emptied,
+            shared,
+        });
+    }
+
+    fn record_absent(&self) {
+        *self.after.borrow_mut() = Some(ProbedState {
+            size: 0,
+            ttl: None,
+            emptied: false,
+            shared: None,
+        });
+    }
+}
+
+/// An occupied write slot: the entry under its shard's write guard, plus the
+/// probe (if any) that records the entry's state when the guard is released.
+struct SlotRef<'a> {
+    guard: RefMut<'a, Key, Slot>,
+    probe: Option<&'a KeyProbe>,
+}
+
+impl<'a> std::ops::Deref for SlotRef<'a> {
+    type Target = RefMut<'a, Key, Slot>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for SlotRef<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl Drop for SlotRef<'_> {
+    /// Runs before the guard itself is released, so the state recorded is
+    /// the state the write committed, seen by no one else in between.
+    fn drop(&mut self) {
+        if let Some(probe) = self.probe {
+            probe.record_after(self.guard.key(), self.guard.value());
+        }
+    }
+}
+
+/// A vacant write slot (the shard's write guard is held while it exists).
+struct SlotVacant<'a> {
+    vacant: Option<dashmap::mapref::entry::VacantEntry<'a, Key, Slot>>,
+    probe: Option<&'a KeyProbe>,
+}
+
+impl<'a> SlotVacant<'a> {
+    fn key(&self) -> &Key {
+        self.vacant
+            .as_ref()
+            .expect("a SlotVacant holds its entry until it is consumed")
+            .key()
+    }
+
+    fn insert(mut self, slot: Slot) -> SlotRef<'a> {
+        let vacant = self
+            .vacant
+            .take()
+            .expect("a SlotVacant holds its entry until this consuming insert");
+        SlotRef {
+            guard: vacant.insert(slot),
+            probe: self.probe.take(),
+        }
+    }
+}
+
+impl Drop for SlotVacant<'_> {
+    /// Released without an insert: the key stayed absent.
+    fn drop(&mut self) {
+        if self.vacant.is_some()
+            && let Some(probe) = self.probe
+        {
+            probe.record_absent();
+        }
+    }
 }
 
 /// [`DashMap::entry`] for a command's key — owned (`String`) or borrowed
@@ -1822,13 +1957,37 @@ enum WriteSlot<'a> {
 /// the write guard, as before; only a miss allocates the key and probes again.
 /// A key inserted by another writer between the two probes is seen by
 /// `entry` as occupied, so the result is exactly what `entry` alone returns.
-fn write_slot<K: AsRef<str> + Into<Key>>(data: &Keyspace, key: K) -> WriteSlot<'_> {
+///
+/// With a `probe`, the key's state is recorded as the slot is taken and again
+/// as it is released (see [`KeyProbe`]).
+fn write_slot<'a, K: AsRef<str> + Into<Key>>(
+    data: &'a Keyspace,
+    key: K,
+    probe: Option<&'a KeyProbe>,
+) -> WriteSlot<'a> {
+    let occupied = |guard: RefMut<'a, Key, Slot>| {
+        if let Some(probe) = probe {
+            probe.record_before((
+                entry_size(guard.key(), guard.value()),
+                Some(guard.value().deadline.get().is_some()),
+            ));
+        }
+        WriteSlot::Occupied(SlotRef { guard, probe })
+    };
     if let Some(existing) = data.get_mut(key.as_ref()) {
-        return WriteSlot::Occupied(existing);
+        return occupied(existing);
     }
     match data.entry(key.into()) {
-        DashEntry::Occupied(occupied) => WriteSlot::Occupied(occupied.into_ref()),
-        DashEntry::Vacant(vacant) => WriteSlot::Vacant(vacant),
+        DashEntry::Occupied(entry) => occupied(entry.into_ref()),
+        DashEntry::Vacant(vacant) => {
+            if let Some(probe) = probe {
+                probe.record_before((0, None));
+            }
+            WriteSlot::Vacant(SlotVacant {
+                vacant: Some(vacant),
+                probe,
+            })
+        }
     }
 }
 
@@ -1852,7 +2011,10 @@ fn write_slot<K: AsRef<str> + Into<Key>>(data: &Keyspace, key: K) -> WriteSlot<'
 /// mutating command instead of one.
 macro_rules! typed_entry {
     ($guard:ident, $inner:ident, $data:expr, $key:expr, $now:expr, $variant:path, $default:expr) => {
-        let mut $guard = match write_slot(&$data, $key) {
+        typed_entry!($guard, $inner, $data, $key, $now, $variant, $default, None);
+    };
+    ($guard:ident, $inner:ident, $data:expr, $key:expr, $now:expr, $variant:path, $default:expr, $probe:expr) => {
+        let mut $guard = match write_slot(&$data, $key, $probe) {
             WriteSlot::Occupied(existing) => existing,
             WriteSlot::Vacant(vacant) => vacant.insert(Box::new(Entry {
                 value: $variant($default),
@@ -1870,6 +2032,20 @@ macro_rules! typed_entry {
             return Value::Error(WRONGTYPE.to_string());
         };
     };
+}
+
+/// A read found the key holding another type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WrongType;
+
+/// What [`KeyValueStore::execute_ref_into`] did, for the caller's metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RefOutcome {
+    /// The reply was an error.
+    pub error: bool,
+    /// For `GET`: whether it found a live key (keyspace hit or miss).
+    pub hit: Option<bool>,
 }
 
 // ── KeyspaceSample ────────────────────────────────────────────────────────────
@@ -3036,7 +3212,9 @@ impl KeyValueStore {
         };
         match scope {
             None => (self.execute_inner(cmd), Vec::new()),
-            Some(scope) => self.run_write(scope, cmd, |store, cmd| store.execute_inner(cmd)),
+            Some(scope) => self.run_write(scope, cmd, |store, cmd, probe| {
+                store.execute_inner_probed(cmd, probe)
+            }),
         }
     }
 
@@ -3058,41 +3236,136 @@ impl KeyValueStore {
             MutationScope::All => WriteScope::All,
             MutationScope::Keys(keys) => WriteScope::Keys(keys),
         };
-        self.run_write(scope, cmd, |store, cmd| {
+        self.run_write(scope, cmd, |store, cmd, probe| {
             store
-                .execute_inner_ref(cmd)
+                .execute_inner_ref(cmd, probe)
                 .unwrap_or_else(|| store.execute_inner(cmd.clone()))
         })
     }
 
+    /// [`execute_reporting_ref`](Self::execute_reporting_ref) for a write the
+    /// caller wants to run only if it can neither evict nor be refused for
+    /// capacity: `None`, having changed nothing, when it might.
+    ///
+    /// An eviction removes a key the command did not name, and the server
+    /// propagates that removal; to keep it in order with writes to the victim
+    /// it takes every replication-order stripe for each write on a capped
+    /// store. Nearly every write to a store well under its cap cannot evict,
+    /// and this lets the server know so before paying for all of them. The
+    /// check runs under the capacity gate and the write in the same hold, so
+    /// no other capped write can use up the headroom in between. On an
+    /// uncapped store this is `execute_reporting_ref`.
+    pub fn execute_reporting_ref_within_capacity(
+        &self,
+        cmd: &Command,
+    ) -> Option<(Value, Vec<String>)> {
+        if !self.has_capacity_limits() {
+            return Some(self.execute_reporting_ref(cmd));
+        }
+        let gate = self
+            .capacity_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !self.fits_without_eviction(cmd) {
+            return None;
+        }
+        let scope = match mutation_scope(cmd) {
+            MutationScope::ReadOnly => return Some((self.execute_inner(cmd.clone()), Vec::new())),
+            // Whole-keyspace writes rebuild metadata and may evict anywhere.
+            MutationScope::All => return None,
+            MutationScope::Keys(keys) => WriteScope::Keys(keys),
+        };
+        Some(
+            self.run_write_gated(scope, cmd, Some(gate), |store, cmd, probe| {
+                store
+                    .execute_inner_ref(cmd, probe)
+                    .unwrap_or_else(|| store.execute_inner(cmd.clone()))
+            }),
+        )
+    }
+
+    /// Whether `cmd` certainly fits under the caps as they stand: it creates
+    /// no key past the key cap (so none has to be evicted or swept to make
+    /// room) and its worst-case growth leaves memory at or below the point
+    /// where eviction starts. A write whose growth has no bound does not fit.
+    fn fits_without_eviction(&self, cmd: &Command) -> bool {
+        if let Some(max) = self.max_keys {
+            let mut new_keys = creating_keys(cmd);
+            new_keys.sort_unstable();
+            new_keys.dedup();
+            new_keys.retain(|key| !self.data.contains_key(*key));
+            if self.data.len().saturating_add(new_keys.len()) > max {
+                return false;
+            }
+        }
+        if let Some(limit) = self.max_memory_bytes {
+            let target = limit - limit / EVICTION_HEADROOM_DIVISOR;
+            match growth_bound(cmd) {
+                Some(bound) if self.approximate_memory_bytes().saturating_add(bound) <= target => {}
+                _ => return false,
+            }
+        }
+        true
+    }
+
     /// Run a mutating command under its write-order stripes with size, index
     /// and capacity accounting around it. `K` is whatever owns the scope's
-    /// keys and `C` whatever owns the command; `exec` consumes `C`.
+    /// keys and `C` whatever owns the command; `exec` consumes `C`, and passes
+    /// the probe it is given to the command's one slot (see
+    /// [`execute_inner_probed`](Self::execute_inner_probed)).
     fn run_write<K, C>(
         &self,
         scope: WriteScope<K>,
         cmd: C,
-        exec: impl FnOnce(&Self, C) -> Value,
+        exec: impl FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
     ) -> (Value, Vec<String>)
     where
         K: AsRef<str> + Ord,
         C: std::borrow::Borrow<Command>,
     {
+        self.run_write_gated(scope, cmd, None, exec)
+    }
+
+    /// [`run_write`](Self::run_write) with the capacity gate possibly already
+    /// held by the caller (`gate`), which it then keeps for the write.
+    fn run_write_gated<K, C>(
+        &self,
+        scope: WriteScope<K>,
+        cmd: C,
+        gate: Option<std::sync::MutexGuard<'_, ()>>,
+        exec: impl FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
+    ) -> (Value, Vec<String>)
+    where
+        K: AsRef<str> + Ord,
+        C: std::borrow::Borrow<Command>,
+    {
+        // The common write — one key, an uncapped store, a command that
+        // takes exactly one slot — is accounted from what the command saw
+        // under its own shard guard, with no lookups of its own.
+        if let WriteScope::Keys(keys) = &scope
+            && let [key] = keys.as_slice()
+            && !self.has_capacity_limits()
+            && probe_eligible(cmd.borrow())
+        {
+            return (self.run_probed_write(key.as_ref(), cmd, exec), Vec::new());
+        }
         let mut evicted = Vec::new();
 
         // Capacity checks and eviction choose across keys, so capped stores use
         // one short synchronous gate. Uncapped stores retain DashMap's normal
         // per-shard concurrency.
-        let _capacity_guard = self.has_capacity_limits().then(|| {
-            self.capacity_gate
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        let _capacity_guard = gate.or_else(|| {
+            self.has_capacity_limits().then(|| {
+                self.capacity_gate
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+            })
         });
 
         let out = match scope {
             WriteScope::All => {
                 let _order = self.order_all();
-                let out = exec(self, cmd);
+                let out = exec(self, cmd, None);
                 self.rebuild_metadata();
                 if self.max_memory_bytes.is_some() {
                     self.try_evict_for_memory_inner(&mut evicted);
@@ -3147,7 +3420,7 @@ impl KeyValueStore {
                     .map(|key| self.entry_state(key.as_ref()))
                     .collect();
                 let before = before_states.iter().map(|(size, _)| size).sum();
-                let out = exec(self, cmd);
+                let out = exec(self, cmd, None);
                 // One lookup per key, not two. Reading the post-write size and
                 // reading the key's TTL state both need the same entry, and
                 // hash lookups are the largest single cost on the write path
@@ -3266,6 +3539,61 @@ impl KeyValueStore {
         (out, evicted)
     }
 
+    /// [`run_write`](Self::run_write) for one key of an uncapped store, by a
+    /// [`probe_eligible`] command.
+    ///
+    /// Same lock, same bookkeeping, same results as the general path; what
+    /// differs is where the key's before and after states come from. The
+    /// general path reads them with a keyspace lookup on each side of the
+    /// command — the command's own lookup in between makes three. Here the
+    /// command records them while it holds the entry ([`KeyProbe`]), so a
+    /// `SET` or `INCR` probes the map once. Nothing else changes:
+    ///
+    /// - the key's write-order stripe is held across the command and its
+    ///   accounting, so no accounted writer (or the expiry sweeper) touches
+    ///   the key between the recorded states and the counters updated from
+    ///   them;
+    /// - the index is updated only when the key's presence or TTL-ness
+    ///   changed, under the index lock, after the shard guard is released —
+    ///   the order every other path uses;
+    /// - an uncapped store has nothing to evict or refuse, which is why the
+    ///   capacity paths are not needed here.
+    ///
+    /// A command that never took its slot (refused before reaching the map)
+    /// changed nothing, and nothing is accounted.
+    fn run_probed_write<C>(
+        &self,
+        key: &str,
+        cmd: C,
+        exec: impl FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
+    ) -> Value {
+        let _order = self.order_keys(std::slice::from_ref(&key));
+        let probe = KeyProbe::default();
+        let out = exec(self, cmd, Some(&probe));
+        let Some((before, was)) = probe.before.get() else {
+            return out;
+        };
+        let after = probe.after.into_inner().unwrap_or(ProbedState {
+            size: 0,
+            ttl: None,
+            emptied: false,
+            shared: None,
+        });
+        if after.emptied {
+            // As on the general path: an emptied collection does not exist.
+            self.data
+                .remove_if(key, |_, entry| entry.value.is_empty_collection());
+        }
+        if index_changes(was, after.ttl) {
+            self.index
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .sync(key, after.ttl.zip(after.shared.as_ref()));
+        }
+        self.adjust_memory(before, after.size);
+        out
+    }
+
     /// Make room under the key-count cap for every key `cmd` may create,
     /// or refuse the write.
     ///
@@ -3376,7 +3704,7 @@ impl KeyValueStore {
 
     /// `SET`, for an owned or a borrowed command: `key` and `val` are moved
     /// into the entry when owned and copied when borrowed.
-    fn set<K, V>(&self, key: K, val: V, opts: &SetOptions) -> Value
+    fn set<K, V>(&self, key: K, val: V, opts: &SetOptions, probe: Option<&KeyProbe>) -> Value
     where
         K: AsRef<str> + Into<Key>,
         V: Into<StrValue>,
@@ -3402,7 +3730,7 @@ impl KeyValueStore {
         // The condition check, optional old-value read, and replacement
         // all happen under one DashMap entry guard. Two concurrent NX
         // writers can therefore never both succeed.
-        match write_slot(&self.data, key) {
+        match write_slot(&self.data, key, probe) {
             WriteSlot::Occupied(mut occupied) => {
                 let live = !occupied.value().is_expired(now);
                 let existing_ttl = live.then_some(occupied.value().deadline.get()).flatten();
@@ -3482,14 +3810,18 @@ impl KeyValueStore {
     /// primitives the owned arms of `execute_inner` call, given borrowed
     /// arguments. `None` for a command without one, which the caller then
     /// clones and runs owned.
-    fn execute_inner_ref(&self, cmd: &Command) -> Option<Value> {
+    ///
+    /// `probe` is passed to the one slot each [`probe_eligible`] command
+    /// takes; every such command must have an arm here and in
+    /// [`execute_inner_probed`](Self::execute_inner_probed).
+    fn execute_inner_ref(&self, cmd: &Command, probe: Option<&KeyProbe>) -> Option<Value> {
         Some(match cmd {
-            Command::Set(key, val, opts) => self.set(key.as_str(), val.as_slice(), opts),
-            Command::Incr(key) => incr_by(&self.data, key.as_str(), 1),
-            Command::Decr(key) => incr_by(&self.data, key.as_str(), -1),
-            Command::IncrBy(key, delta) => incr_by(&self.data, key.as_str(), *delta),
+            Command::Set(key, val, opts) => self.set(key.as_str(), val.as_slice(), opts, probe),
+            Command::Incr(key) => incr_by(&self.data, key.as_str(), 1, probe),
+            Command::Decr(key) => incr_by(&self.data, key.as_str(), -1, probe),
+            Command::IncrBy(key, delta) => incr_by(&self.data, key.as_str(), *delta, probe),
             Command::DecrBy(key, delta) => match delta.checked_neg() {
-                Some(delta) => incr_by(&self.data, key.as_str(), delta),
+                Some(delta) => incr_by(&self.data, key.as_str(), delta, probe),
                 None => Value::Error("ERR increment or decrement would overflow".to_string()),
             },
             Command::HSet(key, pairs) => self.hset(
@@ -3497,7 +3829,12 @@ impl KeyValueStore {
                 pairs
                     .iter()
                     .map(|(field, val)| (field.as_str(), val.as_slice())),
+                probe,
             ),
+            Command::Append(key, suffix) => self.append(key.as_str(), suffix, probe),
+            Command::HIncrBy(key, field, delta) => {
+                hash_incr_int(&self.data, key.as_str(), field.as_str(), *delta, probe)
+            }
             Command::MSet(pairs) => self.mset(
                 pairs
                     .iter()
@@ -3507,8 +3844,183 @@ impl KeyValueStore {
         })
     }
 
+    /// `GET`'s read of one key, handed to `f` while the entry is held (a
+    /// shard read guard: `f` must not block). `Ok(None)` for a missing or
+    /// expired key. The one definition of what `GET` and `MGET` see, whether
+    /// the caller copies the value into a `Value` or straight into a reply.
+    fn read_str<R>(&self, key: &str, f: impl FnOnce(Result<Option<&[u8]>, WrongType>) -> R) -> R {
+        let now = now_ms();
+        match self.data.get(key) {
+            Some(e) if !e.is_expired(now) => match &e.value {
+                EntryValue::Str(s) => {
+                    e.touch(now);
+                    f(Ok(Some(s.as_slice())))
+                }
+                _ => f(Err(WrongType)),
+            },
+            _ => f(Ok(None)),
+        }
+    }
+
+    /// `HGET`'s read, as [`read_str`](Self::read_str) is `GET`'s.
+    fn read_hash_field<R>(
+        &self,
+        key: &str,
+        field: &str,
+        f: impl FnOnce(Result<Option<&[u8]>, WrongType>) -> R,
+    ) -> R {
+        let now = now_ms();
+        match self.data.get(key) {
+            Some(e) if !e.is_expired(now) => match &e.value {
+                EntryValue::Hash(h) => {
+                    e.touch(now);
+                    f(Ok(h.get(field)))
+                }
+                _ => f(Err(WrongType)),
+            },
+            _ => f(Ok(None)),
+        }
+    }
+
+    /// Run a borrowed hot command and append its RESP reply to `out` — the
+    /// bytes `execute_reporting(cmd.to_command())` would serialize to — with
+    /// no copy of its key or value into a `Command` and no `Value` built for
+    /// a read's reply: `GET`'s value goes from the entry into `out` under the
+    /// shard's read guard.
+    ///
+    /// `None`, having run nothing and written nothing, on a capped store:
+    /// capacity accounting needs the owned command (the caller runs that).
+    /// Writes take the same primitives, stripe and accounting as the owned
+    /// path ([`run_probed_write`](Self::run_probed_write)).
+    pub fn execute_ref_into(&self, cmd: &CommandRef<'_>, out: &mut Vec<u8>) -> Option<RefOutcome> {
+        let error = |out: &mut Vec<u8>| {
+            out.push(b'-');
+            out.extend_from_slice(WRONGTYPE.as_bytes());
+            out.extend_from_slice(b"\r\n");
+            RefOutcome {
+                error: true,
+                hit: None,
+            }
+        };
+        let write = |value: Value, out: &mut Vec<u8>| {
+            value.serialize_into(out);
+            RefOutcome {
+                error: matches!(value, Value::Error(_)),
+                hit: None,
+            }
+        };
+        if cmd.is_write() && self.has_capacity_limits() {
+            return None;
+        }
+        Some(match cmd {
+            CommandRef::Get(key) => self.read_str(key, |read| match read {
+                Ok(value) => {
+                    write_bulk(out, value);
+                    RefOutcome {
+                        error: false,
+                        hit: Some(value.is_some()),
+                    }
+                }
+                Err(WrongType) => error(out),
+            }),
+            CommandRef::HGet(key, field) => self.read_hash_field(key, field, |read| match read {
+                Ok(value) => {
+                    write_bulk(out, value);
+                    RefOutcome {
+                        error: false,
+                        hit: None,
+                    }
+                }
+                Err(WrongType) => error(out),
+            }),
+            CommandRef::MGet(keys) => {
+                write_array_header(out, keys.len());
+                for key in keys {
+                    self.read_str(key, |read| write_bulk(out, read.ok().flatten()));
+                }
+                RefOutcome {
+                    error: false,
+                    hit: None,
+                }
+            }
+            CommandRef::Set(key, val) => write(
+                self.run_probed_write(key, (), |store, (), probe| {
+                    store.set(*key, *val, &SetOptions::default(), probe)
+                }),
+                out,
+            ),
+            CommandRef::Incr(key) => write(
+                self.run_probed_write(key, (), |store, (), probe| {
+                    incr_by(&store.data, *key, 1, probe)
+                }),
+                out,
+            ),
+            CommandRef::Decr(key) => write(
+                self.run_probed_write(key, (), |store, (), probe| {
+                    incr_by(&store.data, *key, -1, probe)
+                }),
+                out,
+            ),
+            CommandRef::HSet(key, pairs) => write(
+                self.run_probed_write(key, (), |store, (), probe| {
+                    store.hset(*key, pairs.iter().copied(), probe)
+                }),
+                out,
+            ),
+        })
+    }
+
+    /// [`execute_inner`](Self::execute_inner) for a [`probe_eligible`]
+    /// command, passing `probe` to the one slot it takes. Owned arguments
+    /// move into the store as on the unprobed path.
+    fn execute_inner_probed(&self, cmd: Command, probe: Option<&KeyProbe>) -> Value {
+        match cmd {
+            Command::Set(key, val, opts) => self.set(key, val, &opts, probe),
+            Command::Incr(key) => incr_by(&self.data, key, 1, probe),
+            Command::Decr(key) => incr_by(&self.data, key, -1, probe),
+            Command::IncrBy(key, delta) => incr_by(&self.data, key, delta, probe),
+            Command::DecrBy(key, delta) => match delta.checked_neg() {
+                Some(delta) => incr_by(&self.data, key, delta, probe),
+                None => Value::Error("ERR increment or decrement would overflow".to_string()),
+            },
+            Command::HSet(key, pairs) => self.hset(key, pairs.into_iter(), probe),
+            Command::Append(key, suffix) => self.append(key, &suffix, probe),
+            Command::HIncrBy(key, field, delta) => {
+                hash_incr_int(&self.data, key, field, delta, probe)
+            }
+            other => self.execute_inner(other),
+        }
+    }
+
+    /// `APPEND`.
+    fn append<K: AsRef<str> + Into<Key>>(
+        &self,
+        key: K,
+        suffix: &[u8],
+        probe: Option<&KeyProbe>,
+    ) -> Value {
+        let now = now_ms();
+        typed_entry!(
+            entry,
+            s,
+            self.data,
+            key,
+            now,
+            EntryValue::Str,
+            StrValue::default(),
+            probe
+        );
+        s.extend(suffix);
+        Value::Integer(s.len() as i64)
+    }
+
     /// `HSET`, for owned or borrowed fields and values.
-    fn hset<K, F, V>(&self, key: K, pairs: impl Iterator<Item = (F, V)>) -> Value
+    fn hset<K, F, V>(
+        &self,
+        key: K,
+        pairs: impl Iterator<Item = (F, V)>,
+        probe: Option<&KeyProbe>,
+    ) -> Value
     where
         K: AsRef<str> + Into<Key>,
         F: AsRef<str> + Into<String>,
@@ -3522,7 +4034,8 @@ impl KeyValueStore {
             key,
             now,
             EntryValue::Hash,
-            Box::new(CompactHash::new())
+            Box::new(CompactHash::new()),
+            probe
         );
         // Counted from the inserts themselves, so a field named twice
         // in one command counts once — as in Redis. Checking
@@ -3551,7 +4064,7 @@ impl KeyValueStore {
                 deadline: Deadline::NONE,
                 last_access_ms: AtomicU64::new(now),
             };
-            match write_slot(&self.data, key) {
+            match write_slot(&self.data, key, None) {
                 WriteSlot::Occupied(mut occupied) => {
                     let replaced = std::mem::replace(&mut **occupied.value_mut(), entry);
                     // Free the old value outside the shard guard.
@@ -3619,21 +4132,12 @@ impl KeyValueStore {
             ),
 
             // ── Strings ───────────────────────────────────────────────────────
-            Command::Set(key, val, opts) => self.set(key, val, &opts),
+            Command::Set(key, val, opts) => self.set(key, val, &opts, None),
 
-            Command::Get(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    Some(e) if !e.is_expired(now) => match &e.value {
-                        EntryValue::Str(s) => {
-                            e.touch(now);
-                            Value::BulkString(Some(s.clone().into_bytes()))
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                    _ => Value::BulkString(None),
-                }
-            }
+            Command::Get(key) => self.read_str(&key, |read| match read {
+                Ok(value) => Value::BulkString(value.map(<[u8]>::to_vec)),
+                Err(WrongType) => Value::Error(WRONGTYPE.to_string()),
+            }),
 
             Command::Del(keys) | Command::Unlink(keys) => {
                 let now = now_ms();
@@ -3648,20 +4152,7 @@ impl KeyValueStore {
                 Value::Integer(count as i64)
             }
 
-            Command::Append(key, suffix) => {
-                let now = now_ms();
-                typed_entry!(
-                    entry,
-                    s,
-                    self.data,
-                    key,
-                    now,
-                    EntryValue::Str,
-                    StrValue::default()
-                );
-                s.extend(&suffix);
-                Value::Integer(s.len() as i64)
-            }
+            Command::Append(key, suffix) => self.append(key, &suffix, None),
 
             Command::Strlen(key) => {
                 let now = now_ms();
@@ -3700,7 +4191,7 @@ impl KeyValueStore {
                 // update in the one command whose entire purpose is an atomic
                 // read-and-replace. Redis gets that atomicity for free from
                 // executing on one thread; here it has to be asked for.
-                match write_slot(&self.data, key) {
+                match write_slot(&self.data, key, None) {
                     WriteSlot::Occupied(mut occupied) => {
                         let old = if occupied.value().is_expired(now) {
                             Value::BulkString(None)
@@ -3724,29 +4215,22 @@ impl KeyValueStore {
                 }
             }
 
-            Command::MGet(keys) => {
-                let now = now_ms();
-                let results = keys
-                    .iter()
-                    .map(|k| match self.data.get(k.as_str()) {
-                        Some(e) if !e.is_expired(now) => match &e.value {
-                            EntryValue::Str(s) => {
-                                e.touch(now);
-                                Value::BulkString(Some(s.clone().into_bytes()))
-                            }
-                            _ => Value::BulkString(None),
-                        },
-                        _ => Value::BulkString(None),
+            Command::MGet(keys) => Value::Array(Some(
+                keys.iter()
+                    .map(|k| {
+                        // MGET answers nil for a key of another type.
+                        self.read_str(k, |read| {
+                            Value::BulkString(read.ok().flatten().map(<[u8]>::to_vec))
+                        })
                     })
-                    .collect();
-                Value::Array(Some(results))
-            }
+                    .collect(),
+            )),
 
             Command::MSet(pairs) => self.mset(pairs.into_iter()),
 
             Command::SetNx(key, val) => {
                 let now = now_ms();
-                match write_slot(&self.data, key) {
+                match write_slot(&self.data, key, None) {
                     WriteSlot::Vacant(vacant) => {
                         vacant.insert(Box::new(Entry::new_str(val)));
                         Value::Integer(1)
@@ -3775,11 +4259,11 @@ impl KeyValueStore {
                 Value::SimpleString("OK".to_string())
             }
 
-            Command::Incr(key) => incr_by(&self.data, key, 1),
-            Command::Decr(key) => incr_by(&self.data, key, -1),
-            Command::IncrBy(key, delta) => incr_by(&self.data, key, delta),
+            Command::Incr(key) => incr_by(&self.data, key, 1, None),
+            Command::Decr(key) => incr_by(&self.data, key, -1, None),
+            Command::IncrBy(key, delta) => incr_by(&self.data, key, delta, None),
             Command::DecrBy(key, delta) => match delta.checked_neg() {
-                Some(delta) => incr_by(&self.data, key, delta),
+                Some(delta) => incr_by(&self.data, key, delta, None),
                 None => Value::Error("ERR increment or decrement would overflow".to_string()),
             },
 
@@ -4119,7 +4603,7 @@ impl KeyValueStore {
             }
 
             // ── Hash ──────────────────────────────────────────────────────────
-            Command::HSet(key, pairs) => self.hset(key, pairs.into_iter()),
+            Command::HSet(key, pairs) => self.hset(key, pairs.into_iter(), None),
 
             Command::HStrLen(key, field) => {
                 let now = now_ms();
@@ -4136,22 +4620,10 @@ impl KeyValueStore {
                 }
             }
 
-            Command::HGet(key, field) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::BulkString(None),
-                    Some(e) if e.is_expired(now) => Value::BulkString(None),
-                    Some(e) => match &e.value {
-                        EntryValue::Hash(h) => {
-                            e.touch(now);
-                            h.get(&field)
-                                .map(|v| Value::BulkString(Some(v.to_vec())))
-                                .unwrap_or(Value::BulkString(None))
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
+            Command::HGet(key, field) => self.read_hash_field(&key, &field, |read| match read {
+                Ok(value) => Value::BulkString(value.map(<[u8]>::to_vec)),
+                Err(WrongType) => Value::Error(WRONGTYPE.to_string()),
+            }),
 
             Command::HGetAll(key) => {
                 let now = now_ms();
@@ -4278,7 +4750,9 @@ impl KeyValueStore {
                 }
             }
 
-            Command::HIncrBy(key, field, delta) => hash_incr_int(&self.data, key, field, delta),
+            Command::HIncrBy(key, field, delta) => {
+                hash_incr_int(&self.data, key, field, delta, None)
+            }
 
             Command::HIncrByFloat(key, field, delta) => {
                 hash_incr_float(&self.data, key, field, delta)
@@ -4981,7 +5455,7 @@ impl KeyValueStore {
                 // first (as this used to) let the destination be retyped in
                 // between, after which the member was silently dropped and the
                 // reply still claimed a successful move.
-                let mut dst_entry = match write_slot(&self.data, dst) {
+                let mut dst_entry = match write_slot(&self.data, dst, None) {
                     WriteSlot::Occupied(existing) => existing,
                     WriteSlot::Vacant(vacant) => vacant.insert(Box::new(Entry {
                         value: EntryValue::Set(Box::new(CompactSet::new())),
@@ -5243,7 +5717,7 @@ impl KeyValueStore {
                 // writer create the key between the test and the insert. The
                 // path is checked against the document before anything is
                 // created or reset, so a refused write changes nothing.
-                let mut entry = match write_slot(&self.data, key) {
+                let mut entry = match write_slot(&self.data, key, None) {
                     WriteSlot::Vacant(v) => {
                         if leading_index {
                             return Value::Error(NOT_AN_ARRAY.to_string());
@@ -5409,7 +5883,7 @@ impl KeyValueStore {
                 // needed an "ERR rate limiter vanished mid-check" arm for the
                 // case where the key was deleted in between. It cannot happen
                 // now, so that error is gone.
-                let mut entry = match write_slot(&self.data, key) {
+                let mut entry = match write_slot(&self.data, key, None) {
                     WriteSlot::Vacant(v) => match fresh_limiter(v.key()) {
                         Ok(e) => v.insert(Box::new(e)),
                         Err(err) => return err,
@@ -5502,6 +5976,25 @@ enum MutationScope<'c> {
 enum WriteScope<K> {
     Keys(SmallVec<[K; 2]>),
     All,
+}
+
+/// Commands [`KeyValueStore::run_probed_write`] may account: each mutates one
+/// key through exactly one write slot, which it takes with the probe. Adding
+/// a command here needs an arm in both `execute_inner_probed` and
+/// `execute_inner_ref` that passes the probe on;
+/// `probed_writes_account_exactly_like_the_general_path` checks every one.
+fn probe_eligible(cmd: &Command) -> bool {
+    matches!(
+        cmd,
+        Command::Set(..)
+            | Command::Incr(_)
+            | Command::Decr(_)
+            | Command::IncrBy(..)
+            | Command::DecrBy(..)
+            | Command::HSet(..)
+            | Command::Append(..)
+            | Command::HIncrBy(..)
+    )
 }
 
 fn mutation_scope<'c>(cmd: &'c Command) -> MutationScope<'c> {
@@ -5912,27 +6405,12 @@ fn entry_size(key: &str, e: &Entry) -> usize {
     key.len() + val_size + 64
 }
 
-/// `n` in decimal, written into `buf`.
-fn format_i64(n: i64, buf: &mut [u8; 20]) -> &[u8] {
-    let mut at = buf.len();
-    // Work on the magnitude as u64 so i64::MIN does not overflow.
-    let mut rest = n.unsigned_abs();
-    loop {
-        at -= 1;
-        buf[at] = b'0' + (rest % 10) as u8;
-        rest /= 10;
-        if rest == 0 {
-            break;
-        }
-    }
-    if n < 0 {
-        at -= 1;
-        buf[at] = b'-';
-    }
-    &buf[at..]
-}
-
-fn incr_by<K: AsRef<str> + Into<Key>>(data: &Keyspace, key: K, delta: i64) -> Value {
+fn incr_by<K: AsRef<str> + Into<Key>>(
+    data: &Keyspace,
+    key: K,
+    delta: i64,
+    probe: Option<&KeyProbe>,
+) -> Value {
     let now = now_ms();
     typed_entry!(
         entry,
@@ -5941,7 +6419,8 @@ fn incr_by<K: AsRef<str> + Into<Key>>(data: &Keyspace, key: K, delta: i64) -> Va
         key,
         now,
         EntryValue::Str,
-        StrValue::from("0")
+        StrValue::from("0"),
+        probe
     );
     // A non-UTF-8 value fails here exactly as non-numeric text does: the bytes
     // are stored faithfully, they are simply not a number.
@@ -6146,7 +6625,17 @@ fn set_diff(data: &Keyspace, keys: &[String], now: u64) -> Result<IndexSet<Strin
     Ok(result)
 }
 
-fn hash_incr_int(data: &Keyspace, key: String, field: String, delta: i64) -> Value {
+fn hash_incr_int<K, F>(
+    data: &Keyspace,
+    key: K,
+    field: F,
+    delta: i64,
+    probe: Option<&KeyProbe>,
+) -> Value
+where
+    K: AsRef<str> + Into<Key>,
+    F: AsRef<str> + Into<String>,
+{
     let now = now_ms();
     typed_entry!(
         entry,
@@ -6155,12 +6644,13 @@ fn hash_incr_int(data: &Keyspace, key: String, field: String, delta: i64) -> Val
         key,
         now,
         EntryValue::Hash,
-        Box::new(CompactHash::new())
+        Box::new(CompactHash::new()),
+        probe
     );
     // Only an absent field counts as zero. A present field that is not an
     // integer is an error and stays as it is; folding the two together let
     // `HINCRBY` silently overwrite `not-a-number` with the increment.
-    let cur: i64 = match h.get(&field) {
+    let cur: i64 = match h.get(field.as_ref()) {
         None => 0,
         Some(existing) => match std::str::from_utf8(existing)
             .ok()
@@ -6173,7 +6663,8 @@ fn hash_incr_int(data: &Keyspace, key: String, field: String, delta: i64) -> Val
     match cur.checked_add(delta) {
         None => Value::Error("ERR increment or decrement would overflow".to_string()),
         Some(new) => {
-            h.insert(field, new.to_string().into_bytes());
+            // Formatted on the stack, as `INCR` does.
+            h.insert(field, format_i64(new, &mut [0u8; 20]));
             Value::Integer(new)
         }
     }
@@ -12443,3 +12934,9 @@ mod v06_command_tests;
 
 #[cfg(test)]
 mod ref_exec_tests;
+
+#[cfg(test)]
+mod probe_tests;
+
+#[cfg(test)]
+mod borrowed_tests;

@@ -68,7 +68,7 @@ use watch::*;
 
 use core_engine::catalog;
 use core_engine::cmd::{Command, GetExOption, SetCondition, SetExpiry, SetOptions, ZAddCondition};
-use core_engine::request::RequestDecoder;
+use core_engine::request::{CommandRef, DecodedAny, RequestDecoder};
 use core_engine::resp::{MAX_BULK_STRING_BYTES, Value};
 use core_engine::store::{
     EvictionPolicy, KeyValueStore, KeyspaceSample, SnapshotEntry, SnapshotValue, glob_match,
@@ -856,19 +856,10 @@ async fn run(
                 if store_sweep.volatile_key_count() == 0 && !memory_over_limit {
                     continue;
                 }
-                // Active expiry and eviction can remove keys no client named.
-                // Share the all-write barrier with snapshots and QSUB initial
-                // state so removal plus notification is one observable step.
-                let _write_guards = state_sweep.replicas.lock_all_writes().await;
-                // Bound maintenance work per tick. The cursor advances through
-                // the TTL-only dense index, so large persistent keyspaces cost
-                // nothing here and large volatile keyspaces are amortized.
-                let expired = store_sweep.sweep_expired_reporting_budget(256);
-                state_sweep.forget_ephemeral_keys(expired.iter().map(String::as_str));
-                if !registry_sweep.is_empty() {
-                    notify_removed(&registry_sweep, &expired).await;
-                }
+                sweep_expired_tick(&store_sweep, &state_sweep, &registry_sweep).await;
                 if store_sweep.max_memory_bytes().is_some() {
+                    // Eviction too can remove keys no client named.
+                    let _write_guards = state_sweep.replicas.lock_all_writes().await;
                     let (_, evicted) = store_sweep.try_evict_for_memory_reporting();
                     if !evicted.is_empty() {
                         store_sweep.mark_dirty();

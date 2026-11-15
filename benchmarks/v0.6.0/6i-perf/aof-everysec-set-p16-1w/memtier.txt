@@ -1,0 +1,18 @@
+Writing results to stdout
+[RUN #1] Preparing benchmark client...
+[RUN #1] Launching threads now...
+[RUN #1 8%,   0 secs]  4 threads:       21968 ops,   22082 (avg:   22082) ops/sec, 1.47MB/sec (avg: 1.47MB/sec), 34.46 (avg: 34.46) msec latency[RUN #1 17%,   1 secs]  4 threads:       57808 ops,   35813 (avg:   28968) ops/sec, 2.39MB/sec (avg: 1.93MB/sec), 20.81 (avg: 25.99) msec latency[RUN #1 25%,   2 secs]  4 threads:       91008 ops,   33171 (avg:   30372) ops/sec, 2.21MB/sec (avg: 2.02MB/sec), 23.21 (avg: 24.98) msec latency[RUN #1 33%,   3 secs]  4 threads:      129536 ops,   38481 (avg:   32403) ops/sec, 2.57MB/sec (avg: 2.16MB/sec), 20.42 (avg: 23.62) msec latency[RUN #1 42%,   4 secs]  4 threads:      180144 ops,   50528 (avg:   36034) ops/sec, 3.37MB/sec (avg: 2.40MB/sec), 15.17 (avg: 21.25) msec latency[RUN #1 50%,   6 secs]  4 threads:      239424 ops,   59230 (avg:   39903) ops/sec, 3.95MB/sec (avg: 2.66MB/sec), 12.99 (avg: 19.20) msec latency[RUN #1 58%,   7 secs]  4 threads:      299168 ops,   59700 (avg:   42733) ops/sec, 3.98MB/sec (avg: 2.85MB/sec), 12.85 (avg: 17.93) msec latency[RUN #1 67%,   8 secs]  4 threads:      357632 ops,   58410 (avg:   44694) ops/sec, 3.89MB/sec (avg: 2.98MB/sec), 13.03 (avg: 17.13) msec latency[RUN #1 75%,   9 secs]  4 threads:      397792 ops,   40125 (avg:   44186) ops/sec, 2.67MB/sec (avg: 2.95MB/sec), 19.28 (avg: 17.35) msec latency[RUN #1 83%,  10 secs]  4 threads:      461472 ops,   63644 (avg:   46133) ops/sec, 4.24MB/sec (avg: 3.07MB/sec), 12.04 (avg: 16.62) msec latency[RUN #1 92%,  11 secs]  4 threads:      527056 ops,   65518 (avg:   47896) ops/sec, 4.37MB/sec (avg: 3.19MB/sec), 11.72 (avg: 16.01) msec latency[RUN #1 100%,  12 secs]  3 threads:      591872 ops,   65518 (avg:   49313) ops/sec, 4.37MB/sec (avg: 3.29MB/sec), 11.72 (avg: 15.55) msec latency[RUN #1 100%,  12 secs]  0 threads:      592544 ops,   65518 (avg:   49358) ops/sec, 4.37MB/sec (avg: 3.29MB/sec), 11.72 (avg: 15.54) msec latency
+
+4         Threads
+12        Connections per thread
+12        Seconds
+
+
+ALL STATS
+============================================================================================================================
+Type         Ops/sec     Hits/sec   Misses/sec    Avg. Latency     p50 Latency     p99 Latency   p99.9 Latency       KB/sec 
+----------------------------------------------------------------------------------------------------------------------------
+Sets        45560.51          ---          ---        15.54309        12.73500        52.22300       219.13500      3109.46 
+Gets            0.00         0.00         0.00             ---             ---             ---             ---         0.00 
+Waits           0.00          ---          ---             ---             ---             ---             ---          --- 
+Totals      45560.51         0.00         0.00        15.54309        12.73500        52.22300       219.13500      3109.46 

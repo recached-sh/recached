@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 7K of event 'cpu-clock:pppH'
+# Event count (approx.): 7525525518
+#
+# Overhead  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         IPC   [IPC Coverage]
+# ........  .............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................  ....................
+#
+    24.95%  [k] _raw_spin_unlock_irqrestore                                                                                                                                                                                                                                                                                                                                                                                                                                                                -      -            
+            |          
+            |--16.93%--sock_def_readable
+            |          |          
+            |           --16.68%--tcp_rcv_established
+            |                     tcp_v4_do_rcv
+            |                     tcp_v4_rcv
+            |                     ip_protocol_deliver_rcu
+            |                     ip_local_deliver_finish
+            |                     __netif_receive_skb_one_core
+            |                     process_backlog
+            |                     __napi_poll
+            |                     net_rx_action
+            |                     handle_softirqs
+            |                     do_softirq
+            |                     __local_bh_enable_ip
+            |                     __dev_queue_xmit
+            |                     ip_finish_output2
+            |                     ip_output
+            |                     __ip_queue_xmit
+            |                     __tcp_transmit_skb
+            |                     tcp_write_xmit
+            |                     __tcp_push_pending_frames
+            |                     tcp_sendmsg_locked
+            |                     tcp_sendmsg
+            |                     __sys_sendto
+            |                     __x64_sys_sendto
+            |                     do_syscall_64
+            |                     entry_SYSCALL_64_after_hwframe
+            |                     __send
+            |          
+            |--3.14%--__wake_up
+            |          |          
+            |           --3.13%--__jbd2_log_start_commit
+            |                     jbd2_complete_transaction
+            |                     ext4_sync_file
+            |                     ovl_fsync
+            |                     do_fsync
+            |                     __x64_sys_fdatasync
+            |                     do_syscall_64
+            |                     entry_SYSCALL_64_after_hwframe
+            |                     fdatasync
+            |                     0
+            |                     std::sys::io::error::unix::decode_error_kind
+            |                     0xa0ec8148535441
+            |          
+            |--1.13%--wake_up_bit
+            |          end_bio_bh_io_sync
+            |          blk_update_request
+            |          blk_mq_end_request
+            |          blk_done_softirq
+            |          handle_softirqs
+            |          |          
+            |           --0.82%--__irq_exit_rcu
+            |                     common_interrupt
+            |                     asm_common_interrupt
+            |          
+            |--1.06%--flush_end_io
+            |          __blk_mq_end_request
+            |          blk_done_softirq
+            |          handle_softirqs
+            |          |          
+            |           --0.78%--__irq_exit_rcu
+            |                     |          
+            |                      --0.77%--common_interrupt
+            |                                asm_common_interrupt
+            |          
+            |--1.01%--blk_update_request
+            |          blk_mq_end_request
+            |          blk_done_softirq
+            |          handle_softirqs
+            |          |          
+            |           --0.55%--__irq_exit_rcu
+            |                     common_interrupt
+            |                     asm_common_interrupt
+            |          
+             --0.88%--folio_wake_bit
+                       folio_end_writeback_no_dropbehind
+                       folio_end_writeback
+                       ext4_finish_bio
+                       ext4_end_bio
+                       blk_update_request
+                       blk_mq_end_request
+                       blk_done_softirq
+                       handle_softirqs
+                       |          
+                        --0.64%--__irq_exit_rcu
+                                  |          
+                                   --0.61%--common_interrupt
+                                             asm_common_interrupt
+     3.25%  [k] handle_softirqs                                                                                                                                                                                                                                                                                                                                                                                                                                                                            -      -            
+            |          
+             --3.17%--__irq_exit_rcu
+                       |          
+                        --3.09%--common_interrupt
+                                  asm_common_interrupt
+     2.27%  [.] <dashmap::DashMap<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>> as dashmap::t::Map<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>, std::hash::random::RandomState>>::_get_mut::<str>                                                                                                                                                                                                                                                           -      -            
+            |          
+             --2.26%--<dashmap::DashMap<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>> as dashmap::t::Map<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>, std::hash::random::RandomState>>::_get_mut::<str>
+     2.25%  [.] recached_server::connection::handle_tcp::<tokio::net::tcp::stream::TcpStream>::{closure#0}::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                    -      -            
+            |          
+             --1.17%--0
+     2.02%  [.] __vdso_clock_gettime                                                                                                                                                                                                                                                                                                                                                                                                                                                                       -      -            
+            |          
+             --1.97%--clock_gettime
+     1.53%  [.] <recached_server::server_state::ServerState>::on_write_logged::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                                 -      -            
+            |          
+             --1.20%--0x7fbbd8012080
+     1.44%  [.] do_rallocx                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 -      -            

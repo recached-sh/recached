@@ -4616,7 +4616,7 @@ fn command_name_labels_are_all_pre_registered() {
     ];
     let missing: Vec<&str> = labels
         .into_iter()
-        .filter(|l| !CMD_COUNTERS.contains_key(l))
+        .filter(|l| !CMD_METRICS.contains_key(l))
         .collect();
     assert!(
         missing.is_empty(),

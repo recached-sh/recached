@@ -357,3 +357,61 @@ async fn concurrent_hot_key_writes_and_cas_stay_exact() {
         bulk(&(committed + 500).to_string())
     );
 }
+
+/// Active expiry keeps up with more than one chunk of expired keys per tick
+/// (it used to remove at most 256 a second, so a TTL-churn load grew the
+/// keyspace without bound), and stops after one chunk when a sample shows
+/// little to remove.
+#[tokio::test]
+async fn one_expiry_tick_removes_far_more_than_one_chunk() {
+    use core_engine::cmd::{SetExpiry, SetOptions};
+    let shared = Shared::new(false);
+    let px = |ms| SetOptions {
+        expiry: Some(SetExpiry::Px(ms)),
+        ..SetOptions::default()
+    };
+    for i in 0..5_000 {
+        shared
+            .store
+            .execute(Command::Set(format!("gone:{i}"), b"v".to_vec(), px(1)));
+    }
+    for i in 0..1_000 {
+        shared.store.execute(Command::Set(
+            format!("live:{i}"),
+            b"v".to_vec(),
+            px(3_600_000),
+        ));
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let removed = sweep_expired_tick(&shared.store, &shared.state, &shared.watch_registry).await;
+    // Several chunks in one tick, where one chunk was the old ceiling. (The
+    // exact count depends on how many keys the time budget covers, which a
+    // debug build running beside other tests makes much smaller.)
+    assert!(
+        removed >= 4 * EXPIRY_CHUNK,
+        "one tick removed only {removed} of 5,000 expired keys"
+    );
+    assert_eq!(shared.store.key_count(), 6_000 - removed);
+
+    // The rest go on later ticks: a sample under a quarter expired ends a
+    // tick early (as in Redis), but every tick examines at least a chunk.
+    let mut ticks = 0;
+    while shared.store.key_count() > 1_000 && ticks < 200 {
+        sweep_expired_tick(&shared.store, &shared.state, &shared.watch_registry).await;
+        ticks += 1;
+    }
+    assert_eq!(
+        shared.store.key_count(),
+        1_000,
+        "expired keys left after {ticks} ticks"
+    );
+    let started = std::time::Instant::now();
+    assert_eq!(
+        sweep_expired_tick(&shared.store, &shared.state, &shared.watch_registry).await,
+        0
+    );
+    assert!(
+        started.elapsed() < EXPIRY_TICK_BUDGET,
+        "a fruitless tick ran its whole budget"
+    );
+}

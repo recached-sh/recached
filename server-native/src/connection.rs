@@ -125,6 +125,10 @@ fn ws_message(bytes: &[u8]) -> Message {
 /// Re-tag a top-level RESP array as a RESP3 push (`*` → `>`) when the
 /// connection asked for push framing. The two share one layout below the
 /// type byte, so nothing is re-encoded.
+/// Most queued pushes a WebSocket connection forwards per wake-up of its
+/// event loop before polling its other inputs again.
+const PUSH_DRAIN_BATCH: usize = 256;
+
 pub(crate) fn as_push_if(mut frame: Vec<u8>, push: bool) -> Vec<u8> {
     if push && frame.first() == Some(&b'*') {
         frame[0] = b'>';
@@ -260,6 +264,13 @@ pub(crate) fn process_auth(
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
+/// A frame the TCP loop answered on the borrowed path (and its length), or
+/// the decoded frame for the ordinary path.
+enum Answered {
+    Borrowed(usize),
+    Not(Result<core_engine::request::Decoded, core_engine::resp::ParseError>),
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_tcp<S>(
     socket: S,
@@ -281,7 +292,11 @@ pub(crate) async fn handle_tcp<S>(
     );
     let _guard = ConnectionGuard::new("tcp", client_meta.clone());
     let (mut reader, raw_writer) = tokio::io::split(socket);
-    let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024, raw_writer);
+    // Replies leave only once the AOF writes of the commands before them
+    // have: see `AofGatedWriter`. Without an AOF it holds nothing back.
+    let gated = AofGatedWriter::new(raw_writer, Arc::clone(&state));
+    let deferral = gated.deferral();
+    let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024, gated);
     let mut buf = Vec::<u8>::new();
     let mut read_pos: usize = 0;
     // Reused for every frame on this connection: holds argument offsets
@@ -320,6 +335,7 @@ pub(crate) async fn handle_tcp<S>(
         Arc::new(AtomicBool::new(false)),
     );
 
+    with_deferred_aof(deferral, async {
     'outer: loop {
         let is_subscribed = !subscribed_channels.is_empty() || !subscribed_patterns.is_empty();
         // Republish only when the counts moved: CLIENT LIST has to see live
@@ -385,7 +401,51 @@ pub(crate) async fn handle_tcp<S>(
                             // `Value::parse` + `Command::from_value` gave. The
                             // command owns its data; nothing borrowed from
                             // `buf` survives into the compaction below.
-                            match decoder.decode(&buf[read_pos..]) {
+                            // A hot command is decoded borrowed and, when it
+                            // can be (see `try_execute_borrowed`), run from
+                            // the buffer with its reply written in place — no
+                            // copy of its key or value, no reply `Value`. The
+                            // borrow ends inside this block, before the
+                            // buffer is touched again. Otherwise it is made
+                            // owned, without a second walk of the frame, and
+                            // takes the ordinary path below.
+                            let frame = match decoder.decode_any(&buf[read_pos..]) {
+                                DecodedAny::Borrowed(cmd, consumed) => {
+                                    // The ordinary path's gates for these
+                                    // commands, in its order: auth, MULTI
+                                    // queueing, subscribe mode. Anything
+                                    // they would intercept goes there.
+                                    resp_buf.clear();
+                                    let answered = is_authenticated
+                                        && multi_queue.is_none()
+                                        && !is_subscribed
+                                        && try_execute_borrowed(
+                                            &cmd,
+                                            &state,
+                                            &watch_registry,
+                                            &store,
+                                            &mut resp_buf,
+                                        )
+                                        .is_some();
+                                    if answered {
+                                        Answered::Borrowed(consumed)
+                                    } else {
+                                        Answered::Not(Ok((Ok(cmd.to_command()), consumed)))
+                                    }
+                                }
+                                DecodedAny::Owned(decoded) => Answered::Not(decoded),
+                            };
+                            let frame = match frame {
+                                Answered::Not(frame) => frame,
+                                Answered::Borrowed(consumed) => {
+                                    read_pos += consumed;
+                                    if writer.write_all(&resp_buf).await.is_err() {
+                                        break 'outer;
+                                    }
+                                    continue 'parse;
+                                }
+                            };
+                            match frame {
                                 Ok((decoded, consumed)) => {
                                     read_pos += consumed;
                                     let cmd = match decoded {
@@ -956,6 +1016,11 @@ pub(crate) async fn handle_tcp<S>(
             }
         }
     }
+
+    })
+    .await;
+    // The socket is gone; queued AOF batches are written regardless.
+    drop(writer);
 
     if !subscribed_channels.is_empty() || !subscribed_patterns.is_empty() {
         pubsub.lock().await.unsubscribe_all(conn_id);
@@ -2104,6 +2169,41 @@ pub(crate) async fn handle_ws<S>(
                     Ok(push) => {
                         if forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns) {
                             ws_send!(&push.resp);
+                        }
+                        // Take whatever else is already queued in this one
+                        // wake-up. One push per `select!` cycle made every
+                        // connection pay a full poll of all its arms for every
+                        // write on the server — including the writes its
+                        // scopes filter out — so a writer at 25k/s on keys no
+                        // browser could see lagged and disconnected all ten
+                        // connected browsers (6I Mode 4). Bounded, so the
+                        // other arms still run under a sustained stream.
+                        for _ in 0..PUSH_DRAIN_BATCH {
+                            match rx.try_recv() {
+                                Ok(push) => {
+                                    if forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns)
+                                        && ws_sender.send(ws_message(&push.resp)).await.is_err()
+                                    {
+                                        break 'outer;
+                                    }
+                                }
+                                Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                                    warn!(
+                                        "WS conn {} lagged, missed {} mutations; closing so the client resynchronises",
+                                        conn_id, n
+                                    );
+                                    counter!("recached_sync_lag_disconnects_total").increment(1);
+                                    let _ = ws_sender
+                                        .send(Message::Close(Some(CloseFrame {
+                                            code: CloseCode::Library(WS_CLOSE_SYNC_GAP),
+                                            reason: "sync stream gap; reconnect to resynchronise".into(),
+                                        })))
+                                        .await;
+                                    break 'outer;
+                                }
+                                Err(broadcast::error::TryRecvError::Empty) => break,
+                                Err(broadcast::error::TryRecvError::Closed) => break 'outer,
+                            }
                         }
                     }
                     // The fan-out overran this connection. Resubscribing here

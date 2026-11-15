@@ -64,3 +64,36 @@ store-stripe spin disabled.
 | `6h-linux/tput/rep-1..5/` | memtier matrix, 6G vs 6H vs Redis 7.2.5 vs Valkey 9.1.0, single and 4-worker; each repetition started only at host load < 5 (`gated.sh`); summary `throughput-summary.md`; raw JSON `tput-json.tar.gz` | **Indicative only** — non-dedicated host, per-cell spread ±15–25% |
 | `6h-linux/mem/` | 6G memory script, 6G vs 6H, 3 shapes × 3 reps | **Use** |
 | `6h-linux/*.sh` | `build-test-bin.sh` (Linux server + test binaries), `run.sh`, `gated.sh`, `inproc.sh` | — |
+
+## Phase 6I (2026-11-15) — production paths and storage execution
+
+Reports: `docs/reports/v0.6.0/V0.6I-*.md`. Same laptop and Docker Desktop VM as 6G/6H (kernel
+7.0.12-linuxkit, 8 vCPU, 3.9 GB). New bench image `recached-6i-bench:local` =
+`recached-6g-bench:local` + Node 22.23.4 (copied from `node:22.23.4-bookworm-slim` with
+`docker cp`/`docker commit`; no registry pull). Binaries are frozen in `target/6i/linux-bins`
+with `SHA256SUMS`: `6h` (dev `cbae25e`, the 6H build reused), `6i` (rc2 = this branch's
+commits `dd32ccc..3bd72c1`, minus a one-line DEDUP-commit reordering), `6i-rc3` (+ adaptive
+expiry). Exact sources: `6i-prod/source/`.
+
+**What is new in the method.** 6G/6H measured a memory-only server with metrics off and no
+consumer. 6I measures the configurations production runs, before and after the changes:
+
+| Driver | Configurations |
+|---|---|
+| `6i-prod/prod.sh` (via `run.sh`, `gated.sh`) | `standalone` (metrics off — the 6G/6H method), `standalone-metrics` (default exporter on, scraped every 5 s), `aof-everysec`, `aof-always`, `repl` (primary + replica; replica lag by probe keys timed write-to-readable on the replica, `repl_check.py`; convergence verified by DBSIZE + 900 sampled values), `capped` (1 GB cap never reached) |
+| `6i-prod/ws.sh` + `ws-sync.mjs` | strict token-scoped WebSocket clients (one tenant each, every 4th WATCHing), periodic reconnects, a background writer on keys no client may see, a probe writer (in-scope SETs timed to the client, DEDUP retries); leaks, lag disconnects (close code), reconnect time, per-client RSS |
+| `6i-prod/ttl-churn.sh` | expired data in memory: SET … EX 1 load, then idle, sampling DBSIZE and RSS |
+| `6i-prod/perf.sh`, `build-sym.sh` | `perf` profiles in `recached-6g-perf:local` of a symbolized build |
+
+Durability is **not** identical across engines: Redis/Valkey `appendfsync always` fsync once per
+event-loop iteration; Recached `always` once per batch. Redis/Valkey AOF rewrite is disabled in
+these runs; the VM's virtual disk makes every fsync figure indicative only.
+
+| Directory | What | Trust |
+|---|---|---|
+| `6i-baseline/rep-1/` | the production matrix on 6H, Redis, Valkey **before** any change | Indicative; overlapped host compiles (`host-activity.txt`). The AOF and capped defects are 20–300× effects, far outside its noise |
+| `6i-perf/` | perf profiles, AOF and capped, at each step of the AOF fix | Use for shares; rates are with the profiler attached |
+| `6i-inproc/`, `6i-final/inproc/` | in-process request path, 6H vs 6I (metrics off and on, INCR split, hot-key scaling) | **Use** for relative cost; load ~1.0 |
+| `6i-final/prod/rep-*/` | the production matrix, 6H vs 6I vs Redis vs Valkey, 3 load-gated repetitions | Indicative only — non-dedicated host |
+| `6i-final/ws/` | WebSocket sync matrix, 6H vs 6I, 1/10/100/500 clients, 1 and 4 workers, 2 reps | Indicative; Recached-only functionality, not a Redis comparison |
+| `6i-final/ttl/`, `6i-final/ttl-rc3/` | expiry backlog, 6H/6I/Redis and rc3 | Use: a memory trend, not a rate |

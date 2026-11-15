@@ -1,0 +1,120 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 9K of event 'cpu-clock:pppH'
+# Event count (approx.): 9419419410
+#
+# Overhead  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         IPC   [IPC Coverage]
+# ........  .............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................  ....................
+#
+    41.00%  [k] _raw_spin_unlock_irqrestore                                                                                                                                                                                                                                                                                                                                                                                                                                                                -      -            
+            |          
+            |--26.29%--try_to_wake_up
+            |          wake_up_q
+            |          futex_wake
+            |          do_futex
+            |          __x64_sys_futex
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          syscall
+            |          
+             --14.39%--sock_def_readable
+                       |          
+                        --14.28%--tcp_rcv_established
+                                  tcp_v4_do_rcv
+                                  tcp_v4_rcv
+                                  ip_protocol_deliver_rcu
+                                  ip_local_deliver_finish
+                                  __netif_receive_skb_one_core
+                                  process_backlog
+                                  __napi_poll
+                                  net_rx_action
+                                  handle_softirqs
+                                  do_softirq
+                                  __local_bh_enable_ip
+                                  __dev_queue_xmit
+                                  ip_finish_output2
+                                  ip_output
+                                  __ip_queue_xmit
+                                  __tcp_transmit_skb
+                                  tcp_write_xmit
+                                  __tcp_push_pending_frames
+                                  tcp_sendmsg_locked
+                                  tcp_sendmsg
+                                  __sys_sendto
+                                  __x64_sys_sendto
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  __send
+     1.82%  [.] recached_server::connection::handle_tcp::<tokio::net::tcp::stream::TcpStream>::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                 -      -            
+            |          
+             --1.71%--0x7feb3e9fcdd8
+     1.45%  [.] <dashmap::DashMap<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>> as dashmap::t::Map<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>, std::hash::random::RandomState>>::_get_mut::<str>                                                                                                                                                                                                                                                           -      -            
+     1.37%  [.] syscall                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    -      -            
+     1.07%  [k] memset_orig                                                                                                                                                                                                                                                                                                                                                                                                                                                                                -      -            
+            |          
+             --1.01%--zero_user_segments
+                       ext4_block_write_begin
+                       ext4_da_write_begin
+                       generic_perform_write
+                       ext4_buffered_write_iter
+                       do_iter_readv_writev
+                       vfs_iter_write
+                       backing_file_write_iter
+                       ovl_write_iter
+                       vfs_write
+                       ksys_write
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       write
+     1.01%  [.] <recached_server::persistence::AofWriter>::append::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                                             -      -            
+     0.99%  [k] do_syscall_64                                                                                                                                                                                                                                                                                                                                                                                                                                                                              -      -            
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+                --0.51%--syscall
+     0.90%  [k] finish_task_switch.isra.0                                                                                                                                                                                                                                                                                                                                                                                                                                                                  -      -            
+            |
+            ---__schedule
+               schedule
+               |          
+                --0.86%--futex_do_wait
+                          __futex_wait
+                          futex_wait
+                          do_futex
+                          __x64_sys_futex
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          syscall
+     0.88%  [.] <tokio::sync::notify::NotifyGuard>::notify_waiters                                                                                                                                                                                                                                                                                                                                                                                                                                         -      -            
+            |          
+             --0.87%--0x1
+     0.88%  [.] recached_server::propagation::execute_ordered_write::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                                           -      -            
+            |          
+             --0.83%--0x2
+     0.80%  [.] <tokio::sync::notify::NotifiedProject>::poll_notified                                                                                                                                                                                                                                                                                                                                                                                                                                      -      -            
+     0.77%  [.] std::sys::backtrace::__rust_begin_short_backtrace::<<recached_server::persistence::AofWriter>::open::{closure#0}::{closure#0}, ()>                                                                                                                                                                                                                                                                                                                                                         -      -            
+     0.75%  [.] write                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      -      -            
+     0.73%  [.] __vdso_clock_gettime                                                                                                                                                                                                                                                                                                                                                                                                                                                                       -      -            
+            |          
+             --0.68%--clock_gettime
+     0.70%  [.] recached_server::propagation::apply_write_effects_identified::{closure#0}                                                                                                                                                                                                                                                                                                                                                                                                                  -      -            
+     0.69%  [.] <core::pin::Pin<alloc::boxed::Box<recached_server::run::{closure#0}::{closure#28}::{closure#0}>> as core::future::future::Future>::poll                                                                                                                                                                                                                                                                                                                                                    -      -            
+     0.64%  [.] _rjem_sdallocx                                                                                                                                                                                                                                                                                                                                                                                                                                                                             -      -            
+     0.63%  [.] do_rallocx                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 -      -            
+            |          
+             --0.58%--<alloc::raw_vec::RawVecInner>::finish_grow
+     0.62%  [.] <core_engine::request::RequestDecoder>::decode_any                                                                                                                                                                                                                                                                                                                                                                                                                                         -      -            
+     0.61%  [.] <core_engine::store::KeyValueStore>::execute_reporting_ref                                                                                                                                                                                                                                                                                                                                                                                                                                 -      -            
+     0.61%  [.] _rjem_je_arena_ralloc_no_move                                                                                                                                                                                                                                                                                                                                                                                                                                                              -      -            
+            |          
+             --0.57%--_rjem_je_arena_ralloc
+                       do_rallocx
+                       <alloc::raw_vec::RawVecInner>::finish_grow
+     0.60%  [k] rep_movs_alternative                                                                                                                                                                                                                                                                                                                                                                                                                                                                       -      -            
+     0.60%  [.] tokio::runtime::task::raw::poll::<core::pin::Pin<alloc::boxed::Box<recached_server::run::{closure#0}::{closure#28}::{closure#0}>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>                                                                                                                                                                                                                                                                              -      -            
+     0.58%  [.] 0x0000000000152619                                                                                                                                                                                                                                                                                                                                                                                                                                                                         -      -            
+     0.54%  [.] _rjem_je_arena_ralloc                                                                                                                                                                                                                                                                                                                                                                                                                                                                      -      -            
+            |          

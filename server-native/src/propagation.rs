@@ -396,9 +396,32 @@ pub(crate) async fn execute_ordered_write(
         return response;
     }
 
-    // Capacity eviction may choose any key, so capped stores already serialize
-    // their core writes and reserve every propagation ordering domain here.
-    // Uncapped stores retain per-key concurrency.
+    // Capacity eviction may choose any key, and its DEL must reach replicas
+    // in order with writes to that key, so a write that may evict reserves
+    // every propagation ordering domain. One that cannot — the store says so
+    // under its capacity gate, and runs it in the same hold — needs only its
+    // own keys' domains, like a write to an uncapped store. Taking all 256
+    // stripes (and closing the unordered gate) for every write on a capped
+    // store serialized every writer of every multitenant deployment.
+    if store.has_capacity_limits() && !matches!(effective, Command::ESet(..) | Command::EAdd(..)) {
+        let guards = state.replicas.lock_write(effective).await;
+        if let Some(response) = execute_locked_write_within_capacity(
+            effective,
+            dedup,
+            tx,
+            origin,
+            state,
+            watch_registry,
+            store,
+        )
+        .await
+        {
+            // Committed inside the write's ordering domain, as below.
+            commit_dedup_outcome(state, dedup, &response).await;
+            drop(guards);
+            return response;
+        }
+    }
     let _guards = if store.has_capacity_limits() {
         state.replicas.lock_all_writes().await
     } else if matches!(effective, Command::ESet(..) | Command::EAdd(..)) {
@@ -415,13 +438,53 @@ pub(crate) async fn execute_ordered_write(
     let response =
         execute_locked_write_identified(effective, dedup, tx, origin, state, watch_registry, store)
             .await;
+    commit_dedup_outcome(state, dedup, &response).await;
+    response
+}
+
+/// A DEDUP write's outcome: its refusal remembered, or its mark committed.
+async fn commit_dedup_outcome(state: &ServerState, dedup: Option<(&str, u64)>, response: &Value) {
     if let Some((client, id)) = dedup {
-        match &response {
+        match response {
             Value::Error(error) => record_dedup_refusal(state, client, id, error).await,
             _ => state.commit_dedup(client, id),
         }
     }
-    response
+}
+
+/// [`execute_locked_write_identified`] on a capped store for a write that
+/// cannot evict, under only its own keys' ordering guards; `None`, having
+/// run and propagated nothing, when it might evict — the caller then takes
+/// every guard and runs it the ordinary way. With no eviction the write's
+/// effects are its own, exactly as on an uncapped store.
+async fn execute_locked_write_within_capacity(
+    cmd: &Command,
+    dedup: Option<(&str, u64)>,
+    tx: &broadcast::Sender<SyncMsg>,
+    origin: u64,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+) -> Option<Value> {
+    let claimable_members = claimable_eadd_members(cmd, state, store);
+    let (response, evicted) = execute_and_record_ref_within_capacity(store, cmd)?;
+    debug_assert!(
+        evicted.is_empty(),
+        "a write within capacity evicted {evicted:?}"
+    );
+    apply_write_effects_identified(
+        cmd,
+        &response,
+        dedup,
+        tx,
+        origin,
+        state,
+        watch_registry,
+        store,
+    )
+    .await;
+    reconcile_ephemeral_state(cmd, &response, &claimable_members, origin, state);
+    Some(response)
 }
 
 /// Run a write with no replication-order stripe when nothing can observe the
@@ -455,7 +518,24 @@ pub(crate) fn try_execute_unordered(
     {
         return None;
     }
-    let _pass = state.replicas.unordered.try_enter()?;
+    let _pass = enter_unordered(state, watch_registry)?;
+    #[cfg(test)]
+    unordered_pause::pause(|| primary_key_refs(cmd));
+    let (response, evicted) = execute_and_record_ref(store, cmd);
+    // An uncapped store never evicts; nothing to propagate either way.
+    debug_assert!(evicted.is_empty(), "uncapped store evicted {evicted:?}");
+    Some(response)
+}
+
+/// Enter the unordered gate, then check that nothing observes write order
+/// (see [`UnorderedGate`]: the checks must follow the entry). `None` when the
+/// write has to take the ordered path. The caller checks the store is
+/// uncapped and holds the pass only across synchronous code.
+fn enter_unordered<'a>(
+    state: &'a ServerState,
+    watch_registry: &WatchRegistry,
+) -> Option<UnorderedPass<'a>> {
+    let pass = state.replicas.unordered.try_enter()?;
     // `has_push_receivers`, not `tx.receiver_count()`: the latter locks the
     // broadcast channel's tail mutex — a process-wide lock on every write.
     if state.replicas.unordered.has_push_receivers()
@@ -465,12 +545,103 @@ pub(crate) fn try_execute_unordered(
     {
         return None;
     }
+    Some(pass)
+}
+
+/// Run a borrowed hot command straight from the read buffer, appending its
+/// reply to `out`; `None` (nothing run, nothing written) when it must take
+/// the owned path instead.
+///
+/// A read always can. A write can exactly when the owned write would take
+/// the unordered path: persistence healthy, a primary, an uncapped store, and
+/// nothing observing write order — so it has no effects beyond the store, and
+/// running it from borrowed arguments changes nothing but the copies. Its
+/// metrics and dirty count are recorded as the owned path records them.
+pub(crate) fn try_execute_borrowed(
+    cmd: &CommandRef<'_>,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+    out: &mut Vec<u8>,
+) -> Option<()> {
     #[cfg(test)]
-    unordered_pause::pause(cmd);
-    let (response, evicted) = execute_and_record_ref(store, cmd);
-    // An uncapped store never evicts; nothing to propagate either way.
-    debug_assert!(evicted.is_empty(), "uncapped store evicted {evicted:?}");
-    Some(response)
+    if borrowed_switch::OFF.load(Ordering::Relaxed) {
+        return None;
+    }
+    let started = std::time::Instant::now();
+    let is_write = cmd.is_write();
+    let outcome = if is_write {
+        if !state.persistence_is_healthy() || state.is_replica() || store.has_capacity_limits() {
+            return None;
+        }
+        let _pass = enter_unordered(state, watch_registry)?;
+        #[cfg(test)]
+        unordered_pause::pause(|| cmd.write_key().into_iter().collect());
+        store.execute_ref_into(cmd, out)?
+    } else {
+        store.execute_ref_into(cmd, out)?
+    };
+    record_metrics(
+        store,
+        command_ref_name(cmd),
+        is_write,
+        started,
+        outcome.error,
+        outcome.hit,
+        false,
+    );
+    Some(())
+}
+
+/// One second's active expiry, in chunks; returns the keys removed.
+///
+/// Each chunk examines the next [`EXPIRY_CHUNK`] keys of the TTL-only dense
+/// index (so a large persistent keyspace costs nothing here) and takes the
+/// all-write barrier it shares with snapshots and QSUB's initial state, so a
+/// removal and its notification are one observable step; writers run between
+/// chunks.
+///
+/// One chunk per second used to be all there was: an expiry rate above 256
+/// keys/s accumulated expired entries without bound, since reads only mask
+/// them (6I: a `SET … EX 1` load grew the keyspace ~3,000 entries/s while
+/// Redis stayed flat). As Redis does, this keeps sweeping while the last
+/// sample was at least a quarter expired, within [`EXPIRY_TICK_BUDGET`].
+pub(crate) async fn sweep_expired_tick(
+    store: &KeyValueStore,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+) -> usize {
+    let started = std::time::Instant::now();
+    let mut total = 0usize;
+    loop {
+        let examined = store.volatile_key_count().min(EXPIRY_CHUNK);
+        if examined == 0 {
+            return total;
+        }
+        let removed = {
+            let _write_guards = state.replicas.lock_all_writes().await;
+            let expired = store.sweep_expired_reporting_budget(EXPIRY_CHUNK);
+            state.forget_ephemeral_keys(expired.iter().map(String::as_str));
+            if !watch_registry.is_empty() {
+                notify_removed(watch_registry, &expired).await;
+            }
+            expired.len()
+        };
+        total = total.saturating_add(removed);
+        if removed.saturating_mul(4) < examined || started.elapsed() >= EXPIRY_TICK_BUDGET {
+            return total;
+        }
+    }
+}
+
+/// Test-only: turn the borrowed path off, so a test can compare the replies
+/// of the two paths over the same input. Global, but harmless to tests
+/// running alongside: the owned path answers identically, which is what the
+/// comparison checks.
+#[cfg(test)]
+pub(crate) mod borrowed_switch {
+    pub(crate) static OFF: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
 }
 
 /// Test-only fault injection: stall an unordered write on one key between
@@ -498,13 +669,16 @@ pub(crate) mod unordered_pause {
         *PAUSE.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
 
-    pub(super) fn pause(cmd: &Command) {
+    /// `written` lists the write's keys; it is only called when armed, so
+    /// an unarmed hook costs the benchmarks (which run in test builds) no
+    /// allocation.
+    pub(super) fn pause<'k>(written: impl FnOnce() -> SmallVec<[&'k str; 2]>) {
         if !ARMED.load(Ordering::Relaxed) {
             return;
         }
         let armed = PAUSE.lock().unwrap_or_else(|p| p.into_inner()).clone();
         if let Some((key, pause)) = armed
-            && primary_key_refs(cmd).contains(&key.as_str())
+            && written().contains(&key.as_str())
         {
             std::thread::sleep(pause);
         }
@@ -1039,7 +1213,9 @@ async fn apply_write_effects_identified(
         return;
     };
     if needs_log {
-        state.on_write_identified(&msg, dedup).await;
+        state
+            .on_write_logged(&msg, dedup, !has_ws && !has_watch)
+            .await;
     }
     if has_watch {
         if matches!(cmd, Command::FlushDb) {

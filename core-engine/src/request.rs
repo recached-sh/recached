@@ -32,6 +32,7 @@
 
 use crate::cmd::{Command, SetOptions, validate_key};
 use crate::resp::{MAX_BULK_STRING_BYTES, MAX_TOTAL_MESSAGE_BYTES, ParseError, Value};
+use smallvec::SmallVec;
 use std::ops::Range;
 
 /// Most arguments a frame may have and still take the single-walk scan.
@@ -51,6 +52,80 @@ pub struct RequestDecoder {
 /// bytes of the buffer it occupied.
 pub type Decoded = (Result<Command, String>, usize);
 
+/// One of the hot commands, its arguments borrowed from the read buffer.
+///
+/// Built by [`RequestDecoder::decode_any`] for exactly the frames the owned
+/// builder accepts for the same commands — the owned command *is*
+/// [`to_command`](Self::to_command) of this — so a server can run it without
+/// copying its key and value out of the buffer, and fall back to the owned
+/// command when it cannot. It borrows the buffer: it must be run, or turned
+/// into a `Command`, before the buffer is compacted or reused.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommandRef<'a> {
+    Get(&'a str),
+    Set(&'a str, &'a [u8]),
+    Incr(&'a str),
+    Decr(&'a str),
+    /// HGET does not validate its key on the general path either.
+    HGet(&'a str, &'a str),
+    HSet(&'a str, SmallVec<[(&'a str, &'a [u8]); 2]>),
+    MGet(SmallVec<[&'a str; 8]>),
+}
+
+impl CommandRef<'_> {
+    /// The owned command, exactly as the owned decoder builds it.
+    #[must_use]
+    pub fn to_command(&self) -> Command {
+        match self {
+            CommandRef::Get(key) => Command::Get((*key).to_owned()),
+            CommandRef::Set(key, val) => {
+                Command::Set((*key).to_owned(), val.to_vec(), SetOptions::default())
+            }
+            CommandRef::Incr(key) => Command::Incr((*key).to_owned()),
+            CommandRef::Decr(key) => Command::Decr((*key).to_owned()),
+            CommandRef::HGet(key, field) => Command::HGet((*key).to_owned(), (*field).to_owned()),
+            CommandRef::HSet(key, pairs) => Command::HSet(
+                (*key).to_owned(),
+                pairs
+                    .iter()
+                    .map(|(field, val)| ((*field).to_owned(), val.to_vec()))
+                    .collect(),
+            ),
+            CommandRef::MGet(keys) => Command::MGet(keys.iter().map(|k| (*k).to_owned()).collect()),
+        }
+    }
+
+    /// Whether this command writes.
+    #[must_use]
+    pub fn is_write(&self) -> bool {
+        matches!(
+            self,
+            CommandRef::Set(..) | CommandRef::Incr(_) | CommandRef::Decr(_) | CommandRef::HSet(..)
+        )
+    }
+
+    /// The key a write mutates (every borrowed write names exactly one).
+    #[must_use]
+    pub fn write_key(&self) -> Option<&str> {
+        match self {
+            CommandRef::Set(key, _)
+            | CommandRef::Incr(key)
+            | CommandRef::Decr(key)
+            | CommandRef::HSet(key, _) => Some(key),
+            _ => None,
+        }
+    }
+}
+
+/// What [`RequestDecoder::decode_any`] found at the start of the buffer.
+#[derive(Debug)]
+pub enum DecodedAny<'a> {
+    /// A hot command, borrowed, and the bytes its frame occupied.
+    Borrowed(CommandRef<'a>, usize),
+    /// Anything else, exactly as [`RequestDecoder::decode`] returns it.
+    Owned(Result<Decoded, ParseError>),
+}
+
 impl RequestDecoder {
     #[must_use]
     pub fn new() -> RequestDecoder {
@@ -66,14 +141,34 @@ impl RequestDecoder {
     /// protocol violation. A frame that parses but is not a valid command is
     /// `Ok` with an `Err` command, as from [`Command::from_value`].
     pub fn decode(&mut self, buf: &[u8]) -> Result<Decoded, ParseError> {
+        match self.decode_any(buf) {
+            DecodedAny::Borrowed(command, consumed) => Ok((Ok(command.to_command()), consumed)),
+            DecodedAny::Owned(decoded) => decoded,
+        }
+    }
+
+    /// Decode the frame at the start of `buf` in one walk, borrowing the
+    /// arguments of a hot command instead of copying them.
+    ///
+    /// For every input, turning a `Borrowed` result into a command with
+    /// [`CommandRef::to_command`] gives exactly what [`decode`](Self::decode)
+    /// returns; `Owned` is `decode`'s own result.
+    pub fn decode_any<'a>(&'a mut self, buf: &'a [u8]) -> DecodedAny<'a> {
         if let Some(consumed) = self.scan(buf) {
             let args = Args {
                 buf,
                 spans: &self.spans,
             };
+            if let Some(command) = build_ref(args) {
+                return DecodedAny::Borrowed(command, consumed);
+            }
             let command = build(args).unwrap_or_else(|| args.general());
-            return Ok((command, consumed));
+            return DecodedAny::Owned(Ok((command, consumed)));
         }
+        DecodedAny::Owned(Self::decode_general(buf))
+    }
+
+    fn decode_general(buf: &[u8]) -> Result<Decoded, ParseError> {
         // Measured first, as the connection loop always did: an incomplete
         // frame is answered without allocating a single element.
         Value::frame_len(buf)?;
@@ -149,9 +244,14 @@ impl<'a> Args<'a> {
 
     /// A key: text that also passes the general path's key validation.
     fn key(&self, i: usize) -> Option<String> {
+        self.key_ref(i).map(str::to_owned)
+    }
+
+    /// [`key`](Self::key), borrowed.
+    fn key_ref(&self, i: usize) -> Option<&'a str> {
         let key = self.text(i)?;
         validate_key(key).ok()?;
-        Some(key.to_owned())
+        Some(key)
     }
 
     fn bytes(&self, i: usize) -> Option<Vec<u8>> {
@@ -185,31 +285,47 @@ impl<'a> Args<'a> {
 /// same result. Looser shapes the general path tolerates (`GET k extra`),
 /// options (`SET k v EX 10`), and every error case go there instead, so the
 /// two can only agree.
-fn build(args: Args<'_>) -> Option<Result<Command, String>> {
+/// The borrowed hot shapes: `None` for anything else, including any frame
+/// of these commands that the owned builder would not accept directly.
+fn build_ref(args: Args<'_>) -> Option<CommandRef<'_>> {
     let name = args.get(0)?;
     let n = args.len();
     // Dispatch on length first: one integer compare rejects most names
     // before any byte comparison.
-    let command = match (name.len(), n) {
-        (3, 2) if args.name_is("GET") => Command::Get(args.key(1)?),
-        (3, 3) if args.name_is("SET") => {
-            Command::Set(args.key(1)?, args.bytes(2)?, SetOptions::default())
-        }
-        (4, 2) if args.name_is("INCR") => Command::Incr(args.key(1)?),
-        (4, 2) if args.name_is("DECR") => Command::Decr(args.key(1)?),
-        (4, 3) if args.name_is("HGET") => {
-            // HGET does not validate its key in the general path either.
-            Command::HGet(args.text(1)?.to_owned(), args.text(2)?.to_owned())
-        }
+    Some(match (name.len(), n) {
+        (3, 2) if args.name_is("GET") => CommandRef::Get(args.key_ref(1)?),
+        (3, 3) if args.name_is("SET") => CommandRef::Set(args.key_ref(1)?, args.get(2)?),
+        (4, 2) if args.name_is("INCR") => CommandRef::Incr(args.key_ref(1)?),
+        (4, 2) if args.name_is("DECR") => CommandRef::Decr(args.key_ref(1)?),
+        // HGET does not validate its key in the general path either.
+        (4, 3) if args.name_is("HGET") => CommandRef::HGet(args.text(1)?, args.text(2)?),
         (4, _) if n >= 4 && (n - 2).is_multiple_of(2) && args.name_is("HSET") => {
-            let key = args.key(1)?;
-            let mut pairs = Vec::with_capacity((n - 2) / 2);
+            let key = args.key_ref(1)?;
+            let mut pairs = SmallVec::with_capacity((n - 2) / 2);
             for i in (2..n).step_by(2) {
-                pairs.push((args.text(i)?.to_owned(), args.bytes(i + 1)?));
+                pairs.push((args.text(i)?, args.get(i + 1)?));
             }
-            Command::HSet(key, pairs)
+            CommandRef::HSet(key, pairs)
         }
-        (4, _) if n >= 2 && args.name_is("MGET") => Command::MGet(keys(args, 1)?),
+        (4, _) if n >= 2 && args.name_is("MGET") => CommandRef::MGet(
+            (1..n)
+                .map(|i| args.key_ref(i))
+                .collect::<Option<SmallVec<_>>>()?,
+        ),
+        _ => return None,
+    })
+}
+
+/// The owned shapes not covered by [`build_ref`] — whose arguments the
+/// store takes ownership of anyway, or which are rare — plus, for the
+/// envelope's inner command, every borrowed shape turned owned.
+fn build(args: Args<'_>) -> Option<Result<Command, String>> {
+    if let Some(command) = build_ref(args) {
+        return Some(Ok(command.to_command()));
+    }
+    let name = args.get(0)?;
+    let n = args.len();
+    let command = match (name.len(), n) {
         (3, _) if n >= 2 && args.name_is("DEL") => Command::Del(keys(args, 1)?),
         (4, _) if n >= 3 && (n - 1).is_multiple_of(2) && args.name_is("MSET") => {
             let mut pairs = Vec::with_capacity((n - 1) / 2);

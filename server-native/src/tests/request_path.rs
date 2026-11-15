@@ -129,10 +129,18 @@ pub(super) enum Workload {
     MGet4,
     HotIncr,
     SetEx,
+    /// 6I-F: INCR on counters that all exist (prefilled `cnt:`), so the
+    /// numeric update alone, with no key creation.
+    IncrExisting,
+    /// 6I-F: INCR that creates its key every time (`new:<n>`, never seen):
+    /// key creation, entry allocation and the key-index insert.
+    IncrNew,
+    /// 6I-F: INCR on existing counters that carry a TTL.
+    IncrTtl,
 }
 
 impl Workload {
-    const ALL: [Workload; 9] = [
+    const ALL: [Workload; 12] = [
         Workload::Set,
         Workload::Get,
         Workload::Incr,
@@ -142,6 +150,9 @@ impl Workload {
         Workload::MGet4,
         Workload::HotIncr,
         Workload::SetEx,
+        Workload::IncrExisting,
+        Workload::IncrNew,
+        Workload::IncrTtl,
     ];
 
     fn name(self) -> &'static str {
@@ -155,6 +166,9 @@ impl Workload {
             Workload::MGet4 => "MGET x4",
             Workload::HotIncr => "INCR hot key",
             Workload::SetEx => "SET EX",
+            Workload::IncrExisting => "INCR existing",
+            Workload::IncrNew => "INCR new key",
+            Workload::IncrTtl => "INCR with TTL",
         }
     }
 
@@ -201,6 +215,11 @@ impl Workload {
                     );
                 }
                 Workload::HotIncr => encode(&[b"INCR", b"hot:counter"], &mut out),
+                Workload::IncrExisting => encode(&[b"INCR", k(i, "cnt").as_bytes()], &mut out),
+                Workload::IncrNew => {
+                    encode(&[b"INCR", format!("new:{j:07}").as_bytes()], &mut out);
+                }
+                Workload::IncrTtl => encode(&[b"INCR", k(i, "vol").as_bytes()], &mut out),
                 Workload::SetEx => {
                     let _ = j;
                     encode(
@@ -231,6 +250,21 @@ fn prefill(store: &KeyValueStore) {
         );
         let (v, _) = Value::parse(&frames).expect("valid frame");
         store.execute(core_engine::cmd::Command::from_value(v).expect("valid command"));
+        // Counters for the 6I-F INCR workloads: plain, and with a TTL.
+        for (prefix, ttl) in [("cnt", false), ("vol", true)] {
+            frames.clear();
+            let key = format!("{prefix}:{i:06}");
+            if ttl {
+                encode(
+                    &[b"SET", key.as_bytes(), b"0", b"EX", b"86400"],
+                    &mut frames,
+                );
+            } else {
+                encode(&[b"SET", key.as_bytes(), b"0"], &mut frames);
+            }
+            let (v, _) = Value::parse(&frames).expect("valid frame");
+            store.execute(core_engine::cmd::Command::from_value(v).expect("valid command"));
+        }
     }
 }
 
@@ -247,6 +281,10 @@ pub(super) struct Shared {
 
 impl Shared {
     pub(super) fn new(with_sync_receiver: bool) -> Shared {
+        Shared::with_aof(with_sync_receiver, None)
+    }
+
+    pub(super) fn with_aof(with_sync_receiver: bool, aof: Option<Arc<AofWriter>>) -> Shared {
         let (tx, _) = broadcast::channel::<SyncMsg>(1024);
         let state = Arc::new(ServerState {
             snap: Arc::new(SnapshotConfig {
@@ -255,7 +293,7 @@ impl Shared {
                 last_save: AtomicI64::new(now_unix_secs()),
                 checkpoint_id: AtomicU64::new(0),
             }),
-            aof: None,
+            aof,
             replicas: ReplHub::new(),
             is_replica: AtomicBool::new(false),
             dedup: std::sync::Mutex::new(HashMap::new()),
@@ -453,6 +491,221 @@ pub(super) fn allocation_budgets() -> Vec<(Workload, f64)> {
     ]
 }
 
+// ── borrowed path equivalence ─────────────────────────────────────────────────
+
+/// A pipeline that exercises the borrowed hot commands next to the commands
+/// that must not take it, in every state the TCP loop distinguishes for
+/// them: plain, inside MULTI (queued, then run by EXEC), wrong types, binary,
+/// empty, Unicode and large values, error-producing arguments, DEDUP.
+fn equivalence_stream() -> Vec<u8> {
+    let big = vec![b'B'; 100_000];
+    let mut out = Vec::new();
+    let cmds: Vec<Vec<&[u8]>> = vec![
+        vec![b"GET", b"missing"],
+        vec![b"SET", b"s", b"v"],
+        vec![b"get", b"s"],
+        vec![b"SET", b"empty", b""],
+        vec![b"GET", b"empty"],
+        vec![b"SET", b"bin", b"\x00\xff\r\n*1\r\n"],
+        vec![b"GET", b"bin"],
+        vec!["SET".as_bytes(), "ключ".as_bytes(), "🔑".as_bytes()],
+        vec!["GET".as_bytes(), "ключ".as_bytes()],
+        vec![b"SET", b"big", &big],
+        vec![b"GET", b"big"],
+        vec![b"INCR", b"n"],
+        vec![b"DECR", b"n"],
+        vec![b"INCR", b"s"],
+        vec![b"SET", b"\xff\xfe", b"not utf-8 key"],
+        vec![b"GET", b""],
+        vec![b"GET", b"a", b"extra"],
+        vec![b"HSET", b"h", b"f", b"1", b"g", b"2"],
+        vec![b"HSET", b"h", b"f"],
+        vec![b"HGET", b"h", b"f"],
+        vec![b"HGET", b"s", b"f"],
+        vec![b"GET", b"h"],
+        vec![b"MGET", b"s", b"h", b"n", b"missing"],
+        vec![b"SET", b"k", b"v", b"EX", b"100"],
+        vec![b"TTL", b"k"],
+        vec![b"MSET", b"m1", b"1", b"m2", b"2"],
+        vec![b"MULTI"],
+        vec![b"SET", b"tx", b"1"],
+        vec![b"INCR", b"tx"],
+        vec![b"GET", b"tx"],
+        vec![b"HSET", b"txh", b"f", b"v"],
+        vec![b"EXEC"],
+        vec![b"MULTI"],
+        vec![b"GET", b"s", b"extra"],
+        vec![b"SET", b"never", b"1"],
+        vec![b"EXEC"],
+        vec![b"GET", b"never"],
+        vec![b"DEDUP", b"c1", b"1", b"INCR", b"d"],
+        vec![b"DEDUP", b"c1", b"1", b"INCR", b"d"],
+        vec![b"GET", b"d"],
+        vec![b"DEL", b"s", b"h"],
+        vec![b"GET", b"s"],
+        vec![b"PING"],
+    ];
+    for c in cmds {
+        encode(&c, &mut out);
+    }
+    out
+}
+
+/// Replies of one connection fed `frames` in chunks of `chunk` bytes (0 =
+/// whole), on a fresh server.
+fn replies_for(frames: &[u8], chunk: usize, with_sync_receiver: bool) -> Vec<u8> {
+    let shared = Shared::new(with_sync_receiver);
+    let (client, server) = tokio::io::duplex(1 << 20);
+    let fut = shared.serve(server);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let frames = frames.to_vec();
+    rt.block_on(async move {
+        let server = tokio::spawn(fut);
+        let (mut rd, mut wr) = tokio::io::split(client);
+        let writer = async move {
+            let mut sizes = [1usize, 7, 3, 5, 2].iter().cycle();
+            let mut at = 0;
+            while at < frames.len() {
+                let n = if chunk == 0 {
+                    frames.len()
+                } else {
+                    *sizes.next().expect("cycle")
+                };
+                let end = (at + n).min(frames.len());
+                wr.write_all(&frames[at..end]).await.expect("write");
+                at = end;
+                tokio::task::yield_now().await;
+            }
+            wr.shutdown().await.expect("shutdown");
+            wr
+        };
+        let reader = async move {
+            let mut out = Vec::new();
+            rd.read_to_end(&mut out).await.expect("read");
+            out
+        };
+        let (_wr, out) = tokio::join!(writer, reader);
+        let _ = server.await;
+        out
+    })
+}
+
+/// The borrowed path is invisible on the wire: for the same input, every
+/// byte of every reply is what the owned path sends — whole or fragmented
+/// input, with and without a sync receiver (which sends writes down the
+/// ordered path while reads stay borrowed).
+#[test]
+fn borrowed_and_owned_paths_send_identical_replies() {
+    let frames = equivalence_stream();
+    for &(chunk, receiver) in &[(0, false), (1, false), (0, true), (1, true)] {
+        crate::propagation::borrowed_switch::OFF.store(true, Ordering::SeqCst);
+        let owned = replies_for(&frames, chunk, receiver);
+        crate::propagation::borrowed_switch::OFF.store(false, Ordering::SeqCst);
+        let borrowed = replies_for(&frames, chunk, receiver);
+        assert_eq!(
+            String::from_utf8_lossy(&borrowed),
+            String::from_utf8_lossy(&owned),
+            "chunk {chunk}, sync receiver {receiver}"
+        );
+        // And the stream really exercised both paths' answers.
+        assert!(owned.len() > 100_000 && owned.windows(9).any(|w| w == b"WRONGTYPE"));
+    }
+}
+
+/// A malformed frame after borrowed commands closes the connection with the
+/// same protocol error, having answered exactly the commands before it.
+#[test]
+fn a_malformed_frame_after_borrowed_commands_closes_identically() {
+    let mut frames = Vec::new();
+    encode(&[b"SET", b"a", b"1"], &mut frames);
+    encode(&[b"GET", b"a"], &mut frames);
+    frames.extend_from_slice(b"*2\r\n$3\r\nGET\r\n$x\r\n");
+    encode(&[b"GET", b"a"], &mut frames);
+    crate::propagation::borrowed_switch::OFF.store(true, Ordering::SeqCst);
+    let owned = replies_for(&frames, 0, false);
+    crate::propagation::borrowed_switch::OFF.store(false, Ordering::SeqCst);
+    let borrowed = replies_for(&frames, 0, false);
+    assert_eq!(borrowed, owned);
+    assert!(
+        owned.starts_with(b"+OK\r\n$1\r\n1\r\n-ERR Protocol error"),
+        "{owned:?}"
+    );
+}
+
+// ── AOF-gated replies ─────────────────────────────────────────────────────────
+
+/// With the AOF on, a pipelined write's wait for its `write(2)` is deferred
+/// to the moment its connection next sends anything — but nothing may reach
+/// the client before the AOF writes of the commands it answers. Whenever the
+/// client has `k` SET replies, the file must already hold `k` SET frames:
+/// whole or fragmented input, small replies batched in the buffered writer
+/// and a large one written straight through it.
+#[test]
+fn no_reply_precedes_the_aof_write_of_its_command() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    for chunk in [0usize, 5] {
+        let path = std::env::temp_dir().join(format!(
+            "recached_gated_aof_{}_{chunk}.aof",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        rt.block_on(async {
+            let aof = Arc::new(AofWriter::open(path.clone(), AofSync::EverySec).await.unwrap());
+            let shared = Shared::with_aof(false, Some(Arc::clone(&aof)));
+            let mut frames = Vec::new();
+            encode(&[b"SET", b"big", &vec![b'B'; 100_000]], &mut frames);
+            for i in 0..300 {
+                encode(&[b"SET", format!("k{i}").as_bytes(), b"v"], &mut frames);
+                if i == 150 {
+                    encode(&[b"GET", b"big"], &mut frames);
+                }
+            }
+            let (client, server) = tokio::io::duplex(1 << 20);
+            let server = tokio::spawn(shared.serve(server));
+            let (mut rd, mut wr) = tokio::io::split(client);
+            let writer = tokio::spawn(async move {
+                if chunk == 0 {
+                    wr.write_all(&frames).await.unwrap();
+                } else {
+                    for part in frames.chunks(chunk * 1000) {
+                        wr.write_all(part).await.unwrap();
+                        tokio::task::yield_now().await;
+                    }
+                }
+                wr
+            });
+            let mut got = Vec::new();
+            let mut buf = vec![0u8; 64 * 1024];
+            let mut oks = 0;
+            while oks < 301 {
+                let n = rd.read(&mut buf).await.unwrap();
+                assert!(n > 0, "server closed early");
+                got.extend_from_slice(&buf[..n]);
+                oks = got.windows(5).filter(|w| w == b"+OK\r\n").count();
+                let on_disk = std::fs::read(&path).unwrap_or_default();
+                let logged = on_disk.windows(7).filter(|w| w == b"$3\r\nSET").count();
+                assert!(
+                    logged >= oks,
+                    "chunk {chunk}: {oks} SET replies received but only {logged} SETs in the AOF ({} bytes: {:?})",
+                    on_disk.len(),
+                    String::from_utf8_lossy(&on_disk[..on_disk.len().min(80)])
+                );
+            }
+            drop(writer.await.unwrap());
+            drop(rd);
+            let _ = server.await;
+        });
+        let _ = std::fs::remove_file(&path);
+    }
+}
+
 // ── A/B benchmark ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -466,10 +719,20 @@ fn request_path_bench() {
     let label = std::env::var("BENCH_LABEL").unwrap_or_else(|_| "this".to_string());
     let sync = std::env::var("BENCH_SYNC").is_ok_and(|v| v == "1");
     let only = std::env::var("BENCH_ONLY").ok();
+    // `BENCH_METRICS=1`: the Prometheus recorder the shipped server installs
+    // by default (RECACHED_METRICS_PORT unset), without its HTTP listener.
+    // Installed before any command runs: the per-command handles are cached
+    // on first use, so a recorder installed later would never see them.
+    let metrics = std::env::var("BENCH_METRICS").is_ok_and(|v| v == "1");
+    let handle = metrics.then(|| {
+        metrics_exporter_prometheus::PrometheusBuilder::new()
+            .install_recorder()
+            .expect("install the Prometheus recorder")
+    });
     let mut csv = String::new();
     println!(
-        "{:<14} {:>10} {:>10} {:>10} {:>11}   (label {label}, sync receiver {sync}, {reps} reps x {N})",
-        "workload", "min ns", "median ns", "allocs", "bytes"
+        "{:<14} {:>10} {:>10} {:>10} {:>11} {:>10}   (label {label}, sync receiver {sync}, metrics {metrics}, {reps} reps x {N})",
+        "workload", "min ns", "median ns", "allocs", "bytes", "upkeep ns"
     );
     for workload in Workload::ALL {
         if let Some(only) = &only
@@ -482,20 +745,36 @@ fn request_path_bench() {
         let mut ns: Vec<f64> = Vec::with_capacity(reps);
         let mut allocs = 0.0;
         let mut bytes = 0.0;
+        let mut upkeep: Vec<f64> = Vec::with_capacity(reps);
         for _ in 0..reps {
             let run = measure(workload, N, sync);
             ns.push(run.elapsed.as_nanos() as f64 / N as f64);
             allocs = run.allocs as f64 / N as f64;
             bytes = run.bytes as f64 / N as f64;
+            // The exporter drains histogram samples into its summaries on
+            // upkeep (every 5 s in the server, on its own thread): CPU the
+            // server pays per command, but outside the connection's time.
+            if let Some(handle) = &handle {
+                let started = Instant::now();
+                handle.run_upkeep();
+                upkeep.push(started.elapsed().as_nanos() as f64 / N as f64);
+            }
         }
         ns.sort_by(f64::total_cmp);
+        upkeep.sort_by(f64::total_cmp);
         let (min, median) = (ns[0], ns[reps / 2]);
+        let upkeep = upkeep.get(reps / 2).copied().unwrap_or(0.0);
         println!(
-            "{:<14} {min:>10.1} {median:>10.1} {allocs:>10.2} {bytes:>11.1}",
+            "{:<14} {min:>10.1} {median:>10.1} {allocs:>10.2} {bytes:>11.1} {upkeep:>10.1}",
             workload.name()
         );
+        let label = if metrics {
+            format!("{label}+metrics")
+        } else {
+            label.clone()
+        };
         csv.push_str(&format!(
-            "{label},{},{sync},{min:.1},{median:.1},{allocs:.2},{bytes:.1},{}\n",
+            "{label},{},{sync},{min:.1},{median:.1},{allocs:.2},{bytes:.1},{upkeep:.1},{}\n",
             workload.name(),
             ns.iter()
                 .map(|v| format!("{v:.1}"))
