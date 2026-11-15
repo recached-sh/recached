@@ -17,6 +17,9 @@ server/client/memtier logs as `logs.tar.gz`.
 | `headline-reps/` | 6I vs 6J-B (reviewed), scenario D, 0/100/500/1,000 clients × 1/4 workers, 3 repetitions |
 | `routing-EJ-b/` | 6I vs 6J-B, scenarios E, J, H |
 | `h-keyspace-1k/` | Scenario H with a 1k-key background keyspace (isolates QSUB snapshot cost) |
-| `scan-index-prototype/` | 6J-B: ordered-index alternatives, standalone crate |
+| `soak/`, `soak-500/` | 6J-F production soak (from 6I's): primary + replica + AOF, 500 + 60 WebSocket clients incl. renewal/QSUB-churn/slow groups, 20 min, crash + AOF recovery, write ledger |
+| `standalone-1w/` | 6I vs 6J-B vs Redis vs Valkey, standard workloads, 1 worker, 3 gated repetitions (via `../6i-prod/gated.sh`) |
+
+The 6J-B ordered-index prototype is on branch `fix/v0.6j-scan-cursor-eviction` (`benchmarks/v0.6.0/6j/scan-index-prototype/`).
 
 Binaries: `6i` = merged 6I (`738a6a6`); `6j-a` = routing; `6j-b` = routing + review fixes.

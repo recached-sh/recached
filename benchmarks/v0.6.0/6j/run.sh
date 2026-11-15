@@ -17,7 +17,7 @@ envs=(); for kv in "$@"; do envs+=(-e "$kv"); done
   echo "branch: $(git -C "$here" rev-parse --abbrev-ref HEAD) $(git -C "$here" rev-parse --short HEAD) (+ working tree)"
   (cd "$bins" && shasum -a 256 recached-server-*)
 } >"$out/conditions.txt"
-docker run --rm --name "recached-6j-${SCRIPT:-ws-route}" --ulimit nofile=65536:65536 \
+docker run --rm --name "recached-6j-$(echo "${SCRIPT:-ws-route}" | tr /. --)" --ulimit nofile=65536:65536 \
   -v "$bins":/bins:ro -v "$here":/scripts:ro -v "$out":/out \
   "${envs[@]}" recached-6i-bench:local \
   bash -c "{ uname -a; nproc; grep -m1 'model name' /proc/cpuinfo; free -m; redis-server --version; memtier_benchmark --version | head -1; node --version; for b in /bins/recached-server-*; do echo \$b: \$(\$b --version); done; } >> /out/conditions.txt; /scripts/${SCRIPT:-ws-route.sh}"
