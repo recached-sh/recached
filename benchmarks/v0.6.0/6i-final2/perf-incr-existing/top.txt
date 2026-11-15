@@ -1,0 +1,400 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 7K of event 'cpu-clock:pppH'
+# Event count (approx.): 7817817810
+#
+# Overhead  Symbol                                                                                                                                                                                                                                                                             IPC   [IPC Coverage]
+# ........  .................................................................................................................................................................................................................................................................................  ....................
+#
+    36.89%  [k] _raw_spin_unlock_irqrestore                                                                                                                                                                                                                                                    -      -            
+            |          
+            |--36.27%--sock_def_readable
+            |          |          
+            |           --36.25%--tcp_rcv_established
+            |                     tcp_v4_do_rcv
+            |                     tcp_v4_rcv
+            |                     ip_protocol_deliver_rcu
+            |                     ip_local_deliver_finish
+            |                     __netif_receive_skb_one_core
+            |                     process_backlog
+            |                     __napi_poll
+            |                     net_rx_action
+            |                     handle_softirqs
+            |                     do_softirq
+            |                     __local_bh_enable_ip
+            |                     __dev_queue_xmit
+            |                     ip_finish_output2
+            |                     ip_output
+            |                     __ip_queue_xmit
+            |                     __tcp_transmit_skb
+            |                     tcp_write_xmit
+            |                     __tcp_push_pending_frames
+            |                     tcp_sendmsg_locked
+            |                     tcp_sendmsg
+            |                     __sys_sendto
+            |                     __x64_sys_sendto
+            |                     do_syscall_64
+            |                     entry_SYSCALL_64_after_hwframe
+            |                     __send
+            |          
+             --0.59%--__mod_timer
+                       sk_reset_timer
+     2.97%  [.] __vdso_clock_gettime                                                                                                                                                                                                                                                           -      -            
+            |          
+             --2.78%--clock_gettime
+                       |          
+                       |--1.04%--recached_server::propagation::try_execute_borrowed
+                       |          
+                       |--0.95%--recached_server::clients::record_metrics
+                       |          
+                        --0.77%--core_engine::store::incr_by::<&str>
+                                  0x10
+                                  0x7fd445693a00
+     2.71%  [.] <core_engine::request::RequestDecoder>::decode_any                                                                                                                                                                                                                             -      -            
+     2.66%  [.] <dashmap::DashMap<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>> as dashmap::t::Map<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>, std::hash::random::RandomState>>::_get_mut::<str>                                               -      -            
+            |          
+             --0.51%--0x690a0d34240a0d32
+     2.20%  [.] recached_server::connection::handle_tcp::<tokio::net::tcp::stream::TcpStream>::{closure#0}::{closure#0}                                                                                                                                                                        -      -            
+     1.88%  [.] recached_server::clients::record_metrics                                                                                                                                                                                                                                       -      -            
+     1.54%  [.] core_engine::store::incr_by::<&str>                                                                                                                                                                                                                                            -      -            
+            |          
+             --1.04%--0x10
+                       0x7fd445693a00
+     1.37%  [.] <core_engine::store::KeyValueStore>::execute_ref_into                                                                                                                                                                                                                          -      -            
+            |          
+             --0.86%--0
+     1.37%  [.] 0x0000000000152619                                                                                                                                                                                                                                                             -      -            
+     1.32%  [.] recached_server::run::{closure#0}::{closure#28}::{closure#0}                                                                                                                                                                                                                   -      -            
+     1.23%  [.] recached_server::propagation::try_execute_borrowed                                                                                                                                                                                                                             -      -            
+     1.10%  [.] __send                                                                                                                                                                                                                                                                         -      -            
+     1.04%  [k] rep_movs_alternative                                                                                                                                                                                                                                                           -      -            
+            |          
+             --0.70%--_copy_from_iter
+                       tcp_sendmsg_locked
+                       tcp_sendmsg
+                       __sys_sendto
+                       __x64_sys_sendto
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __send
+     1.01%  [.] core::str::converts::from_utf8                                                                                                                                                                                                                                                 -      -            
+     0.97%  [.] clock_gettime                                                                                                                                                                                                                                                                  -      -            
+            |          
+             --0.54%--recached_server::propagation::try_execute_borrowed
+     0.96%  [.] recv                                                                                                                                                                                                                                                                           -      -            
+     0.92%  [.] core_engine::store::lock_stripe                                                                                                                                                                                                                                                -      -            
+     0.86%  [k] do_syscall_64                                                                                                                                                                                                                                                                  -      -            
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+                --0.55%--__send
+     0.83%  [k] fdget                                                                                                                                                                                                                                                                          -      -            
+            |          
+             --0.65%--__sys_recvfrom
+                       __x64_sys_recvfrom
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       recv
+     0.77%  [.] core_engine::resp::format_i64                                                                                                                                                                                                                                                  -      -            
+     0.77%  [.] core_engine::store::entry_size                                                                                                                                                                                                                                                 -      -            
+            |          
+             --0.52%--0x690a0d34240a0d32
+     0.74%  [k] tcp_ack                                                                                                                                                                                                                                                                        -      -            
+            |
+            ---tcp_rcv_established
+               tcp_v4_do_rcv
+               tcp_v4_rcv
+               ip_protocol_deliver_rcu
+               ip_local_deliver_finish
+               __netif_receive_skb_one_core
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               ip_output
+               __ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               __sys_sendto
+               __x64_sys_sendto
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __send
+     0.72%  [.] core_engine::request::build_ref                                                                                                                                                                                                                                                -      -            
+     0.69%  [.] 0x0000000000152a80                                                                                                                                                                                                                                                             -      -            
+     0.68%  [.] <core_engine::store::SlotRef as core::ops::drop::Drop>::drop                                                                                                                                                                                                                   -      -            
+     0.63%  [.] <tokio::sync::mpsc::list::Rx<()>>::pop                                                                                                                                                                                                                                         -      -            
+     0.61%  [.] <dashmap::DashMap<alloc::sync::Arc<str>, alloc::boxed::Box<core_engine::store::Entry>>>::hash_u64::<&str>                                                                                                                                                                      -      -            
+            |          
+             --0.55%--0x690a0d34240a0d32
+     0.58%  [.] <tokio::runtime::scheduler::multi_thread::worker::Context>::run_task                                                                                                                                                                                                           -      -            
+            |
+            ---0x7fd446a5c060
+     0.58%  [k] inet_recvmsg                                                                                                                                                                                                                                                                   -      -            
+            |
+            ---sock_recvmsg
+               __sys_recvfrom
+               __x64_sys_recvfrom
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               recv
+     0.56%  [k] tcp_rcv_established                                                                                                                                                                                                                                                            -      -            
+            |
+            ---tcp_v4_do_rcv
+               tcp_v4_rcv
+               ip_protocol_deliver_rcu
+               ip_local_deliver_finish
+               __netif_receive_skb_one_core
+               process_backlog
+               __napi_poll
+               net_rx_action
+               handle_softirqs
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               ip_output
+               __ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               __sys_sendto
+               __x64_sys_sendto
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __send
+     0.54%  [k] net_rx_action                                                                                                                                                                                                                                                                  -      -            
+            |
+            ---handle_softirqs
+               do_softirq
+               __local_bh_enable_ip
+               __dev_queue_xmit
+               ip_finish_output2
+               ip_output
+               __ip_queue_xmit
+               __tcp_transmit_skb
+               tcp_write_xmit
+               __tcp_push_pending_frames
+               tcp_sendmsg_locked
+               tcp_sendmsg
+               __sys_sendto
+               __x64_sys_sendto
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __send
+     0.50%  [.] <std::hash::random::RandomState as core::hash::BuildHasher>::hash_one::<&str>                                                                                                                                                                                                  -      -            
+     0.50%  [k] __inet_lookup_established                                                                                                                                                                                                                                                      -      -            
+     0.50%  [.] tokio::runtime::task::raw::poll::<core::pin::Pin<alloc::boxed::Box<recached_server::run::{closure#0}::{closure#28}::{closure#0}>>, alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>>                                                                  -      -            
+     0.46%  [.] core_engine::resp::write_header                                                                                                                                                                                                                                                -      -            
+     0.46%  [k] tcp_sendmsg_locked                                                                                                                                                                                                                                                             -      -            
+     0.44%  [.] <tokio::io::util::write_all::WriteAll<tokio::io::util::buf_writer::BufWriter<recached_server::persistence::AofGatedWriter<tokio::io::split::WriteHalf<tokio::net::tcp::stream::TcpStream>>>> as core::future::future::Future>::poll                                            -      -            
+     0.42%  [.] <core_engine::store::StrValue>::parse_as::<i64>                                                                                                                                                                                                                                -      -            
+     0.41%  [.] <tokio::runtime::io::registration::Registration>::poll_ready                                                                                                                                                                                                                   -      -            
+     0.41%  [k] __tcp_transmit_skb                                                                                                                                                                                                                                                             -      -            
+     0.40%  [.] <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write                                                                                                                                                                                           -      -            
+     0.40%  [.] <core::hash::sip::Hasher<core::hash::sip::Sip13Rounds> as core::hash::Hasher>::write                                                                                                                                                                                           -      -            
+     0.40%  [.] <std::sys::pal::unix::time::Timespec>::sub_timespec                                                                                                                                                                                                                            -      -            
+     0.40%  [k] kmem_cache_alloc_node_noprof                                                                                                                                                                                                                                                   -      -            
+     0.40%  [k] tcp_write_xmit                                                                                                                                                                                                                                                                 -      -            
+     0.37%  [k] __ip_queue_xmit                                                                                                                                                                                                                                                                -      -            
+     0.36%  [k] tcp_v4_rcv                                                                                                                                                                                                                                                                     -      -            
+     0.33%  [k] __netif_receive_skb_core.constprop.0                                                                                                                                                                                                                                           -      -            
+     0.32%  [k] tcp_recvmsg_locked                                                                                                                                                                                                                                                             -      -            
+     0.31%  [k] ip_finish_output2                                                                                                                                                                                                                                                              -      -            
+     0.31%  [.] tokio::runtime::task::raw::poll::<tokio::runtime::blocking::task::BlockingTask<<tokio::runtime::scheduler::multi_thread::worker::Launch>::launch::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>                                                          -      -            
+     0.29%  [.] <std::sys::pal::unix::time::Timespec>::now                                                                                                                                                                                                                                     -      -            
+     0.28%  [.] <tokio::sync::mpsc::bounded::Receiver<()>>::recv::{closure#0}                                                                                                                                                                                                                  -      -            
+     0.28%  [k] __sys_recvfrom                                                                                                                                                                                                                                                                 -      -            
+     0.27%  [k] __alloc_skb                                                                                                                                                                                                                                                                    -      -            
+     0.27%  [k] __dev_queue_xmit                                                                                                                                                                                                                                                               -      -            
+     0.27%  [.] core::ptr::drop_glue::<core_engine::resp::Value>                                                                                                                                                                                                                               -      -            
+     0.27%  [k] sock_poll                                                                                                                                                                                                                                                                      -      -            
+     0.27%  [.] 0x0000000000152ad9                                                                                                                                                                                                                                                             -      -            
+     0.26%  [.] <tokio::io::split::ReadHalf<tokio::net::tcp::stream::TcpStream> as tokio::io::async_read::AsyncRead>::poll_read                                                                                                                                                                -      -            
+     0.26%  [k] __sys_sendto                                                                                                                                                                                                                                                                   -      -            
+     0.26%  [k] __virt_addr_valid                                                                                                                                                                                                                                                              -      -            
+     0.24%  [.] <core_engine::resp::Value>::serialize_into                                                                                                                                                                                                                                     -      -            
+     0.24%  [.] <tokio::io::util::buf_writer::BufWriter<recached_server::persistence::AofGatedWriter<tokio::io::split::WriteHalf<tokio::net::tcp::stream::TcpStream>>>>::flush_buf                                                                                                             -      -            
+     0.24%  [k] __rcu_read_lock                                                                                                                                                                                                                                                                -      -            
+     0.24%  [k] __skb_datagram_iter                                                                                                                                                                                                                                                            -      -            
+     0.24%  [.] 0x0000000000152a83                                                                                                                                                                                                                                                             -      -            
+     0.23%  [.] <core_engine::request::Args>::key_ref                                                                                                                                                                                                                                          -      -            
+     0.23%  [.] <recached_server::persistence::DeferredAof>::pop                                                                                                                                                                                                                               -      -            
+     0.23%  [k] read_tsc                                                                                                                                                                                                                                                                       -      -            
+     0.22%  [.] core_engine::store::write_slot::<&str>                                                                                                                                                                                                                                         -      -            
+     0.22%  [k] skb_release_data                                                                                                                                                                                                                                                               -      -            
+     0.20%  [k] ip_rcv_finish_core                                                                                                                                                                                                                                                             -      -            
+     0.20%  [k] tcp_rcv_space_adjust                                                                                                                                                                                                                                                           -      -            
+     0.19%  [.] <tokio::net::tcp::stream::TcpStream>::poll_write_priv                                                                                                                                                                                                                          -      -            
+     0.18%  [.] <core_engine::resp::Value>::parse_inner                                                                                                                                                                                                                                        -      -            
+     0.18%  [k] do_softirq                                                                                                                                                                                                                                                                     -      -            
+     0.18%  [k] enqueue_to_backlog                                                                                                                                                                                                                                                             -      -            
+     0.18%  [k] skb_attempt_defer_free                                                                                                                                                                                                                                                         -      -            
+     0.18%  [k] tcp_schedule_loss_probe                                                                                                                                                                                                                                                        -      -            
+     0.18%  [.] 0x000000000015265b                                                                                                                                                                                                                                                             -      -            
+     0.17%  [.] <tokio::io::split::WriteHalf<tokio::net::tcp::stream::TcpStream> as tokio::io::async_write::AsyncWrite>::poll_write                                                                                                                                                            -      -            
+     0.17%  [k] _raw_spin_lock_bh                                                                                                                                                                                                                                                              -      -            
+     0.17%  [k] handle_softirqs                                                                                                                                                                                                                                                                -      -            
+     0.17%  [k] inet_send_prepare                                                                                                                                                                                                                                                              -      -            
+     0.17%  [k] ip_protocol_deliver_rcu                                                                                                                                                                                                                                                        -      -            
+     0.17%  [k] ktime_get                                                                                                                                                                                                                                                                      -      -            
+     0.17%  [k] tcp_ack_update_rtt                                                                                                                                                                                                                                                             -      -            
+     0.17%  [k] tcp_current_mss                                                                                                                                                                                                                                                                -      -            
+     0.17%  [k] tcp_poll                                                                                                                                                                                                                                                                       -      -            
+     0.17%  [k] tcp_v4_fill_cb                                                                                                                                                                                                                                                                 -      -            
+     0.17%  [.] 0x0000000000152a8d                                                                                                                                                                                                                                                             -      -            
+     0.15%  [k] __check_object_size                                                                                                                                                                                                                                                            -      -            
+     0.15%  [k] __sk_dst_check                                                                                                                                                                                                                                                                 -      -            
+     0.15%  [k] fput                                                                                                                                                                                                                                                                           -      -            
+     0.15%  [k] loopback_xmit                                                                                                                                                                                                                                                                  -      -            
+     0.15%  [k] process_backlog                                                                                                                                                                                                                                                                -      -            
+     0.15%  [k] sock_def_readable                                                                                                                                                                                                                                                              -      -            
+     0.15%  [.] tokio::runtime::task::waker::wake_by_val                                                                                                                                                                                                                                       -      -            
+     0.15%  [k] x64_sys_call                                                                                                                                                                                                                                                                   -      -            
+     0.15%  [.] 0x0000000000152adf                                                                                                                                                                                                                                                             -      -            
+     0.14%  [.] <recached_server::persistence::AofGatedWriter<tokio::io::split::WriteHalf<tokio::net::tcp::stream::TcpStream>>>::poll_settled                                                                                                                                                  -      -            
+     0.14%  [.] <tokio::sync::task::atomic_waker::AtomicWaker>::register_by_ref                                                                                                                                                                                                                -      -            
+     0.14%  [k] _copy_from_iter                                                                                                                                                                                                                                                                -      -            
+     0.14%  [k] ep_item_poll.isra.0                                                                                                                                                                                                                                                            -      -            
+     0.14%  [k] tcp_skb_entail                                                                                                                                                                                                                                                                 -      -            
+     0.14%  [k] tcp_v4_do_rcv                                                                                                                                                                                                                                                                  -      -            
+     0.14%  [.] 0x0000000000152b47                                                                                                                                                                                                                                                             -      -            
+     0.13%  [.] <tokio::runtime::io::driver::Driver>::turn                                                                                                                                                                                                                                     -      -            
+     0.13%  [k] __rcu_read_unlock                                                                                                                                                                                                                                                              -      -            
+     0.13%  [k] ip_queue_xmit                                                                                                                                                                                                                                                                  -      -            
+     0.13%  [k] lock_timer_base                                                                                                                                                                                                                                                                -      -            
+     0.13%  [k] mod_memcg_state                                                                                                                                                                                                                                                                -      -            
+     0.13%  [k] raw_local_deliver                                                                                                                                                                                                                                                              -      -            
+     0.13%  [k] tcp_event_new_data_sent                                                                                                                                                                                                                                                        -      -            
+     0.13%  [.] tokio::runtime::task::waker::clone_waker                                                                                                                                                                                                                                       -      -            
+     0.13%  [.] 0x000000000015261d                                                                                                                                                                                                                                                             -      -            
+     0.13%  [.] 0x0000000000152ab0                                                                                                                                                                                                                                                             -      -            
+     0.13%  [.] 0x0000000000152b5b                                                                                                                                                                                                                                                             -      -            
+     0.12%  [k] __local_bh_enable_ip                                                                                                                                                                                                                                                           -      -            
+     0.12%  [k] eth_type_trans                                                                                                                                                                                                                                                                 -      -            
+     0.12%  [k] kfree                                                                                                                                                                                                                                                                          -      -            
+     0.12%  [k] skb_clone                                                                                                                                                                                                                                                                      -      -            
+     0.12%  [k] validate_xmit_skb.isra.0                                                                                                                                                                                                                                                       -      -            
+     0.10%  [.] <recached_server::persistence::AOF_DEFERRED::__KEY::{K#0}::{closure#0} as core::ops::function::FnOnce<(core::option::Option<&mut core::option::Option<core::cell::RefCell<core::option::Option<alloc::sync::Arc<recached_server::persistence::DeferredAof>>>>>,)>>::call_once  -      -            
+     0.10%  [.] <tokio::runtime::io::scheduled_io::ScheduledIo>::wake                                                                                                                                                                                                                          -      -            
+     0.10%  [k] _raw_spin_unlock_irq                                                                                                                                                                                                                                                           -      -            
+     0.10%  [k] kfree_skbmem                                                                                                                                                                                                                                                                   -      -            
+     0.10%  [k] sock_rfree                                                                                                                                                                                                                                                                     -      -            
+     0.10%  [.] 0x0000000000152b99                                                                                                                                                                                                                                                             -      -            
+     0.10%  [.] 0x0000000000152bcb                                                                                                                                                                                                                                                             -      -            
+     0.09%  [k] __netif_receive_skb_one_core                                                                                                                                                                                                                                                   -      -            
+     0.09%  [k] __tcp_cleanup_rbuf                                                                                                                                                                                                                                                             -      -            
+     0.09%  [k] __tcp_select_window                                                                                                                                                                                                                                                            -      -            
+     0.09%  [k] ep_send_events                                                                                                                                                                                                                                                                 -      -            
+     0.09%  [k] ip_output                                                                                                                                                                                                                                                                      -      -            
+     0.09%  [k] sock_recvmsg                                                                                                                                                                                                                                                                   -      -            
+     0.09%  [k] tcp_recvmsg                                                                                                                                                                                                                                                                    -      -            
+     0.09%  [.] 0x0000000000152a89                                                                                                                                                                                                                                                             -      -            
+     0.09%  [.] 0x0000000000152ab5                                                                                                                                                                                                                                                             -      -            
+     0.08%  [k] __ip_local_out                                                                                                                                                                                                                                                                 -      -            
+     0.08%  [k] cubictcp_cwnd_event                                                                                                                                                                                                                                                            -      -            
+     0.08%  [k] import_ubuf                                                                                                                                                                                                                                                                    -      -            
+     0.08%  [k] ip_finish_output                                                                                                                                                                                                                                                               -      -            
+     0.08%  [k] rb_erase                                                                                                                                                                                                                                                                       -      -            
+     0.08%  [k] skb_push                                                                                                                                                                                                                                                                       -      -            
+     0.08%  [k] tcp_event_data_recv                                                                                                                                                                                                                                                            -      -            
+     0.08%  [k] tcp_tso_segs                                                                                                                                                                                                                                                                   -      -            
+     0.08%  [k] try_charge_memcg                                                                                                                                                                                                                                                               -      -            
+     0.08%  [.] 0x0000000000152ad5                                                                                                                                                                                                                                                             -      -            
+     0.06%  [.] <tokio::io::split::WriteHalf<tokio::net::tcp::stream::TcpStream> as tokio::io::async_write::AsyncWrite>::poll_flush                                                                                                                                                            -      -            
+     0.06%  [k] __css_rstat_updated                                                                                                                                                                                                                                                            -      -            
+     0.06%  [k] __x64_sys_recvfrom                                                                                                                                                                                                                                                             -      -            
+     0.06%  [k] cubictcp_acked                                                                                                                                                                                                                                                                 -      -            
+     0.06%  [k] inet_sendmsg                                                                                                                                                                                                                                                                   -      -            
+     0.06%  [k] ip_rcv_core                                                                                                                                                                                                                                                                    -      -            
+     0.06%  [k] ipv4_mtu                                                                                                                                                                                                                                                                       -      -            
+     0.06%  [k] its_return_thunk                                                                                                                                                                                                                                                               -      -            
+     0.06%  [k] netif_skb_features                                                                                                                                                                                                                                                             -      -            
+     0.06%  [k] sk_page_frag_refill                                                                                                                                                                                                                                                            -      -            
+     0.06%  [k] tcp_chrono_stop                                                                                                                                                                                                                                                                -      -            
+     0.06%  [k] tcp_queue_rcv                                                                                                                                                                                                                                                                  -      -            
+     0.06%  [k] tcp_update_pacing_rate                                                                                                                                                                                                                                                         -      -            
+     0.06%  [.] 0x0000000000152ba5                                                                                                                                                                                                                                                             -      -            
+     0.06%  [.] 0x0000000000152c3b                                                                                                                                                                                                                                                             -      -            
+     0.05%  [.] <tokio::net::tcp::stream::TcpStream>::poll_read_priv                                                                                                                                                                                                                           -      -            
+     0.05%  [.] <tokio::runtime::signal::Driver>::process                                                                                                                                                                                                                                      -      -            
+     0.05%  [k] __copy_skb_header                                                                                                                                                                                                                                                              -      -            
+     0.05%  [k] __mod_timer                                                                                                                                                                                                                                                                    -      -            
+     0.05%  [k] __sk_mem_reduce_allocated                                                                                                                                                                                                                                                      -      -            
+     0.05%  [k] _raw_spin_lock                                                                                                                                                                                                                                                                 -      -            
+     0.05%  [k] get_rps_cpu                                                                                                                                                                                                                                                                    -      -            
+     0.05%  [k] ipv4_dst_check                                                                                                                                                                                                                                                                 -      -            
+     0.05%  [k] kmem_cache_free                                                                                                                                                                                                                                                                -      -            
+     0.05%  [k] qdisc_pkt_len_segs_init                                                                                                                                                                                                                                                        -      -            
+     0.05%  [k] release_sock                                                                                                                                                                                                                                                                   -      -            
+     0.05%  [k] sk_filter_trim_cap                                                                                                                                                                                                                                                             -      -            
+     0.05%  [k] skb_page_frag_refill                                                                                                                                                                                                                                                           -      -            
+     0.05%  [k] tcp_rearm_rto                                                                                                                                                                                                                                                                  -      -            
+     0.05%  [k] tcp_rearm_rto.part.0                                                                                                                                                                                                                                                           -      -            
+     0.05%  [.] tokio::runtime::task::waker::drop_waker                                                                                                                                                                                                                                        -      -            
+     0.05%  [.] 0x0000000000152b86                                                                                                                                                                                                                                                             -      -            
+     0.05%  [.] 0x0000000000152b8f                                                                                                                                                                                                                                                             -      -            
+     0.04%  [.] <tokio::process::imp::GlobalOrphanQueue>::reap_orphans                                                                                                                                                                                                                         -      -            
+     0.04%  [.] <tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal                                                                                                                                                                                                      -      -            
+     0.04%  [k] __kfree_skb                                                                                                                                                                                                                                                                    -      -            
+     0.04%  [k] __softirqentry_text_end                                                                                                                                                                                                                                                        -      -            
+     0.04%  [k] __xfrm_policy_check2.constprop.0                                                                                                                                                                                                                                               -      -            
+     0.04%  [k] _copy_to_iter                                                                                                                                                                                                                                                                  -      -            
+     0.04%  [k] bpf_skops_write_hdr_opt.isra.0                                                                                                                                                                                                                                                 -      -            
+     0.04%  [k] cubictcp_cong_avoid                                                                                                                                                                                                                                                            -      -            
+     0.04%  [k] mod_timer                                                                                                                                                                                                                                                                      -      -            
+     0.04%  [k] refill_stock                                                                                                                                                                                                                                                                   -      -            
+     0.04%  [k] set_normalized_timespec64                                                                                                                                                                                                                                                      -      -            
+     0.04%  [k] sk_forced_mem_schedule                                                                                                                                                                                                                                                         -      -            
+     0.04%  [k] sk_reset_timer                                                                                                                                                                                                                                                                 -      -            
+     0.04%  [k] skb_csum_hwoffload_help                                                                                                                                                                                                                                                        -      -            
+     0.04%  [k] tcp_established_options.isra.0                                                                                                                                                                                                                                                 -      -            
+     0.04%  [k] tcp_sendmsg                                                                                                                                                                                                                                                                    -      -            
+     0.04%  [k] tcp_small_queue_check.isra.0                                                                                                                                                                                                                                                   -      -            
+     0.04%  [k] tcp_update_skb_after_send                                                                                                                                                                                                                                                      -      -            
+     0.04%  [k] tcp_v4_send_check                                                                                                                                                                                                                                                              -      -            
+     0.04%  [k] tcp_wfree                                                                                                                                                                                                                                                                      -      -            
+     0.04%  [.] 0x000000000006f250                                                                                                                                                                                                                                                             -      -            
+     0.04%  [.] 0x000000000006f2aa                                                                                                                                                                                                                                                             -      -            
+     0.04%  [.] 0x0000000000085845                                                                                                                                                                                                                                                             -      -            
+     0.04%  [.] 0x00000000000858b9                                                                                                                                                                                                                                                             -      -            
+     0.04%  [.] 0x00000000000858d1                                                                                                                                                                                                                                                             -      -            
+     0.04%  [.] 0x0000000000152633                                                                                                                                                                                                                                                             -      -            
+     0.04%  [.] 0x0000000000152adb                                                                                                                                                                                                                                                             -      -            
+     0.04%  [.] 0x0000000000152b40                                                                                                                                                                                                                                                             -      -            
+     0.03%  [.] <tokio::runtime::driver::Driver>::park                                                                                                                                                                                                                                         -      -            
+     0.03%  [.] <tokio::runtime::scheduler::multi_thread::handle::Handle>::schedule_task::{closure#0}                                                                                                                                                                                          -      -            
+     0.03%  [.] <tokio::runtime::time::Driver>::park_internal                                                                                                                                                                                                                                  -      -            
+     0.03%  [.] __floattidf                                                                                                                                                                                                                                                                    -      -            
+     0.03%  [k] __ip_finish_output                                                                                                                                                                                                                                                             -      -            
+     0.03%  [k] __tcp_ack_snd_check                                                                                                                                                                                                                                                            -      -            
+     0.03%  [k] __tcp_push_pending_frames                                                                                                                                                                                                                                                      -      -            
+     0.03%  [k] __wake_up_sync_key                                                                                                                                                                                                                                                             -      -            
+     0.03%  [k] __x64_sys_sendto                                                                                                                                                                                                                                                               -      -            
+     0.03%  [k] _raw_spin_lock_irqsave                                                                                                                                                                                                                                                         -      -            
+     0.03%  [k] _raw_spin_unlock_bh                                                                                                                                                                                                                                                            -      -            
+     0.03%  [k] dev_hard_start_xmit                                                                                                                                                                                                                                                            -      -            
+     0.03%  [k] do_epoll_wait                                                                                                                                                                                                                                                                  -      -            
+     0.03%  [k] inet_ehashfn                                                                                                                                                                                                                                                                   -      -            
+     0.03%  [k] ip_local_deliver                                                                                                                                                                                                                                                               -      -            
+     0.03%  [k] ip_local_deliver_finish                                                                                                                                                                                                                                                        -      -            
+     0.03%  [k] ip_rcv                                                                                                                                                                                                                                                                         -      -            
+     0.03%  [k] ip_send_check                                                                                                                                                                                                                                                                  -      -            
+     0.03%  [k] ip_skb_dst_mtu                                                                                                                                                                                                                                                                 -      -            
+     0.03%  [k] ktime_get_seconds                                                                                                                                                                                                                                                              -      -            
+     0.03%  [k] napi_consume_skb                                                                                                                                                                                                                                                               -      -            
+     0.03%  [k] rb_insert_color                                                                                                                                                                                                                                                                -      -            
+     0.03%  [k] rb_next                                                                                                                                                                                                                                                                        -      -            
+     0.03%  [k] security_sock_rcv_skb                                                                                                                                                                                                                                                          -      -            

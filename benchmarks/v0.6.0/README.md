@@ -94,6 +94,12 @@ these runs; the VM's virtual disk makes every fsync figure indicative only.
 | `6i-baseline/rep-1/` | the production matrix on 6H, Redis, Valkey **before** any change | Indicative; overlapped host compiles (`host-activity.txt`). The AOF and capped defects are 20–300× effects, far outside its noise |
 | `6i-perf/` | perf profiles, AOF and capped, at each step of the AOF fix | Use for shares; rates are with the profiler attached |
 | `6i-inproc/`, `6i-final/inproc/` | in-process request path, 6H vs 6I (metrics off and on, INCR split, hot-key scaling) | **Use** for relative cost; load ~1.0 |
-| `6i-final/prod/rep-*/` | the production matrix, 6H vs 6I vs Redis vs Valkey, 3 load-gated repetitions | Indicative only — non-dedicated host |
 | `6i-final/ws/` | WebSocket sync matrix, 6H vs 6I, 1/10/100/500 clients, 1 and 4 workers, 2 reps | Indicative; Recached-only functionality, not a Redis comparison |
 | `6i-final/ttl/`, `6i-final/ttl-rc3/` | expiry backlog, 6H/6I/Redis and rc3 | Use: a memory trend, not a rate |
+| `6i-final2/standalone/` | final build (`a326427`): v0.5.1, 6G, 6H, 6I, Redis, Valkey, standalone, 1 and 4 workers, INCR variants, 3 reps (`battery2.sh` A; `summary.md` from `summarize.py prod`, `best-rep.md` from `best_rep.py`) | Indicative; **heavily disturbed** (host load up to 160 between reps): 1-worker medians unreliable, `best-rep.md` understates Redis too. 4-worker ranges narrow |
+| `6i-final2/prod/`, `6i-final2/aof-always/` | production configurations, 6H / 6I / Redis / Valkey (`battery2.sh` B, C) | Indicative; disturbed like the above — gaps to Redis are lower bounds |
+| `6i-final2/standalone-1w/`, `6i-final2/capped2/` | the gate cells re-measured on a quiet host, 6H / 6I / Redis (`battery3.sh` G, H) | **Numbers of record** for the gate; still the VM, still indicative |
+| `6i-final2/mem/` | RSS per key, 1M keys, 6H / 6I / Redis / Valkey (`../6g-linux/memory.sh`) | Use; same method as 6G/6H |
+| `6i-final2/inproc/hot-key.csv` | in-process hot-key scaling, 6H vs 6I, 1/2/4 workers | Use for relative cost |
+| `6i-final2/perf-*` | perf of INCR new key / existing key and capped SET at 4 workers (`top.txt`; `perf.data` not kept) | Use for shares; VM `cpu-clock` sampling |
+| `6i-final2/soak/` | 10-minute sustained topology with failure injection, ledger crash-recovery (`soak.sh`) | Use: correctness; the lag probe covers only the first ~3 min |

@@ -1,0 +1,42 @@
+date_utc: 2026-11-15T08:38:41Z
+host: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz, 8 logical CPUs, macOS 15.8.1
+host_load_at_start: 4.65 12.50 13.89
+vm: Docker Desktop kernel 7.0.12-linuxkit, 8 vCPU, 4101238784 B
+args: REPS=1 SERVERS=6h 6i redis valkey CONFIGS=standalone-metrics aof-everysec repl capped
+branch: perf/v0.6-storage-execution-efficiency a326427 (+ working tree)
+a58c3c4c318ebb64547b8e8553d319d94f6a882700a9bbcf477d2dfe3724aee4  recached-server-6g
+4ab3d0900b79c67c44c71e569ef431c4a55b62d9ede7a8836ec8f748e98e891e  recached-server-6h
+9982886bcfd75cc1eec50dc289be077cbf45799e0dad7d8358be5486e4396752  recached-server-6i
+ea9dc6985817d72cf545c2aa035dc35f1fd842eafc34b1b0fa0029de97607248  recached-server-6i-rc3
+13942ef9d081350b49854f2651f6f0bb90ea93bc796214d63cd6b1f8493ec270  recached-server-6i-sym
+08582e9cb18983c629cece25c443bfe0b71f3af5fb6e9736557ec99af98e80a4  recached-server-6i-wip
+11b19e73e926c666bfb624788b8071adc926ea8de1ab54e597167e6cf5695d0f  recached-server-6i-wip2-sym
+7b07e0b357f8ce7a942669d6e09ee559646b22ea2829f7759a8fb836b154d2d6  recached-server-6i-wip3-sym
+55adf5e8a6d507bf1735b929dddb40c5fd0287db5bc3c4cf7512ec8c3a7dc2a2  recached-server-6i-wip4-sym
+305ce2b6b7bc2648107b6c001843cfe7c558f3f6e5011acfd88e13f32ee25d29  recached-server-6i-wip5
+d414625fab7aaab35ba500a4cc188ec00491dc916986b7fdbe0678c41b3630fd  recached-server-6i-wip5-sym
+c95062e58092d465b92ce88e4d1d9d413d6256f9eac0bd0e80c50b9254c29945  recached-server-6i-ws
+5efb59a2eb68e6f342c6e5cd37f6c6af678978c7199cdb8b32dbc6f1a978e22d  recached-server-v051
+Linux f9890084ff79 7.0.12-linuxkit #1 SMP PREEMPT_DYNAMIC Fri Aug 14 16:31:37 UTC 2026 x86_64 GNU/Linux
+8
+model name	: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz
+               total        used        free      shared  buff/cache   available
+Mem:            3911         551        3040           0         524        3359
+Swap:           1023           0        1023
+Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=a3d9d57f5c794f12
+Valkey server v=9.1.0 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=645e670ae38ffd26
+memtier_benchmark 2.1.4
+v22.23.4
+/bins/recached-server-6g: recached-server 0.5.1
+/bins/recached-server-6h: recached-server 0.5.1
+/bins/recached-server-6i: recached-server 0.5.1
+/bins/recached-server-6i-rc3: recached-server 0.5.1
+/bins/recached-server-6i-sym: recached-server 0.5.1
+/bins/recached-server-6i-wip: recached-server 0.5.1
+/bins/recached-server-6i-wip2-sym: recached-server 0.5.1
+/bins/recached-server-6i-wip3-sym: recached-server 0.5.1
+/bins/recached-server-6i-wip4-sym: recached-server 0.5.1
+/bins/recached-server-6i-wip5: recached-server 0.5.1
+/bins/recached-server-6i-wip5-sym: recached-server 0.5.1
+/bins/recached-server-6i-ws: recached-server 0.5.1
+/bins/recached-server-v051: recached-server 0.5.1

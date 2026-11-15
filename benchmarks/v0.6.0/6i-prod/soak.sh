@@ -68,7 +68,9 @@ t0=$(date +%s)
 while (( $(date +%s) - t0 < SOAK_SECS )); do
   sleep 5
   t=$(( $(date +%s) - t0 )); ev=""
-  if (( t % 30 < 5 )); then
+  # No snapshot in the last 20 s: the crash at the end must leave writes
+  # that only the AOF holds, so recovery replays it.
+  if (( t % 30 < 5 && t < SOAK_SECS - 20 )); then
     redis-cli -p $P bgsave >/dev/null 2>&1; ev="bgsave"
   fi
   if (( t % 45 < 5 && t > 10 )); then
@@ -88,6 +90,7 @@ python3 -I "$HERE/ledger.py" verify $R "$OUT/ledger.json" >"$OUT/ledger-replica.
 log "ledger on replica: $(cat "$OUT/ledger-replica.json") (exit $rv)"
 
 # Crash recovery: SIGKILL the primary, restart it from snapshot + AOF.
+log "crashing the primary: aof $(stat -c %s $pdir/a.aof) bytes since the last checkpoint"
 kill -9 "$PPID_"; wait "$PPID_" 2>/dev/null
 rs=$(date +%s%N); start_primary; re=$(date +%s%N)
 log "primary restarted from AOF in $(( (re - rs) / 1000000 )) ms; aof $(stat -c %s $pdir/a.aof) bytes"
