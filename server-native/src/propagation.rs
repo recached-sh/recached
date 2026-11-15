@@ -396,9 +396,32 @@ pub(crate) async fn execute_ordered_write(
         return response;
     }
 
-    // Capacity eviction may choose any key, so capped stores already serialize
-    // their core writes and reserve every propagation ordering domain here.
-    // Uncapped stores retain per-key concurrency.
+    // Capacity eviction may choose any key, and its DEL must reach replicas
+    // in order with writes to that key, so a write that may evict reserves
+    // every propagation ordering domain. One that cannot — the store says so
+    // under its capacity gate, and runs it in the same hold — needs only its
+    // own keys' domains, like a write to an uncapped store. Taking all 256
+    // stripes (and closing the unordered gate) for every write on a capped
+    // store serialized every writer of every multitenant deployment.
+    if store.has_capacity_limits() && !matches!(effective, Command::ESet(..) | Command::EAdd(..)) {
+        let guards = state.replicas.lock_write(effective).await;
+        if let Some(response) = execute_locked_write_within_capacity(
+            effective,
+            dedup,
+            tx,
+            origin,
+            state,
+            watch_registry,
+            store,
+        )
+        .await
+        {
+            // Committed inside the write's ordering domain, as below.
+            commit_dedup_outcome(state, dedup, &response).await;
+            drop(guards);
+            return response;
+        }
+    }
     let _guards = if store.has_capacity_limits() {
         state.replicas.lock_all_writes().await
     } else if matches!(effective, Command::ESet(..) | Command::EAdd(..)) {
@@ -415,13 +438,53 @@ pub(crate) async fn execute_ordered_write(
     let response =
         execute_locked_write_identified(effective, dedup, tx, origin, state, watch_registry, store)
             .await;
+    commit_dedup_outcome(state, dedup, &response).await;
+    response
+}
+
+/// A DEDUP write's outcome: its refusal remembered, or its mark committed.
+async fn commit_dedup_outcome(state: &ServerState, dedup: Option<(&str, u64)>, response: &Value) {
     if let Some((client, id)) = dedup {
-        match &response {
+        match response {
             Value::Error(error) => record_dedup_refusal(state, client, id, error).await,
             _ => state.commit_dedup(client, id),
         }
     }
-    response
+}
+
+/// [`execute_locked_write_identified`] on a capped store for a write that
+/// cannot evict, under only its own keys' ordering guards; `None`, having
+/// run and propagated nothing, when it might evict — the caller then takes
+/// every guard and runs it the ordinary way. With no eviction the write's
+/// effects are its own, exactly as on an uncapped store.
+async fn execute_locked_write_within_capacity(
+    cmd: &Command,
+    dedup: Option<(&str, u64)>,
+    tx: &broadcast::Sender<SyncMsg>,
+    origin: u64,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+) -> Option<Value> {
+    let claimable_members = claimable_eadd_members(cmd, state, store);
+    let (response, evicted) = execute_and_record_ref_within_capacity(store, cmd)?;
+    debug_assert!(
+        evicted.is_empty(),
+        "a write within capacity evicted {evicted:?}"
+    );
+    apply_write_effects_identified(
+        cmd,
+        &response,
+        dedup,
+        tx,
+        origin,
+        state,
+        watch_registry,
+        store,
+    )
+    .await;
+    reconcile_ephemeral_state(cmd, &response, &claimable_members, origin, state);
+    Some(response)
 }
 
 /// Run a write with no replication-order stripe when nothing can observe the

@@ -403,6 +403,23 @@ pub(crate) fn execute_and_record_ref(store: &KeyValueStore, cmd: &Command) -> (V
     record_outcome(store, name, is_write, is_get, started, response, evicted)
 }
 
+/// [`execute_and_record_ref`] for a write that may run only if it cannot
+/// evict (see `KeyValueStore::execute_reporting_ref_within_capacity`); a
+/// declined write records nothing.
+pub(crate) fn execute_and_record_ref_within_capacity(
+    store: &KeyValueStore,
+    cmd: &Command,
+) -> Option<(Value, Vec<String>)> {
+    let name = command_name(cmd);
+    let is_write = is_write_command(cmd);
+    let is_get = matches!(cmd, Command::Get(_));
+    let started = std::time::Instant::now();
+    let (response, evicted) = store.execute_reporting_ref_within_capacity(cmd)?;
+    Some(record_outcome(
+        store, name, is_write, is_get, started, response, evicted,
+    ))
+}
+
 fn record_outcome(
     store: &KeyValueStore,
     name: &'static str,
