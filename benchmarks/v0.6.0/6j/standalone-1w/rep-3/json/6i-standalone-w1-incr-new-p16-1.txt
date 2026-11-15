@@ -1,0 +1,18 @@
+Json file /out/json/6i-standalone-w1-incr-new-p16-1.json created...
+Writing results to stdout
+[RUN #1] Preparing benchmark client...
+[RUN #1] Launching threads now...
+[RUN #1 10%,   0 secs]  4 threads:      152176 ops,  152184 (avg:  152184) ops/sec, 5.02MB/sec (avg: 5.02MB/sec),  5.02 (avg:  5.02) msec latency[RUN #1 20%,   2 secs]  4 threads:      278992 ops,  126756 (avg:  139466) ops/sec, 4.18MB/sec (avg: 4.60MB/sec),  6.05 (avg:  5.49) msec latency[RUN #1 30%,   3 secs]  4 threads:      422560 ops,  143425 (avg:  140786) ops/sec, 4.73MB/sec (avg: 4.64MB/sec),  5.35 (avg:  5.44) msec latency[RUN #1 40%,   4 secs]  4 threads:      562064 ops,  139198 (avg:  140389) ops/sec, 4.59MB/sec (avg: 4.63MB/sec),  5.48 (avg:  5.45) msec latency[RUN #1 50%,   5 secs]  4 threads:      678320 ops,  116142 (avg:  135539) ops/sec, 3.83MB/sec (avg: 4.47MB/sec),  6.64 (avg:  5.65) msec latency[RUN #1 60%,   6 secs]  4 threads:      816400 ops,  138020 (avg:  135952) ops/sec, 4.55MB/sec (avg: 4.48MB/sec),  5.55 (avg:  5.64) msec latency[RUN #1 70%,   7 secs]  4 threads:      947648 ops,  131186 (avg:  135272) ops/sec, 4.33MB/sec (avg: 4.46MB/sec),  5.84 (avg:  5.67) msec latency[RUN #1 80%,   8 secs]  4 threads:     1081184 ops,  133472 (avg:  135047) ops/sec, 4.40MB/sec (avg: 4.45MB/sec),  5.74 (avg:  5.67) msec latency[RUN #1 90%,   9 secs]  4 threads:     1212624 ops,  131364 (avg:  134638) ops/sec, 4.33MB/sec (avg: 4.44MB/sec),  5.84 (avg:  5.69) msec latency[RUN #1 100%,  10 secs]  0 threads:     1341008 ops,  131364 (avg:  134060) ops/sec, 4.33MB/sec (avg: 4.42MB/sec),  5.84 (avg:  5.72) msec latency
+
+Json file closed.
+4         Threads
+12        Connections per thread
+10        Seconds
+
+
+ALL STATS
+==================================================================================================
+Type         Ops/sec    Avg. Latency     p50 Latency     p99 Latency   p99.9 Latency       KB/sec 
+--------------------------------------------------------------------------------------------------
+Incrs      134055.25         5.71948         5.69500        13.18300        27.26300      4526.70 
+Totals     134055.25         5.71948         5.69500        13.18300        27.26300      9053.39 

@@ -1,0 +1,6 @@
+     16   WARN recached_server::connection: TCP read error: Connection reset by peer (os error 104)
+      2   WARN recached_server: WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 7701 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+      2   WARN recached_server: TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+      2   WARN recached_server: Replication server ENABLED on port 7710 WITHOUT a password, on loopback only. It serves the entire keyspace to whoever connects — set RECACHED_REPL_PASSWORD before binding any other interface.
+      2   WARN recached_server: IP allowlist DISABLED. Accepting all connections.
+      2   WARN recached_server: Authentication DISABLED. Set RECACHED_PASSWORD to enable.

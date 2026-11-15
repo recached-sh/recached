@@ -143,7 +143,10 @@ fn plain_writes_take_the_unordered_path_only_with_no_consumers() {
         let cmd = core_engine::cmd::Command::Incr("ctr".into());
         let ran = || crate::propagation::try_execute_unordered(&cmd, &state, &wr, &store);
         assert!(ran().is_some(), "standalone write is unordered");
-        let receiver = state.replicas.subscribe_pushes(&tx).await;
+        let receiver = state
+            .replicas
+            .subscribe_pushes(&tx, Routes::Everything)
+            .await;
         assert!(ran().is_none(), "a WebSocket receiver orders writes");
         drop(receiver);
         assert!(ran().is_some());

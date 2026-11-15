@@ -144,7 +144,7 @@ pub(crate) fn primary_key_refs(cmd: &Command) -> KeyRefs<'_> {
         | Command::ZPopMin(k, _)
         | Command::ZPopMax(k, _) => smallvec::smallvec![k.as_str()],
         // COPY writes only its destination; the source is read, and is in its
-        // ordering domain through `ordering_keys`.
+        // ordering domain through `ordering_key_refs`.
         Command::Copy(_, dst, _) => smallvec::smallvec![dst.as_str()],
         Command::Del(keys) | Command::Unlink(keys) => keys.iter().map(String::as_str).collect(),
         Command::MSet(pairs) => pairs.iter().map(|(k, _)| k.as_str()).collect(),
@@ -161,11 +161,8 @@ pub(crate) fn primary_key_refs(cmd: &Command) -> KeyRefs<'_> {
 /// `*STORE` command are read while computing the destination, so they must be
 /// in the same ordering domain as that destination. `FLUSHDB` is represented
 /// by `None` because it conflicts with every key.
-pub(crate) fn ordering_keys(cmd: &Command) -> Option<Vec<String>> {
-    ordering_key_refs(cmd).map(|keys| keys.into_iter().map(str::to_owned).collect())
-}
-
-/// [`ordering_keys`], borrowed. What the replication stripes are chosen from.
+///
+/// What the replication stripes are chosen from, borrowed from the command.
 pub(crate) fn ordering_key_refs(cmd: &Command) -> Option<KeyRefs<'_>> {
     if let Command::Dedup(_, _, inner) = cmd {
         return ordering_key_refs(inner);
@@ -196,7 +193,14 @@ pub(crate) fn ordering_key_refs(cmd: &Command) -> Option<KeyRefs<'_>> {
 /// the destination still get the value through their keychange. Empty for
 /// `FLUSHDB`, which the filter handles as keyspace-wide.
 pub(crate) fn push_keys(cmd: &Command) -> Vec<String> {
-    ordering_keys(cmd).unwrap_or_default()
+    push_key_refs(cmd).into_iter().map(str::to_owned).collect()
+}
+
+/// [`push_keys`], borrowed: what [`SyncRouter`] routes a write on before
+/// deciding whether to build its push at all. One definition, so the keys
+/// routed on and the keys the push carries cannot drift apart.
+pub(crate) fn push_key_refs(cmd: &Command) -> KeyRefs<'_> {
+    ordering_key_refs(cmd).unwrap_or_default()
 }
 
 fn claimable_eadd_members(
@@ -314,7 +318,7 @@ fn reconcile_ephemeral_state(
 /// write path so ephemeral ownership cannot be bypassed.
 pub(crate) async fn execute_locked_write(
     cmd: &Command,
-    tx: &broadcast::Sender<SyncMsg>,
+    tx: &SyncTx,
     origin: u64,
     state: &ServerState,
     watch_registry: &WatchRegistry,
@@ -328,7 +332,7 @@ pub(crate) async fn execute_locked_write(
 async fn execute_locked_write_identified(
     cmd: &Command,
     dedup: Option<(&str, u64)>,
-    tx: &broadcast::Sender<SyncMsg>,
+    tx: &SyncTx,
     origin: u64,
     state: &ServerState,
     watch_registry: &WatchRegistry,
@@ -349,7 +353,7 @@ async fn execute_locked_write_identified(
         store,
     )
     .await;
-    apply_eviction_effects(&evicted, tx, origin, state, watch_registry, store).await;
+    apply_eviction_effects(&evicted, tx, state, watch_registry, store).await;
     reconcile_ephemeral_state(cmd, &response, &claimable_members, origin, state);
     response
 }
@@ -360,7 +364,7 @@ async fn execute_locked_write_identified(
 /// writes.
 pub(crate) async fn execute_ordered_write(
     cmd: &Command,
-    tx: &broadcast::Sender<SyncMsg>,
+    tx: &SyncTx,
     origin: u64,
     state: &ServerState,
     watch_registry: &WatchRegistry,
@@ -460,7 +464,7 @@ async fn commit_dedup_outcome(state: &ServerState, dedup: Option<(&str, u64)>, r
 async fn execute_locked_write_within_capacity(
     cmd: &Command,
     dedup: Option<(&str, u64)>,
-    tx: &broadcast::Sender<SyncMsg>,
+    tx: &SyncTx,
     origin: u64,
     state: &ServerState,
     watch_registry: &WatchRegistry,
@@ -536,8 +540,9 @@ fn enter_unordered<'a>(
     watch_registry: &WatchRegistry,
 ) -> Option<UnorderedPass<'a>> {
     let pass = state.replicas.unordered.try_enter()?;
-    // `has_push_receivers`, not `tx.receiver_count()`: the latter locks the
-    // broadcast channel's tail mutex — a process-wide lock on every write.
+    // `has_push_receivers` counts every WebSocket connection, routed or not:
+    // one that is not routed yet may be any moment, and its routes are
+    // published without closing the gate (see `SyncRouter`).
     if state.replicas.unordered.has_push_receivers()
         || state.needs_write_log()
         || !watch_registry.is_empty()
@@ -718,7 +723,7 @@ pub(crate) async fn record_dedup_refusal(state: &ServerState, client: &str, id: 
 /// cleanup's cardinality check and delete.
 pub(crate) async fn release_ephemeral_state(
     conn_id: u64,
-    tx: &broadcast::Sender<SyncMsg>,
+    tx: &SyncTx,
     state: &ServerState,
     watch_registry: &WatchRegistry,
     store: &KeyValueStore,
@@ -763,10 +768,15 @@ pub(crate) async fn release_ephemeral_state(
 /// Propagate implicit capacity victims as DEL operations. The caller holds the
 /// same ordering guards as the write that selected them, so local mutation,
 /// AOF, replication, browser sync, and watcher delivery agree on the order.
+///
+/// The deletions are the server's, not the writer's: pushed with origin 0.
+/// They used to carry the id of the connection whose write caused them, and
+/// a connection never receives its own pushes — so the one browser that
+/// triggered an eviction was the one never told that a different key it
+/// held had gone, and kept it in its local copy.
 pub(crate) async fn apply_eviction_effects(
     evicted: &[String],
-    tx: &broadcast::Sender<SyncMsg>,
-    origin: u64,
+    tx: &SyncTx,
     state: &ServerState,
     watch_registry: &WatchRegistry,
     store: &KeyValueStore,
@@ -778,7 +788,7 @@ pub(crate) async fn apply_eviction_effects(
             &deletion,
             &Value::Integer(1),
             tx,
-            origin,
+            0,
             state,
             watch_registry,
             store,
@@ -823,7 +833,7 @@ mod eviction_propagation_tests {
             persistence_failures: AtomicU64::new(0),
         };
         let store = KeyValueStore::with_config(Some(1), None, EvictionPolicy::AllKeysRandom);
-        let tx = broadcast::channel::<SyncMsg>(8).0;
+        let tx = SyncRouter::new(8);
         let watches = WatchHub::new();
 
         for (key, value) in [("victim", "old"), ("replacement", "new")] {
@@ -848,6 +858,58 @@ mod eviction_propagation_tests {
         );
 
         let _ = tokio::fs::remove_file(&path).await;
+    }
+
+    #[tokio::test]
+    async fn the_writer_whose_write_evicted_a_key_is_pushed_the_deletion() {
+        // Regression (pre-6J, found by the 6J-E review): the eviction's DEL
+        // carried the writer's connection id, and a connection never receives
+        // its own pushes, so the browser that caused the eviction kept the
+        // victim in its local copy.
+        let state = ServerState {
+            snap: Arc::new(SnapshotConfig {
+                path: tmp_path("eviction_origin.rdb"),
+                last_save: AtomicI64::new(0),
+                checkpoint_id: AtomicU64::new(0),
+            }),
+            aof: None,
+            replicas: ReplHub::new(),
+            is_replica: AtomicBool::new(false),
+            dedup: std::sync::Mutex::new(HashMap::new()),
+            ephemeral: std::sync::Mutex::new(HashMap::new()),
+            ephemeral_members: std::sync::Mutex::new(HashMap::new()),
+            ephemeral_in_use: std::sync::atomic::AtomicBool::new(false),
+            dedup_dirty: AtomicBool::new(false),
+            dedup_order: tokio::sync::Mutex::new(()),
+            save_lock: tokio::sync::Mutex::new(()),
+            persistence_healthy: AtomicBool::new(true),
+            persistence_failures: AtomicU64::new(0),
+        };
+        let store = KeyValueStore::with_config(Some(1), None, EvictionPolicy::AllKeysRandom);
+        let tx = SyncRouter::new(8);
+        let watches = WatchHub::new();
+        let mut browser = state
+            .replicas
+            .subscribe_pushes(&tx, Routes::Everything)
+            .await;
+        const WRITER: u64 = 42;
+        for key in ["victim", "replacement"] {
+            let command = Command::Set(key.into(), "v".into(), SetOptions::default());
+            execute_ordered_write(&command, &tx, WRITER, &state, &watches, &store).await;
+        }
+        let mut deletion = None;
+        while let Ok(push) = browser.try_recv() {
+            if push.keys == ["victim"]
+                && push.resp.windows(3).any(|w| w.eq_ignore_ascii_case(b"DEL"))
+            {
+                deletion = Some(push.origin);
+            }
+        }
+        assert_eq!(
+            deletion,
+            Some(0),
+            "the eviction must be pushed as the server's"
+        );
     }
 }
 
@@ -1155,7 +1217,7 @@ pub(crate) async fn notify_flushdb(registry: &WatchRegistry, watched_before: Vec
 pub(crate) async fn apply_write_effects(
     cmd: &Command,
     response: &Value,
-    tx: &broadcast::Sender<SyncMsg>,
+    tx: &SyncTx,
     origin: u64,
     state: &ServerState,
     watch_registry: &WatchRegistry,
@@ -1179,15 +1241,19 @@ async fn apply_write_effects_identified(
     cmd: &Command,
     response: &Value,
     dedup: Option<(&str, u64)>,
-    tx: &broadcast::Sender<SyncMsg>,
+    tx: &SyncTx,
     origin: u64,
     state: &ServerState,
     watch_registry: &WatchRegistry,
     store: &KeyValueStore,
 ) {
-    let has_ws = tx.receiver_count() > 0;
     let needs_log = state.needs_write_log();
     let has_watch = !watch_registry.is_empty();
+    // Only when some connection is a candidate for this write's push (see
+    // `SyncRouter`): a write to keys no browser may see builds no push, and
+    // with nothing else to do builds no frame either. Checked after the
+    // write, so a connection routed later reads the write from the store.
+    let has_ws = tx.would_route(cmd);
     if !has_ws && !needs_log && !has_watch {
         return;
     }
@@ -1231,7 +1297,7 @@ async fn apply_write_effects_identified(
         }
     }
     if has_ws {
-        let _ = tx.send(Arc::new(SyncPush::for_command(
+        tx.send(Arc::new(SyncPush::for_command(
             origin,
             cmd,
             push_keys(cmd),

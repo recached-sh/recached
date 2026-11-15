@@ -41,7 +41,7 @@ On each reconnect, `sync-client` sends the session in this order:
 
 Replaying writes before snapshots prevents a reconnect snapshot from temporarily erasing accepted offline edits. Applying the new snapshot also removes matching local keys absent from the server, including deletions missed while offline. Re-register mobile watches after reopening the cache; they are not stored in SQLite.
 
-Authorization is separate from watches. With no sync secret or scopes, the default server fans mutations out to every WebSocket client. Scoped connections receive only permitted keys. Use backend-minted [sync tokens](/server/sync-scopes) for per-user data.
+Authorization is separate from watches. With no sync secret or scopes, the default server fans mutations out to every WebSocket client. Scoped connections receive only permitted keys, and the server routes each write only to the connections whose grants could match it ([how pushes are routed](/server/sync-scopes#how-pushes-are-routed)). Use backend-minted [sync tokens](/server/sync-scopes) for per-user data.
 
 ## Read and write locally
 

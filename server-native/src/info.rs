@@ -653,6 +653,7 @@ pub(crate) fn render_info(
     last_save: i64,
     live_queries: u64,
     watched_keys: u64,
+    routes: RouteStatsSnapshot,
 ) -> String {
     let wanted: Vec<&str> = if sections.is_empty()
         || sections
@@ -798,11 +799,38 @@ pub(crate) fn render_info(
             "cluster" => "cluster_enabled:0\r\n".to_string(),
             // Recached-specific: the live-query machinery has no Redis analogue,
             // so it gets its own section rather than being smuggled into one.
+            // The `sync_*` fields describe WebSocket push routing (see
+            // `SyncRouter`): connections registered and routed, the index's
+            // size, and since start how many pushes were routed, how many
+            // mailboxes they were offered to, how many writes built no push
+            // because nobody was a candidate, and what connections did with
+            // the pushes they took (sent, or dropped by their own filter).
             "recached" => {
                 format!(
                     "live_queries:{}\r\n\
-                     watched_keys:{}\r\n",
-                    live_queries, watched_keys,
+                     watched_keys:{}\r\n\
+                     sync_subscribers:{}\r\n\
+                     sync_routed_subscribers:{}\r\n\
+                     sync_route_broad:{}\r\n\
+                     sync_route_exact_keys:{}\r\n\
+                     sync_route_prefixes:{}\r\n\
+                     sync_route_events:{}\r\n\
+                     sync_route_candidates:{}\r\n\
+                     sync_route_skipped:{}\r\n\
+                     sync_pushes_forwarded:{}\r\n\
+                     sync_pushes_filtered:{}\r\n",
+                    live_queries,
+                    watched_keys,
+                    routes.subscribers,
+                    routes.routed,
+                    routes.broad,
+                    routes.exact_keys,
+                    routes.prefixes,
+                    routes.events,
+                    routes.candidates,
+                    routes.skipped,
+                    routes.forwarded,
+                    routes.filtered,
                 )
             }
             _ => continue,

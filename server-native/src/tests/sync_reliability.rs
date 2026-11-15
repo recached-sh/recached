@@ -73,7 +73,7 @@ fn dedup(client: &str, id: u64, inner: Command) -> Command {
 }
 
 async fn write(state: &ServerState, store: &KeyValueStore, cmd: &Command) -> Value {
-    let tx = broadcast::channel::<SyncMsg>(8).0;
+    let tx = SyncRouter::new(8);
     let watches = WatchHub::new();
     execute_ordered_write(cmd, &tx, 1, state, &watches, store).await
 }

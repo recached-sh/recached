@@ -1,0 +1,23 @@
+date_utc: 2026-11-15T13:34:25Z
+host: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz, 8 logical CPUs, macOS 15.8.1
+host_load_at_start: 9.54 9.67 8.24
+vm: Docker Desktop kernel 7.0.12-linuxkit, 8 vCPU, 4101246976 B
+args: SERVERS=v051 6i 6j-a 6j-b
+branch: perf/v0.6j-sync-routing 3656ea9 (+ working tree)
+9982886bcfd75cc1eec50dc289be077cbf45799e0dad7d8358be5486e4396752  recached-server-6i
+6ffca5fcd04b41dbb8aa8d2ffa643201771ff4f52cb80207a20a04fe1d493506  recached-server-6j-a
+93afdce5689dcd41cc578ff670fc9139880dc5950a5f5fc1cf140bcecf69b112  recached-server-6j-b
+5efb59a2eb68e6f342c6e5cd37f6c6af678978c7199cdb8b32dbc6f1a978e22d  recached-server-v051
+Linux 23827df03e6a 7.0.12-linuxkit #1 SMP PREEMPT_DYNAMIC Fri Aug 14 16:31:37 UTC 2026 x86_64 GNU/Linux
+8
+model name	: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz
+               total        used        free      shared  buff/cache   available
+Mem:            3911         615        1334           0        2195        3295
+Swap:           1023           0        1023
+Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=a3d9d57f5c794f12
+memtier_benchmark 2.1.4
+v22.23.4
+/bins/recached-server-6i: recached-server 0.5.1
+/bins/recached-server-6j-a: recached-server 0.6.0
+/bins/recached-server-6j-b: recached-server 0.6.0
+/bins/recached-server-v051: recached-server 0.5.1

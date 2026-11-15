@@ -1,0 +1,20 @@
+Json file /out/json/6i-standalone-w1-get-p16-1.json created...
+Writing results to stdout
+[RUN #1] Preparing benchmark client...
+[RUN #1] Launching threads now...
+[RUN #1 10%,   1 secs]  4 threads:      203600 ops,  203496 (avg:  203496) ops/sec, 12.59MB/sec (avg: 12.59MB/sec),  3.75 (avg:  3.75) msec latency[RUN #1 20%,   2 secs]  4 threads:      302888 ops,   98792 (avg:  151027) ops/sec, 6.11MB/sec (avg: 9.35MB/sec),  7.70 (avg:  5.05) msec latency[RUN #1 30%,   3 secs]  4 threads:      361051 ops,   57921 (avg:  119962) ops/sec, 3.58MB/sec (avg: 7.42MB/sec), 13.09 (avg:  6.34) msec latency[RUN #1 40%,   4 secs]  4 threads:      457680 ops,   96383 (avg:  114070) ops/sec, 5.96MB/sec (avg: 7.06MB/sec),  8.04 (avg:  6.70) msec latency[RUN #1 50%,   5 secs]  4 threads:      691484 ops,  233642 (avg:  137939) ops/sec, 14.46MB/sec (avg: 8.54MB/sec),  3.27 (avg:  5.54) msec latency[RUN #1 60%,   6 secs]  4 threads:      890208 ops,  198484 (avg:  148019) ops/sec, 12.28MB/sec (avg: 9.16MB/sec),  3.85 (avg:  5.17) msec latency[RUN #1 70%,   7 secs]  4 threads:     1204160 ops,  313783 (avg:  171662) ops/sec, 19.42MB/sec (avg: 10.62MB/sec),  2.44 (avg:  4.45) msec latency[RUN #1 80%,   8 secs]  4 threads:     1469504 ops,  265153 (avg:  183335) ops/sec, 16.41MB/sec (avg: 11.35MB/sec),  2.89 (avg:  4.17) msec latency[RUN #1 90%,   9 secs]  4 threads:     1758000 ops,  288326 (avg:  194986) ops/sec, 17.84MB/sec (avg: 12.07MB/sec),  2.65 (avg:  3.92) msec latency[RUN #1 100%,  10 secs]  0 threads:     2031920 ops,  288326 (avg:  203145) ops/sec, 17.84MB/sec (avg: 12.57MB/sec),  2.65 (avg:  3.76) msec latency
+
+Json file closed.
+4         Threads
+12        Connections per thread
+10        Seconds
+
+
+ALL STATS
+============================================================================================================================
+Type         Ops/sec     Hits/sec   Misses/sec    Avg. Latency     p50 Latency     p99 Latency   p99.9 Latency       KB/sec 
+----------------------------------------------------------------------------------------------------------------------------
+Sets            0.00          ---          ---             ---             ---             ---             ---         0.00 
+Gets       225710.66    225710.66         0.00         3.76513         2.87900        16.12700       165.88700     14302.85 
+Waits           0.00          ---          ---             ---             ---             ---             ---          --- 
+Totals     225710.66    225710.66         0.00         3.76513         2.87900        16.12700       165.88700     14302.85 

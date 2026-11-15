@@ -1,0 +1,18 @@
+Json file /out/json/redis-standalone-w1-hset-p16-1.json created...
+Writing results to stdout
+[RUN #1] Preparing benchmark client...
+[RUN #1] Launching threads now...
+[RUN #1 10%,   1 secs]  4 threads:      177584 ops,  176835 (avg:  176835) ops/sec, 13.14MB/sec (avg: 13.14MB/sec),  4.32 (avg:  4.32) msec latency[RUN #1 20%,   2 secs]  4 threads:      316736 ops,  138970 (avg:  157930) ops/sec, 10.32MB/sec (avg: 11.73MB/sec),  5.49 (avg:  4.83) msec latency[RUN #1 30%,   3 secs]  4 threads:      514240 ops,  197286 (avg:  171034) ops/sec, 14.65MB/sec (avg: 12.70MB/sec),  3.90 (avg:  4.47) msec latency[RUN #1 40%,   4 secs]  4 threads:      831856 ops,  317488 (avg:  207598) ops/sec, 23.58MB/sec (avg: 15.42MB/sec),  2.41 (avg:  3.69) msec latency[RUN #1 50%,   5 secs]  4 threads:     1152800 ops,  320759 (avg:  230209) ops/sec, 23.83MB/sec (avg: 17.10MB/sec),  2.39 (avg:  3.32) msec latency[RUN #1 60%,   6 secs]  4 threads:     1517680 ops,  364691 (avg:  252604) ops/sec, 27.09MB/sec (avg: 18.76MB/sec),  2.10 (avg:  3.03) msec latency[RUN #1 70%,   7 secs]  4 threads:     1845488 ops,  327514 (avg:  263301) ops/sec, 24.33MB/sec (avg: 19.56MB/sec),  2.34 (avg:  2.91) msec latency[RUN #1 80%,   8 secs]  4 threads:     2124880 ops,  279216 (avg:  265289) ops/sec, 20.74MB/sec (avg: 19.71MB/sec),  2.74 (avg:  2.88) msec latency[RUN #1 90%,   9 secs]  4 threads:     2408608 ops,  283722 (avg:  267335) ops/sec, 21.08MB/sec (avg: 19.86MB/sec),  2.70 (avg:  2.86) msec latency[RUN #1 100%,  10 secs]  4 threads:     2630704 ops,  221987 (avg:  262803) ops/sec, 16.49MB/sec (avg: 19.52MB/sec),  3.43 (avg:  2.91) msec latency[RUN #1 100%,  10 secs]  0 threads:     2630880 ops,  221987 (avg:  262811) ops/sec, 16.49MB/sec (avg: 19.52MB/sec),  3.43 (avg:  2.91) msec latency
+
+Json file closed.
+4         Threads
+12        Connections per thread
+10        Seconds
+
+
+ALL STATS
+==================================================================================================
+Type         Ops/sec    Avg. Latency     p50 Latency     p99 Latency   p99.9 Latency       KB/sec 
+--------------------------------------------------------------------------------------------------
+Hsets      238955.52         2.91145         2.43100        10.62300        57.34300     18175.79 
+Totals     238955.52         2.91145         2.43100        10.62300        57.34300     36351.59 

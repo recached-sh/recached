@@ -5,8 +5,8 @@ use crate::*;
 
 /// One mutation pushed towards WebSocket peers: the RESP push frame plus the
 /// keys it touches, so each connection can filter against its sync scopes
-/// without re-parsing the frame. Wrapped in `Arc` — the broadcast channel
-/// clones the payload once per receiver, so a clone is a refcount bump.
+/// without re-parsing the frame. Wrapped in `Arc` — the router queues it once
+/// per candidate connection, so a clone is a refcount bump.
 pub(crate) struct SyncPush {
     pub(crate) origin: u64,
     pub(crate) keys: Vec<String>,
@@ -29,8 +29,7 @@ impl SyncPush {
         keys: Vec<String>,
         resp: Vec<u8>,
     ) -> Self {
-        let keyspace_wide = matches!(cmd, Command::FlushDb)
-            || matches!(cmd, Command::Dedup(_, _, inner) if matches!(**inner, Command::FlushDb));
+        let keyspace_wide = is_keyspace_wide(cmd);
         SyncPush {
             origin,
             keys,

@@ -12,7 +12,7 @@ use super::*;
 pub(super) struct Node {
     pub(super) store: Arc<KeyValueStore>,
     pub(super) state: Arc<ServerState>,
-    pub(super) tx: broadcast::Sender<SyncMsg>,
+    pub(super) tx: SyncTx,
     pub(super) ws: std::net::SocketAddr,
 }
 
@@ -32,7 +32,7 @@ pub(super) async fn node(is_replica: bool, dedup: bool) -> Node {
         is_replica,
     );
     let store = Arc::new(KeyValueStore::new());
-    let (tx, _rx) = broadcast::channel::<SyncMsg>(256);
+    let tx = SyncRouter::new(256);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let ws = listener.local_addr().unwrap();
     let (s, t, st) = (Arc::clone(&store), tx.clone(), Arc::clone(&state));

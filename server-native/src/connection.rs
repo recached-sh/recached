@@ -113,6 +113,28 @@ pub(crate) fn forwards_push(
     visible && !superseded
 }
 
+/// Whether the token in force has expired. The expiry timer closes the
+/// connection, but it is one arm of the connection's `select!` among several:
+/// without this, pushes taken in the moments between the deadline and that
+/// arm winning were still forwarded under the expired token.
+fn token_lapsed(expires_at: Option<u64>) -> bool {
+    expires_at.is_some_and(|exp| unix_now_secs() >= exp)
+}
+
+/// What a WebSocket connection is routed before it holds any scopes: nothing
+/// until it has authenticated, nothing on a strict server until a token, and
+/// every push on an open one.
+///
+/// A socket that had not sent `AUTH` used to be pushed every mutation in open
+/// mode while every command it sent was refused `NOAUTH`.
+pub(crate) fn open_routes(strict: bool, authenticated: bool) -> Routes<'static> {
+    if authenticated && !strict {
+        Routes::Everything
+    } else {
+        Routes::Nothing
+    }
+}
+
 /// A WebSocket message carrying RESP bytes: text when they are valid UTF-8,
 /// binary otherwise.
 fn ws_message(bytes: &[u8]) -> Message {
@@ -275,7 +297,7 @@ enum Answered {
 pub(crate) async fn handle_tcp<S>(
     socket: S,
     store: Arc<KeyValueStore>,
-    tx: broadcast::Sender<SyncMsg>,
+    tx: SyncTx,
     password: Arc<Option<String>>,
     pubsub: SharedPubSub,
     watch_registry: WatchRegistry,
@@ -873,6 +895,7 @@ pub(crate) async fn handle_tcp<S>(
                                                         state.snap.last_save.load(Ordering::Relaxed),
                                                         watch_registry.watched_patterns.load(Ordering::Relaxed) as u64,
                                                         watch_registry.watched_keys.load(Ordering::Relaxed) as u64,
+                                                        tx.stats(),
                                                     );
                                                     let resp = Value::BulkString(Some(body.into_bytes())).serialize();
                                                     if writer.write_all(&resp).await.is_err() { break 'outer; }
@@ -1104,7 +1127,7 @@ where
 pub(crate) async fn handle_ws<S>(
     socket: S,
     store: Arc<KeyValueStore>,
-    tx: broadcast::Sender<SyncMsg>,
+    tx: SyncTx,
     password: Arc<Option<String>>,
     conn_id: u64,
     pubsub: SharedPubSub,
@@ -1136,20 +1159,26 @@ pub(crate) async fn handle_ws<S>(
     };
 
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
-    // Subscribing makes this socket a consumer of every write's push, so it
-    // happens with the unordered fast path closed (see `UnorderedGate`): every
-    // write either completed before the subscription or sees the receiver.
-    let (mut rx, _push_receiver) = state.replicas.subscribe_pushes(&tx).await;
-    let mut ws_decoder = RequestDecoder::new();
     // Strict mode (RECACHED_SYNC_SECRET set): no pushes and no key commands
     // until a signed token is presented. Without a secret, scopes are an
     // opt-in bandwidth filter (legacy fan-out of everything when None).
     let strict = sync_policy.is_strict();
+    let mut ws_decoder = RequestDecoder::new();
     // With `RECACHED_WS_AUTH=token` the token is the credential: the socket
     // needs no RESP password, so that password never has to reach a browser.
     // Everything that reads or writes data still waits for the token.
     let token_is_auth = strict && sync_policy.token_auth;
     let mut is_authenticated = password.is_none() || token_is_auth;
+    // Subscribing makes this socket a push consumer, so it happens with the
+    // unordered fast path closed (see `UnorderedGate`): every write either
+    // completed before the subscription or sees the receiver. What it is
+    // routed follows what it may see (see `SyncRouter`): nothing before AUTH,
+    // nothing on a strict socket until a token, and everything on an open
+    // one until `SYNC` narrows it.
+    let mut rx = state
+        .replicas
+        .subscribe_pushes(&tx, open_routes(strict, is_authenticated))
+        .await;
     let mut auth_failures: u32 = 0;
     // Refused `SYNC TOKEN`s on this socket; the same limit as passwords.
     let mut token_failures: u32 = 0;
@@ -1247,16 +1276,18 @@ pub(crate) async fn handle_ws<S>(
                         loop {
                             match rx.try_recv() {
                                 Ok(push) => {
-                                    if forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns)
-                                        && ws_sender.send(ws_message(&push.resp)).await.is_err()
-                                    {
+                                    let forward = is_authenticated
+                            && !token_lapsed(scope_expires_at)
+                            && forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns);
+                                    rx.record(forward);
+                                    if forward && ws_sender.send(ws_message(&push.resp)).await.is_err() {
                                         break 'outer;
                                     }
                                 }
-                                Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                                Err(TryPushRecvError::Lagged) => {
                                     warn!(
-                                        "WS conn {} lagged, missed {} mutations; closing so the client resynchronises",
-                                        conn_id, n
+                                        "WS conn {} lagged, missed mutations; closing so the client resynchronises",
+                                        conn_id
                                     );
                                     counter!("recached_sync_lag_disconnects_total").increment(1);
                                     let _ = ws_sender
@@ -1267,8 +1298,8 @@ pub(crate) async fn handle_ws<S>(
                                         .await;
                                     break 'outer;
                                 }
-                                Err(broadcast::error::TryRecvError::Empty) => break,
-                                Err(broadcast::error::TryRecvError::Closed) => break 'outer,
+                                Err(TryPushRecvError::Empty) => break,
+                                Err(TryPushRecvError::Closed) => break 'outer,
                             }
                         }
                         // Borrowed, not copied: the decoder reads the message
@@ -1314,9 +1345,15 @@ pub(crate) async fn handle_ws<S>(
 
                         // AUTH
                         if let Command::Auth(ref pwd) = cmd {
+                            let was_authenticated = is_authenticated;
                             let (disconnect, resp) = process_auth(
                                 pwd, &password, &mut is_authenticated, &mut auth_failures,
                             );
+                            // Routed from here on, before the reply, so every write after it
+                            // reaches this socket (it holds no scopes yet: SYNC needs AUTH).
+                            if is_authenticated && !was_authenticated {
+                                rx.set_routes(open_routes(strict, true));
+                            }
                             ws_send!(&resp);
                             if disconnect { break; }
                             continue;
@@ -1462,6 +1499,11 @@ pub(crate) async fn handle_ws<S>(
                                     scope_expires_at = token.expires_at;
                                     scope_subject = token.subject;
                                     channel_grants = token.channels;
+                                    // Routed on the new grants before the
+                                    // reply goes out: a write that routed
+                                    // too early to see them had finished, so
+                                    // every read after the reply sees it.
+                                    rx.set_routes(Routes::Grants(&token.grants));
                                     sync_scopes = Some(token.grants);
                                     if let Some(exp) = scope_expires_at {
                                         let remaining_ms = exp
@@ -2069,6 +2111,7 @@ pub(crate) async fn handle_ws<S>(
                                             state.snap.last_save.load(Ordering::Relaxed),
                                             watch_registry.watched_patterns.load(Ordering::Relaxed) as u64,
                                             watch_registry.watched_keys.load(Ordering::Relaxed) as u64,
+                                            tx.stats(),
                                         );
                                         ws_send!(&Value::BulkString(Some(body.into_bytes())).serialize());
                                         continue 'outer;
@@ -2167,7 +2210,11 @@ pub(crate) async fn handle_ws<S>(
             result = rx.recv() => {
                 match result {
                     Ok(push) => {
-                        if forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns) {
+                        let forward = is_authenticated
+                            && !token_lapsed(scope_expires_at)
+                            && forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns);
+                        rx.record(forward);
+                        if forward {
                             ws_send!(&push.resp);
                         }
                         // Take whatever else is already queued in this one
@@ -2181,16 +2228,18 @@ pub(crate) async fn handle_ws<S>(
                         for _ in 0..PUSH_DRAIN_BATCH {
                             match rx.try_recv() {
                                 Ok(push) => {
-                                    if forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns)
-                                        && ws_sender.send(ws_message(&push.resp)).await.is_err()
-                                    {
+                                    let forward = is_authenticated
+                            && !token_lapsed(scope_expires_at)
+                            && forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns);
+                                    rx.record(forward);
+                                    if forward && ws_sender.send(ws_message(&push.resp)).await.is_err() {
                                         break 'outer;
                                     }
                                 }
-                                Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                                Err(TryPushRecvError::Lagged) => {
                                     warn!(
-                                        "WS conn {} lagged, missed {} mutations; closing so the client resynchronises",
-                                        conn_id, n
+                                        "WS conn {} lagged, missed mutations; closing so the client resynchronises",
+                                        conn_id
                                     );
                                     counter!("recached_sync_lag_disconnects_total").increment(1);
                                     let _ = ws_sender
@@ -2201,8 +2250,8 @@ pub(crate) async fn handle_ws<S>(
                                         .await;
                                     break 'outer;
                                 }
-                                Err(broadcast::error::TryRecvError::Empty) => break,
-                                Err(broadcast::error::TryRecvError::Closed) => break 'outer,
+                                Err(TryPushRecvError::Empty) => break,
+                                Err(TryPushRecvError::Closed) => break 'outer,
                             }
                         }
                     }
@@ -2218,10 +2267,10 @@ pub(crate) async fn handle_ws<S>(
                     //
                     // This matches what the live-query path already does when
                     // its notification queue overflows.
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                    Err(PushRecvError::Lagged) => {
                         warn!(
-                            "WS conn {} lagged, missed {} mutations; closing so the client resynchronises",
-                            conn_id, n
+                            "WS conn {} lagged, missed mutations; closing so the client resynchronises",
+                            conn_id
                         );
                         counter!("recached_sync_lag_disconnects_total").increment(1);
                         let _ = ws_sender
@@ -2232,7 +2281,7 @@ pub(crate) async fn handle_ws<S>(
                             .await;
                         break;
                     }
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(PushRecvError::Closed) => break,
                 }
             }
 
