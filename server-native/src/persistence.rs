@@ -371,11 +371,19 @@ impl AofShared {
                 };
                 if front.needs_disk(self.policy) {
                     // Claimed before the task exists, so no inline leader
-                    // can start meanwhile; released by the task itself.
+                    // can start meanwhile; released by the drain itself.
                     queue.busy = true;
                     drop(queue);
                     let shared = Arc::clone(self);
-                    tokio::task::spawn_blocking(move || shared.drain_blocking());
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(runtime) => {
+                            runtime.spawn_blocking(move || shared.drain_blocking());
+                        }
+                        // No runtime to hand it to (a connection's writer
+                        // dropped during shutdown): drain here rather than
+                        // panic in `spawn_blocking` or leave it unwritten.
+                        Err(_) => shared.drain_blocking(),
+                    }
                     return;
                 }
                 queue.busy = true;
