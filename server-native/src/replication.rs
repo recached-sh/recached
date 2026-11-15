@@ -79,6 +79,14 @@ pub(crate) struct ReplHub {
 
 const WRITE_ORDER_STRIPES: usize = 256;
 
+/// Most replication frames a primary writes before one flush.
+const REPL_SEND_BATCH_FRAMES: usize = 512;
+/// Send buffer per replica connection; a burst larger than this is written
+/// in several syscalls but still flushed once.
+const REPL_SEND_BUFFER_BYTES: usize = 64 * 1024;
+/// Receive buffer on a replica's stream from its primary.
+const REPL_RECV_BUFFER_BYTES: usize = 64 * 1024;
+
 /// In-flight counters for [`UnorderedGate`], one per cache line so writers on
 /// different workers do not contend on one counter.
 const UNORDERED_SLOTS: usize = 16;
@@ -733,6 +741,12 @@ pub(crate) async fn run_repl_server(
     loop {
         match listener.accept().await {
             Ok((socket, addr)) => {
+                // Frames and acknowledgements are small writes. With Nagle's
+                // algorithm on, each waited for the peer's ACK of the last —
+                // which Linux delays by up to 40 ms — so every replicated write
+                // reached the replica ~41 ms late (6I probe lag p50, every
+                // workload). The client ports already set this.
+                let _ = socket.set_nodelay(true);
                 // The IP allowlist and the connection limit were previously
                 // applied on the RESP and WebSocket listeners only, so neither
                 // constrained the one port that streams the whole keyspace.
@@ -1029,13 +1043,32 @@ where
     // now writes back a cumulative count of applied frames; `sent - acked` is
     // the lag. Reading and writing are selected over so a replica that stops
     // acknowledging cannot stall the write side, and vice versa.
-    let (mut rd, mut wr) = tokio::io::split(socket);
+    let (mut rd, wr) = tokio::io::split(socket);
+    // Buffered, and flushed once per burst: a frame used to cost three
+    // unbuffered writes and a flush — four syscalls per replicated write — so
+    // a pipelined primary out-ran its replica's link and the replica fell
+    // seconds behind (6I production benchmark: probe lag p99 2.8 s).
+    let mut wr = tokio::io::BufWriter::with_capacity(REPL_SEND_BUFFER_BYTES, wr);
     let mut ack_buf = [0u8; 8];
     loop {
         tokio::select! {
             frame = rx.recv() => {
                 let Some(queued) = frame else { break };
                 write_repl_frame(&mut wr, &queued.frame).await?;
+                // Everything already queued goes out in the same flush, up to
+                // a bound so a busy primary still flushes regularly. Frames
+                // leave the queue only once written, as before, so the byte
+                // accounting of `QueuedReplFrame` is unchanged.
+                let mut batched = 1;
+                while batched < REPL_SEND_BATCH_FRAMES {
+                    match rx.try_recv() {
+                        Ok(queued) => {
+                            write_repl_frame(&mut wr, &queued.frame).await?;
+                            batched += 1;
+                        }
+                        Err(_) => break,
+                    }
+                }
                 wr.flush().await?;
             }
             res = rd.read_exact(&mut ack_buf) => {
@@ -1124,6 +1157,9 @@ pub(crate) async fn run_repl_client(
             }
             Ok(socket) => {
                 backoff_secs = 2;
+                // As on the primary's side: no Nagle delay on small frames
+                // and acknowledgements.
+                let _ = socket.set_nodelay(true);
 
                 // TLS is what makes the primary's *identity* checked, not just
                 // the channel encrypted: without it a DNS hijack or an on-path
@@ -1374,10 +1410,20 @@ where
     resume.run_id = primary_run_id;
     resume.offset = boundary;
     socket.write_all(&boundary.to_le_bytes()).await?;
+    socket.flush().await?;
 
-    // 2. Stream write commands from primary, acknowledging each applied offset.
+    // 2. Stream write commands from primary, acknowledging applied offsets.
+    //
+    // Read through a buffer: each frame used to take three `read_exact`
+    // calls on the bare socket, plus an 8-byte acknowledgement write — four
+    // syscalls per replicated write, which capped how fast a replica could
+    // follow a pipelined primary. Nothing was read from the socket before
+    // this point beyond what the handshake consumed exactly, so no bytes are
+    // stranded by wrapping it here.
+    let (rd, mut wr) = tokio::io::split(socket);
+    let mut rd = tokio::io::BufReader::with_capacity(REPL_RECV_BUFFER_BYTES, rd);
     loop {
-        let (offset, cmd_bytes) = read_repl_frame(socket).await?;
+        let (offset, cmd_bytes) = read_repl_frame(&mut rd).await?;
         let expected = resume.offset.saturating_add(1);
         if offset != expected {
             return Err(std::io::Error::new(
@@ -1388,9 +1434,14 @@ where
         apply_repl_frame(store, state, tx, &cmd_bytes).await?;
         resume.offset = offset;
 
-        // Acknowledge on the same socket. TcpStream is unbuffered, so this is a
-        // single 8-byte write with no flush.
-        socket.write_all(&offset.to_le_bytes()).await?;
+        // The acknowledgement is cumulative (the primary keeps the maximum),
+        // so one per burst says as much as one per frame: acknowledge when
+        // the buffer holds no further frame, i.e. before waiting on the
+        // socket again. Lag is then reported at most one burst late.
+        if rd.buffer().is_empty() {
+            wr.write_all(&offset.to_le_bytes()).await?;
+            wr.flush().await?;
+        }
     }
 }
 
@@ -1472,14 +1523,24 @@ async fn apply_repl_frame(
     };
     let cmd = Command::from_value(normalised)
         .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
-    let push = SyncPush::for_command(0, &cmd, push_keys(&cmd), bytes.to_vec());
-    if let Value::Error(error) = store.execute(cmd) {
+    if let (Value::Error(error), _) = store.execute_reporting_ref(&cmd) {
         return Err(std::io::Error::new(
             ErrorKind::InvalidData,
             format!("replicated command failed: {error}"),
         ));
     }
-    let _ = tx.send(Arc::new(push));
+    // Built only when a browser can receive it: the push copies the frame,
+    // which every replicated write paid for even with no WebSocket client.
+    // Checked after the write, so a client that subscribed before it is
+    // pushed it and one that subscribes later reads it from the store.
+    if state.replicas.unordered.has_push_receivers() {
+        let _ = tx.send(Arc::new(SyncPush::for_command(
+            0,
+            &cmd,
+            push_keys(&cmd),
+            bytes.to_vec(),
+        )));
+    }
     state.on_write(bytes).await;
     Ok(())
 }
