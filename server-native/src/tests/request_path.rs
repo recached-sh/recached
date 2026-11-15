@@ -270,13 +270,14 @@ fn prefill(store: &KeyValueStore) {
 
 pub(super) struct Shared {
     pub(super) store: Arc<KeyValueStore>,
-    pub(super) tx: broadcast::Sender<SyncMsg>,
+    pub(super) tx: SyncTx,
     pub(super) pubsub: SharedPubSub,
     pub(super) watch_registry: WatchRegistry,
     pub(super) state: Arc<ServerState>,
     /// Held when the run should look like a server with a browser attached:
-    /// `tx.receiver_count() > 0` turns on push construction for every write.
-    _sync_rx: Option<(broadcast::Receiver<SyncMsg>, PushReceiver)>,
+    /// a subscriber routed every push turns on push construction for every
+    /// write.
+    _sync_rx: Option<SyncSubscription>,
 }
 
 impl Shared {
@@ -285,7 +286,7 @@ impl Shared {
     }
 
     pub(super) fn with_aof(with_sync_receiver: bool, aof: Option<Arc<AofWriter>>) -> Shared {
-        let (tx, _) = broadcast::channel::<SyncMsg>(1024);
+        let tx = SyncRouter::new(1024);
         let state = Arc::new(ServerState {
             snap: Arc::new(SnapshotConfig {
                 path: std::env::temp_dir()
@@ -321,7 +322,14 @@ impl Shared {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .expect("runtime");
-            shared._sync_rx = Some(rt.block_on(shared.state.replicas.subscribe_pushes(&shared.tx)));
+            shared._sync_rx = Some(
+                rt.block_on(
+                    shared
+                        .state
+                        .replicas
+                        .subscribe_pushes(&shared.tx, Routes::Everything),
+                ),
+            );
         }
         shared
     }

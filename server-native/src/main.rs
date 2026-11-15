@@ -11,6 +11,7 @@
 //! | [`connection`] | The RESP and WebSocket command loops, plus HELLO/AUTH |
 //! | [`clients`] | Per-connection bookkeeping and the command metrics counters |
 //! | [`sync_scopes`] | Signed tokens restricting a socket to a set of key patterns |
+//! | [`sync_router`] | Which WebSocket connections a write's push is offered to |
 //! | [`propagation`] | Turning an executed command into the frame everyone else replays |
 //! | [`server_state`] | Shared state a write passes through: AOF, replicas, role |
 //! | [`persistence`] | Snapshots and the append-only file |
@@ -46,6 +47,7 @@ mod propagation;
 mod pubsub;
 mod replication;
 mod server_state;
+mod sync_router;
 mod sync_scopes;
 mod tls;
 mod watch;
@@ -62,6 +64,7 @@ use propagation::*;
 use pubsub::*;
 use replication::*;
 use server_state::*;
+use sync_router::*;
 use sync_scopes::*;
 use tls::*;
 use watch::*;
@@ -86,7 +89,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Semaphore, broadcast, mpsc};
+use tokio::sync::{Semaphore, mpsc};
 use tokio_rustls::rustls::pki_types::pem::PemObject;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
@@ -778,7 +781,7 @@ async fn run(
     // Carries (sender_conn_id, resp_encoded_mutation). WS receivers skip their
     // own messages. Created before replication so a replica can push the writes
     // it receives from the primary to its own local WebSocket clients.
-    let (tx, _) = broadcast::channel::<SyncMsg>(BROADCAST_CHANNEL_CAPACITY);
+    let tx = SyncRouter::new(BROADCAST_CHANNEL_CAPACITY);
 
     // ── start replication ─────────────────────────────────────────────────
     // Opt-in. The listener may run on a replica as well as a primary, so a
@@ -866,7 +869,6 @@ async fn run(
                         apply_eviction_effects(
                             &evicted,
                             &tx_sweep,
-                            0,
                             &state_sweep,
                             &registry_sweep,
                             &store_sweep,

@@ -1139,6 +1139,7 @@ dependencies = [
  "core-engine",
  "futures-util",
  "hmac",
+ "indexmap",
  "metrics",
  "metrics-exporter-prometheus",
  "num_cpus",

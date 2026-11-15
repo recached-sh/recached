@@ -125,8 +125,8 @@ pub(crate) struct UnorderedGate {
     in_flight: [PaddedCount; UNORDERED_SLOTS],
     /// WebSocket push receivers registered through
     /// [`ReplHub::subscribe_pushes`] — the only way the server subscribes.
-    /// Read by every unordered write instead of
-    /// `broadcast::Sender::receiver_count`, which takes the channel's mutex.
+    /// Read by every unordered write: a count of connections, routed or
+    /// not, so registering one keeps every later write on the ordered path.
     push_receivers: AtomicUsize,
 }
 
@@ -427,23 +427,23 @@ impl ReplHub {
         hasher.finish() as usize % WRITE_ORDER_STRIPES
     }
 
-    /// Subscribe to write pushes as a consumer: with the unordered path
-    /// closed, so every write either completed before the subscription or
-    /// sees the receiver (see [`UnorderedGate`]). The count is raised before
-    /// the gate reopens and lowered when the returned guard drops.
+    /// Subscribe to write pushes as a consumer, routed `routes` to begin
+    /// with: with the unordered path closed, so every write either completed
+    /// before the subscription or sees the receiver (see [`UnorderedGate`]).
+    /// The count is raised before the gate reopens and lowered when the
+    /// returned subscription drops.
     pub(crate) async fn subscribe_pushes(
         self: &Arc<Self>,
-        tx: &broadcast::Sender<SyncMsg>,
-    ) -> (broadcast::Receiver<SyncMsg>, PushReceiver) {
+        tx: &SyncTx,
+        routes: Routes<'_>,
+    ) -> SyncSubscription {
         let _closed = self.unordered.close().await;
-        let rx = tx.subscribe();
+        let mut subscription = tx.subscribe(routes);
         self.unordered.push_receivers.fetch_add(1, Ordering::SeqCst);
-        (
-            rx,
-            PushReceiver {
-                hub: Arc::clone(self),
-            },
-        )
+        subscription.receiver = Some(PushReceiver {
+            hub: Arc::clone(self),
+        });
+        subscription
     }
 
     /// The stripes for one ordinary write on the ordered path. The only
@@ -1133,7 +1133,7 @@ pub(crate) async fn run_repl_client(
     state: Arc<ServerState>,
     repl_password: Option<String>,
     failover_timeout_secs: Option<u64>,
-    tx: broadcast::Sender<SyncMsg>,
+    tx: SyncTx,
     tls: Option<(TlsConnector, String)>,
 ) {
     let mut backoff_secs = 2u64;
@@ -1247,7 +1247,7 @@ pub(crate) async fn sync_from_primary<S>(
     socket: &mut S,
     store: &KeyValueStore,
     repl_password: Option<&str>,
-    tx: &broadcast::Sender<SyncMsg>,
+    tx: &SyncTx,
     state: &ServerState,
     resume: &mut ReplResume,
 ) -> std::io::Result<()>
@@ -1487,7 +1487,7 @@ where
 async fn apply_repl_frame(
     store: &KeyValueStore,
     state: &ServerState,
-    tx: &broadcast::Sender<SyncMsg>,
+    tx: &SyncTx,
     bytes: &[u8],
 ) -> std::io::Result<()> {
     let (value, consumed) = Value::parse(bytes)
@@ -1529,12 +1529,12 @@ async fn apply_repl_frame(
             format!("replicated command failed: {error}"),
         ));
     }
-    // Built only when a browser can receive it: the push copies the frame,
-    // which every replicated write paid for even with no WebSocket client.
-    // Checked after the write, so a client that subscribed before it is
-    // pushed it and one that subscribes later reads it from the store.
-    if state.replicas.unordered.has_push_receivers() {
-        let _ = tx.send(Arc::new(SyncPush::for_command(
+    // Built only when a browser is a candidate for it: the push copies the
+    // frame, which every replicated write paid for even with no WebSocket
+    // client. Checked after the write, so a client routed before it is
+    // pushed it and one routed later reads it from the store.
+    if tx.would_route(&cmd) {
+        tx.send(Arc::new(SyncPush::for_command(
             0,
             &cmd,
             push_keys(&cmd),
@@ -1558,7 +1558,7 @@ async fn apply_repl_frame(
 async fn apply_dedup_envelope(
     store: &KeyValueStore,
     state: &ServerState,
-    tx: &broadcast::Sender<SyncMsg>,
+    tx: &SyncTx,
     value: Value,
     client: &str,
     id: u64,
@@ -1586,15 +1586,22 @@ async fn apply_dedup_envelope(
     let bare = resp_push(&inner);
     let cmd = Command::from_value(Value::Array(Some(items.into_iter().skip(3).collect())))
         .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
-    let push = SyncPush::for_command(0, &cmd, push_keys(&cmd), bare.clone());
-    if let Value::Error(error) = store.execute(cmd) {
+    if let (Value::Error(error), _) = store.execute_reporting_ref(&cmd) {
         return Err(std::io::Error::new(
             ErrorKind::InvalidData,
             format!("replicated command failed: {error}"),
         ));
     }
     state.commit_dedup(client, id);
-    let _ = tx.send(Arc::new(push));
+    // After the write, as for a bare replicated write above.
+    if tx.would_route(&cmd) {
+        tx.send(Arc::new(SyncPush::for_command(
+            0,
+            &cmd,
+            push_keys(&cmd),
+            bare.clone(),
+        )));
+    }
     state.on_write_identified(&bare, Some((client, id))).await;
     Ok(())
 }

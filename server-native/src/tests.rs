@@ -19,6 +19,8 @@ pub(super) struct TestServer {
     pub tcp_addr: std::net::SocketAddr,
     pub store: Arc<KeyValueStore>,
     pub state: Arc<ServerState>,
+    /// The server's push router, for asserting what it routed.
+    pub router: SyncTx,
     _task: tokio::task::JoinHandle<()>,
 }
 
@@ -38,7 +40,8 @@ async fn spawn_server_cfg(
     start_as_replica: bool,
 ) -> TestServer {
     let store = Arc::new(KeyValueStore::new());
-    let (tx, _rx) = broadcast::channel::<SyncMsg>(256);
+    let tx = SyncRouter::new(256);
+    let router = tx.clone();
     let pubsub: SharedPubSub = Arc::new(tokio::sync::Mutex::new(PubSubHub::new()));
     let watch_registry: WatchRegistry = WatchHub::new();
     let semaphore = Arc::new(Semaphore::new(64));
@@ -100,6 +103,7 @@ async fn spawn_server_cfg(
         tcp_addr: addr,
         store,
         state,
+        router,
         _task: task,
     }
 }
@@ -1205,7 +1209,7 @@ async fn a_failed_dedup_write_does_not_consume_its_id() {
         7,
         Box::new(Command::HIncrBy("typed".into(), "field".into(), 1)),
     );
-    let tx = broadcast::channel::<SyncMsg>(8).0;
+    let tx = SyncRouter::new(8);
     let watches = WatchHub::new();
 
     let response = execute_ordered_write(&wrapped, &tx, 1, &state, &watches, &store).await;
@@ -1231,7 +1235,7 @@ async fn dedup_mark_is_checkpointed_with_the_successful_write() {
     let _ = std::fs::remove_file(&sidecar);
     let state = state_with_snapshot_path(snap.clone());
     let store = KeyValueStore::new();
-    let tx = broadcast::channel::<SyncMsg>(8).0;
+    let tx = SyncRouter::new(8);
     let watches = WatchHub::new();
     let wrapped = Command::Dedup(
         "client-b".into(),
@@ -1492,7 +1496,8 @@ async fn integration_replica_receives_write() {
     // Use a fresh primary state that shares our registry.
     let primary2 = {
         let store = Arc::clone(&primary.store);
-        let (tx, _rx) = broadcast::channel::<SyncMsg>(256);
+        let tx = SyncRouter::new(256);
+        let router = tx.clone();
         let pubsub: SharedPubSub = Arc::new(tokio::sync::Mutex::new(PubSubHub::new()));
         let wr: WatchRegistry = WatchHub::new();
         let sem = Arc::new(Semaphore::new(64));
@@ -1547,6 +1552,7 @@ async fn integration_replica_receives_write() {
             tcp_addr: addr,
             store,
             state,
+            router,
             _task: task,
         }
     };
@@ -1575,7 +1581,7 @@ async fn integration_replica_receives_write() {
     let rs = Arc::clone(&replica_store);
     let rst = Arc::clone(&replica_state);
     let repl_addr = format!("127.0.0.1:{repl_port}");
-    let rtx = broadcast::channel::<SyncMsg>(16).0;
+    let rtx = SyncRouter::new(16);
     tokio::spawn(async move {
         run_repl_client(repl_addr, rs, rst, None, None, rtx, None).await;
     });
@@ -1844,7 +1850,7 @@ async fn integration_concurrent_writers() {
 async fn integration_connection_limit() {
     // Small semaphore: only 3 concurrent connections
     let store = Arc::new(KeyValueStore::new());
-    let (tx, _rx) = broadcast::channel::<SyncMsg>(16);
+    let tx = SyncRouter::new(16);
     let pubsub: SharedPubSub = Arc::new(tokio::sync::Mutex::new(PubSubHub::new()));
     let watch_registry: WatchRegistry = WatchHub::new();
     let semaphore = Arc::new(Semaphore::new(3));
@@ -2001,7 +2007,7 @@ async fn integration_failover_timeout_does_not_promote() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let dead_addr = format!("127.0.0.1:{}", listener.local_addr().unwrap().port());
     drop(listener);
-    let rtx = broadcast::channel::<SyncMsg>(16).0;
+    let rtx = SyncRouter::new(16);
     tokio::spawn(async move {
         run_repl_client(dead_addr, rs, rst, None, Some(1), rtx, None).await;
     });
@@ -2158,7 +2164,7 @@ async fn ws_closes_a_client_whose_mutation_stream_developed_a_gap() {
     // stops the send path, the channel overruns, and the only correct answer is
     // to close so the client reconnects and re-runs QSUB.
     let store = Arc::new(KeyValueStore::new());
-    let (tx, _rx) = broadcast::channel::<SyncMsg>(16);
+    let tx = SyncRouter::new(16);
     let pubsub: SharedPubSub = Arc::new(tokio::sync::Mutex::new(PubSubHub::new()));
     let watch_registry: WatchRegistry = WatchHub::new();
     let state = Arc::new(ServerState {
@@ -2262,7 +2268,8 @@ pub(super) async fn spawn_ws_server_policy(
     password: Option<&str>,
 ) -> TestServer {
     let store = Arc::new(KeyValueStore::new());
-    let (tx, _rx) = broadcast::channel::<SyncMsg>(256);
+    let tx = SyncRouter::new(256);
+    let router = tx.clone();
     let pubsub: SharedPubSub = Arc::new(tokio::sync::Mutex::new(PubSubHub::new()));
     let watch_registry: WatchRegistry = WatchHub::new();
     let snap_cfg = Arc::new(SnapshotConfig {
@@ -2324,6 +2331,7 @@ pub(super) async fn spawn_ws_server_policy(
         tcp_addr: addr,
         store,
         state,
+        router,
         _task: task,
     }
 }
@@ -3830,6 +3838,7 @@ fn info_publishes_the_cluster_flag_that_cluster_info_cannot() {
         0,
         0,
         0,
+        RouteStatsSnapshot::default(),
     );
     assert!(body.contains("# Cluster\r\n"), "section header: {body:?}");
     assert!(body.contains("cluster_enabled:0"), "{body:?}");
@@ -3846,6 +3855,7 @@ fn info_publishes_the_cluster_flag_that_cluster_info_cannot() {
         0,
         0,
         0,
+        RouteStatsSnapshot::default(),
     );
     assert!(default.contains("cluster_enabled:0"), "{default:?}");
 }
@@ -4054,6 +4064,7 @@ fn info_for(sections: &[&str], store: &KeyValueStore) -> String {
         1_700_000_000,
         0,
         0,
+        RouteStatsSnapshot::default(),
     )
 }
 
@@ -4186,6 +4197,7 @@ fn info_replication_reports_both_redis_and_recached_spellings() {
         0,
         0,
         0,
+        RouteStatsSnapshot::default(),
     ));
     assert_eq!(primary[&("replication".into(), "role".into())], "master");
     // Tooling greps for `connected_slaves`; the modern alias ships too.
@@ -4215,6 +4227,7 @@ fn info_replication_reports_both_redis_and_recached_spellings() {
         0,
         0,
         0,
+        RouteStatsSnapshot::default(),
     ));
     // Redis still spells a replica `slave` in INFO, and clients match on it.
     assert_eq!(replica[&("replication".into(), "role".into())], "slave");
@@ -6724,6 +6737,7 @@ mod multitenant;
 mod replication_dedup;
 mod request_path;
 mod security_v06_regressions;
+mod sync_routing;
 mod write_gate;
 
 #[tokio::test]
