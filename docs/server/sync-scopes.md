@@ -207,6 +207,17 @@ recached-server
 
 Scope checks run before a command is queued inside `MULTI`, so an out-of-scope command errors at queue time rather than sneaking into `EXEC`. `WATCH` is scope-checked like any other key command — a connection cannot observe keys outside its grant. It observes rather than mutates, so a read-only grant is enough to `WATCH`; the writes inside the transaction are each checked on their own.
 
+## How pushes are routed
+
+Since 0.6 the server indexes each connection's grants. A write's push goes only to the connections whose grants could match the first key it names; a connection whose grants cannot match it is not woken at all. A write to `tenant:a:book:1` costs nothing for connections scoped to other tenants, however many there are.
+
+- **Prefix and exact grants are routed precisely.** For example `tenant:a:*`, `tenant:a:?:x` (routed on `tenant:a:`) and `tenant:a:book:1`.
+- **Grants with no literal prefix are not.** A grant such as `*:user1` or `?x`, or an open-mode connection that never called `SYNC`, is offered every push and filters it itself, which is how every connection was handled before 0.6. Prefer grants that start with a literal namespace.
+- **Routing only selects candidates.** Each connection still checks every push it takes against the scopes it holds at that moment, so a push naming any key outside them — for example a `COPY` source — is never sent.
+- **A push counts only against its candidates' queues.** Each connection's queue holds up to 512 pushes for that connection. Writes it cannot see no longer count towards the stream gap that closes it with `4001`.
+
+`INFO recached` reports the routing counters (`sync_route_*`, `sync_pushes_*`) for TCP clients. The [commands reference](/server/commands#info) lists them.
+
 ## Replication and multi-tier setups
 
 Scope filtering happens per-connection at the fan-out edge. Replicas receive the full write stream (they serve their own WebSocket clients, which are scoped independently), and the AOF/snapshot are unaffected.

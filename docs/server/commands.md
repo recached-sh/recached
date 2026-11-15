@@ -152,7 +152,7 @@ redis-cli -p 6379 INFO server memory
 | `replication` | `role`, `connected_slaves`, `connected_replicas`, `recached_replication_queue_depth`, `recached_replication_lag_frames` |
 | `cluster` | `cluster_enabled:0` — always, see [CLUSTER and MODULE](#cluster-and-module) |
 | `keyspace` | `db0:keys=N,expires=N,avg_ttl=0` — omitted entirely when the keyspace is empty, as in Redis |
-| `recached` | `live_queries`, `watched_keys` — Recached-specific, no Redis equivalent |
+| `recached` | `live_queries`, `watched_keys`, and WebSocket push routing: `sync_subscribers` and `sync_routed_subscribers` (connected / routed sockets), `sync_route_broad`, `sync_route_exact_keys` and `sync_route_prefixes` (index size), and since start `sync_route_events` (pushes routed), `sync_route_candidates` (connections offered them), `sync_route_skipped` (writes that built no push because no connection could see them), `sync_pushes_forwarded` and `sync_pushes_filtered` (what connections sent, or dropped on their own check). Recached-specific, no Redis equivalent |
 
 ### Version reporting
 
