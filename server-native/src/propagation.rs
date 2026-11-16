@@ -1056,6 +1056,26 @@ pub(crate) fn encode_keychange(key: &str, value: &Value) -> Vec<u8> {
     .serialize()
 }
 
+/// Tell WATCH and live-query subscribers about a confirmed write: per key, or
+/// for `FLUSHDB` — which names no keys, so the per-key notifier would announce
+/// nothing and subscribers would miss the wipe — every watched key and one
+/// sentinel per live-query pattern. Shared by client writes on a primary and
+/// replicated writes on a replica, so the two cannot drift apart.
+pub(crate) async fn notify_write(registry: &WatchRegistry, cmd: &Command, store: &KeyValueStore) {
+    if registry.is_empty() {
+        return;
+    }
+    if matches!(cmd, Command::FlushDb) {
+        let watched: Vec<String> = {
+            let reg = registry.map.lock().await;
+            reg.keys().cloned().collect()
+        };
+        notify_flushdb(registry, watched).await;
+    } else {
+        notify_watchers(registry, cmd, store).await;
+    }
+}
+
 /// Push keychange notifications for a *confirmed* mutation. Callers must have
 /// already established that `cmd` mutated the store (via `broadcast_for`).
 pub(crate) async fn notify_watchers(
@@ -1283,17 +1303,7 @@ async fn apply_write_effects_identified(
             .await;
     }
     if has_watch {
-        if matches!(cmd, Command::FlushDb) {
-            // primary_keys() is empty for FLUSHDB, so the generic notifier has
-            // nothing to announce — subscribers would silently miss the wipe.
-            let watched: Vec<String> = {
-                let reg = watch_registry.map.lock().await;
-                reg.keys().cloned().collect()
-            };
-            notify_flushdb(watch_registry, watched).await;
-        } else {
-            notify_watchers(watch_registry, cmd, store).await;
-        }
+        notify_write(watch_registry, cmd, store).await;
     }
     if has_ws {
         tx.send(Arc::new(SyncPush::for_command(

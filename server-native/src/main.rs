@@ -806,15 +806,31 @@ async fn run(
             .await;
         });
     }
+    // ── watch registry ────────────────────────────────────────────────────
+    // Before the replication client: replicated writes notify WATCH and
+    // live-query subscribers on this node, as client writes do.
+    let watch_registry: WatchRegistry = WatchHub::new();
+
     if is_replica_start && let Some(primary_addr) = replicaof {
         let store_r = Arc::clone(&store);
         let state_r = Arc::clone(&state);
         let pwd_r = repl_password.clone();
         let fo_r = failover_timeout_secs;
         let tx_r = tx.clone();
+        let watches_r = watch_registry.clone();
         let tls_r = repl_tls;
         tokio::spawn(async move {
-            run_repl_client(primary_addr, store_r, state_r, pwd_r, fo_r, tx_r, tls_r).await;
+            run_repl_client(
+                primary_addr,
+                store_r,
+                state_r,
+                pwd_r,
+                fo_r,
+                tx_r,
+                watches_r,
+                tls_r,
+            )
+            .await;
         });
         if failover_timeout_secs.is_some() {
             info!(
@@ -829,9 +845,6 @@ async fn run(
 
     // ── pub/sub hub ───────────────────────────────────────────────────────
     let pubsub: SharedPubSub = Arc::new(tokio::sync::Mutex::new(PubSubHub::new()));
-
-    // ── watch registry ────────────────────────────────────────────────────
-    let watch_registry: WatchRegistry = WatchHub::new();
 
     // ── background expiry & eviction ──────────────────────────────────────
     // Spawned after the watch registry because the sweep now has to announce

@@ -13,6 +13,9 @@ pub(super) struct Node {
     pub(super) store: Arc<KeyValueStore>,
     pub(super) state: Arc<ServerState>,
     pub(super) tx: SyncTx,
+    /// The registry this node's WebSocket connections use, shared with its
+    /// replication client so replicated writes reach them.
+    pub(super) watches: WatchRegistry,
     pub(super) ws: std::net::SocketAddr,
 }
 
@@ -37,7 +40,8 @@ pub(super) async fn node(is_replica: bool, dedup: bool) -> Node {
     let ws = listener.local_addr().unwrap();
     let (s, t, st) = (Arc::clone(&store), tx.clone(), Arc::clone(&state));
     let pubsub: SharedPubSub = Arc::new(tokio::sync::Mutex::new(PubSubHub::new()));
-    let watch: WatchRegistry = WatchHub::new();
+    let watches: WatchRegistry = WatchHub::new();
+    let watch = Arc::clone(&watches);
     tokio::spawn(async move {
         while let Ok((socket, peer)) = listener.accept().await {
             let (s, t, st, ps, wr) = (
@@ -69,6 +73,7 @@ pub(super) async fn node(is_replica: bool, dedup: bool) -> Node {
         store,
         state,
         tx,
+        watches,
         ws,
     }
 }
@@ -115,6 +120,7 @@ async fn follow_for(
             &replica.store,
             None,
             &replica.tx,
+            &replica.watches,
             &replica.state,
             resume,
         ),
@@ -124,15 +130,25 @@ async fn follow_for(
 
 /// Follow in the background for the rest of the test.
 pub(super) fn follow(replica: &Node, primary_addr: std::net::SocketAddr) {
-    let (store, state, tx) = (
+    let (store, state, tx, watches) = (
         Arc::clone(&replica.store),
         Arc::clone(&replica.state),
         replica.tx.clone(),
+        Arc::clone(&replica.watches),
     );
     tokio::spawn(async move {
         let mut resume = ReplResume::default();
         let mut socket = TcpStream::connect(primary_addr).await.unwrap();
-        let _ = sync_from_primary(&mut socket, &store, None, &tx, &state, &mut resume).await;
+        let _ = sync_from_primary(
+            &mut socket,
+            &store,
+            None,
+            &tx,
+            &watches,
+            &state,
+            &mut resume,
+        )
+        .await;
     });
 }
 
@@ -360,6 +376,182 @@ async fn a_replicas_browser_peers_are_pushed_the_bare_write() {
         !push.contains("DEDUP") && !push.contains("secret-client-id"),
         "envelope leaked to a peer: {push}"
     );
+}
+
+// ── Live queries and WATCH on a replica ─────────────────────────────────────
+
+/// A `qstate` reply as a map.
+fn qstate(reply: &Value) -> std::collections::BTreeMap<String, Value> {
+    let Value::Array(Some(items)) = reply else {
+        panic!("expected qstate, got {reply:?}");
+    };
+    items[2..]
+        .chunks(2)
+        .map(|pair| match pair {
+            [Value::BulkString(Some(k)), v] => (String::from_utf8_lossy(k).into_owned(), v.clone()),
+            other => panic!("malformed pair {other:?}"),
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_query_on_a_replica_follows_replicated_writes() {
+    // Regression: a replicated write never reached the replica's watch
+    // registry, and the sync push that did reach the connection was dropped
+    // as covered by its live query. A QSUB against a replica got its snapshot
+    // and then nothing, ever.
+    let primary = node(false, true).await;
+    let replica = node(true, true).await;
+    follow(&replica, serve_replicas(&primary).await);
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    let mut p = WsClient::connect(primary.ws).await;
+    assert_eq!(p.cmd(&["SET", "r:0", "a"]).await, ok());
+    caught_up(&mut p, &replica, "t0").await;
+
+    let mut r = WsClient::connect(replica.ws).await;
+    let snap = qstate(&r.cmd(&["QSUB", "r:*"]).await);
+    assert_eq!(snap.keys().collect::<Vec<_>>(), ["r:0"]);
+
+    assert_eq!(p.cmd(&["SET", "r:1", "b"]).await, ok());
+    let (key, value) = r.recv_keychange(2_000).await.expect("replicated SET");
+    assert_eq!((key.as_str(), value), ("r:1", bulk("b")));
+    assert_eq!(p.cmd(&["DEL", "r:0"]).await, int(1));
+    let (key, value) = r.recv_keychange(2_000).await.expect("replicated DEL");
+    assert_eq!((key.as_str(), value), ("r:0", nil()));
+    // A DEDUP-wrapped write takes the envelope path; it notifies too.
+    assert_eq!(p.cmd(&["DEDUP", "c9", "1", "SET", "r:2", "c"]).await, ok());
+    let (key, value) = r
+        .recv_keychange(2_000)
+        .await
+        .expect("replicated DEDUP write");
+    assert_eq!((key.as_str(), value), ("r:2", bulk("c")));
+    // Outside the pattern: nothing.
+    assert_eq!(p.cmd(&["SET", "other", "x"]).await, ok());
+    assert!(r.recv_keychange(300).await.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replicated_write_invalidates_a_watch_on_the_replica() {
+    let primary = node(false, true).await;
+    let replica = node(true, true).await;
+    follow(&replica, serve_replicas(&primary).await);
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    let mut p = WsClient::connect(primary.ws).await;
+    assert_eq!(p.cmd(&["SET", "w", "1"]).await, ok());
+    caught_up(&mut p, &replica, "t0").await;
+
+    let mut r = WsClient::connect(replica.ws).await;
+    assert_eq!(r.cmd(&["WATCH", "w"]).await, ok());
+    assert_eq!(p.cmd(&["SET", "w", "2"]).await, ok());
+    caught_up(&mut p, &replica, "t1").await;
+    assert_eq!(r.cmd(&["MULTI"]).await, ok());
+    assert_eq!(
+        r.cmd(&["GET", "w"]).await,
+        Value::SimpleString("QUEUED".into())
+    );
+    assert_eq!(
+        r.cmd(&["EXEC"]).await,
+        Value::Array(None),
+        "EXEC on a replica must abort after a replicated write to a watched key"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replicated_flushdb_reaches_live_queries_and_watches_on_the_replica() {
+    // Regression (6K independent review, M1): FLUSHDB names no keys, so the
+    // per-key notifier announced nothing on the replica — a live query kept
+    // every key and a WATCH was not invalidated. The primary sends one
+    // sentinel per pattern (key = the pattern, value nil) for it.
+    let primary = node(false, true).await;
+    let replica = node(true, true).await;
+    follow(&replica, serve_replicas(&primary).await);
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    let mut p = WsClient::connect(primary.ws).await;
+    assert_eq!(p.cmd(&["SET", "cart:1", "a"]).await, ok());
+    caught_up(&mut p, &replica, "t0").await;
+
+    let mut q = WsClient::connect(replica.ws).await;
+    assert_eq!(qstate(&q.cmd(&["QSUB", "cart:*"]).await).len(), 1);
+    let mut w = WsClient::connect(replica.ws).await;
+    assert_eq!(w.cmd(&["WATCH", "cart:1"]).await, ok());
+
+    assert_eq!(p.cmd(&["FLUSHDB"]).await, ok());
+    let (key, value) = q
+        .recv_keychange(2_000)
+        .await
+        .expect("the live query was told of the replicated FLUSHDB");
+    assert_eq!((key.as_str(), value), ("cart:*", nil()));
+
+    assert_eq!(w.cmd(&["MULTI"]).await, ok());
+    assert_eq!(
+        w.cmd(&["GET", "cart:1"]).await,
+        Value::SimpleString("QUEUED".into())
+    );
+    assert_eq!(w.cmd(&["EXEC"]).await, Value::Array(None));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replica_live_queries_converge_while_the_primary_writes() {
+    // Snapshot and registration on the replica are atomic with replicated
+    // writes (they now take write-order stripes), so every observer that
+    // subscribes mid-stream ends up equal to the replica's store.
+    let primary = node(false, true).await;
+    let replica = node(true, true).await;
+    follow(&replica, serve_replicas(&primary).await);
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer = {
+        let stop = Arc::clone(&stop);
+        let addr = primary.ws;
+        tokio::spawn(async move {
+            let mut c = WsClient::connect(addr).await;
+            let mut i = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                let key = format!("q:{}", i % 40);
+                match i % 5 {
+                    0 => {
+                        c.cmd(&["DEL", &key]).await;
+                    }
+                    1 => {
+                        c.cmd(&["INCR", &key]).await;
+                    }
+                    _ => {
+                        c.cmd(&["SET", &key, &format!("v{i}")]).await;
+                    }
+                }
+                i += 1;
+            }
+        })
+    };
+    let mut observers = Vec::new();
+    for _ in 0..5 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(40)).await;
+        let mut c = WsClient::connect(replica.ws).await;
+        let local = qstate(&c.cmd(&["QSUB", "q:*"]).await);
+        observers.push((c, local));
+    }
+    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+    stop.store(true, Ordering::Relaxed);
+    writer.await.unwrap();
+    let mut p = WsClient::connect(primary.ws).await;
+    caught_up(&mut p, &replica, "done").await;
+
+    let expected: std::collections::BTreeMap<String, Value> = replica
+        .store
+        .matching_key_values("q:*", usize::MAX)
+        .into_iter()
+        .collect();
+    for (n, (mut c, mut local)) in observers.into_iter().enumerate() {
+        while let Some((key, value)) = c.recv_keychange(400).await {
+            if value == nil() {
+                local.remove(&key);
+            } else {
+                local.insert(key, value);
+            }
+        }
+        assert_eq!(local, expected, "replica observer {n} diverged");
+    }
 }
 
 // ── Compatibility ───────────────────────────────────────────────────────────

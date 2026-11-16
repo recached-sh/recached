@@ -57,6 +57,9 @@ Measured with persistence, replication, a memory cap and browser clients switche
 - Reads of one key from several workers no longer write to that key's memory on every `GET` (the access time is stored only when it changes), and a write that leaves a value's size unchanged no longer updates the store-wide memory counter
 - Checking whether any browser client is connected no longer takes a lock on every write (one call site still took the broadcast channel's lock on every ordered write until routing replaced it)
 
+### Fixed — replication
+- **Live queries and `WATCH` on a replica see replicated writes.** A replicated write never reached the replica's watch registry, and the push that did reach a browser was dropped as covered by its live query — so a `QSUB` against a replica got its snapshot and then nothing (also in 0.5.1). Replicated writes now take the same ordering locks as client writes and notify `WATCH` and live-query subscribers, including for `FLUSHDB`; `EXEC` on a replica aborts after a replicated write to a watched key, as in Redis. A full resynchronization no longer runs alongside a live query's snapshot. Still open: after a full resynchronization a replica's browsers are not told to resubscribe
+
 ### Fixed — commands
 - **A key that expired while a snapshot was loading is no longer stranded.** It stayed in memory for good, never swept, and was missing from `DBSIZE`
 - On a capped store, the expiry sweeper no longer makes a concurrent write see one key too many (a spurious `max keys` refusal, or an unnecessary eviction)
