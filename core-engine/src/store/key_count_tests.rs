@@ -260,7 +260,20 @@ fn eight_creators_racing_with_eviction_stay_at_the_cap() {
                     let key = format!("e{t}:{i}");
                     let reply = store.execute(Command::Set(key, s("v"), SetOptions::default()));
                     assert_eq!(reply, Value::SimpleString("OK".into()));
-                    assert!(store.data.len() <= MAX);
+                    // `DashMap::len()` sums its shards one at a time, so read
+                    // while another write evicts (removing the victim from
+                    // one shard, inserting into another) it can count both
+                    // and report one over. Read it where no capped write is
+                    // in flight — under the capacity gate they all hold —
+                    // and check the exact published count as well.
+                    {
+                        let _gate = store
+                            .capacity_gate
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
+                        assert!(store.data.len() <= MAX, "map over the cap");
+                    }
+                    assert!(store.key_count() <= MAX, "count over the cap");
                 }
             });
         }
