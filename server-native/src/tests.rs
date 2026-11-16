@@ -1583,7 +1583,7 @@ async fn integration_replica_receives_write() {
     let repl_addr = format!("127.0.0.1:{repl_port}");
     let rtx = SyncRouter::new(16);
     tokio::spawn(async move {
-        run_repl_client(repl_addr, rs, rst, None, None, rtx, None).await;
+        run_repl_client(repl_addr, rs, rst, None, None, rtx, WatchHub::new(), None).await;
     });
 
     // Give replica time to connect and receive initial snapshot
@@ -2009,7 +2009,17 @@ async fn integration_failover_timeout_does_not_promote() {
     drop(listener);
     let rtx = SyncRouter::new(16);
     tokio::spawn(async move {
-        run_repl_client(dead_addr, rs, rst, None, Some(1), rtx, None).await;
+        run_repl_client(
+            dead_addr,
+            rs,
+            rst,
+            None,
+            Some(1),
+            rtx,
+            WatchHub::new(),
+            None,
+        )
+        .await;
     });
 
     tokio::time::sleep(tokio::time::Duration::from_millis(2300)).await;
