@@ -456,6 +456,40 @@ async fn a_replicated_write_invalidates_a_watch_on_the_replica() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replicated_flushdb_reaches_live_queries_and_watches_on_the_replica() {
+    // Regression (6K independent review, M1): FLUSHDB names no keys, so the
+    // per-key notifier announced nothing on the replica — a live query kept
+    // every key and a WATCH was not invalidated. The primary sends one
+    // sentinel per pattern (key = the pattern, value nil) for it.
+    let primary = node(false, true).await;
+    let replica = node(true, true).await;
+    follow(&replica, serve_replicas(&primary).await);
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    let mut p = WsClient::connect(primary.ws).await;
+    assert_eq!(p.cmd(&["SET", "cart:1", "a"]).await, ok());
+    caught_up(&mut p, &replica, "t0").await;
+
+    let mut q = WsClient::connect(replica.ws).await;
+    assert_eq!(qstate(&q.cmd(&["QSUB", "cart:*"]).await).len(), 1);
+    let mut w = WsClient::connect(replica.ws).await;
+    assert_eq!(w.cmd(&["WATCH", "cart:1"]).await, ok());
+
+    assert_eq!(p.cmd(&["FLUSHDB"]).await, ok());
+    let (key, value) = q
+        .recv_keychange(2_000)
+        .await
+        .expect("the live query was told of the replicated FLUSHDB");
+    assert_eq!((key.as_str(), value), ("cart:*", nil()));
+
+    assert_eq!(w.cmd(&["MULTI"]).await, ok());
+    assert_eq!(
+        w.cmd(&["GET", "cart:1"]).await,
+        Value::SimpleString("QUEUED".into())
+    );
+    assert_eq!(w.cmd(&["EXEC"]).await, Value::Array(None));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replica_live_queries_converge_while_the_primary_writes() {
     // Snapshot and registration on the replica are atomic with replicated

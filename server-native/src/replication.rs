@@ -1368,7 +1368,14 @@ where
             None
         };
         let count = entries.len();
-        store.replace(entries);
+        {
+            // Behind the all-write barrier, as a QSUB snapshot is: a live
+            // query registered on this replica must not snapshot a keyspace
+            // that is half replaced (the prefix plan would read the fresh,
+            // empty index installed at the start of `replace`).
+            let _barrier = state.replicas.lock_all_writes().await;
+            store.replace(entries);
+        }
         match table {
             Some(table) => {
                 let clients = table.len();
@@ -1551,7 +1558,11 @@ async fn apply_repl_frame(
             format!("replicated command failed: {error}"),
         ));
     }
-    notify_watchers(watches, &cmd, store).await;
+    // Logged first, then announced, as a write on the primary is: a client
+    // is told of a write only once it is in this node's AOF and replication
+    // stream.
+    state.on_write(bytes).await;
+    notify_write(watches, &cmd, store).await;
     // Built only when a browser is a candidate for it: the push copies the
     // frame, which every replicated write paid for even with no WebSocket
     // client. Checked after the write, so a client routed before it is
@@ -1564,7 +1575,6 @@ async fn apply_repl_frame(
             bytes.to_vec(),
         )));
     }
-    state.on_write(bytes).await;
     Ok(())
 }
 
@@ -1621,18 +1631,18 @@ async fn apply_dedup_envelope(
             format!("replicated command failed: {error}"),
         ));
     }
-    notify_watchers(watches, &cmd, store).await;
     state.commit_dedup(client, id);
-    // After the write, as for a bare replicated write above.
+    // Logged, then announced, then pushed, as for a bare replicated write.
+    state.on_write_identified(&bare, Some((client, id))).await;
+    notify_write(watches, &cmd, store).await;
     if tx.would_route(&cmd) {
         tx.send(Arc::new(SyncPush::for_command(
             0,
             &cmd,
             push_keys(&cmd),
-            bare.clone(),
+            bare,
         )));
     }
-    state.on_write_identified(&bare, Some((client, id))).await;
     Ok(())
 }
 
