@@ -3836,7 +3836,7 @@ fn info_publishes_the_cluster_flag_that_cluster_info_cannot() {
         false,
         ReplInfo::default(),
         0,
-        0,
+        LiveQueryStats::default(),
         0,
         RouteStatsSnapshot::default(),
     );
@@ -3853,7 +3853,7 @@ fn info_publishes_the_cluster_flag_that_cluster_info_cannot() {
         false,
         ReplInfo::default(),
         0,
-        0,
+        LiveQueryStats::default(),
         0,
         RouteStatsSnapshot::default(),
     );
@@ -4062,7 +4062,7 @@ fn info_for(sections: &[&str], store: &KeyValueStore) -> String {
         false,
         ReplInfo::default(),
         1_700_000_000,
-        0,
+        LiveQueryStats::default(),
         0,
         RouteStatsSnapshot::default(),
     )
@@ -4195,7 +4195,7 @@ fn info_replication_reports_both_redis_and_recached_spellings() {
         false,
         repl,
         0,
-        0,
+        LiveQueryStats::default(),
         0,
         RouteStatsSnapshot::default(),
     ));
@@ -4225,7 +4225,7 @@ fn info_replication_reports_both_redis_and_recached_spellings() {
         true,
         ReplInfo::default(),
         0,
-        0,
+        LiveQueryStats::default(),
         0,
         RouteStatsSnapshot::default(),
     ));
@@ -6604,7 +6604,7 @@ mod sweep_notification {
         let (overflow, _overflow_rx) = mpsc::channel(1);
         let (subscriber, rx) = notification_channel(1, overflow, Arc::new(AtomicBool::new(false)));
         let mut pats = registry.patterns.lock().await;
-        pats.insert(pattern.to_string(), vec![subscriber]);
+        pats.add(pattern, subscriber);
         registry.sync_patterns_len(&pats);
         rx
     }

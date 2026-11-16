@@ -219,3 +219,71 @@ async fn expired_keys_are_absent_from_a_prefix_snapshot() {
     let snap = qstate_map(&q.cmd(&["QSUB", "e:*"]).await, "e:*");
     assert_eq!(snap.keys().collect::<Vec<_>>(), ["e:live"]);
 }
+
+/// One `INFO recached` field, read over the WebSocket.
+async fn recached_info(c: &mut WsClient, field: &str) -> u64 {
+    let Value::BulkString(Some(body)) = c.cmd(&["INFO", "recached"]).await else {
+        panic!("INFO recached did not return a bulk string");
+    };
+    let body = String::from_utf8_lossy(&body).into_owned();
+    body.lines()
+        .find_map(|line| line.strip_prefix(&format!("{field}:")))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or_else(|| panic!("{field} missing from {body}"))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_checks_only_the_live_queries_that_could_match_it() {
+    // 6K-B: with ~1,000 tenant live queries registered, a write to an
+    // unrelated key checks none of them and a write to one tenant's key
+    // checks that tenant's pattern only — and is still delivered.
+    let srv = spawn_ws_server().await;
+    let mut subscribers = Vec::new();
+    for conn in 0..16 {
+        let mut c = WsClient::connect(srv.tcp_addr).await;
+        for q in 0..62 {
+            let pattern = format!("tenant:{}:*", conn * 62 + q);
+            assert!(matches!(
+                c.cmd(&["QSUB", &pattern]).await,
+                Value::Array(Some(_))
+            ));
+        }
+        subscribers.push(c);
+    }
+    let mut writer = WsClient::connect(srv.tcp_addr).await;
+    assert_eq!(recached_info(&mut writer, "live_queries").await, 992);
+    assert_eq!(recached_info(&mut writer, "qsub_route_prefixes").await, 992);
+
+    let before = recached_info(&mut writer, "qsub_route_candidates").await;
+    assert_eq!(writer.cmd(&["SET", "unrelated:1", "v"]).await, ok());
+    assert_eq!(
+        recached_info(&mut writer, "qsub_route_candidates").await,
+        before,
+        "an unrelated write checked live-query patterns"
+    );
+
+    assert_eq!(writer.cmd(&["SET", "tenant:70:k", "v"]).await, ok());
+    assert_eq!(
+        recached_info(&mut writer, "qsub_route_candidates").await,
+        before + 1,
+        "tenant:70:k is a candidate for tenant:70:* alone (not tenant:7*:)"
+    );
+    // tenant:70 is connection 1's (62..124).
+    let (key, value) = subscribers[1]
+        .recv_keychange(1_000)
+        .await
+        .expect("the matching live query was notified");
+    assert_eq!((key.as_str(), value), ("tenant:70:k", bulk("v")));
+    assert!(subscribers[0].recv_keychange(200).await.is_none());
+
+    // Unsubscribing unindexes: the same write then checks nothing.
+    assert_eq!(subscribers[1].cmd(&["QUNSUB", "tenant:70:*"]).await, ok());
+    let before = recached_info(&mut writer, "qsub_route_candidates").await;
+    assert_eq!(writer.cmd(&["SET", "tenant:70:k", "w"]).await, ok());
+    assert_eq!(
+        recached_info(&mut writer, "qsub_route_candidates").await,
+        before
+    );
+    assert_eq!(recached_info(&mut writer, "live_queries").await, 991);
+    drop(subscribers);
+}

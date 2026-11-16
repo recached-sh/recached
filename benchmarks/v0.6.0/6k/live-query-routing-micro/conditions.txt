@@ -1,0 +1,13 @@
+what: per-write live-query matching, pre-6K-B pattern loop (verbatim copy) vs LiveQueries, same release test binary, interleaved batches of 100, receivers drained untimed.
+command: cargo test --release -p recached --bin recached-server -- --ignored bench_live_query_routing --nocapture
+source: server-native/src/watch.rs (live_query_routing_bench)
+patterns: tenant:<i>:* (one connection each); many = +50 overlapping tenant:7*<j>* patterns (10 match); broad = +1 '*:x'
+run1: df703db (names indexed, subscribers in a separate map; matching names copied to String)  2026-11-16 22:14-22:20, load 6.1 -> 9.4
+run2: names borrowed instead of copied (intermediate, never shipped)                             2026-11-16 22:56-23:00, load 4.7 -> 4.8
+run3: 7f4b8d4 (subscribers kept in the index buckets; final)                                       2026-11-16 23:04-23:08, load 4.8 -> 5.5
+Every run's binary was built after `cargo clean -p` of the workspace members (see the
+Verification note in the 6K reports: worktrees sharing one target dir reused stale
+binaries; an earlier, unverified run2 showing 1.1x at 10 all-matching was discarded).
+host: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz, 8 logical CPUs, macOS 15.8.1, shared with other work; disk ~98% full
+toolchain: rustc 1.98.0 (88d9e12ae 2026-08-18)
+status: INDICATIVE

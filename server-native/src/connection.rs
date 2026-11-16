@@ -911,7 +911,7 @@ pub(crate) async fn handle_tcp<S>(
                                                         state.is_replica(),
                                                         repl,
                                                         state.snap.last_save.load(Ordering::Relaxed),
-                                                        watch_registry.watched_patterns.load(Ordering::Relaxed) as u64,
+                                                        watch_registry.live_query_stats(),
                                                         watch_registry.watched_keys.load(Ordering::Relaxed) as u64,
                                                         tx.stats(),
                                                     );
@@ -1999,9 +1999,7 @@ pub(crate) async fn handle_ws<S>(
                                             if qsub_patterns.insert(pattern.clone()) {
                                                 let mut pats =
                                                     watch_registry.patterns.lock().await;
-                                                pats.entry(pattern.clone())
-                                                    .or_default()
-                                                    .push(qsub_subscriber.clone());
+                                                pats.add(&pattern, qsub_subscriber.clone());
                                                 watch_registry.sync_patterns_len(&pats);
                                             }
                                             Ok(values)
@@ -2058,12 +2056,7 @@ pub(crate) async fn handle_ws<S>(
                                 if !targets.is_empty() {
                                     let mut pats = watch_registry.patterns.lock().await;
                                     for p in &targets {
-                                        if let Some(subs) = pats.get_mut(p) {
-                                            subs.retain(|sub| sub.conn_id != conn_id);
-                                            if subs.is_empty() {
-                                                pats.remove(p);
-                                            }
-                                        }
+                                        pats.remove_conn(p, conn_id);
                                     }
                                     watch_registry.sync_patterns_len(&pats);
                                 }
@@ -2131,7 +2124,7 @@ pub(crate) async fn handle_ws<S>(
                                             state.is_replica(),
                                             repl,
                                             state.snap.last_save.load(Ordering::Relaxed),
-                                            watch_registry.watched_patterns.load(Ordering::Relaxed) as u64,
+                                            watch_registry.live_query_stats(),
                                             watch_registry.watched_keys.load(Ordering::Relaxed) as u64,
                                             tx.stats(),
                                         );
