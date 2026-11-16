@@ -13309,3 +13309,6 @@ mod match_plan_tests;
 
 #[cfg(test)]
 mod key_count_tests;
+
+#[cfg(test)]
+mod growth_bound_tests;
