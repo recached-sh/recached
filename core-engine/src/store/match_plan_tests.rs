@@ -42,6 +42,52 @@ fn snapshot(store: &KeyValueStore, pattern: &str) -> BTreeMap<String, (Value, bo
     out
 }
 
+/// `pattern` walked with `plan` forced, bypassing the scan fallback, so
+/// both plans are checked whatever share of the keyspace a prefix covers.
+fn walked(
+    store: &KeyValueStore,
+    pattern: &str,
+    plan: MatchPlan,
+) -> BTreeMap<String, (Value, bool)> {
+    let mut out = BTreeMap::new();
+    store.walk_plan(pattern, plan, now_ms(), |key, entry| {
+        let fresh = out
+            .insert(
+                key.to_string(),
+                (
+                    KeyValueStore::encode_current_value(&entry.value),
+                    entry.deadline.get().is_some(),
+                ),
+            )
+            .is_none();
+        assert!(fresh, "{key} visited twice for {pattern:?} under {plan:?}");
+        true
+    });
+    out
+}
+
+/// Every way `pattern` can be answered agrees with the full walk: the public
+/// path (whatever plan it picks), its own plan forced, and a forced scan.
+fn assert_all_plans_agree(store: &KeyValueStore, pattern: &str, what: &str) {
+    let want = reference(store, pattern);
+    assert_eq!(
+        snapshot(store, pattern),
+        want,
+        "{what}: public path, {pattern:?}"
+    );
+    let own = MatchPlan::of(pattern);
+    assert_eq!(
+        walked(store, pattern, own),
+        want,
+        "{what}: {own:?}, {pattern:?}"
+    );
+    assert_eq!(
+        walked(store, pattern, MatchPlan::Scan),
+        want,
+        "{what}: scan, {pattern:?}"
+    );
+}
+
 fn set(store: &KeyValueStore, key: &str, value: &str) {
     store.execute(Command::Set(
         key.into(),
@@ -143,12 +189,7 @@ fn every_pattern_shape_matches_the_full_walk() {
         "t?nant:a:*",
     ];
     for pattern in patterns {
-        assert_eq!(
-            snapshot(&store, pattern),
-            reference(&store, pattern),
-            "pattern {pattern:?} ({:?})",
-            MatchPlan::of(pattern)
-        );
+        assert_all_plans_agree(&store, pattern, "fixed keyspace");
     }
 }
 
@@ -189,11 +230,7 @@ fn random_keyspaces_and_patterns_match_the_full_walk() {
                     .unwrap_or(pattern.len());
                 pattern.insert(at, if rng.random_bool(0.5) { '*' } else { '?' });
             }
-            assert_eq!(
-                snapshot(&store, &pattern),
-                reference(&store, &pattern),
-                "round {round}, pattern {pattern:?}"
-            );
+            assert_all_plans_agree(&store, &pattern, &format!("round {round}"));
         }
     }
 }
@@ -204,6 +241,11 @@ fn a_prefix_wider_than_one_index_step_is_walked_exactly_once() {
     // a step boundary landing exactly on the prefix's last key.
     let store = KeyValueStore::new();
     let total = MATCH_INDEX_STEP * 3;
+    // Enough other keys that `t:a:` stays under a quarter of the keyspace,
+    // so the public path takes the prefix plan this test is about.
+    for i in 0..total * 10 {
+        set(&store, &format!("z:{i}"), "bg");
+    }
     for i in 0..total {
         set(&store, &format!("t:a:{i:06}"), "v");
         set(&store, &format!("t:a:{i:06}:x"), "x");
@@ -211,12 +253,9 @@ fn a_prefix_wider_than_one_index_step_is_walked_exactly_once() {
     set(&store, "t:b:000000", "other");
     set(&store, "t:9", "before");
     for pattern in ["t:a:*", "t:a:*:x", "t:a:??????", "t:*", "t:a:00*"] {
-        assert_eq!(
-            snapshot(&store, pattern),
-            reference(&store, pattern),
-            "{pattern}"
-        );
+        assert_all_plans_agree(&store, pattern, "step boundaries");
     }
+    assert_eq!(store.plan_for("t:a:*"), MatchPlan::Prefix(4));
     // Exactly the prefix's own keys were examined: twice `total`, nothing
     // past the prefix and nothing twice across the lock releases.
     let (values, examined) = store.matching_key_values_with_ttl_counted("t:a:*", usize::MAX);
@@ -224,16 +263,50 @@ fn a_prefix_wider_than_one_index_step_is_walked_exactly_once() {
     assert_eq!(examined, total * 2);
 
     let exact_boundary = KeyValueStore::new();
+    for i in 0..MATCH_INDEX_STEP * 5 {
+        set(&exact_boundary, &format!("z:{i}"), "bg");
+    }
     for i in 0..MATCH_INDEX_STEP {
         set(&exact_boundary, &format!("p:{i:06}"), "v");
     }
     set(&exact_boundary, "q", "v");
+    assert_eq!(exact_boundary.plan_for("p:*"), MatchPlan::Prefix(2));
     assert_eq!(
         exact_boundary
             .matching_key_values_with_ttl("p:*", usize::MAX)
             .len(),
         MATCH_INDEX_STEP
     );
+}
+
+#[test]
+fn a_prefix_covering_a_quarter_of_the_keyspace_is_scanned() {
+    // Past ~30% of the keyspace a map lookup per match costs more than one
+    // walk of the map (`bench_live_query_snapshot`), so a wide prefix scans.
+    let store = KeyValueStore::new();
+    for i in 0..3_001 {
+        set(&store, &format!("other:{i}"), "v");
+    }
+    for i in 0..999 {
+        set(&store, &format!("wide:{i}"), "v");
+    }
+    // 999 of 4,000: just under a quarter.
+    assert_eq!(store.plan_for("wide:*"), MatchPlan::Prefix(5));
+    set(&store, "wide:last", "v");
+    // 1,000 of 4,001: a quarter (integer division).
+    assert_eq!(store.plan_for("wide:*"), MatchPlan::Scan);
+    let (values, examined) = store.matching_key_values_with_ttl_counted("wide:*", usize::MAX);
+    assert_eq!(values.len(), 1_000);
+    assert_eq!(examined, 4_001, "scanned");
+    assert_all_plans_agree(&store, "wide:*", "wide prefix");
+    // Narrow and exact patterns are unaffected.
+    assert_eq!(store.plan_for("other:7*"), MatchPlan::Prefix(7));
+    assert_eq!(store.plan_for("wide:1"), MatchPlan::Exact);
+    assert_eq!(store.plan_for("*:1"), MatchPlan::Scan);
+    // A tiny keyspace scans: a quarter of it rounds to nothing.
+    let tiny = KeyValueStore::new();
+    set(&tiny, "a:1", "v");
+    assert_eq!(tiny.plan_for("a:*"), MatchPlan::Scan);
 }
 
 #[test]
@@ -272,12 +345,12 @@ fn expired_keys_are_skipped_on_every_plan() {
     store.execute(Command::PSetEx("dead".into(), 1, "d".into()));
     std::thread::sleep(std::time::Duration::from_millis(10));
     for pattern in ["q:*", "q:dead", "*", "dead", "?:*"] {
-        let got = snapshot(&store, pattern);
+        let got = walked(&store, pattern, MatchPlan::of(pattern));
         assert!(
             got.keys().all(|k| k != "q:dead" && k != "dead"),
             "{pattern}: {got:?}"
         );
-        assert_eq!(got, reference(&store, pattern), "{pattern}");
+        assert_all_plans_agree(&store, pattern, "expiry");
     }
     // Still physically present (awaiting the sweeper), so still indexed —
     // which is why liveness is checked after the index, not trusted from it.
@@ -306,6 +379,11 @@ fn snapshots_agree_with_the_full_walk_while_writers_run() {
     // map walk), but it must never return a key that does not match, a key
     // twice, or a key that was never written.
     let store = KeyValueStore::new();
+    // Background keys keep `c:0` under a quarter of the keyspace, so this
+    // races writers against the prefix plan.
+    for i in 0..20_000 {
+        set(&store, &format!("bg:{i}"), "v");
+    }
     for i in 0..2_000 {
         set(&store, &format!("c:{i:05}"), "v");
     }
@@ -345,7 +423,8 @@ fn snapshots_agree_with_the_full_walk_while_writers_run() {
         }
     });
     // Quiescent again: exact agreement.
-    assert_eq!(snapshot(&store, "c:0*"), reference(&store, "c:0*"));
+    assert_eq!(store.plan_for("c:0*"), MatchPlan::Prefix(3));
+    assert_all_plans_agree(&store, "c:0*", "after writers");
 }
 
 /// The pre-6K implementation, verbatim: walk the whole map, glob each key.

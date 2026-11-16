@@ -2799,7 +2799,10 @@ impl KeyValueStore {
     ///   its first metacharacter, and keys sharing a prefix are contiguous in
     ///   the ordered index. Only that range is walked, and `glob_match` still
     ///   decides each one: the prefix narrows candidates, it never admits one.
-    /// * **Scan** — no literal prefix (`*`, `*:book`): every key.
+    /// * **Scan** — no literal prefix (`*`, `*:book`): every key. Also used
+    ///   for a prefix whose range holds a quarter or more of the keyspace (see
+    ///   [`Self::plan_for`]): past that share, a lookup per match costs more
+    ///   than walking the map once.
     ///
     /// Not atomic by itself, any more than a walk of the map is: a key
     /// written while this runs may or may not be seen. The server takes its
@@ -2819,9 +2822,86 @@ impl KeyValueStore {
         &self,
         pattern: &str,
         now: u64,
+        visit: impl FnMut(&Key, &Entry) -> bool,
+    ) -> usize {
+        self.walk_plan(pattern, self.plan_for(pattern), now, visit)
+    }
+
+    /// [`MatchPlan::of`], except that a prefix covering at least a quarter of
+    /// the keyspace is walked as a scan.
+    ///
+    /// The prefix plan pays a map lookup per match — a random access — where
+    /// the scan reads the map in order. Measured (`bench_live_query_snapshot`,
+    /// release): the scan costs ~80 ns per key, the prefix plan ~280 ns per
+    /// match over the encode both pay, so the two cross near 30% of the
+    /// keyspace; at 100% the prefix plan was 0.7x the scan. Deciding costs a
+    /// walk of the index range up to that quarter — index steps only, no map
+    /// lookups — and a narrow prefix stops as soon as its range ends.
+    fn plan_for(&self, pattern: &str) -> MatchPlan {
+        let plan = MatchPlan::of(pattern);
+        let MatchPlan::Prefix(len) = plan else {
+            return plan;
+        };
+        let prefix = pattern.get(..len).unwrap_or(pattern);
+        let quarter = self.key_count() / 4;
+        if self.prefix_range_reaches(prefix, quarter) {
+            MatchPlan::Scan
+        } else {
+            plan
+        }
+    }
+
+    /// Whether at least `threshold` indexed keys begin with `prefix`. Walks
+    /// the index range in steps of [`MATCH_INDEX_STEP`], releasing the lock
+    /// between them, and stops at the threshold or the end of the range.
+    fn prefix_range_reaches(&self, prefix: &str, threshold: usize) -> bool {
+        if threshold == 0 {
+            return true;
+        }
+        let mut seen = 0usize;
+        let mut resume: Option<Key> = None;
+        loop {
+            let index = self
+                .index
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let lower = match &resume {
+                Some(after) => std::ops::Bound::Excluded(&**after),
+                None => std::ops::Bound::Included(prefix),
+            };
+            let mut range = index
+                .ordered
+                .range::<str, _>((lower, std::ops::Bound::Unbounded));
+            let mut step = 0usize;
+            let last = loop {
+                let Some(key) = range.next() else {
+                    return false;
+                };
+                if !key.starts_with(prefix) {
+                    return false;
+                }
+                seen = seen.saturating_add(1);
+                if seen >= threshold {
+                    return true;
+                }
+                step = step.saturating_add(1);
+                if step >= MATCH_INDEX_STEP {
+                    break Arc::clone(key);
+                }
+            };
+            resume = Some(last);
+        }
+    }
+
+    /// Run `plan` for `pattern` (see [`Self::for_each_live_match`]).
+    fn walk_plan(
+        &self,
+        pattern: &str,
+        plan: MatchPlan,
+        now: u64,
         mut visit: impl FnMut(&Key, &Entry) -> bool,
     ) -> usize {
-        match MatchPlan::of(pattern) {
+        match plan {
             MatchPlan::Exact => {
                 if let Some(entry) = self.data.get(pattern)
                     && !entry.is_expired(now)
