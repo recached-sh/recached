@@ -262,3 +262,7 @@ without the `SAVE` refuses to start rather than skip the records it cannot read.
 written as by 0.5.0, so either version can follow the other. On startup 0.5.1 truncates an
 incomplete record at the end of the AOF (left by a crash mid-append) instead of only skipping it;
 0.5.0 left it in place, which made the following restart fail.
+
+**0.5.1 → 0.5.2.** No format or protocol changes, so either version can follow the other. With
+`RECACHED_PASSWORD` set, a WebSocket connection now receives sync pushes only after `AUTH`. Clients
+that authenticate before subscribing, as the SDKs do, see no difference.
