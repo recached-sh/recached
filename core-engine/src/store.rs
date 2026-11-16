@@ -2174,6 +2174,13 @@ impl MatchPlan {
     }
 }
 
+/// Test-only: make capacity admission count the map (`DashMap::len()`, the
+/// pre-6K behaviour) instead of the published key count, so a benchmark can
+/// compare the two in one binary.
+#[cfg(test)]
+static ADMISSION_COUNTS_THE_MAP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Most `SCAN` sessions the server keeps a cursor for (documented as the cap
 /// on abandoned cursors).
 const MAX_SCAN_CURSORS: usize = 4096;
@@ -2199,6 +2206,13 @@ struct KeyIndex {
     all: DenseKeys,
     volatile: DenseKeys,
     track_all: bool,
+    /// `ordered.len()`, published for lock-free reads
+    /// ([`KeyValueStore::key_count`]). Stored by every change to `ordered`,
+    /// under the index lock, so it is exactly the indexed key count as of the
+    /// last completed change. An index being built off to the side (see
+    /// [`KeyValueStore::install_index`]) has a counter of its own until it
+    /// is installed, so a half-built index is never what readers see.
+    len: Arc<AtomicUsize>,
 }
 
 impl KeyIndex {
@@ -2208,7 +2222,12 @@ impl KeyIndex {
             all: DenseKeys::default(),
             volatile: DenseKeys::default(),
             track_all,
+            len: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    fn publish_len(&self) {
+        self.len.store(self.ordered.len(), Ordering::Release);
     }
 
     /// Bring the index into line with a key's current state: `None` if the
@@ -2217,8 +2236,11 @@ impl KeyIndex {
     fn sync(&mut self, key: &str, live: Option<(bool, &Key)>) {
         match live {
             None => {
-                if self.ordered.remove(key) && self.track_all {
-                    self.all.remove(key);
+                if self.ordered.remove(key) {
+                    self.publish_len();
+                    if self.track_all {
+                        self.all.remove(key);
+                    }
                 }
                 self.volatile.remove(key);
             }
@@ -2228,6 +2250,7 @@ impl KeyIndex {
                     None => {
                         let fresh = Arc::clone(map_key);
                         self.ordered.insert(Arc::clone(&fresh));
+                        self.publish_len();
                         if self.track_all {
                             self.all.insert(&fresh);
                         }
@@ -2305,6 +2328,9 @@ pub struct KeyValueStore {
     /// update only the keys they touched.
     memory_bytes: Arc<AtomicUsize>,
     index: Arc<std::sync::Mutex<KeyIndex>>,
+    /// Exact stored-key count: the installed index's `len`, readable without
+    /// its lock. See [`Self::key_count`].
+    key_count: Arc<AtomicUsize>,
     /// Live `SCAN` sessions: cursor token → the last key that session was
     /// returned. Tokens are issued in increasing order, so the map's first
     /// entry is the session that was last advanced longest ago (a session's
@@ -2391,6 +2417,13 @@ fn write_order_stripes() -> Arc<[std::sync::Mutex<()>]> {
 /// necessary.
 const EVICTION_HEADROOM_DIVISOR: usize = 16;
 
+/// A store's key index and the counter it publishes its length to.
+fn new_index(track_all: bool) -> (Arc<std::sync::Mutex<KeyIndex>>, Arc<AtomicUsize>) {
+    let index = KeyIndex::new(track_all);
+    let len = Arc::clone(&index.len);
+    (Arc::new(std::sync::Mutex::new(index)), len)
+}
+
 impl Default for KeyValueStore {
     fn default() -> Self {
         Self::new()
@@ -2399,6 +2432,7 @@ impl Default for KeyValueStore {
 
 impl KeyValueStore {
     pub fn new() -> Self {
+        let (index, key_count) = new_index(false);
         Self {
             data: Arc::new(DashMap::new()),
             max_keys: None,
@@ -2408,7 +2442,8 @@ impl KeyValueStore {
             eviction_sample: 10,
             evicted: Arc::new(AtomicU64::new(0)),
             memory_bytes: Arc::new(AtomicUsize::new(0)),
-            index: Arc::new(std::sync::Mutex::new(KeyIndex::new(false))),
+            index,
+            key_count,
             scan_cursors: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
@@ -2419,6 +2454,7 @@ impl KeyValueStore {
     }
 
     pub fn with_max_keys(max: usize) -> Self {
+        let (index, key_count) = new_index(false);
         Self {
             data: Arc::new(DashMap::new()),
             max_keys: Some(max),
@@ -2428,7 +2464,8 @@ impl KeyValueStore {
             eviction_sample: 10,
             evicted: Arc::new(AtomicU64::new(0)),
             memory_bytes: Arc::new(AtomicUsize::new(0)),
-            index: Arc::new(std::sync::Mutex::new(KeyIndex::new(false))),
+            index,
+            key_count,
             scan_cursors: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
@@ -2443,6 +2480,7 @@ impl KeyValueStore {
         max_memory_bytes: Option<usize>,
         eviction_policy: EvictionPolicy,
     ) -> Self {
+        let (index, key_count) = new_index(tracks_all_keys(eviction_policy));
         Self {
             data: Arc::new(DashMap::new()),
             max_keys,
@@ -2452,9 +2490,8 @@ impl KeyValueStore {
             eviction_sample: 10,
             evicted: Arc::new(AtomicU64::new(0)),
             memory_bytes: Arc::new(AtomicUsize::new(0)),
-            index: Arc::new(std::sync::Mutex::new(KeyIndex::new(tracks_all_keys(
-                eviction_policy,
-            )))),
+            index,
+            key_count,
             scan_cursors: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
@@ -2587,25 +2624,40 @@ impl KeyValueStore {
             .sync(key, live.as_ref().map(|(ttl, shared)| (*ttl, shared)));
     }
 
+    /// Rebuild the key index and memory estimate from the keyspace.
+    ///
+    /// Every present entry is indexed and counted, expired or not, as every
+    /// other path does (see [`Self::sync_key_metadata`]): an expired entry is
+    /// still in the map until the sweeper removes it, and the sweeper finds
+    /// it through the index. Skipping one here — a key that expired between
+    /// a snapshot's load filtering it and this rebuild — left it in the map
+    /// for good, unreachable to the sweeper and missing from the key count.
     fn rebuild_metadata(&self) {
-        let now = now_ms();
         let mut index = self.fresh_index();
         let mut memory = 0usize;
         for entry in self.data.iter() {
-            if entry.value().is_expired(now) {
-                continue;
-            }
             index.sync(
                 entry.key(),
                 Some((entry.value().deadline.get().is_some(), entry.key())),
             );
             memory = memory.saturating_add(entry_size(entry.key(), entry.value()));
         }
-        *self
+        self.install_index(index);
+        self.memory_bytes.store(memory, Ordering::Relaxed);
+    }
+
+    /// Replace the key index with one built off to the side, and publish its
+    /// length. The new index takes over the store's counter only here, under
+    /// the index lock, so readers of [`Self::key_count`] see the old count
+    /// until the new index is in place and its exact length after.
+    fn install_index(&self, mut index: KeyIndex) {
+        let mut installed = self
             .index
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = index;
-        self.memory_bytes.store(memory, Ordering::Relaxed);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        index.len = Arc::clone(&self.key_count);
+        index.publish_len();
+        *installed = index;
     }
 
     /// Evict entries until the logical memory estimate is below the configured
@@ -3099,6 +3151,17 @@ impl KeyValueStore {
     }
 
     fn remove_expired_candidates(&self, keys: Vec<String>) -> Vec<String> {
+        // On a capped store, removal and its index update happen under the
+        // capacity gate, as every capped write's do. Admission reads the key
+        // count under the gate; without it, a removal between the map and the
+        // index left the count one high for that moment, so a write could be
+        // refused at the cap, or evict a live key, for room an expired one had
+        // already given back. Gate before stripes: the order capped writes use.
+        let _capacity_guard = self.has_capacity_limits().then(|| {
+            self.capacity_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        });
         let now = now_ms();
         let mut removed = Vec::new();
         for key in keys {
@@ -3149,14 +3212,28 @@ impl KeyValueStore {
         self.max_keys.is_some() || self.max_memory_bytes.is_some()
     }
 
-    /// O(1) stored-key count maintained with the key index. Expired physical
-    /// entries remain counted until the bounded active-expiry task removes them.
+    /// Exact stored-key count, read without a lock. Expired physical entries
+    /// remain counted until the bounded active-expiry task removes them.
+    ///
+    /// The key index publishes its length on every change, under its lock,
+    /// after the map change it records — so this is never lower than the map
+    /// holds once the writer that created a key has finished, and capacity
+    /// admission, which runs under the capacity gate every capped write holds
+    /// to completion, reads it exactly. It used to be `DashMap::len()` there,
+    /// which read-locks all 64 shards on every capped write.
     pub fn key_count(&self) -> usize {
-        self.index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .ordered
-            .len()
+        self.key_count.load(Ordering::Acquire)
+    }
+
+    /// The key count capacity admission checks against; see
+    /// [`Self::key_count`]. A test can make it read the map instead, to
+    /// measure both in one binary (`bench_capped_admission`).
+    fn admission_key_count(&self) -> usize {
+        #[cfg(test)]
+        if ADMISSION_COUNTS_THE_MAP.load(Ordering::Relaxed) {
+            return self.data.len();
+        }
+        self.key_count()
     }
 
     /// O(1) keyspace counters and logical-memory estimate for INFO/metrics.
@@ -3434,10 +3511,7 @@ impl KeyValueStore {
         let _order = self.order_all();
         self.data.clear();
         self.memory_bytes.store(0, Ordering::Relaxed);
-        *self
-            .index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.fresh_index();
+        self.install_index(self.fresh_index());
         self.restore_ordered(entries);
     }
 
@@ -3545,7 +3619,7 @@ impl KeyValueStore {
             new_keys.sort_unstable();
             new_keys.dedup();
             new_keys.retain(|key| !self.data.contains_key(*key));
-            if self.data.len().saturating_add(new_keys.len()) > max {
+            if self.admission_key_count().saturating_add(new_keys.len()) > max {
                 return false;
             }
         }
@@ -3874,8 +3948,7 @@ impl KeyValueStore {
         new_keys.dedup();
         new_keys.retain(|key| !self.data.contains_key(*key));
         let needed = self
-            .data
-            .len()
+            .admission_key_count()
             .saturating_add(new_keys.len())
             .saturating_sub(max);
         if needed == 0 {
@@ -13244,3 +13317,9 @@ mod borrowed_tests;
 
 #[cfg(test)]
 mod match_plan_tests;
+
+#[cfg(test)]
+mod key_count_tests;
+
+#[cfg(test)]
+mod growth_bound_tests;

@@ -11,7 +11,7 @@ code paths being compared were measured in the same interleaved sequence.
 | `qsub-snapshot-micro/` | 6K-A: QSUB snapshot cost, pre-6K full walk (verbatim copy) vs `MatchPlan`, in-process, release. `run1` = prefix plan only (shows the 0.7× regression at 100% match), `run2` = with the quarter-keyspace scan fallback |
 | `live-query-routing-micro/` | 6K-B: per-write live-query matching, pre-6K-B loop (verbatim copy) vs `LiveQueries`, 10–10,000 patterns. `run1` = `df703db` and `run2` (names borrowed) were 0.8× at 10 all-matching patterns; `run3` = `7f4b8d4` (subscribers in the index buckets, the shipped design) is ≥1.1× in every cell |
 | `h-qsub-churn/` | 6K-A/B end to end: the 6J harness (`../6j/ws-route.sh`), scenario H. Every client QSUBs/QUNSUBs `t<i>:q*` while memtier writes `bg:1..100000` at 12,000/s; strict token mode; 1 worker; 500 and 1,000 clients; 3 interleaved reps |
-| `capped-admission-micro/` | 6K-C: capped-store SET throughput, admission by `DashMap::len()` (pre-6K) vs the published key count, 1/2/4/8 threads |
+| `capped-admission-micro/` | 6K-C: capped-store SET throughput, admission by `DashMap::len()` (pre-6K) vs the published key count, 1/2/4/8 threads. +17% at 1 thread, +11% at 2, parity at 4–8 (the capacity gate itself is the limit there) |
 
 Binaries for `h-qsub-churn` (Linux release profile, `../6j/build.sh`,
 checksums in its `conditions.txt`):

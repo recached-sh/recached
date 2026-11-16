@@ -1,0 +1,8 @@
+what: capped-store SET throughput, admission counting the map (DashMap::len(), pre-6K) vs the published key count, same release test binary, toggled by the test-only ADMISSION_COUNTS_THE_MAP flag; 200k resident keys, then 200k fresh SETs split across threads, store capped at 50M keys (every write admitted on the fast path); median of 5 interleaved repetitions.
+command: cargo test --release -p core-engine --lib -- --ignored bench_capped_admission --nocapture
+source: core-engine/src/store/key_count_tests.rs (bench_capped_admission)
+commit: 955659c (before rebase; key-counter code identical to 84aa3cc). The sweeper-gate edit (now 92d759b) may or may not have been compiled in; the benchmark sets no TTLs, so the sweeper never runs.
+run: 2026-11-16 22:10-22:14, load 13.3 -> 6.1 (falling after an earlier I/O storm)
+host: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz, 8 logical CPUs, macOS 15.8.1, shared with other work; disk ~98% full
+toolchain: rustc 1.98.0 (88d9e12ae 2026-08-18)
+status: INDICATIVE
