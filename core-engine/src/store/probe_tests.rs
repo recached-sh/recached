@@ -36,6 +36,15 @@ fn assert_accounting_exact(store: &KeyValueStore, what: &str) {
         "{what}: memory counter drifted from the keyspace"
     );
     let index = store.index.lock().unwrap_or_else(|p| p.into_inner());
+    assert_eq!(
+        store.key_count(),
+        keys.len(),
+        "{what}: published key count disagrees with the keyspace"
+    );
+    assert!(
+        Arc::ptr_eq(&index.len, &store.key_count),
+        "{what}: the installed index publishes to a counter nobody reads"
+    );
     let ordered: BTreeSet<String> = index.ordered.iter().map(|k| k.to_string()).collect();
     assert_eq!(
         ordered, keys,
