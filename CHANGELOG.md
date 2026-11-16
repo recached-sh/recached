@@ -2,6 +2,14 @@
 
 All notable changes to Recached are documented here.
 
+## [0.5.2] (2026-11-17) — security fix
+
+### Security
+- WebSocket: a connection is sent no sync pushes until it has authenticated. With `RECACHED_PASSWORD` set and no `RECACHED_SYNC_SECRET`, an unauthenticated connection was refused every command but was still sent other clients' mutations, including keys and values. Strict sync mode (`RECACHED_SYNC_SECRET` set), servers without a password, and the RESP port were not affected. See [GHSA-3f7f-vqch-f76m](https://github.com/recached-sh/recached/security/advisories/GHSA-3f7f-vqch-f76m)
+
+### Upgrade notes
+- Server-only change. No protocol, storage or client change. The browser, mobile and React/Vue clients need no update
+
 ## [0.5.1] (2026-11-11) — sync stabilization
 
 ### Fixed — server

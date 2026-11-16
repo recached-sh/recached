@@ -6,8 +6,8 @@ Recached is pre-1.0. Only the latest released version receives security fixes.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.3.x   | yes       |
-| < 0.3   | no        |
+| 0.5.x   | yes       |
+| < 0.5   | no        |
 
 ## Reporting a vulnerability
 
