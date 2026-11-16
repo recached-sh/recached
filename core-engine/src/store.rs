@@ -3151,6 +3151,17 @@ impl KeyValueStore {
     }
 
     fn remove_expired_candidates(&self, keys: Vec<String>) -> Vec<String> {
+        // On a capped store, removal and its index update happen under the
+        // capacity gate, as every capped write's do. Admission reads the key
+        // count under the gate; without it, a removal between the map and the
+        // index left the count one high for that moment, so a write could be
+        // refused at the cap, or evict a live key, for room an expired one had
+        // already given back. Gate before stripes: the order capped writes use.
+        let _capacity_guard = self.has_capacity_limits().then(|| {
+            self.capacity_gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        });
         let now = now_ms();
         let mut removed = Vec::new();
         for key in keys {
