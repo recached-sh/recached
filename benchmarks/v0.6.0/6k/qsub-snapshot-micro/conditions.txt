@@ -1,0 +1,11 @@
+what: QSUB snapshot enumeration, pre-6K full map walk (verbatim copy) vs 6K MatchPlan,
+      same release test binary, same data, interleaved per repetition, median reported.
+command: cargo test --release -p core-engine --lib -- --ignored bench_live_query_snapshot --nocapture
+source: core-engine/src/store/match_plan_tests.rs (bench_live_query_snapshot)
+data: N keys, value 16 bytes; k:m:<i> match k:m:*, k:o:<i> do not; share 0 queries absent k:x:*
+reps: 41 (N<=10k), 15 (100k), 7 (1M)
+run1: commit bd37b4a (prefix plan, no fallback)        2026-11-16 ~20:18, load avg 8.94 -> 4.91
+run2: bd37b4a + quarter-keyspace scan fallback          2026-11-16 ~20:24, load avg 5.14 -> 7.75
+host: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz, 8 logical CPUs, macOS 15.8.1, shared with other work
+toolchain: rustc 1.98.0 (88d9e12ae 2026-08-18)
+status: INDICATIVE (shared laptop, not a dedicated host)
