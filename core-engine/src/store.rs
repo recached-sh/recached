@@ -2143,6 +2143,37 @@ impl DenseKeys {
     }
 }
 
+/// Most ordered-index entries [`KeyValueStore::for_each_live_match`] walks
+/// per hold of the index lock. Large enough that the lock round trip is
+/// noise, small enough that a prefix covering most of the keyspace still
+/// lets `SCAN`, `DBSIZE` and key creation in between.
+const MATCH_INDEX_STEP: usize = 1024;
+
+/// How the keys a glob pattern can match are found. The server's glob knows
+/// two metacharacters, `*` and `?`, and matches bytes, so every byte before
+/// the first metacharacter must equal the same byte of any matching key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchPlan {
+    /// No metacharacter: the pattern matches only the key spelled the same.
+    Exact,
+    /// The first `n` bytes are literal and every match begins with them.
+    Prefix(usize),
+    /// The pattern begins with a metacharacter; any key may match.
+    Scan,
+}
+
+impl MatchPlan {
+    /// The plan for `pattern`. The metacharacters are ASCII, so the prefix
+    /// always ends on a character boundary.
+    pub fn of(pattern: &str) -> MatchPlan {
+        match pattern.find(['*', '?']) {
+            None => MatchPlan::Exact,
+            Some(0) => MatchPlan::Scan,
+            Some(at) => MatchPlan::Prefix(at),
+        }
+    }
+}
+
 /// Most `SCAN` sessions the server keeps a cursor for (documented as the cap
 /// on abandoned cursors).
 const MAX_SCAN_CURSORS: usize = 4096;
@@ -2698,25 +2729,27 @@ impl KeyValueStore {
     /// caller that only needs to know *which* keys are present — reconciling a
     /// live query's local copy against a fresh snapshot, for instance.
     pub fn matching_keys(&self, pattern: &str) -> Vec<String> {
-        let now = now_ms();
-        self.data
-            .iter()
-            .filter(|e| !e.is_expired(now) && glob_match(pattern, e.key()))
-            .map(|e| e.key().to_string())
-            .collect()
+        let mut keys = Vec::new();
+        self.for_each_live_match(pattern, now_ms(), |key, _| {
+            keys.push(key.to_string());
+            true
+        });
+        keys
     }
 
     /// Current state of every live key matching the glob pattern, in
     /// `get_current` form (strings in full; collections type-tagged with their
     /// complete contents), capped at `limit` entries. Backs QSUB initial state.
     pub fn matching_key_values(&self, pattern: &str, limit: usize) -> Vec<(String, Value)> {
-        let now = now_ms();
-        self.data
-            .iter()
-            .filter(|e| !e.is_expired(now) && glob_match(pattern, e.key()))
-            .take(limit)
-            .map(|e| (e.key().to_string(), Self::encode_current_value(&e.value)))
-            .collect()
+        let mut out = Vec::new();
+        if limit == 0 {
+            return out;
+        }
+        self.for_each_live_match(pattern, now_ms(), |key, entry| {
+            out.push((key.to_string(), Self::encode_current_value(&entry.value)));
+            out.len() < limit
+        });
+        out
     }
 
     /// [`matching_key_values`](Self::matching_key_values) with each key's
@@ -2726,19 +2759,149 @@ impl KeyValueStore {
         pattern: &str,
         limit: usize,
     ) -> Vec<(String, Value, Option<u64>)> {
+        self.matching_key_values_with_ttl_counted(pattern, limit).0
+    }
+
+    /// [`matching_key_values_with_ttl`](Self::matching_key_values_with_ttl),
+    /// also reporting how many keys were examined to find them — the work a
+    /// live-query snapshot cost, as opposed to what it returned. A pattern
+    /// with a literal prefix examines only keys sharing that prefix; one
+    /// without examines the whole keyspace (see [`MatchPlan`]).
+    pub fn matching_key_values_with_ttl_counted(
+        &self,
+        pattern: &str,
+        limit: usize,
+    ) -> (Vec<(String, Value, Option<u64>)>, usize) {
+        let mut out = Vec::new();
+        if limit == 0 {
+            return (out, 0);
+        }
         let now = now_ms();
-        self.data
-            .iter()
-            .filter(|e| !e.is_expired(now) && glob_match(pattern, e.key()))
-            .take(limit)
-            .map(|e| {
-                (
-                    e.key().to_string(),
-                    Self::encode_current_value(&e.value),
-                    e.deadline.get().map(|exp| exp - now),
-                )
-            })
-            .collect()
+        let examined = self.for_each_live_match(pattern, now, |key, entry| {
+            out.push((
+                key.to_string(),
+                Self::encode_current_value(&entry.value),
+                entry.deadline.get().map(|exp| exp - now),
+            ));
+            out.len() < limit
+        });
+        (out, examined)
+    }
+
+    /// Call `visit` with every live key matching `pattern` and its entry,
+    /// until it returns `false`. Returns how many keys were examined.
+    ///
+    /// How the candidates are found depends on the pattern ([`MatchPlan`]):
+    ///
+    /// * **Exact** — no metacharacter, so the pattern can match only the key
+    ///   spelled the same: one lookup.
+    /// * **Prefix** — every key a pattern matches begins with the bytes before
+    ///   its first metacharacter, and keys sharing a prefix are contiguous in
+    ///   the ordered index. Only that range is walked, and `glob_match` still
+    ///   decides each one: the prefix narrows candidates, it never admits one.
+    /// * **Scan** — no literal prefix (`*`, `*:book`): every key.
+    ///
+    /// Not atomic by itself, any more than a walk of the map is: a key
+    /// written while this runs may or may not be seen. The server takes its
+    /// all-write barrier around a live-query snapshot, under which nothing
+    /// changes either the map or the index — every write that creates or
+    /// removes a key updates both before releasing its ordering stripe, reads
+    /// never remove expired entries, and the expiry sweeper runs under the
+    /// same barrier. So within it the index holds exactly the map's keys (plus
+    /// expired ones awaiting the sweeper, which liveness filters out), and
+    /// the two plans return the same set.
+    ///
+    /// The index lock is never held across a map lookup — the order
+    /// `sync_key_metadata` uses is a map guard, released, then the index —
+    /// and is given up every [`MATCH_INDEX_STEP`] index entries, so a wide
+    /// prefix does not keep `SCAN`, `DBSIZE` or `INFO` waiting for the walk.
+    fn for_each_live_match(
+        &self,
+        pattern: &str,
+        now: u64,
+        mut visit: impl FnMut(&Key, &Entry) -> bool,
+    ) -> usize {
+        match MatchPlan::of(pattern) {
+            MatchPlan::Exact => {
+                if let Some(entry) = self.data.get(pattern)
+                    && !entry.is_expired(now)
+                {
+                    visit(entry.key(), entry.value());
+                }
+                1
+            }
+            MatchPlan::Scan => {
+                let mut examined = 0usize;
+                for entry in self.data.iter() {
+                    examined = examined.saturating_add(1);
+                    if !entry.is_expired(now)
+                        && glob_match(pattern, entry.key())
+                        && !visit(entry.key(), entry.value())
+                    {
+                        break;
+                    }
+                }
+                examined
+            }
+            MatchPlan::Prefix(len) => {
+                let prefix = pattern.get(..len).unwrap_or(pattern);
+                let mut examined = 0usize;
+                let mut resume: Option<Key> = None;
+                loop {
+                    let mut matched: Vec<Key> = Vec::new();
+                    let next = {
+                        let index = self
+                            .index
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        let lower = match &resume {
+                            Some(after) => std::ops::Bound::Excluded(&**after),
+                            None => std::ops::Bound::Included(prefix),
+                        };
+                        let mut range = index
+                            .ordered
+                            .range::<str, _>((lower, std::ops::Bound::Unbounded));
+                        let mut step = 0usize;
+                        loop {
+                            let Some(key) = range.next() else {
+                                break None;
+                            };
+                            if !key.starts_with(prefix) {
+                                break None;
+                            }
+                            step = step.saturating_add(1);
+                            if glob_match(pattern, key) {
+                                matched.push(Arc::clone(key));
+                            }
+                            if step >= MATCH_INDEX_STEP {
+                                break Some(Arc::clone(key));
+                            }
+                        }
+                        .map(|last| (last, step))
+                        .ok_or(step)
+                    };
+                    let (step, more) = match next {
+                        Ok((last, step)) => {
+                            resume = Some(last);
+                            (step, true)
+                        }
+                        Err(step) => (step, false),
+                    };
+                    examined = examined.saturating_add(step);
+                    for key in &matched {
+                        if let Some(entry) = self.data.get(&**key)
+                            && !entry.is_expired(now)
+                            && !visit(entry.key(), entry.value())
+                        {
+                            return examined;
+                        }
+                    }
+                    if !more {
+                        return examined;
+                    }
+                }
+            }
+        }
     }
 
     /// Number of physical keys carrying a TTL.
@@ -12998,3 +13161,6 @@ mod probe_tests;
 
 #[cfg(test)]
 mod borrowed_tests;
+
+#[cfg(test)]
+mod match_plan_tests;
