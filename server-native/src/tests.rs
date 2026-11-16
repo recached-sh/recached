@@ -2367,6 +2367,36 @@ impl WsClient {
         self.next_reply().await
     }
 
+    /// Send a command without reading anything back.
+    async fn send(&mut self, args: &[&str]) {
+        let mut req = format!("*{}\r\n", args.len());
+        for a in args {
+            req.push_str(&format!("${}\r\n{}\r\n", a.len(), a));
+        }
+        self.ws.send(Message::Text(req.into())).await.unwrap();
+    }
+
+    /// Wait up to `ms` for the next text *or binary* frame and return its
+    /// bytes unparsed. `None` when nothing arrives in time. Unlike `cmd`,
+    /// `recv_push` and `recv_any`, this skips nothing, so it is what a
+    /// "this socket was sent nothing" check must use.
+    async fn recv_frame(&mut self, ms: u64) -> Option<Vec<u8>> {
+        let fut = async {
+            loop {
+                match self.ws.next().await {
+                    Some(Ok(Message::Text(t))) => return Some(t.as_bytes().to_vec()),
+                    Some(Ok(Message::Binary(b))) => return Some(b.to_vec()),
+                    Some(Ok(_)) => continue,
+                    _ => return None,
+                }
+            }
+        };
+        tokio::time::timeout(tokio::time::Duration::from_millis(ms), fut)
+            .await
+            .ok()
+            .flatten()
+    }
+
     /// Send pre-encoded RESP bytes in a *binary* frame. Text frames must be
     /// well-formed UTF-8 per the WebSocket spec, so this is the only way to
     /// put arbitrary bytes on the wire.
@@ -6750,6 +6780,7 @@ mod request_path;
 mod security_v06_regressions;
 mod sync_routing;
 mod write_gate;
+mod ws_auth;
 
 #[tokio::test]
 async fn empty_lines_between_commands_are_ignored_like_redis() {
