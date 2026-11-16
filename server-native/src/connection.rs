@@ -161,17 +161,35 @@ pub(crate) fn as_push_if(mut frame: Vec<u8>, push: bool) -> Vec<u8> {
 /// Build a complete initial live-query snapshot or refuse it. Returning a
 /// partial snapshot is unsafe because reconnect reconciliation treats absence
 /// as deletion and would drop locally held keys that still exist upstream.
+/// A live query's initial state: each matching key, its value and its
+/// remaining time to live in milliseconds.
+pub(crate) type QState = Vec<(String, Value, Option<u64>)>;
+
+#[cfg(test)]
 pub(crate) fn initial_qstate(
     store: &KeyValueStore,
     pattern: &str,
     limit: usize,
-) -> Result<Vec<(String, Value, Option<u64>)>, usize> {
-    let values = store.matching_key_values_with_ttl(pattern, limit.saturating_add(1));
-    if values.len() > limit {
+) -> Result<QState, usize> {
+    initial_qstate_counted(store, pattern, limit).0
+}
+
+/// [`initial_qstate`], plus how many keys the store examined to build it. A
+/// pattern with a literal prefix examines only keys sharing it; one without
+/// (`*`, `*:x`) examines the whole keyspace.
+pub(crate) fn initial_qstate_counted(
+    store: &KeyValueStore,
+    pattern: &str,
+    limit: usize,
+) -> (Result<QState, usize>, usize) {
+    let (values, examined) =
+        store.matching_key_values_with_ttl_counted(pattern, limit.saturating_add(1));
+    let state = if values.len() > limit {
         Err(limit)
     } else {
         Ok(values)
-    }
+    };
+    (state, examined)
 }
 
 /// Encode a pub/sub delivery for a connection speaking protocol `protover`.
@@ -1968,14 +1986,15 @@ pub(crate) async fn handle_ws<S>(
                                 // write barriers. A slow client therefore cannot pause
                                 // unrelated writers.
                                 let snapshot_started = std::time::Instant::now();
-                                let qstate = {
+                                let (qstate, examined) = {
                                     let _snapshot_guards =
                                         state.replicas.lock_all_writes().await;
-                                    match initial_qstate(
+                                    let (qstate, examined) = initial_qstate_counted(
                                         &store,
                                         &pattern,
                                         max_qsub_initial_keys(),
-                                    ) {
+                                    );
+                                    let qstate = match qstate {
                                         Ok(values) => {
                                             if qsub_patterns.insert(pattern.clone()) {
                                                 let mut pats =
@@ -1988,12 +2007,15 @@ pub(crate) async fn handle_ws<S>(
                                             Ok(values)
                                         }
                                         Err(limit) => Err(limit),
-                                    }
+                                    };
+                                    (qstate, examined)
                                 };
                                 // Taken under every write barrier, so this is
                                 // also how long writers waited for it.
                                 histogram!("recached_qsub_snapshot_duration_seconds")
                                     .record(snapshot_started.elapsed().as_secs_f64());
+                                histogram!("recached_qsub_snapshot_keys_examined")
+                                    .record(examined as f64);
                                 counter!(
                                     "recached_qsub_snapshots_total",
                                     "outcome" => if qstate.is_ok() { "sent" } else { "too_large" }

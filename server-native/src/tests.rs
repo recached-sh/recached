@@ -6733,6 +6733,7 @@ mod sweep_notification {
 mod sync_reliability;
 
 mod commands_v06;
+mod live_query_6k;
 mod multitenant;
 mod replication_dedup;
 mod request_path;
