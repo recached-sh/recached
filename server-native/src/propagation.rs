@@ -1137,38 +1137,42 @@ async fn fan_out(registry: &WatchRegistry, changes: &[KeyChange<'_>]) {
         }
         registry.sync_len(&reg);
     }
-    // Live queries: any registered glob pattern matching a touched key gets
-    // the same keychange notification.
+    // Live queries: every registered pattern matching a touched key gets the
+    // same keychange notification. Only the patterns that could match the key
+    // are checked (see `LiveQueries`), so a write no live query can match
+    // costs a few hash lookups however many patterns are registered. Changes
+    // are delivered in command order, so a connection sees a multi-key
+    // command's keys in the order it named them.
     if registry.watched_patterns.load(Ordering::Relaxed) > 0 {
         let mut pats = registry.patterns.lock().await;
-        let mut emptied = false;
-        for (pattern, subs) in pats.iter_mut() {
-            for change in changes {
-                let key = &change.key;
-                if core_engine::store::glob_match(pattern, key) {
-                    subs.retain(|sub| {
-                        if delivered
-                            .get(key)
-                            .is_some_and(|connections| connections.contains(&sub.conn_id))
-                        {
-                            return true;
-                        }
-                        let alive = sub.notify(change);
-                        if alive {
-                            delivered
-                                .entry(key.clone())
-                                .or_default()
-                                .insert(sub.conn_id);
-                        }
-                        alive
-                    });
+        let (mut candidates, mut matches) = (0usize, 0usize);
+        for change in changes {
+            // A key named twice in one command is delivered once, so
+            // connections reached are remembered per key — but a key is only
+            // copied into the map once somebody was reached.
+            let (checked, matched) = match delivered.get_mut(&change.key) {
+                Some(reached) => pats.deliver(change, reached),
+                None => {
+                    let mut reached = HashSet::new();
+                    let counts = pats.deliver(change, &mut reached);
+                    if !reached.is_empty() {
+                        delivered.insert(change.key.clone(), reached);
+                    }
+                    counts
                 }
-            }
-            emptied |= subs.is_empty();
+            };
+            candidates = candidates.saturating_add(checked);
+            matches = matches.saturating_add(matched);
         }
-        if emptied {
-            pats.retain(|_, subs| !subs.is_empty());
-        }
+        registry
+            .route_events
+            .fetch_add(changes.len() as u64, Ordering::Relaxed);
+        registry
+            .route_candidates
+            .fetch_add(candidates as u64, Ordering::Relaxed);
+        registry
+            .route_matches
+            .fetch_add(matches as u64, Ordering::Relaxed);
         registry.sync_patterns_len(&pats);
     }
 }
@@ -1197,15 +1201,10 @@ pub(crate) async fn notify_flushdb(registry: &WatchRegistry, watched_before: Vec
     }
     if registry.watched_patterns.load(Ordering::Relaxed) > 0 {
         let mut pats = registry.patterns.lock().await;
-        let mut emptied = false;
-        for (pattern, subs) in pats.iter_mut() {
-            let sentinel = KeyChange::removed(pattern.clone());
+        pats.for_each_pattern(|pattern, subs| {
+            let sentinel = KeyChange::removed(pattern.to_string());
             subs.retain(|sub| sub.notify(&sentinel));
-            emptied |= subs.is_empty();
-        }
-        if emptied {
-            pats.retain(|_, subs| !subs.is_empty());
-        }
+        });
         registry.sync_patterns_len(&pats);
     }
 }

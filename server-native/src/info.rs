@@ -651,7 +651,7 @@ pub(crate) fn render_info(
     is_replica: bool,
     repl: ReplInfo,
     last_save: i64,
-    live_queries: u64,
+    live_queries: LiveQueryStats,
     watched_keys: u64,
     routes: RouteStatsSnapshot,
 ) -> String {
@@ -805,9 +805,19 @@ pub(crate) fn render_info(
             // mailboxes they were offered to, how many writes built no push
             // because nobody was a candidate, and what connections did with
             // the pushes they took (sent, or dropped by their own filter).
+            // The `qsub_route_*` fields do the same for live-query keychanges
+            // (see `LiveQueries`): the pattern index's shape, and since start
+            // how many changed keys were offered to live queries, how many
+            // patterns the index left to check for them, and how many matched.
             "recached" => {
                 format!(
                     "live_queries:{}\r\n\
+                     qsub_route_exact:{}\r\n\
+                     qsub_route_prefixes:{}\r\n\
+                     qsub_route_broad:{}\r\n\
+                     qsub_route_events:{}\r\n\
+                     qsub_route_candidates:{}\r\n\
+                     qsub_route_matches:{}\r\n\
                      watched_keys:{}\r\n\
                      sync_subscribers:{}\r\n\
                      sync_routed_subscribers:{}\r\n\
@@ -819,7 +829,13 @@ pub(crate) fn render_info(
                      sync_route_skipped:{}\r\n\
                      sync_pushes_forwarded:{}\r\n\
                      sync_pushes_filtered:{}\r\n",
-                    live_queries,
+                    live_queries.patterns,
+                    live_queries.exact,
+                    live_queries.prefixes,
+                    live_queries.broad,
+                    live_queries.events,
+                    live_queries.candidates,
+                    live_queries.matches,
                     watched_keys,
                     routes.subscribers,
                     routes.routed,
