@@ -263,16 +263,17 @@ pub(crate) type WatchMap = HashMap<String, Vec<WatchSubscriber>>;
 /// critical section as the subscriptions it indexes and adds no lock.
 #[derive(Default)]
 pub(crate) struct LiveQueries {
-    /// Every registered pattern and its subscribers. Never holds an empty
-    /// subscriber list: the last subscriber leaving removes the pattern.
-    subs: WatchMap,
-    exact: HashSet<String>,
-    broad: HashSet<String>,
-    /// Literal prefix → the patterns sharing it.
-    prefixes: HashMap<Box<[u8]>, HashSet<String>>,
+    /// Patterns without a metacharacter, and their subscribers.
+    exact: WatchMap,
+    /// Patterns beginning with a metacharacter, and their subscribers.
+    broad: WatchMap,
+    /// Literal prefix → the patterns sharing it, and their subscribers.
+    prefixes: HashMap<Box<[u8]>, WatchMap>,
     /// Each distinct length in `prefixes`, with how many prefixes have it: a
     /// key is looked up once per length no longer than itself.
     prefix_lens: BTreeMap<usize, usize>,
+    /// Distinct patterns registered, across all three.
+    len: usize,
 }
 
 /// Where [`LiveQueries`] files a pattern.
@@ -293,32 +294,50 @@ fn classify(pattern: &str) -> PatternClass<'_> {
     }
 }
 
+/// Deliver `change` to `subs` (one pattern's subscribers), skipping and
+/// recording connections in `delivered`; drops overflowed subscribers.
+/// Returns whether the pattern is left with none.
+fn deliver_to(
+    subs: &mut Vec<WatchSubscriber>,
+    change: &KeyChange<'_>,
+    delivered: &mut HashSet<u64>,
+) -> bool {
+    subs.retain(|sub| {
+        if delivered.contains(&sub.conn_id) {
+            return true;
+        }
+        let alive = sub.notify(change);
+        if alive {
+            delivered.insert(sub.conn_id);
+        }
+        alive
+    });
+    subs.is_empty()
+}
+
 impl LiveQueries {
     /// Distinct patterns registered.
     pub(crate) fn len(&self) -> usize {
-        self.subs.len()
+        self.len
     }
 
     /// Register `sub` for `pattern`.
     pub(crate) fn add(&mut self, pattern: &str, sub: WatchSubscriber) {
-        if let Some(subs) = self.subs.get_mut(pattern) {
-            subs.push(sub);
-            return;
-        }
-        self.subs.insert(pattern.to_string(), vec![sub]);
-        match classify(pattern) {
-            PatternClass::Exact => {
-                self.exact.insert(pattern.to_string());
-            }
-            PatternClass::Broad => {
-                self.broad.insert(pattern.to_string());
-            }
+        let bucket = match classify(pattern) {
+            PatternClass::Exact => &mut self.exact,
+            PatternClass::Broad => &mut self.broad,
             PatternClass::Prefix(prefix) => {
-                let patterns = self.prefixes.entry(Box::from(prefix)).or_default();
-                if patterns.is_empty() {
+                if !self.prefixes.contains_key(prefix) {
                     *self.prefix_lens.entry(prefix.len()).or_default() += 1;
                 }
-                patterns.insert(pattern.to_string());
+                self.prefixes.entry(Box::from(prefix)).or_default()
+            }
+        };
+        match bucket.get_mut(pattern) {
+            Some(subs) => subs.push(sub),
+            None => {
+                bucket.insert(pattern.to_string(), vec![sub]);
+                self.len = self.len.saturating_add(1);
             }
         }
     }
@@ -326,64 +345,43 @@ impl LiveQueries {
     /// Remove `conn_id`'s subscription to `pattern`, and the pattern itself
     /// when that was its last.
     pub(crate) fn remove_conn(&mut self, pattern: &str, conn_id: u64) {
-        let Some(subs) = self.subs.get_mut(pattern) else {
-            return;
-        };
-        subs.retain(|sub| sub.conn_id != conn_id);
-        if subs.is_empty() {
+        let emptied = self.bucket_mut(pattern).is_some_and(|bucket| {
+            bucket.get_mut(pattern).is_some_and(|subs| {
+                subs.retain(|sub| sub.conn_id != conn_id);
+                subs.is_empty()
+            })
+        });
+        if emptied {
             self.remove_pattern(pattern);
+        }
+    }
+
+    /// The bucket `pattern` is filed in, if it exists.
+    fn bucket_mut(&mut self, pattern: &str) -> Option<&mut WatchMap> {
+        match classify(pattern) {
+            PatternClass::Exact => Some(&mut self.exact),
+            PatternClass::Broad => Some(&mut self.broad),
+            PatternClass::Prefix(prefix) => self.prefixes.get_mut(prefix),
         }
     }
 
     /// Drop `pattern` and everything indexed for it.
     fn remove_pattern(&mut self, pattern: &str) {
-        if self.subs.remove(pattern).is_none() {
+        let removed = self
+            .bucket_mut(pattern)
+            .is_some_and(|bucket| bucket.remove(pattern).is_some());
+        if !removed {
             return;
         }
-        match classify(pattern) {
-            PatternClass::Exact => {
-                self.exact.remove(pattern);
-            }
-            PatternClass::Broad => {
-                self.broad.remove(pattern);
-            }
-            PatternClass::Prefix(prefix) => {
-                let Some(patterns) = self.prefixes.get_mut(prefix) else {
-                    return;
-                };
-                patterns.remove(pattern);
-                if !patterns.is_empty() {
-                    return;
-                }
-                self.prefixes.remove(prefix);
-                if let Some(count) = self.prefix_lens.get_mut(&prefix.len()) {
-                    *count = count.saturating_sub(1);
-                    if *count == 0 {
-                        self.prefix_lens.remove(&prefix.len());
-                    }
-                }
-            }
-        }
-    }
-
-    /// Call `f` with every registered pattern that could match `key` — each
-    /// at most once — and whether it needs `glob_match` to confirm it (only
-    /// exact patterns do not).
-    fn for_each_candidate(&self, key: &str, mut f: impl FnMut(&str, bool)) {
-        for pattern in &self.broad {
-            f(pattern, true);
-        }
-        if self.exact.contains(key) {
-            f(key, false);
-        }
-        let bytes = key.as_bytes();
-        // `..=len`: `BTreeMap::range` panics when its start exceeds its end,
-        // and the empty key is a key. Every stored prefix is at least one
-        // byte (an empty one is broad).
-        for &len in self.prefix_lens.range(..=bytes.len()).map(|(len, _)| len) {
-            if let Some(patterns) = bytes.get(..len).and_then(|p| self.prefixes.get(p)) {
-                for pattern in patterns {
-                    f(pattern, true);
+        self.len = self.len.saturating_sub(1);
+        if let PatternClass::Prefix(prefix) = classify(pattern)
+            && self.prefixes.get(prefix).is_some_and(HashMap::is_empty)
+        {
+            self.prefixes.remove(prefix);
+            if let Some(count) = self.prefix_lens.get_mut(&prefix.len()) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    self.prefix_lens.remove(&prefix.len());
                 }
             }
         }
@@ -394,54 +392,69 @@ impl LiveQueries {
     /// WATCH or another of their patterns) and adding the ones reached.
     /// Subscribers whose queue overflowed are dropped, and patterns left with
     /// none are unregistered. Returns (candidates checked, patterns matched).
+    ///
+    /// Only patterns that could match are visited (see the table above);
+    /// each is confirmed with `glob_match` (exact ones need not be) and its
+    /// subscribers are reached in place, with no second lookup and nothing
+    /// allocated per match. Only a pattern emptied by overflow (rare) is
+    /// copied, to unregister it afterwards.
     pub(crate) fn deliver(
         &mut self,
         change: &KeyChange<'_>,
         delivered: &mut HashSet<u64>,
     ) -> (usize, usize) {
-        let mut matching: smallvec::SmallVec<[String; 4]> = smallvec::SmallVec::new();
-        let mut candidates = 0usize;
-        self.for_each_candidate(&change.key, |pattern, needs_glob| {
-            candidates = candidates.saturating_add(1);
-            if !needs_glob || core_engine::store::glob_match(pattern, &change.key) {
-                matching.push(pattern.to_string());
-            }
-        });
-        let mut emptied: smallvec::SmallVec<[usize; 2]> = smallvec::SmallVec::new();
-        for (at, pattern) in matching.iter().enumerate() {
-            let Some(subs) = self.subs.get_mut(pattern.as_str()) else {
-                continue;
-            };
-            subs.retain(|sub| {
-                if delivered.contains(&sub.conn_id) {
-                    return true;
-                }
-                let alive = sub.notify(change);
-                if alive {
-                    delivered.insert(sub.conn_id);
-                }
-                alive
-            });
-            if subs.is_empty() {
-                emptied.push(at);
+        let key = change.key.as_str();
+        let (mut candidates, mut matched) = (0usize, 0usize);
+        let mut emptied: smallvec::SmallVec<[String; 1]> = smallvec::SmallVec::new();
+        // An exact pattern is the key itself: no glob needed.
+        if let Some(subs) = self.exact.get_mut(key) {
+            candidates = 1;
+            matched = 1;
+            if deliver_to(subs, change, delivered) {
+                emptied.push(key.to_string());
             }
         }
-        for at in emptied {
-            if let Some(pattern) = matching.get(at) {
-                self.remove_pattern(pattern);
+        let mut visit = |bucket: &mut WatchMap, needs_glob: bool| {
+            for (pattern, subs) in bucket.iter_mut() {
+                candidates = candidates.saturating_add(1);
+                if needs_glob && !core_engine::store::glob_match(pattern, key) {
+                    continue;
+                }
+                matched = matched.saturating_add(1);
+                if deliver_to(subs, change, delivered) {
+                    emptied.push(pattern.clone());
+                }
+            }
+        };
+        visit(&mut self.broad, true);
+        let bytes = key.as_bytes();
+        // `..=len`: `BTreeMap::range` panics when its start exceeds its end,
+        // and the empty key is a key. Every stored prefix is at least one
+        // byte (an empty one is broad).
+        for &len in self.prefix_lens.range(..=bytes.len()).map(|(len, _)| len) {
+            if let Some(bucket) = bytes.get(..len).and_then(|p| self.prefixes.get_mut(p)) {
+                visit(bucket, true);
             }
         }
-        (candidates, matching.len())
+        for pattern in emptied {
+            self.remove_pattern(&pattern);
+        }
+        (candidates, matched)
     }
 
     /// Call `f` with every pattern and its subscribers (FLUSHDB announces
     /// itself to every pattern), then unregister patterns left with none.
     pub(crate) fn for_each_pattern(&mut self, mut f: impl FnMut(&str, &mut Vec<WatchSubscriber>)) {
         let mut emptied = Vec::new();
-        for (pattern, subs) in &mut self.subs {
-            f(pattern, subs);
-            if subs.is_empty() {
-                emptied.push(pattern.clone());
+        let buckets = std::iter::once(&mut self.exact)
+            .chain(std::iter::once(&mut self.broad))
+            .chain(self.prefixes.values_mut());
+        for bucket in buckets {
+            for (pattern, subs) in bucket.iter_mut() {
+                f(pattern, subs);
+                if subs.is_empty() {
+                    emptied.push(pattern.clone());
+                }
             }
         }
         for pattern in emptied {
@@ -668,7 +681,7 @@ mod live_query_index_tests {
 
     /// Nothing indexed for a pattern outlives its last subscriber.
     fn assert_no_residue(q: &LiveQueries) {
-        assert!(q.subs.is_empty(), "{:?}", q.subs.keys().collect::<Vec<_>>());
+        assert_eq!(q.len(), 0);
         assert!(q.exact.is_empty() && q.broad.is_empty());
         assert!(q.prefixes.is_empty() && q.prefix_lens.is_empty());
     }
