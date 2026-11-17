@@ -115,6 +115,13 @@ struct Mailbox {
 }
 
 impl Mailbox {
+    /// Record a gap that is not a full mailbox: nothing queued before it is
+    /// delivered, nothing is queued after it, and the connection is woken.
+    fn open_gap(&self) {
+        self.state.fetch_or(GAP_BIT, Ordering::AcqRel);
+        self.gap_notify.notify_one();
+    }
+
     fn has_gap(&self) -> bool {
         self.state.load(Ordering::Acquire) & GAP_BIT != 0
     }
@@ -629,6 +636,26 @@ impl SyncRouter {
                 self.routed.fetch_sub(1, Ordering::SeqCst);
             }
         }
+    }
+
+    /// Open a gap in every connection's stream, routed or not, and return how
+    /// many connections that was.
+    ///
+    /// For a keyspace replaced wholesale (a replica's full resynchronisation):
+    /// every client's local copy and live-query snapshot describes data that
+    /// may no longer exist, and no sequence of pushes can say which. Each
+    /// connection is then closed with the sync-gap code as soon as it next
+    /// polls its stream — before any push still queued from before the gap,
+    /// which [`Mailbox::release`] discards — and the client's reconnect
+    /// replays AUTH, its token and every QSUB against the new keyspace. That
+    /// is the contract a lagging connection already has; nothing new reaches
+    /// the wire. A connection that subscribes afterwards starts clean.
+    pub(crate) fn invalidate_all(&self) -> usize {
+        let table = self.read();
+        for sub in table.subscribers.values() {
+            sub.mailbox.open_gap();
+        }
+        table.subscribers.len()
     }
 
     /// Whether any connection could currently be pushed anything.

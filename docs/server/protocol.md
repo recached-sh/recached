@@ -203,6 +203,16 @@ its pattern — which is what makes reconciliation correct. Server-side, the clo
 `recached_sync_lag_disconnects_total`; a non-zero rate means clients are being fed faster than they
 can drain, not that anything is corrupt.
 
+A replica that performs a **full resynchronisation** closes every WebSocket connection it holds the
+same way, with `4001`. The replica replaces its keyspace with the primary's snapshot, and a key the
+primary deleted while the link was down is simply absent from it: no `DEL` describes the change, so
+no stream of pushes could bring a client's local copy or live-query snapshot up to date. The
+reconnect rebuilds both from the new keyspace. These closes are counted in
+`recached_sync_lag_disconnects_total` too; `recached_replica_full_resync_total` counts the
+resynchronisations. A *partial* resynchronisation replays the missed writes in order and closes
+nobody. A `WATCH`ed key is announced with its new value at a full resynchronisation, so a
+transaction that watched it aborts at `EXEC`.
+
 ### Close codes
 
 | Code | Reason | Client action |

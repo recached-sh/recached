@@ -536,3 +536,39 @@ fn taking_a_push_reports_a_gap_that_opened_while_it_was_queued() {
     assert!(!ok.mailbox.release(&taken));
     assert_eq!(router.send(push_for(&set("b"))), 1);
 }
+
+#[tokio::test]
+async fn invalidate_all_gaps_every_subscriber_and_drops_what_was_queued() {
+    // A replica's full resynchronisation: every connection, routed or not,
+    // must see a gap before anything queued for the old keyspace.
+    let router = SyncRouter::new(8);
+    let mut routed = router.subscribe(Routes::Everything);
+    let mut unrouted = router.subscribe(Routes::Nothing);
+    assert_eq!(router.send(push_for(&set("old"))), 1);
+
+    assert_eq!(router.invalidate_all(), 2);
+    assert_eq!(routed.try_recv().err(), Some(TryPushRecvError::Lagged));
+    assert_eq!(unrouted.recv().await.err(), Some(PushRecvError::Lagged));
+    // Nothing is queued after the gap either.
+    router.send(push_for(&set("new")));
+    assert_eq!(routed.try_recv().err(), Some(TryPushRecvError::Lagged));
+
+    // A connection that subscribes afterwards starts clean.
+    let mut fresh = router.subscribe(Routes::Everything);
+    router.send(push_for(&set("after")));
+    assert!(fresh.try_recv().is_ok());
+}
+
+#[tokio::test]
+async fn invalidate_all_wakes_a_connection_idle_on_its_stream() {
+    let router = SyncRouter::new(8);
+    let mut idle = router.subscribe(Routes::Everything);
+    let waiting = tokio::spawn(async move { idle.recv().await.err() });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    router.invalidate_all();
+    let woke = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+        .await
+        .expect("an idle connection is woken by the gap")
+        .unwrap();
+    assert_eq!(woke, Some(PushRecvError::Lagged));
+}

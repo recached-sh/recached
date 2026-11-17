@@ -1375,6 +1375,22 @@ where
             // empty index installed at the start of `replace`).
             let _barrier = state.replicas.lock_all_writes().await;
             store.replace(entries);
+            // Every client of this replica holds a copy, and live-query
+            // snapshots, of the keyspace just replaced; keys deleted on the
+            // primary while the link was down are simply gone, with no DEL
+            // to say so. Close them all with the sync-gap code so they
+            // rebuild from the new keyspace, and abort `WATCH`ed `EXEC`s.
+            // Still behind the barrier, so no write or QSUB snapshot falls
+            // between the replacement and the gap.
+            let invalidated = tx.invalidate_all();
+            notify_keyspace_replaced(watches, store).await;
+            if invalidated > 0 {
+                info!(
+                    "Replica: full resynchronisation closed {invalidated} WebSocket connection(s) \
+                     so they resynchronise"
+                );
+            }
+            counter!("recached_replica_full_resync_total").increment(1);
         }
         match table {
             Some(table) => {
