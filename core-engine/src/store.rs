@@ -2185,6 +2185,158 @@ static ADMISSION_COUNTS_THE_MAP: std::sync::atomic::AtomicBool =
 /// on abandoned cursors).
 const MAX_SCAN_CURSORS: usize = 4096;
 
+/// Most keys one refill of a [`ScanFrontier`] takes from a shard.
+const SCAN_REFILL_KEYS: usize = 32;
+/// Most key bytes one refill takes from a shard, past its first key. With
+/// [`SCAN_REFILL_KEYS`], this bounds what a cursor holds — at most 16 shards'
+/// worth, and [`MAX_SCAN_CURSORS`] cursors — including keys deleted since
+/// they were buffered, whose memory a buffer keeps alive until it moves on.
+const SCAN_REFILL_BYTES: usize = 1024;
+
+/// A live `SCAN` session (6L-C): where it is, and its merge frontier over
+/// the index shards.
+struct ScanSession {
+    frontier: ScanFrontier,
+}
+
+/// A `SCAN` cursor's merge frontier over the [`INDEX_SHARDS`] index shards.
+///
+/// The index is split by key hash, so byte order across the keyspace is a
+/// k-way merge of the shards. Seeking every shard on every call made a full
+/// traversal at `COUNT 10` 7x slower than one index (6J); this keeps, per
+/// shard, a buffer of the shard's next keys and where to resume, between
+/// calls, so a call seeks only the shards whose buffer ran out — under that
+/// shard's lock alone.
+///
+/// **Why every key present for the whole iteration is returned exactly
+/// once, in byte order.**
+/// - A refill takes the shard's keys after `pos` in order, up to its
+///   limits. A key present for the whole iteration that lies inside a run
+///   already fetched was in the shard when it was fetched, so it was fetched.
+///   A key created later inside a fetched run is not present for the whole
+///   iteration, and may be missed, as the contract allows.
+/// - No shard that may still hold keys is empty while the merge takes the
+///   next key: it is refilled first. So every key taken is the least of all
+///   shards' next keys, and output is in byte order, across calls too.
+/// - A shard is exhausted only when its range ended before the limits did:
+///   it held no key after `pos` at that moment.
+///
+/// A key deleted after it was buffered is still taken, and dropped by the
+/// caller's liveness check, as a deleted candidate was before.
+struct ScanFrontier {
+    bufs: Vec<VecDeque<Key>>,
+    pos: Vec<Option<Key>>,
+    exhausted: Vec<bool>,
+    /// Shards with a non-empty buffer, by their next key: its first 16 bytes
+    /// as a big-endian integer ([`key_prefix`]), then the key itself on ties.
+    /// Comparing integers first was what brought the merge within reach of
+    /// one index: ~70% of a traversal was `memcmp` before (6L-C profile).
+    order: VecDeque<(u128, usize)>,
+}
+
+/// A key's first 16 bytes as a big-endian integer, zero-padded. `key_prefix(a)
+/// < key_prefix(b)` implies `a < b` in byte order, and `>` implies `>`; equal
+/// prefixes decide nothing (one key may be the other's zero-padded prefix).
+fn key_prefix(key: &str) -> u128 {
+    let mut bytes = [0u8; 16];
+    let head = key.as_bytes().get(..16).unwrap_or(key.as_bytes());
+    if let Some(dst) = bytes.get_mut(..head.len()) {
+        dst.copy_from_slice(head);
+    }
+    u128::from_be_bytes(bytes)
+}
+
+impl ScanFrontier {
+    fn new() -> Self {
+        ScanFrontier {
+            bufs: (0..INDEX_SHARDS).map(|_| VecDeque::new()).collect(),
+            pos: vec![None; INDEX_SHARDS],
+            exhausted: vec![false; INDEX_SHARDS],
+            order: VecDeque::with_capacity(INDEX_SHARDS),
+        }
+    }
+
+    /// Put shard `i`, whose buffer is not empty, in `order`.
+    fn place(&mut self, i: usize) {
+        let Some(head) = self.bufs.get(i).and_then(VecDeque::front) else {
+            return;
+        };
+        let p = key_prefix(head);
+        let bufs = &self.bufs;
+        let at = self.order.partition_point(|&(q, j)| {
+            q < p
+                || (q == p
+                    && bufs
+                        .get(j)
+                        .and_then(VecDeque::front)
+                        .is_some_and(|h| h < head))
+        });
+        self.order.insert(at, (p, i));
+    }
+
+    /// Refill shard `i` from its own resume point, under its lock only.
+    fn refill(&mut self, store: &KeyValueStore, i: usize) {
+        let (Some(buf), Some(pos)) = (self.bufs.get_mut(i), self.pos.get_mut(i)) else {
+            return;
+        };
+        let shard = store.index_shard_at(i);
+        let lower = pos
+            .as_deref()
+            .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
+        let mut range = shard
+            .ordered
+            .range::<str, _>((lower, std::ops::Bound::Unbounded));
+        let mut bytes = 0usize;
+        let ended = loop {
+            if buf.len() >= SCAN_REFILL_KEYS || (bytes >= SCAN_REFILL_BYTES && !buf.is_empty()) {
+                break false;
+            }
+            let Some(key) = range.next() else {
+                break true;
+            };
+            bytes = bytes.saturating_add(key.len());
+            buf.push_back(Arc::clone(key));
+        };
+        drop(shard);
+        if ended && let Some(flag) = self.exhausted.get_mut(i) {
+            *flag = true;
+        }
+        if let Some(last) = buf.back() {
+            *pos = Some(Arc::clone(last));
+        }
+        self.place(i);
+    }
+
+    /// Up to `count` keys, in byte order, and whether any may follow.
+    fn next_page(&mut self, store: &KeyValueStore, count: usize) -> (Vec<Key>, bool) {
+        let mut keys = Vec::with_capacity(count.min(1024));
+        while keys.len() < count {
+            let Some((_, i)) = self.order.pop_front() else {
+                break;
+            };
+            let Some(key) = self.bufs.get_mut(i).and_then(VecDeque::pop_front) else {
+                continue;
+            };
+            if self.bufs.get(i).is_some_and(|b| !b.is_empty()) {
+                self.place(i);
+            } else if !self.exhausted.get(i).copied().unwrap_or(true) {
+                self.refill(store, i);
+            }
+            keys.push(key);
+        }
+        (keys, !self.order.is_empty())
+    }
+
+    /// The frontier of a new iteration: every shard filled from its start.
+    fn start(store: &KeyValueStore) -> Self {
+        let mut frontier = ScanFrontier::new();
+        for i in 0..INDEX_SHARDS {
+            frontier.refill(store, i);
+        }
+        frontier
+    }
+}
+
 /// Secondary indexes over the keyspace.
 ///
 /// Every key used to be copied into each structure as its own `String`: four
@@ -2207,12 +2359,78 @@ struct KeyIndex {
     volatile: DenseKeys,
     track_all: bool,
     /// `ordered.len()`, published for lock-free reads
-    /// ([`KeyValueStore::key_count`]). Stored by every change to `ordered`,
-    /// under the index lock, so it is exactly the indexed key count as of the
-    /// last completed change. An index being built off to the side (see
-    /// [`KeyValueStore::install_index`]) has a counter of its own until it
-    /// is installed, so a half-built index is never what readers see.
-    len: Arc<AtomicUsize>,
+    /// ([`KeyValueStore::key_count`] sums the shards'). Stored by every
+    /// change to `ordered`, under this shard's lock, so it is exactly the
+    /// shard's indexed key count as of its last completed change. An index
+    /// being built off to the side (see [`KeyValueStore::install_index`]) has
+    /// counters of its own until it is installed, so a half-built index is
+    /// never what readers see.
+    len: Arc<ShardLen>,
+}
+
+/// Shards of the key index (6L-C). Key creation took one store-wide lock;
+/// with the index split by key hash, creations of different keys rarely
+/// meet. 16: the 6J/6L prototypes measured 4.65x creation throughput at 8
+/// threads over one lock, where 64 shards were no better at 4-8 threads and
+/// cost more per `SCAN` call.
+const INDEX_SHARDS: usize = 16;
+const _: () = assert!(WRITE_ORDER_STRIPES.is_multiple_of(INDEX_SHARDS));
+
+/// The index shard holding `key`. Derived from the key's write-order stripe,
+/// so a key's stripe and its index shard never disagree, and the key is
+/// hashed once for both.
+fn index_shard(key: &str) -> usize {
+    write_order_stripe(key) % INDEX_SHARDS
+}
+
+/// A shard's TTL keys (`volatile`) or all keys (`all`).
+fn dense_of(shard: &KeyIndex, volatile: bool) -> &DenseKeys {
+    if volatile {
+        &shard.volatile
+    } else {
+        &shard.all
+    }
+}
+
+/// The key at `position` of the shards' dense vectors read as one sequence
+/// in shard order; `None` past the end.
+fn nth_dense<'a>(
+    shards: &'a [std::sync::MutexGuard<'_, KeyIndex>],
+    volatile: bool,
+    mut position: usize,
+) -> Option<&'a Arc<str>> {
+    for shard in shards {
+        let keys = &dense_of(shard, volatile).keys;
+        match keys.get(position) {
+            Some(key) => return Some(key),
+            None => position -= keys.len(),
+        }
+    }
+    None
+}
+
+/// One index shard's lock, alone on its cache lines: shards are written by
+/// different workers, and adjacent ones must not share a line.
+#[repr(align(64))]
+struct IndexShard(std::sync::Mutex<KeyIndex>);
+
+/// A shard's published key count, alone on its cache line for the same
+/// reason.
+#[repr(align(64))]
+#[derive(Default)]
+struct ShardLen(AtomicUsize);
+
+/// A store's index shards and the per-shard counters they publish to.
+fn new_index(track_all: bool) -> (Arc<[IndexShard]>, Arc<[Arc<ShardLen>]>) {
+    let shards: Vec<KeyIndex> = (0..INDEX_SHARDS)
+        .map(|_| KeyIndex::new(track_all))
+        .collect();
+    let lens: Arc<[Arc<ShardLen>]> = shards.iter().map(|s| Arc::clone(&s.len)).collect();
+    let shards: Arc<[IndexShard]> = shards
+        .into_iter()
+        .map(|s| IndexShard(std::sync::Mutex::new(s)))
+        .collect();
+    (shards, lens)
 }
 
 impl KeyIndex {
@@ -2222,12 +2440,12 @@ impl KeyIndex {
             all: DenseKeys::default(),
             volatile: DenseKeys::default(),
             track_all,
-            len: Arc::new(AtomicUsize::new(0)),
+            len: Arc::new(ShardLen::default()),
         }
     }
 
     fn publish_len(&self) {
-        self.len.store(self.ordered.len(), Ordering::Release);
+        self.len.0.store(self.ordered.len(), Ordering::Release);
     }
 
     /// Bring the index into line with a key's current state: `None` if the
@@ -2327,15 +2545,16 @@ pub struct KeyValueStore {
     /// payload/accounting estimate, not process RSS; reads are O(1) and writes
     /// update only the keys they touched.
     memory_bytes: Arc<AtomicUsize>,
-    index: Arc<std::sync::Mutex<KeyIndex>>,
-    /// Exact stored-key count: the installed index's `len`, readable without
-    /// its lock. See [`Self::key_count`].
-    key_count: Arc<AtomicUsize>,
+    /// The key index, in [`INDEX_SHARDS`] shards by key hash.
+    index: Arc<[IndexShard]>,
+    /// Exact stored-key count, per shard: each installed shard's `len`,
+    /// readable without its lock. See [`Self::key_count`].
+    key_count: Arc<[Arc<ShardLen>]>,
     /// Live `SCAN` sessions: cursor token → the last key that session was
     /// returned. Tokens are issued in increasing order, so the map's first
     /// entry is the session that was last advanced longest ago (a session's
     /// cursor is replaced by a fresh token on every page).
-    scan_cursors: Arc<std::sync::Mutex<BTreeMap<u64, String>>>,
+    scan_cursors: Arc<std::sync::Mutex<BTreeMap<u64, ScanSession>>>,
     next_scan_cursor: Arc<AtomicU64>,
     expiry_cursor: Arc<AtomicUsize>,
     /// Next keyspace shard [`Self::reclaim_capacity_step`] looks at.
@@ -2495,8 +2714,7 @@ impl<'a> Reservation<'a> {
         if let Some(max) = store.max_keys
             && keys > 0
             && store
-                .key_count
-                .load(Ordering::SeqCst)
+                .key_count_ordered(Ordering::SeqCst)
                 .saturating_add(pledged_keys)
                 > max
         {
@@ -2515,13 +2733,6 @@ impl Drop for Reservation<'_> {
             .reserved_keys
             .fetch_sub(self.keys, Ordering::SeqCst);
     }
-}
-
-/// A store's key index and the counter it publishes its length to.
-fn new_index(track_all: bool) -> (Arc<std::sync::Mutex<KeyIndex>>, Arc<AtomicUsize>) {
-    let index = KeyIndex::new(track_all);
-    let len = Arc::clone(&index.len);
-    (Arc::new(std::sync::Mutex::new(index)), len)
 }
 
 impl Default for KeyValueStore {
@@ -2717,8 +2928,31 @@ impl KeyValueStore {
             .collect()
     }
 
-    fn fresh_index(&self) -> KeyIndex {
-        KeyIndex::new(tracks_all_keys(self.eviction_policy))
+    /// Empty index shards, built off to the side (see [`Self::install_index`]).
+    fn fresh_index(&self) -> Vec<KeyIndex> {
+        (0..INDEX_SHARDS)
+            .map(|_| KeyIndex::new(tracks_all_keys(self.eviction_policy)))
+            .collect()
+    }
+
+    /// The index shard holding `key`, locked.
+    fn index_for(&self, key: &str) -> std::sync::MutexGuard<'_, KeyIndex> {
+        self.index_shard_at(index_shard(key))
+    }
+
+    /// Index shard `i`, locked.
+    fn index_shard_at(&self, i: usize) -> std::sync::MutexGuard<'_, KeyIndex> {
+        self.index[i]
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Every index shard, locked in shard order: a consistent view across
+    /// shards. Writers hold at most one shard lock at a time, so taking them
+    /// all in a fixed order cannot deadlock.
+    fn index_all(&self) -> Vec<std::sync::MutexGuard<'_, KeyIndex>> {
+        (0..INDEX_SHARDS).map(|i| self.index_shard_at(i)).collect()
     }
 
     fn sync_key_metadata(&self, key: &str) {
@@ -2730,9 +2964,7 @@ impl KeyValueStore {
             .data
             .get(key)
             .map(|entry| (entry.deadline.get().is_some(), Arc::clone(entry.key())));
-        self.index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.index_for(key)
             .sync(key, live.as_ref().map(|(ttl, shared)| (*ttl, shared)));
     }
 
@@ -2748,7 +2980,7 @@ impl KeyValueStore {
         let mut index = self.fresh_index();
         let mut memory = 0usize;
         for entry in self.data.iter() {
-            index.sync(
+            index[index_shard(entry.key())].sync(
                 entry.key(),
                 Some((entry.value().deadline.get().is_some(), entry.key())),
             );
@@ -2758,18 +2990,19 @@ impl KeyValueStore {
         self.memory_bytes.store(memory, Ordering::Relaxed);
     }
 
-    /// Replace the key index with one built off to the side, and publish its
-    /// length. The new index takes over the store's counter only here, under
-    /// the index lock, so readers of [`Self::key_count`] see the old count
-    /// until the new index is in place and its exact length after.
-    fn install_index(&self, mut index: KeyIndex) {
-        let mut installed = self
-            .index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        index.len = Arc::clone(&self.key_count);
-        index.publish_len();
-        *installed = index;
+    /// Replace the key index with shards built off to the side, and publish
+    /// their lengths. Each new shard takes over its store counter only here,
+    /// with every shard locked, so each shard's count is its old length until
+    /// the new shard is in place and its exact length after. Callers hold
+    /// every write-order stripe (`FLUSHDB`, restore, replace), so no write
+    /// races the swap.
+    fn install_index(&self, index: Vec<KeyIndex>) {
+        let mut installed = self.index_all();
+        for ((slot, mut fresh), len) in installed.iter_mut().zip(index).zip(self.key_count.iter()) {
+            fresh.len = Arc::clone(len);
+            fresh.publish_len();
+            **slot = fresh;
+        }
     }
 
     /// Evict entries until the logical memory estimate is below the configured
@@ -3030,38 +3263,42 @@ impl KeyValueStore {
             return true;
         }
         let mut seen = 0usize;
-        let mut resume: Option<Key> = None;
-        loop {
-            let index = self
-                .index
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let lower = match &resume {
-                Some(after) => std::ops::Bound::Excluded(&**after),
-                None => std::ops::Bound::Included(prefix),
-            };
-            let mut range = index
-                .ordered
-                .range::<str, _>((lower, std::ops::Bound::Unbounded));
-            let mut step = 0usize;
-            let last = loop {
-                let Some(key) = range.next() else {
-                    return false;
+        // Shard by shard: only the count matters, not the order.
+        for shard in 0..INDEX_SHARDS {
+            let mut resume: Option<Key> = None;
+            loop {
+                let index = self.index_shard_at(shard);
+                let lower = match &resume {
+                    Some(after) => std::ops::Bound::Excluded(&**after),
+                    None => std::ops::Bound::Included(prefix),
                 };
-                if !key.starts_with(prefix) {
-                    return false;
+                let mut range = index
+                    .ordered
+                    .range::<str, _>((lower, std::ops::Bound::Unbounded));
+                let mut step = 0usize;
+                let last = loop {
+                    let Some(key) = range.next() else {
+                        break None;
+                    };
+                    if !key.starts_with(prefix) {
+                        break None;
+                    }
+                    seen = seen.saturating_add(1);
+                    if seen >= threshold {
+                        return true;
+                    }
+                    step = step.saturating_add(1);
+                    if step >= MATCH_INDEX_STEP {
+                        break Some(Arc::clone(key));
+                    }
+                };
+                match last {
+                    Some(last) => resume = Some(last),
+                    None => break,
                 }
-                seen = seen.saturating_add(1);
-                if seen >= threshold {
-                    return true;
-                }
-                step = step.saturating_add(1);
-                if step >= MATCH_INDEX_STEP {
-                    break Arc::clone(key);
-                }
-            };
-            resume = Some(last);
+            }
         }
+        false
     }
 
     /// Run `plan` for `pattern` (see [`Self::for_each_live_match`]).
@@ -3097,60 +3334,62 @@ impl KeyValueStore {
             MatchPlan::Prefix(len) => {
                 let prefix = pattern.get(..len).unwrap_or(pattern);
                 let mut examined = 0usize;
-                let mut resume: Option<Key> = None;
-                loop {
-                    let mut matched: Vec<Key> = Vec::new();
-                    let next = {
-                        let index = self
-                            .index
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        let lower = match &resume {
-                            Some(after) => std::ops::Bound::Excluded(&**after),
-                            None => std::ops::Bound::Included(prefix),
-                        };
-                        let mut range = index
-                            .ordered
-                            .range::<str, _>((lower, std::ops::Bound::Unbounded));
-                        let mut step = 0usize;
-                        loop {
-                            let Some(key) = range.next() else {
-                                break None;
+                // Shard by shard: a live query's snapshot is a set, and the
+                // scan plan visits keys in hash order anyway.
+                for shard in 0..INDEX_SHARDS {
+                    let mut resume: Option<Key> = None;
+                    loop {
+                        let mut matched: Vec<Key> = Vec::new();
+                        let next = {
+                            let index = self.index_shard_at(shard);
+                            let lower = match &resume {
+                                Some(after) => std::ops::Bound::Excluded(&**after),
+                                None => std::ops::Bound::Included(prefix),
                             };
-                            if !key.starts_with(prefix) {
-                                break None;
+                            let mut range = index
+                                .ordered
+                                .range::<str, _>((lower, std::ops::Bound::Unbounded));
+                            let mut step = 0usize;
+                            loop {
+                                let Some(key) = range.next() else {
+                                    break None;
+                                };
+                                if !key.starts_with(prefix) {
+                                    break None;
+                                }
+                                step = step.saturating_add(1);
+                                if glob_match(pattern, key) {
+                                    matched.push(Arc::clone(key));
+                                }
+                                if step >= MATCH_INDEX_STEP {
+                                    break Some(Arc::clone(key));
+                                }
                             }
-                            step = step.saturating_add(1);
-                            if glob_match(pattern, key) {
-                                matched.push(Arc::clone(key));
+                            .map(|last| (last, step))
+                            .ok_or(step)
+                        };
+                        let (step, more) = match next {
+                            Ok((last, step)) => {
+                                resume = Some(last);
+                                (step, true)
                             }
-                            if step >= MATCH_INDEX_STEP {
-                                break Some(Arc::clone(key));
+                            Err(step) => (step, false),
+                        };
+                        examined = examined.saturating_add(step);
+                        for key in &matched {
+                            if let Some(entry) = self.data.get(&**key)
+                                && !entry.is_expired(now)
+                                && !visit(entry.key(), entry.value())
+                            {
+                                return examined;
                             }
                         }
-                        .map(|last| (last, step))
-                        .ok_or(step)
-                    };
-                    let (step, more) = match next {
-                        Ok((last, step)) => {
-                            resume = Some(last);
-                            (step, true)
+                        if !more {
+                            break;
                         }
-                        Err(step) => (step, false),
-                    };
-                    examined = examined.saturating_add(step);
-                    for key in &matched {
-                        if let Some(entry) = self.data.get(&**key)
-                            && !entry.is_expired(now)
-                            && !visit(entry.key(), entry.value())
-                        {
-                            return examined;
-                        }
-                    }
-                    if !more {
-                        return examined;
                     }
                 }
+                examined
             }
         }
     }
@@ -3160,12 +3399,9 @@ impl KeyValueStore {
     /// The server uses this cheap index read to avoid taking its global write
     /// barrier on maintenance ticks when active expiry has no possible work.
     pub fn volatile_key_count(&self) -> usize {
-        self.index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .volatile
-            .keys
-            .len()
+        (0..INDEX_SHARDS)
+            .map(|i| self.index_shard_at(i).volatile.keys.len())
+            .sum()
     }
 
     /// Give back table capacity that mass deletion left empty, one shard at a
@@ -3214,12 +3450,11 @@ impl KeyValueStore {
         // The dense indexes behave the same way: their vectors and position
         // maps keep the capacity of the largest TTL keyspace ever held.
         if at == 0 {
-            let mut index = self
-                .index
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            shrunk |= index.volatile.reclaim();
-            shrunk |= index.all.reclaim();
+            for i in 0..INDEX_SHARDS {
+                let mut index = self.index_shard_at(i);
+                shrunk |= index.volatile.reclaim();
+                shrunk |= index.all.reclaim();
+            }
         }
         shrunk
     }
@@ -3232,14 +3467,15 @@ impl KeyValueStore {
 
     /// Drop every currently expired volatile entry and return its key names.
     pub fn sweep_expired_reporting(&self) -> Vec<String> {
-        let keys = self
-            .index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .volatile
-            .keys
-            .iter()
-            .map(|key| key.to_string())
+        let keys = (0..INDEX_SHARDS)
+            .flat_map(|i| {
+                self.index_shard_at(i)
+                    .volatile
+                    .keys
+                    .iter()
+                    .map(|key| key.to_string())
+                    .collect::<Vec<_>>()
+            })
             .collect();
         self.remove_expired_candidates(keys)
     }
@@ -3252,18 +3488,19 @@ impl KeyValueStore {
             return Vec::new();
         }
         let keys = {
-            let index = self
-                .index
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let len = index.volatile.keys.len();
+            // The shards' TTL vectors, read as one sequence in shard order,
+            // with the cursor walking it as it walked the single vector.
+            let index = self.index_all();
+            let len: usize = index.iter().map(|shard| shard.volatile.keys.len()).sum();
             if len == 0 {
                 return Vec::new();
             }
             let start = self.expiry_cursor.fetch_add(limit, Ordering::Relaxed) % len;
             let take = limit.min(len);
             (0..take)
-                .map(|offset| index.volatile.keys[(start + offset) % len].to_string())
+                .filter_map(|offset| {
+                    nth_dense(&index, true, (start + offset) % len).map(|key| key.to_string())
+                })
                 .collect()
         };
         self.remove_expired_candidates(keys)
@@ -3376,7 +3613,15 @@ impl KeyValueStore {
     /// to completion, reads it exactly. It used to be `DashMap::len()` there,
     /// which read-locks all 64 shards on every capped write.
     pub fn key_count(&self) -> usize {
-        self.key_count.load(Ordering::Acquire)
+        self.key_count_ordered(Ordering::Acquire)
+    }
+
+    /// [`Self::key_count`] read with `order`: the sum of every shard's
+    /// published count. Each shard's count is published before its writer
+    /// releases anything another reader synchronizes with (the capacity
+    /// gate, a reservation), so the sum read after acquiring one includes it.
+    fn key_count_ordered(&self, order: Ordering) -> usize {
+        self.key_count.iter().map(|len| len.0.load(order)).sum()
     }
 
     /// The key count capacity admission checks against; see
@@ -3393,39 +3638,39 @@ impl KeyValueStore {
     /// O(1) keyspace counters and logical-memory estimate for INFO/metrics.
     /// Expired physical entries leave these counters during active expiry.
     pub fn keyspace_sample(&self) -> KeyspaceSample {
-        let index = self
-            .index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let index = self.index_all();
         KeyspaceSample {
-            keys: index.ordered.len(),
-            volatile_keys: index.volatile.keys.len(),
+            keys: index.iter().map(|shard| shard.ordered.len()).sum(),
+            volatile_keys: index.iter().map(|shard| shard.volatile.keys.len()).sum(),
             memory_bytes: self.approximate_memory_bytes(),
         }
     }
 
     fn indexed_candidates(&self, volatile_only: bool, want: usize) -> Vec<String> {
-        let index = self
-            .index
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let source = if volatile_only {
-            &index.volatile.keys
-        } else {
-            &index.all.keys
-        };
-        if source.is_empty() || want == 0 {
+        // Every shard locked: positions are drawn without replacement over
+        // the shards' vectors read as one sequence, exactly as over the one
+        // vector before sharding, so a sample at least as large as the
+        // keyspace still draws every key. Eviction runs under the capacity
+        // gate, so this is not on any writer's path.
+        let index = self.index_all();
+        let len: usize = index
+            .iter()
+            .map(|shard| dense_of(shard, volatile_only).keys.len())
+            .sum();
+        if len == 0 || want == 0 {
             return Vec::new();
         }
         let mut rng = rand::rng();
-        let take = want.min(source.len());
+        let take = want.min(len);
         let mut positions = BTreeSet::new();
         while positions.len() < take {
-            positions.insert(rng.random_range(0..source.len()));
+            positions.insert(rng.random_range(0..len));
         }
         positions
             .into_iter()
-            .map(|position| source[position].to_string())
+            .filter_map(|position| {
+                nth_dense(&index, volatile_only, position).map(|key| key.to_string())
+            })
             .collect()
     }
 
@@ -3985,19 +4230,15 @@ impl KeyValueStore {
                     // it at all. Anything else (created, removed, TTL gained or
                     // lost, or absent both times, which re-asserts absence)
                     // is synced.
-                    let mut index = None;
                     for ((key, (live_ttl, shared)), (_, was)) in
                         keys.iter().zip(ttl_states).zip(before_states)
                     {
                         if !index_changes(was, live_ttl) {
                             continue;
                         }
-                        index
-                            .get_or_insert_with(|| {
-                                self.index
-                                    .lock()
-                                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            })
+                        // One shard lock per key, held only for its sync:
+                        // a command's keys usually live in different shards.
+                        self.index_for(key.as_ref())
                             .sync(key.as_ref(), live_ttl.zip(shared.as_ref()));
                     }
                 }
@@ -4099,9 +4340,7 @@ impl KeyValueStore {
                 .remove_if(key, |_, entry| entry.value.is_empty_collection());
         }
         if index_changes(was, after.ttl) {
-            self.index
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+            self.index_for(key)
                 .sync(key, after.ttl.zip(after.shared.as_ref()));
         }
         self.adjust_memory(before, after.size);
@@ -4997,7 +5236,10 @@ impl KeyValueStore {
             }
 
             Command::Scan(cursor, pattern, count) => {
-                let last_key = if cursor == 0 {
+                // The session leaves the table for the length of the call:
+                // a second call with the same cursor meanwhile is answered as
+                // an unknown cursor, as before.
+                let session = if cursor == 0 {
                     None
                 } else {
                     self.scan_cursors
@@ -5005,41 +5247,19 @@ impl KeyValueStore {
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .remove(&cursor)
                 };
-                if cursor != 0 && last_key.is_none() {
+                if cursor != 0 && session.is_none() {
                     return empty_scan();
                 }
+                let mut frontier = match session {
+                    Some(session) => session.frontier,
+                    None => ScanFrontier::start(self),
+                };
 
                 let batch = count.unwrap_or(10).max(1);
-                let mut candidates: Vec<String> = {
-                    let index = self
-                        .index
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    match last_key {
-                        Some(ref key) => index
-                            .ordered
-                            .range::<str, _>((
-                                std::ops::Bound::Excluded(key.as_str()),
-                                std::ops::Bound::Unbounded,
-                            ))
-                            .take(batch.saturating_add(1))
-                            .map(|key| key.to_string())
-                            .collect(),
-                        None => index
-                            .ordered
-                            .iter()
-                            .take(batch.saturating_add(1))
-                            .map(|key| key.to_string())
-                            .collect(),
-                    }
-                };
-                let has_more = candidates.len() > batch;
-                if has_more {
-                    candidates.truncate(batch);
-                }
+                let (page, has_more) = frontier.next_page(self, batch);
+                let candidates: Vec<String> = page.iter().map(|key| key.to_string()).collect();
                 let next_cursor = if has_more {
                     let token = self.next_scan_cursor.fetch_add(1, Ordering::Relaxed).max(1);
-                    let last = candidates.last().cloned().unwrap_or_default();
                     let mut cursors = self
                         .scan_cursors
                         .lock()
@@ -5054,7 +5274,7 @@ impl KeyValueStore {
                     if cursors.len() >= MAX_SCAN_CURSORS {
                         cursors.pop_first();
                     }
-                    cursors.insert(token, last);
+                    cursors.insert(token, ScanSession { frontier });
                     token
                 } else {
                     0
@@ -12727,36 +12947,37 @@ mod storage_regression_tests {
         };
 
         let check = |label: &str| {
-            let index = store.index.lock().unwrap_or_else(|e| e.into_inner());
-            let ordered: std::collections::BTreeSet<&str> =
-                index.ordered.iter().map(|k| &**k).collect();
-            let dense: std::collections::BTreeSet<&str> =
-                index.all.keys.iter().map(|k| &**k).collect();
-            if index.track_all {
-                assert_eq!(
-                    ordered,
-                    dense,
-                    "ordered and all diverged after {label}: only-in-ordered {:?}, only-in-all {:?}",
-                    ordered.difference(&dense).collect::<Vec<_>>(),
-                    dense.difference(&ordered).collect::<Vec<_>>()
-                );
-            } else {
-                assert!(
-                    dense.is_empty(),
-                    "all is maintained without an allkeys policy"
-                );
-            }
-            // Every volatile key must still be a live key.
-            for key in &index.volatile.keys {
-                assert!(
-                    ordered.contains(&**key),
-                    "volatile holds {key}, which is not in the key set, after {label}"
-                );
-            }
-            // The dense position map must agree with its own vector.
-            assert_eq!(index.all.keys.len(), index.all.positions.len());
-            for (position, key) in index.all.keys.iter().enumerate() {
-                assert_eq!(index.all.positions.get(key), Some(&position));
+            for index in store.index_all() {
+                let ordered: std::collections::BTreeSet<&str> =
+                    index.ordered.iter().map(|k| &**k).collect();
+                let dense: std::collections::BTreeSet<&str> =
+                    index.all.keys.iter().map(|k| &**k).collect();
+                if index.track_all {
+                    assert_eq!(
+                        ordered,
+                        dense,
+                        "ordered and all diverged after {label}: only-in-ordered {:?}, only-in-all {:?}",
+                        ordered.difference(&dense).collect::<Vec<_>>(),
+                        dense.difference(&ordered).collect::<Vec<_>>()
+                    );
+                } else {
+                    assert!(
+                        dense.is_empty(),
+                        "all is maintained without an allkeys policy"
+                    );
+                }
+                // Every volatile key must still be a live key.
+                for key in &index.volatile.keys {
+                    assert!(
+                        ordered.contains(&**key),
+                        "volatile holds {key}, which is not in the key set, after {label}"
+                    );
+                }
+                // The dense position map must agree with its own vector.
+                assert_eq!(index.all.keys.len(), index.all.positions.len());
+                for (position, key) in index.all.keys.iter().enumerate() {
+                    assert_eq!(index.all.positions.get(key), Some(&position));
+                }
             }
         };
 
@@ -13680,6 +13901,12 @@ mod key_count_tests;
 
 #[cfg(test)]
 mod reservation_tests;
+
+#[cfg(test)]
+mod sharded_index_tests;
+
+#[cfg(test)]
+mod index_bench;
 
 #[cfg(test)]
 mod growth_bound_tests;

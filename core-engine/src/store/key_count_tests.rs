@@ -16,12 +16,18 @@ use std::sync::atomic::AtomicBool;
 /// The map's physical key count, and the store's three views of it.
 fn assert_counts_agree(store: &KeyValueStore, what: &str) {
     let physical = store.data.len();
-    let indexed = store
-        .index
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .ordered
-        .len();
+    let shards = store.index_all();
+    for (i, shard) in shards.iter().enumerate() {
+        for key in &shard.ordered {
+            assert_eq!(
+                index_shard(key),
+                i,
+                "{what}: {key} indexed in the wrong shard"
+            );
+        }
+    }
+    let indexed: usize = shards.iter().map(|shard| shard.ordered.len()).sum();
+    drop(shards);
     assert_eq!(indexed, physical, "{what}: index vs map");
     assert_eq!(
         store.key_count(),
