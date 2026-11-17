@@ -245,10 +245,58 @@ async fn a_capped_replica_follows_its_primary_instead_of_evicting() {
     }
 
     // Promotion turns the caps back on: the next new key makes room.
-    replica.state.promote_to_primary(&replica.store);
+    replica.state.promote_to_primary(&replica.store).await;
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(r.cmd(&["SET", "after", "x"]).await, ok());
     assert_eq!(r.cmd(&["DBSIZE"]).await, int(2));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_promoted_replica_stops_applying_its_old_primarys_stream() {
+    // 6L review, R2. An operator who promotes without fencing the old
+    // primary first leaves the link up. Its frames then ran with the caps
+    // on: this 2-key replica evicted for them, and the evictions reached
+    // none of its consumers (AOF, replicas, WebSocket clients, watchers).
+    let primary = node(false, true).await;
+    let replica = node_with(
+        true,
+        true,
+        KeyValueStore::with_config(Some(2), None, EvictionPolicy::AllKeysRandom),
+        SyncPolicy::open(),
+    )
+    .await;
+    follow(&replica, serve_replicas(&primary).await);
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    let mut p = WsClient::connect(primary.ws).await;
+    p.cmd(&["SET", "a", "1"]).await;
+    p.cmd(&["SET", "b", "1"]).await;
+    // Three keys on a 2-key follower: it does not enforce the cap.
+    caught_up(&mut p, &replica, "t1").await;
+
+    replica.state.promote_to_primary(&replica.store).await;
+    for i in 0..5 {
+        p.cmd(&["SET", &format!("late:{i}"), "v"]).await;
+    }
+    p.cmd(&["SET", "sentinel", "t2"]).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+    assert_eq!(
+        replica.store.get_current("sentinel"),
+        bulk("t1"),
+        "a frame was applied after the promotion"
+    );
+    for i in 0..5 {
+        assert_eq!(
+            replica.store.get_current(&format!("late:{i}")),
+            Value::BulkString(None)
+        );
+    }
+    assert_eq!(
+        replica.store.evicted_count(),
+        0,
+        "evicted for the old primary's frames"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

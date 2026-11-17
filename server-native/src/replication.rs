@@ -1572,6 +1572,23 @@ where
     Ok((u64::from_le_bytes(offset), bytes))
 }
 
+/// Refuse a replicated write once this node has been promoted.
+///
+/// Called with the frame's write-order stripes held, which promotion's
+/// all-write barrier excludes (`ServerState::promote_to_primary`): a frame
+/// either applies before the promotion, as a follower's, or sees it here and
+/// ends the link. Applied after it, a frame would run with the caps on and
+/// its evictions would reach none of this node's consumers (6L review, R2).
+fn still_following(state: &ServerState) -> std::io::Result<()> {
+    if state.is_replica() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            "promoted with REPLICAOF NO ONE: replication link closed",
+        ))
+    }
+}
+
 /// Apply one replicated write on a replica, with the effects a write on the
 /// primary has on this node's own clients.
 ///
@@ -1628,6 +1645,7 @@ async fn apply_repl_frame(
         .replicas
         .lock_commands(std::slice::from_ref(&cmd))
         .await;
+    still_following(state)?;
     if let (Value::Error(error), _) = store.execute_reporting_ref(&cmd) {
         return Err(std::io::Error::new(
             ErrorKind::InvalidData,
@@ -1701,6 +1719,7 @@ async fn apply_dedup_envelope(
         .replicas
         .lock_commands(std::slice::from_ref(&cmd))
         .await;
+    still_following(state)?;
     if let (Value::Error(error), _) = store.execute_reporting_ref(&cmd) {
         return Err(std::io::Error::new(
             ErrorKind::InvalidData,

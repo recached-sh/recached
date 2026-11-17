@@ -436,10 +436,35 @@ impl ServerState {
 
     /// Stop following a primary: accept writes, and enforce `store`'s caps,
     /// which a replica leaves to its primary (see `KeyValueStore::set_follower`).
-    pub(crate) fn promote_to_primary(&self, store: &KeyValueStore) {
+    ///
+    /// Behind the all-write barrier. A replicated frame holds its stripes
+    /// while it checks [`Self::is_replica`] and applies (`apply_repl_frame`),
+    /// so each frame is either applied as a follower's before the promotion,
+    /// or refused after it, which ends the link (6L review, R2). Before, a
+    /// link still up kept applying the old primary's frames with the caps on,
+    /// and what they evicted reached nobody: not this node's AOF, replicas,
+    /// WebSocket clients or watchers.
+    pub(crate) async fn promote_to_primary(&self, store: &KeyValueStore) {
+        let _all_writes = self.replicas.lock_all_writes().await;
         store.set_follower(false);
         self.is_replica.store(false, Ordering::Relaxed);
         info!("REPLICAOF NO ONE: promoted to primary — writes now accepted");
+        // A follower does not enforce its caps, so it may be far above them.
+        // The first write that needs room evicts down to them in one go (6L
+        // review, R3): say so here rather than leave an unexplained pause.
+        let keys = store.key_count();
+        let memory = store.approximate_memory_bytes();
+        let over_keys = store.max_keys().filter(|&cap| keys > cap);
+        let over_memory = store.max_memory_bytes().filter(|&cap| memory > cap);
+        if over_keys.is_some() || over_memory.is_some() {
+            warn!(
+                keys,
+                max_keys = ?over_keys,
+                memory_bytes = memory,
+                max_memory_bytes = ?over_memory,
+                "promoted above this node's caps: the next write that needs room evicts the excess at once"
+            );
+        }
     }
 
     /// True when a write must be RESP-encoded for the durability/replication
