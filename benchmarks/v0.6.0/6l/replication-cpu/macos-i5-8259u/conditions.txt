@@ -1,0 +1,8 @@
+date_utc: 2026-11-17T04:15:27Z
+Darwin 24.6.0 x86_64
+cpu: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz
+load_at_start: 9.25 10.99 13.73
+3bdae9f0472c5b151d1293dd1424703bde980c1c6b660741f25c78f6ea3807bc  bench-base
+c88d53f93f85dba3c4fe17f642b814cc262e623de9783f2a5ec4a7a02e9ad044  bench-r1
+585cd89d2503d737cf207fa03279682464f2c7b16af931de249468cd74625488  bench-r2
+load_at_end: 11.47 11.97 13.53
