@@ -181,9 +181,8 @@ async fn a_keyless_push_reaches_scoped_connections_only_when_keyspace_wide() {
     let push = |keyspace_wide: bool, marker: &str| SyncPush {
         origin: 0,
         keys: Vec::new(),
-        resp: resp_push(&[b"set", b"tenant:a:k", marker.as_bytes()]).into(),
+        resp: resp_push(&[b"set", b"tenant:a:k", marker.as_bytes()]),
         keyspace_wide,
-        message: Default::default(),
     };
     let leaked = SyncPush::for_command(
         0,

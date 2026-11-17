@@ -227,9 +227,8 @@ fn keyspace_wide_pushes_reach_everyone_keyless_ones_only_the_broad_set() {
     let keyless = Arc::new(SyncPush {
         origin: 0,
         keys: Vec::new(),
-        resp: Bytes::new(),
+        resp: Vec::new(),
         keyspace_wide: false,
-        message: Default::default(),
     });
     assert_eq!(router.send(keyless), 1);
     assert_eq!(
@@ -444,9 +443,8 @@ fn a_mailbox_is_bounded_by_bytes_as_well_as_pushes() {
         Arc::new(SyncPush {
             origin: 0,
             keys: vec!["k".into()],
-            resp: vec![b'x'; n].into(),
+            resp: vec![b'x'; n],
             keyspace_wide: false,
-            message: Default::default(),
         })
     };
     let mut fast = router.subscribe(Routes::Everything);

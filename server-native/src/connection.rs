@@ -135,17 +135,18 @@ pub(crate) fn open_routes(strict: bool, authenticated: bool) -> Routes<'static> 
     }
 }
 
-/// The WebSocket message a connection sends for a sync push: built once per
-/// push, from the shared frame without copying it, and cloned for every
-/// connection. Text when the frame is valid UTF-8, binary otherwise, as every
-/// reply is sent (`ws_send!`).
+/// A WebSocket message carrying RESP bytes: text when they are valid UTF-8,
+/// binary otherwise.
+fn ws_message(bytes: &[u8]) -> Message {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Message::Text(text.into()),
+        Err(_) => Message::Binary(bytes.to_vec().into()),
+    }
+}
+
+/// The WebSocket message a connection sends for a sync push.
 pub(crate) fn push_message(push: &SyncPush) -> Message {
-    push.message
-        .get_or_init(|| match Utf8Bytes::try_from(push.resp.clone()) {
-            Ok(text) => Message::Text(text),
-            Err(_) => Message::Binary(push.resp.clone()),
-        })
-        .clone()
+    ws_message(&push.resp)
 }
 
 /// Re-tag a top-level RESP array as a RESP3 push (`*` → `>`) when the

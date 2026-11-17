@@ -1781,7 +1781,7 @@ async fn replication_lag_counts_unacknowledged_frames() {
     }
     for i in 0..3 {
         registry
-            .fan_out(Bytes::from(format!("*1\r\n$4\r\nPING{i}\r\n").into_bytes()))
+            .fan_out(format!("*1\r\n$4\r\nPING{i}\r\n").into_bytes())
             .await;
     }
 
@@ -2236,9 +2236,8 @@ async fn ws_closes_a_client_whose_mutation_stream_developed_a_gap() {
         let _ = tx.send(Arc::new(SyncPush {
             origin: 999,
             keys: vec!["k".to_string()],
-            resp: payload.clone().into(),
+            resp: payload.clone(),
             keyspace_wide: false,
-            message: Default::default(),
         }));
         tokio::task::yield_now().await;
     }

@@ -8,9 +8,7 @@ use std::hash::{Hash, Hasher};
 #[derive(Clone)]
 pub(crate) struct ReplFrame {
     offset: u64,
-    /// Shared with the backlog, every replica queue and — for a client write —
-    /// the AOF caller and the WebSocket push built from the same frame.
-    bytes: Bytes,
+    bytes: Arc<Vec<u8>>,
 }
 
 pub(crate) struct QueuedReplFrame {
@@ -332,10 +330,11 @@ impl ReplHub {
     /// Send one frame to every attached replica, dropping any that cannot keep
     /// up. Increments each surviving replica's sent counter, which is one half
     /// of the lag calculation.
-    pub(crate) async fn fan_out(&self, bytes: Bytes) {
+    pub(crate) async fn fan_out(&self, bytes: Vec<u8>) {
         if !self.is_enabled() {
             return;
         }
+        let bytes = Arc::new(bytes);
         // Keep the backlog guard until every replica queue has accepted this
         // frame. Independent-key writes can propagate concurrently; without
         // this serialization offset 2 could be queued before offset 1.
@@ -347,7 +346,7 @@ impl ReplHub {
         let offset = self.offset.fetch_add(1, Ordering::AcqRel) + 1;
         let frame = ReplFrame {
             offset,
-            bytes: bytes.clone(),
+            bytes: Arc::clone(&bytes),
         };
         let backlog_limit = self.backlog_bytes.load(Ordering::Acquire);
         backlog.bytes = backlog.bytes.saturating_add(bytes.len());
@@ -358,7 +357,7 @@ impl ReplHub {
             };
             backlog.bytes = backlog.bytes.saturating_sub(expired.bytes.len());
         }
-        gauge!("recached_replication_backlog_bytes").set(backlog.bytes as f64);
+        let backlog_bytes = backlog.bytes;
 
         reg.retain(|r| {
             let charged_bytes = bytes.len();
@@ -398,6 +397,10 @@ impl ReplHub {
             }
         });
         self.count.store(reg.len(), Ordering::Relaxed);
+        drop(stream);
+        // Outside the lock: a metrics update is a registry lookup, and every
+        // replicated write would otherwise wait out another's.
+        gauge!("recached_replication_backlog_bytes").set(backlog_bytes as f64);
     }
 
     /// Attach an in-process replica that is handed every frame from now on,
@@ -1798,8 +1801,8 @@ mod write_order_tests {
     async fn backlog_only_resumes_when_every_missing_offset_is_retained() {
         let hub = ReplHub::new();
         hub.configure_backlog(5);
-        hub.fan_out(Bytes::from(vec![1, 2, 3])).await;
-        hub.fan_out(Bytes::from(vec![4, 5, 6])).await;
+        hub.fan_out(vec![1, 2, 3]).await;
+        hub.fan_out(vec![4, 5, 6]).await;
 
         assert!(
             hub.resume_frames(&hub.run_id, 0).await.is_none(),
@@ -1828,20 +1831,18 @@ mod write_order_tests {
         });
         hub.count.store(1, Ordering::Relaxed);
 
-        hub.fan_out(Bytes::from(vec![0; 4])).await;
+        hub.fan_out(vec![0; 4]).await;
         assert_eq!(hub.count.load(Ordering::Relaxed), 0);
     }
 
-    /// Drain `rx` until it closes or `want` frames arrived; returns the
-    /// offsets and payloads in arrival order.
     async fn drain_frames(
         rx: &mut mpsc::Receiver<QueuedReplFrame>,
         want: usize,
-    ) -> Vec<(u64, Bytes)> {
+    ) -> Vec<(u64, Vec<u8>)> {
         let mut got = Vec::with_capacity(want);
         while got.len() < want {
             match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
-                Ok(Some(q)) => got.push((q.frame.offset, q.frame.bytes.clone())),
+                Ok(Some(q)) => got.push((q.frame.offset, q.frame.bytes.to_vec())),
                 _ => break,
             }
         }
@@ -1865,8 +1866,7 @@ mod write_order_tests {
                 let hub = Arc::clone(&hub);
                 tokio::spawn(async move {
                     for i in 0..EACH {
-                        hub.fan_out(Bytes::from(format!("w{w}:{i}").into_bytes()))
-                            .await;
+                        hub.fan_out(format!("w{w}:{i}").into_bytes()).await;
                     }
                 })
             })
@@ -1881,17 +1881,17 @@ mod write_order_tests {
             assert_eq!(*offset, i as u64 + 1, "replica A: offsets out of order");
         }
         assert_eq!(got_a, got_b, "both replicas see the same stream");
-        let backlog: Vec<(u64, Bytes)> = hub
+        let backlog: Vec<(u64, Vec<u8>)> = hub
             .stream()
             .backlog
             .frames
             .iter()
-            .map(|f| (f.offset, f.bytes.clone()))
+            .map(|f| (f.offset, f.bytes.to_vec()))
             .collect();
         assert_eq!(backlog, got_a, "the backlog holds the stream as sent");
         // Each writer's frames keep their own order within the stream.
         for w in 0..WRITERS {
-            let mine: Vec<&Bytes> = got_a
+            let mine: Vec<&Vec<u8>> = got_a
                 .iter()
                 .map(|(_, b)| b)
                 .filter(|b| b.starts_with(format!("w{w}:").as_bytes()))
@@ -1915,7 +1915,7 @@ mod write_order_tests {
         assert_eq!(hub.count.load(Ordering::Relaxed), 2);
         let started = std::time::Instant::now();
         for i in 0..2_000 {
-            hub.fan_out(Bytes::from(format!("f{i}").into_bytes())).await;
+            hub.fan_out(format!("f{i}").into_bytes()).await;
         }
         assert!(
             started.elapsed() < std::time::Duration::from_secs(5),
@@ -1939,8 +1939,8 @@ mod write_order_tests {
         // still speaks unchanged.
         hub.configure_dedup(false);
         hub.configure_backlog(1024);
-        hub.fan_out(Bytes::from_static(b"one")).await;
-        hub.fan_out(Bytes::from_static(b"two")).await;
+        hub.fan_out(b"one".to_vec()).await;
+        hub.fan_out(b"two".to_vec()).await;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
