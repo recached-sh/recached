@@ -116,9 +116,12 @@ async fn replicas_reattach_partially_and_fully_while_writes_continue() {
     for w in writers {
         w.await.unwrap();
     }
+    // One last write, applied by both replicas before either is compared:
+    // a sentinel per replica raced, since writing the second one left the
+    // first replica a write behind the primary it was compared with.
     let mut p = WsClient::connect(primary.ws).await;
-    caught_up(&mut p, &replica, "r1").await;
-    caught_up(&mut p, &steady, "s1").await;
+    caught_up(&mut p, &replica, "done").await;
+    wait_for(&steady.store, "sentinel", bulk("done")).await;
     assert_converged(&primary, &replica, "reattached replica");
     assert_converged(&primary, &steady, "steady replica");
 }
