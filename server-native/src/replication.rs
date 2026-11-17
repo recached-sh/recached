@@ -49,15 +49,31 @@ struct ReplBacklog {
     bytes: usize,
 }
 
+/// The replication stream's state: the backlog partial resynchronisation
+/// reads, and the replicas live frames go to. One lock for both (6L-D R1).
+///
+/// They were two `tokio::sync::Mutex`es, taken in turn by every replicated
+/// write: two async lock round trips per write, and the backlog lock held
+/// across the second acquisition anyway, because a frame must reach the
+/// backlog and every replica queue before the next offset is assigned. No
+/// holder awaits — the fan-out only `try_send`s — so a short synchronous lock
+/// serves, and `MutexGuard` being `!Send` keeps any future holder from
+/// carrying it across an `.await` in a spawned task.
+#[derive(Default)]
+pub(crate) struct ReplStream {
+    backlog: ReplBacklog,
+    pub(crate) senders: Vec<ReplicaHandle>,
+}
+
 /// Connected-replica registry. `count` mirrors `senders.len()` (updated by
 /// every writer while holding the lock) so the per-write hot path can skip
 /// the mutex entirely when no replica is connected.
 pub(crate) struct ReplHub {
-    pub(crate) senders: tokio::sync::Mutex<Vec<ReplicaHandle>>,
+    /// Backlog and replica queues; see [`ReplStream`].
+    stream: std::sync::Mutex<ReplStream>,
     pub(crate) count: AtomicUsize,
     run_id: String,
     offset: AtomicU64,
-    backlog: tokio::sync::Mutex<ReplBacklog>,
     backlog_bytes: AtomicUsize,
     queue_bytes: AtomicUsize,
     /// Per-key ordering domains shared by client writes and full-sync
@@ -276,13 +292,25 @@ impl<'a> HandshakeId<'a> {
 pub(crate) type DedupTableEntry = (String, Option<u64>, Vec<(u64, String)>);
 
 impl ReplHub {
+    /// The stream's lock. Poisoning: a panic while it is held could only come
+    /// from an allocation failure in a `VecDeque`/`Vec` push; the state is then
+    /// at worst missing that frame for some replicas, which their offset
+    /// check turns into a resynchronisation. Every later write panicking
+    /// would be worse, so recover the guard.
+    pub(crate) fn stream(&self) -> std::sync::MutexGuard<'_, ReplStream> {
+        self.stream
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Deepest send queue across connected replicas, in frames.
     ///
     /// Queue depth measures frames waiting to be written to a replica. Applied
     /// offset acknowledgements provide the separate end-to-end lag metric.
     pub(crate) async fn max_queue_depth(&self) -> usize {
-        let senders = self.senders.lock().await;
-        senders
+        let stream = self.stream();
+        stream
+            .senders
             .iter()
             .map(|r| r.tx.max_capacity().saturating_sub(r.tx.capacity()))
             .max()
@@ -290,8 +318,9 @@ impl ReplHub {
     }
 
     pub(crate) async fn max_queue_bytes(&self) -> usize {
-        let senders = self.senders.lock().await;
-        senders
+        let stream = self.stream();
+        stream
+            .senders
             .iter()
             .map(|replica| replica.pending_bytes.load(Ordering::Relaxed))
             .max()
@@ -309,7 +338,11 @@ impl ReplHub {
         // Keep the backlog guard until every replica queue has accepted this
         // frame. Independent-key writes can propagate concurrently; without
         // this serialization offset 2 could be queued before offset 1.
-        let mut backlog = self.backlog.lock().await;
+        let mut stream = self.stream();
+        let ReplStream {
+            backlog,
+            senders: reg,
+        } = &mut *stream;
         let offset = self.offset.fetch_add(1, Ordering::AcqRel) + 1;
         let frame = ReplFrame {
             offset,
@@ -324,9 +357,8 @@ impl ReplHub {
             };
             backlog.bytes = backlog.bytes.saturating_sub(expired.bytes.len());
         }
-        gauge!("recached_replication_backlog_bytes").set(backlog.bytes as f64);
+        let backlog_bytes = backlog.bytes;
 
-        let mut reg = self.senders.lock().await;
         reg.retain(|r| {
             let charged_bytes = bytes.len();
             let reserved = r
@@ -365,6 +397,32 @@ impl ReplHub {
             }
         });
         self.count.store(reg.len(), Ordering::Relaxed);
+        drop(stream);
+        // Outside the lock: a metrics update is a registry lookup, and every
+        // replicated write would otherwise wait out another's.
+        gauge!("recached_replication_backlog_bytes").set(backlog_bytes as f64);
+    }
+
+    /// Attach an in-process replica that is handed every frame from now on,
+    /// for tests and benchmarks that need the fan-out without a socket.
+    #[cfg(test)]
+    pub(crate) async fn attach_test_replica(
+        &self,
+        capacity: usize,
+        max_queue_bytes: usize,
+    ) -> mpsc::Receiver<QueuedReplFrame> {
+        let (tx, rx) = mpsc::channel(capacity);
+        let mut stream = self.stream();
+        let reg = &mut stream.senders;
+        reg.push(ReplicaHandle {
+            tx,
+            sent: Arc::new(AtomicU64::new(self.offset.load(Ordering::Acquire))),
+            acked: Arc::new(AtomicU64::new(0)),
+            pending_bytes: Arc::new(AtomicUsize::new(0)),
+            max_queue_bytes,
+        });
+        self.count.store(reg.len(), Ordering::Relaxed);
+        rx
     }
 
     /// Frames the furthest-behind replica has yet to acknowledge.
@@ -373,8 +431,9 @@ impl ReplHub {
     /// applied downstream. Queue depth only shows what is stuck locally, and
     /// reads zero for a replica that has received frames but cannot apply them.
     pub(crate) async fn max_lag_frames(&self) -> u64 {
-        let senders = self.senders.lock().await;
-        senders
+        let stream = self.stream();
+        stream
+            .senders
             .iter()
             .map(|r| {
                 r.sent
@@ -387,11 +446,10 @@ impl ReplHub {
 
     pub(crate) fn new() -> ReplRegistry {
         Arc::new(ReplHub {
-            senders: tokio::sync::Mutex::new(Vec::new()),
+            stream: std::sync::Mutex::new(ReplStream::default()),
             count: AtomicUsize::new(0),
             run_id: generate_run_id(),
             offset: AtomicU64::new(0),
-            backlog: tokio::sync::Mutex::new(ReplBacklog::default()),
             backlog_bytes: AtomicUsize::new(0),
             queue_bytes: AtomicUsize::new(DEFAULT_REPL_QUEUE_BYTES),
             write_order: (0..WRITE_ORDER_STRIPES)
@@ -578,7 +636,8 @@ impl ReplHub {
         if requested_offset > current {
             return None;
         }
-        let backlog = self.backlog.lock().await;
+        let stream = self.stream();
+        let backlog = &stream.backlog;
         if requested_offset == current {
             return Some(Vec::new());
         }
@@ -973,7 +1032,8 @@ where
     }));
     let pending_bytes = Arc::new(AtomicUsize::new(0));
     {
-        let mut reg = replicas.senders.lock().await;
+        let mut stream = replicas.stream();
+        let reg = &mut stream.senders;
         reg.push(ReplicaHandle {
             tx,
             sent: Arc::clone(&sent),
@@ -1762,7 +1822,7 @@ mod write_order_tests {
         hub.configure_backlog(1024);
         hub.configure_queue_bytes(3);
         let (tx, _rx) = mpsc::channel(16);
-        hub.senders.lock().await.push(ReplicaHandle {
+        hub.stream().senders.push(ReplicaHandle {
             tx,
             sent: Arc::new(AtomicU64::new(0)),
             acked: Arc::new(AtomicU64::new(0)),
@@ -1773,6 +1833,102 @@ mod write_order_tests {
 
         hub.fan_out(vec![0; 4]).await;
         assert_eq!(hub.count.load(Ordering::Relaxed), 0);
+    }
+
+    async fn drain_frames(
+        rx: &mut mpsc::Receiver<QueuedReplFrame>,
+        want: usize,
+    ) -> Vec<(u64, Vec<u8>)> {
+        let mut got = Vec::with_capacity(want);
+        while got.len() < want {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+                Ok(Some(q)) => got.push((q.frame.offset, q.frame.bytes.to_vec())),
+                _ => break,
+            }
+        }
+        got
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_fan_out_reaches_two_replicas_in_offset_order() {
+        // 6L-D R1: one lock now orders the offset, the backlog and every
+        // replica queue. Eight concurrent writers; each replica must receive
+        // offsets 1..=n contiguously, the same payload per offset, and the
+        // backlog must hold them in the same order.
+        const WRITERS: usize = 8;
+        const EACH: usize = 500;
+        let hub = ReplHub::new();
+        hub.configure_backlog(16 << 20);
+        let mut a = hub.attach_test_replica(1 << 14, usize::MAX >> 1).await;
+        let mut b = hub.attach_test_replica(1 << 14, usize::MAX >> 1).await;
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|w| {
+                let hub = Arc::clone(&hub);
+                tokio::spawn(async move {
+                    for i in 0..EACH {
+                        hub.fan_out(format!("w{w}:{i}").into_bytes()).await;
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.await.unwrap();
+        }
+        let n = WRITERS * EACH;
+        let (got_a, got_b) = (drain_frames(&mut a, n).await, drain_frames(&mut b, n).await);
+        assert_eq!(got_a.len(), n);
+        for (i, (offset, _)) in got_a.iter().enumerate() {
+            assert_eq!(*offset, i as u64 + 1, "replica A: offsets out of order");
+        }
+        assert_eq!(got_a, got_b, "both replicas see the same stream");
+        let backlog: Vec<(u64, Vec<u8>)> = hub
+            .stream()
+            .backlog
+            .frames
+            .iter()
+            .map(|f| (f.offset, f.bytes.to_vec()))
+            .collect();
+        assert_eq!(backlog, got_a, "the backlog holds the stream as sent");
+        // Each writer's frames keep their own order within the stream.
+        for w in 0..WRITERS {
+            let mine: Vec<&Vec<u8>> = got_a
+                .iter()
+                .map(|(_, b)| b)
+                .filter(|b| b.starts_with(format!("w{w}:").as_bytes()))
+                .collect();
+            assert_eq!(mine.len(), EACH);
+            for (i, b) in mine.iter().enumerate() {
+                assert_eq!(&b[..], format!("w{w}:{i}").as_bytes());
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_slow_replica_is_dropped_without_stalling_the_others() {
+        // Backpressure: a replica that stops reading is disconnected once its
+        // queue is full; the healthy one keeps every frame, in order, and the
+        // writers never block on the slow one.
+        let hub = ReplHub::new();
+        hub.configure_backlog(16 << 20);
+        let _slow = hub.attach_test_replica(8, usize::MAX >> 1).await;
+        let mut healthy = hub.attach_test_replica(1 << 14, usize::MAX >> 1).await;
+        assert_eq!(hub.count.load(Ordering::Relaxed), 2);
+        let started = std::time::Instant::now();
+        for i in 0..2_000 {
+            hub.fan_out(format!("f{i}").into_bytes()).await;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "writers stalled"
+        );
+        assert_eq!(
+            hub.count.load(Ordering::Relaxed),
+            1,
+            "the slow replica was dropped"
+        );
+        let got = drain_frames(&mut healthy, 2_000).await;
+        assert_eq!(got.len(), 2_000);
+        assert!(got.iter().enumerate().all(|(i, (o, _))| *o == i as u64 + 1));
     }
 
     #[tokio::test]

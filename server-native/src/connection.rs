@@ -144,6 +144,11 @@ fn ws_message(bytes: &[u8]) -> Message {
     }
 }
 
+/// The WebSocket message a connection sends for a sync push.
+pub(crate) fn push_message(push: &SyncPush) -> Message {
+    ws_message(&push.resp)
+}
+
 /// Re-tag a top-level RESP array as a RESP3 push (`*` → `>`) when the
 /// connection asked for push framing. The two share one layout below the
 /// type byte, so nothing is re-encoded.
@@ -1298,7 +1303,7 @@ pub(crate) async fn handle_ws<S>(
                             && !token_lapsed(scope_expires_at)
                             && forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns);
                                     rx.record(forward);
-                                    if forward && ws_sender.send(ws_message(&push.resp)).await.is_err() {
+                                    if forward && ws_sender.send(push_message(&push)).await.is_err() {
                                         break 'outer;
                                     }
                                 }
@@ -2229,8 +2234,8 @@ pub(crate) async fn handle_ws<S>(
                             && !token_lapsed(scope_expires_at)
                             && forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns);
                         rx.record(forward);
-                        if forward {
-                            ws_send!(&push.resp);
+                        if forward && ws_sender.send(push_message(&push)).await.is_err() {
+                            break;
                         }
                         // Take whatever else is already queued in this one
                         // wake-up. One push per `select!` cycle made every
@@ -2247,7 +2252,7 @@ pub(crate) async fn handle_ws<S>(
                             && !token_lapsed(scope_expires_at)
                             && forwards_push(&push, conn_id, sync_scopes.as_deref(), strict, &watched_keys, &qsub_patterns);
                                     rx.record(forward);
-                                    if forward && ws_sender.send(ws_message(&push.resp)).await.is_err() {
+                                    if forward && ws_sender.send(push_message(&push)).await.is_err() {
                                         break 'outer;
                                     }
                                 }
