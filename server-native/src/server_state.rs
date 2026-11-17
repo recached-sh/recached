@@ -611,6 +611,19 @@ impl ServerState {
         dedup: Option<(&str, u64)>,
         may_defer: bool,
     ) {
+        self.on_write_shared(resp, None, dedup, may_defer).await;
+    }
+
+    /// [`on_write_logged`](Self::on_write_logged) for a frame the caller
+    /// already holds as `shared` (the same bytes as `resp`): replicas are
+    /// handed that buffer instead of a copy of it (6L-D R2).
+    pub(crate) async fn on_write_shared(
+        &self,
+        resp: &[u8],
+        shared: Option<&Bytes>,
+        dedup: Option<(&str, u64)>,
+        may_defer: bool,
+    ) {
         let wrapped = dedup.map(|(client, id)| dedup_wrap(client, id, resp));
         if let Some(aof) = &self.aof {
             let frame = wrapped.as_deref().unwrap_or(resp);
@@ -625,8 +638,10 @@ impl ServerState {
         }
         if self.replicas.is_enabled() {
             let frame = match wrapped {
-                Some(envelope) if self.replicas.streams_dedup() => envelope,
-                _ => resp.to_vec(),
+                Some(envelope) if self.replicas.streams_dedup() => Bytes::from(envelope),
+                _ => shared
+                    .cloned()
+                    .unwrap_or_else(|| Bytes::copy_from_slice(resp)),
             };
             self.replicas.fan_out(frame).await;
         }
@@ -653,7 +668,7 @@ impl ServerState {
         // promoted one would run the retry the primary answered `+DUP` — or
         // answer `+DUP` to a write the primary refused.
         if replicate {
-            self.replicas.fan_out(frame).await;
+            self.replicas.fan_out(Bytes::from(frame)).await;
         }
     }
 

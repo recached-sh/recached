@@ -10,7 +10,9 @@ use crate::*;
 pub(crate) struct SyncPush {
     pub(crate) origin: u64,
     pub(crate) keys: Vec<String>,
-    pub(crate) resp: Vec<u8>,
+    /// The mutation's frame, shared with the AOF caller and the replica
+    /// queues (6L-D R2): one buffer per write, not one per consumer.
+    pub(crate) resp: Bytes,
     /// The mutation affects the whole keyspace (`FLUSHDB`), so it is visible
     /// to every scope even though it names no key.
     ///
@@ -19,6 +21,11 @@ pub(crate) struct SyncPush {
     /// pushed, value and all, to every tenant. An empty key list is now only
     /// visible to a scoped connection when this says so.
     pub(crate) keyspace_wide: bool,
+    /// The WebSocket message for `resp`, built by the first connection that
+    /// forwards this push and cloned (a reference count) by every other.
+    /// Before, each connection checked the frame's UTF-8 and copied it into
+    /// a message of its own: N copies of every push for N browsers.
+    pub(crate) message: std::sync::OnceLock<Message>,
 }
 
 impl SyncPush {
@@ -27,14 +34,15 @@ impl SyncPush {
         origin: u64,
         cmd: &Command,
         keys: Vec<String>,
-        resp: Vec<u8>,
+        resp: impl Into<Bytes>,
     ) -> Self {
         let keyspace_wide = is_keyspace_wide(cmd);
         SyncPush {
             origin,
             keys,
-            resp,
+            resp: resp.into(),
             keyspace_wide,
+            message: std::sync::OnceLock::new(),
         }
     }
 }

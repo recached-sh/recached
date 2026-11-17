@@ -8,7 +8,9 @@ use std::hash::{Hash, Hasher};
 #[derive(Clone)]
 pub(crate) struct ReplFrame {
     offset: u64,
-    bytes: Arc<Vec<u8>>,
+    /// Shared with the backlog, every replica queue and — for a client write —
+    /// the AOF caller and the WebSocket push built from the same frame.
+    bytes: Bytes,
 }
 
 pub(crate) struct QueuedReplFrame {
@@ -330,11 +332,10 @@ impl ReplHub {
     /// Send one frame to every attached replica, dropping any that cannot keep
     /// up. Increments each surviving replica's sent counter, which is one half
     /// of the lag calculation.
-    pub(crate) async fn fan_out(&self, bytes: Vec<u8>) {
+    pub(crate) async fn fan_out(&self, bytes: Bytes) {
         if !self.is_enabled() {
             return;
         }
-        let bytes = Arc::new(bytes);
         // Keep the backlog guard until every replica queue has accepted this
         // frame. Independent-key writes can propagate concurrently; without
         // this serialization offset 2 could be queued before offset 1.
@@ -346,7 +347,7 @@ impl ReplHub {
         let offset = self.offset.fetch_add(1, Ordering::AcqRel) + 1;
         let frame = ReplFrame {
             offset,
-            bytes: Arc::clone(&bytes),
+            bytes: bytes.clone(),
         };
         let backlog_limit = self.backlog_bytes.load(Ordering::Acquire);
         backlog.bytes = backlog.bytes.saturating_add(bytes.len());
@@ -1797,8 +1798,8 @@ mod write_order_tests {
     async fn backlog_only_resumes_when_every_missing_offset_is_retained() {
         let hub = ReplHub::new();
         hub.configure_backlog(5);
-        hub.fan_out(vec![1, 2, 3]).await;
-        hub.fan_out(vec![4, 5, 6]).await;
+        hub.fan_out(Bytes::from(vec![1, 2, 3])).await;
+        hub.fan_out(Bytes::from(vec![4, 5, 6])).await;
 
         assert!(
             hub.resume_frames(&hub.run_id, 0).await.is_none(),
@@ -1827,8 +1828,107 @@ mod write_order_tests {
         });
         hub.count.store(1, Ordering::Relaxed);
 
-        hub.fan_out(vec![0; 4]).await;
+        hub.fan_out(Bytes::from(vec![0; 4])).await;
         assert_eq!(hub.count.load(Ordering::Relaxed), 0);
+    }
+
+    /// Drain `rx` until it closes or `want` frames arrived; returns the
+    /// offsets and payloads in arrival order.
+    async fn drain_frames(
+        rx: &mut mpsc::Receiver<QueuedReplFrame>,
+        want: usize,
+    ) -> Vec<(u64, Bytes)> {
+        let mut got = Vec::with_capacity(want);
+        while got.len() < want {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+                Ok(Some(q)) => got.push((q.frame.offset, q.frame.bytes.clone())),
+                _ => break,
+            }
+        }
+        got
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_fan_out_reaches_two_replicas_in_offset_order() {
+        // 6L-D R1: one lock now orders the offset, the backlog and every
+        // replica queue. Eight concurrent writers; each replica must receive
+        // offsets 1..=n contiguously, the same payload per offset, and the
+        // backlog must hold them in the same order.
+        const WRITERS: usize = 8;
+        const EACH: usize = 500;
+        let hub = ReplHub::new();
+        hub.configure_backlog(16 << 20);
+        let mut a = hub.attach_test_replica(1 << 14, usize::MAX >> 1).await;
+        let mut b = hub.attach_test_replica(1 << 14, usize::MAX >> 1).await;
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|w| {
+                let hub = Arc::clone(&hub);
+                tokio::spawn(async move {
+                    for i in 0..EACH {
+                        hub.fan_out(Bytes::from(format!("w{w}:{i}").into_bytes()))
+                            .await;
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.await.unwrap();
+        }
+        let n = WRITERS * EACH;
+        let (got_a, got_b) = (drain_frames(&mut a, n).await, drain_frames(&mut b, n).await);
+        assert_eq!(got_a.len(), n);
+        for (i, (offset, _)) in got_a.iter().enumerate() {
+            assert_eq!(*offset, i as u64 + 1, "replica A: offsets out of order");
+        }
+        assert_eq!(got_a, got_b, "both replicas see the same stream");
+        let backlog: Vec<(u64, Bytes)> = hub
+            .stream()
+            .backlog
+            .frames
+            .iter()
+            .map(|f| (f.offset, f.bytes.clone()))
+            .collect();
+        assert_eq!(backlog, got_a, "the backlog holds the stream as sent");
+        // Each writer's frames keep their own order within the stream.
+        for w in 0..WRITERS {
+            let mine: Vec<&Bytes> = got_a
+                .iter()
+                .map(|(_, b)| b)
+                .filter(|b| b.starts_with(format!("w{w}:").as_bytes()))
+                .collect();
+            assert_eq!(mine.len(), EACH);
+            for (i, b) in mine.iter().enumerate() {
+                assert_eq!(&b[..], format!("w{w}:{i}").as_bytes());
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_slow_replica_is_dropped_without_stalling_the_others() {
+        // Backpressure: a replica that stops reading is disconnected once its
+        // queue is full; the healthy one keeps every frame, in order, and the
+        // writers never block on the slow one.
+        let hub = ReplHub::new();
+        hub.configure_backlog(16 << 20);
+        let _slow = hub.attach_test_replica(8, usize::MAX >> 1).await;
+        let mut healthy = hub.attach_test_replica(1 << 14, usize::MAX >> 1).await;
+        assert_eq!(hub.count.load(Ordering::Relaxed), 2);
+        let started = std::time::Instant::now();
+        for i in 0..2_000 {
+            hub.fan_out(Bytes::from(format!("f{i}").into_bytes())).await;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "writers stalled"
+        );
+        assert_eq!(
+            hub.count.load(Ordering::Relaxed),
+            1,
+            "the slow replica was dropped"
+        );
+        let got = drain_frames(&mut healthy, 2_000).await;
+        assert_eq!(got.len(), 2_000);
+        assert!(got.iter().enumerate().all(|(i, (o, _))| *o == i as u64 + 1));
     }
 
     #[tokio::test]
@@ -1839,8 +1939,8 @@ mod write_order_tests {
         // still speaks unchanged.
         hub.configure_dedup(false);
         hub.configure_backlog(1024);
-        hub.fan_out(b"one".to_vec()).await;
-        hub.fan_out(b"two".to_vec()).await;
+        hub.fan_out(Bytes::from_static(b"one")).await;
+        hub.fan_out(Bytes::from_static(b"two")).await;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

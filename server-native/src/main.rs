@@ -95,7 +95,6 @@ use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName}
 use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tokio_tungstenite::accept_hdr_async_with_config;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{
     ErrorResponse, Request as HandshakeRequest, Response as HandshakeResponse,
 };
@@ -103,6 +102,7 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::protocol::frame::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::{Bytes, Message, Utf8Bytes};
 use tracing::{debug, error, info, warn};
 
 // ── metrics ───────────────────────────────────────────────────────────────────

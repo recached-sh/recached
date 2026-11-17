@@ -1322,9 +1322,11 @@ async fn apply_write_effects_identified(
         }
         return;
     };
+    // One buffer for the AOF caller, every replica queue and the push.
+    let msg = Bytes::from(msg);
     if needs_log {
         state
-            .on_write_logged(&msg, dedup, !has_ws && !has_watch)
+            .on_write_shared(&msg, Some(&msg), dedup, !has_ws && !has_watch)
             .await;
     }
     if has_watch {
