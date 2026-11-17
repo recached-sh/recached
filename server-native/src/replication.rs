@@ -49,15 +49,31 @@ struct ReplBacklog {
     bytes: usize,
 }
 
+/// The replication stream's state: the backlog partial resynchronisation
+/// reads, and the replicas live frames go to. One lock for both (6L-D R1).
+///
+/// They were two `tokio::sync::Mutex`es, taken in turn by every replicated
+/// write: two async lock round trips per write, and the backlog lock held
+/// across the second acquisition anyway, because a frame must reach the
+/// backlog and every replica queue before the next offset is assigned. No
+/// holder awaits — the fan-out only `try_send`s — so a short synchronous lock
+/// serves, and `MutexGuard` being `!Send` keeps any future holder from
+/// carrying it across an `.await` in a spawned task.
+#[derive(Default)]
+pub(crate) struct ReplStream {
+    backlog: ReplBacklog,
+    pub(crate) senders: Vec<ReplicaHandle>,
+}
+
 /// Connected-replica registry. `count` mirrors `senders.len()` (updated by
 /// every writer while holding the lock) so the per-write hot path can skip
 /// the mutex entirely when no replica is connected.
 pub(crate) struct ReplHub {
-    pub(crate) senders: tokio::sync::Mutex<Vec<ReplicaHandle>>,
+    /// Backlog and replica queues; see [`ReplStream`].
+    stream: std::sync::Mutex<ReplStream>,
     pub(crate) count: AtomicUsize,
     run_id: String,
     offset: AtomicU64,
-    backlog: tokio::sync::Mutex<ReplBacklog>,
     backlog_bytes: AtomicUsize,
     queue_bytes: AtomicUsize,
     /// Per-key ordering domains shared by client writes and full-sync
@@ -276,13 +292,25 @@ impl<'a> HandshakeId<'a> {
 pub(crate) type DedupTableEntry = (String, Option<u64>, Vec<(u64, String)>);
 
 impl ReplHub {
+    /// The stream's lock. Poisoning: a panic while it is held could only come
+    /// from an allocation failure in a `VecDeque`/`Vec` push; the state is then
+    /// at worst missing that frame for some replicas, which their offset
+    /// check turns into a resynchronisation. Every later write panicking
+    /// would be worse, so recover the guard.
+    pub(crate) fn stream(&self) -> std::sync::MutexGuard<'_, ReplStream> {
+        self.stream
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Deepest send queue across connected replicas, in frames.
     ///
     /// Queue depth measures frames waiting to be written to a replica. Applied
     /// offset acknowledgements provide the separate end-to-end lag metric.
     pub(crate) async fn max_queue_depth(&self) -> usize {
-        let senders = self.senders.lock().await;
-        senders
+        let stream = self.stream();
+        stream
+            .senders
             .iter()
             .map(|r| r.tx.max_capacity().saturating_sub(r.tx.capacity()))
             .max()
@@ -290,8 +318,9 @@ impl ReplHub {
     }
 
     pub(crate) async fn max_queue_bytes(&self) -> usize {
-        let senders = self.senders.lock().await;
-        senders
+        let stream = self.stream();
+        stream
+            .senders
             .iter()
             .map(|replica| replica.pending_bytes.load(Ordering::Relaxed))
             .max()
@@ -309,7 +338,11 @@ impl ReplHub {
         // Keep the backlog guard until every replica queue has accepted this
         // frame. Independent-key writes can propagate concurrently; without
         // this serialization offset 2 could be queued before offset 1.
-        let mut backlog = self.backlog.lock().await;
+        let mut stream = self.stream();
+        let ReplStream {
+            backlog,
+            senders: reg,
+        } = &mut *stream;
         let offset = self.offset.fetch_add(1, Ordering::AcqRel) + 1;
         let frame = ReplFrame {
             offset,
@@ -326,7 +359,6 @@ impl ReplHub {
         }
         gauge!("recached_replication_backlog_bytes").set(backlog.bytes as f64);
 
-        let mut reg = self.senders.lock().await;
         reg.retain(|r| {
             let charged_bytes = bytes.len();
             let reserved = r
@@ -376,7 +408,8 @@ impl ReplHub {
         max_queue_bytes: usize,
     ) -> mpsc::Receiver<QueuedReplFrame> {
         let (tx, rx) = mpsc::channel(capacity);
-        let mut reg = self.senders.lock().await;
+        let mut stream = self.stream();
+        let reg = &mut stream.senders;
         reg.push(ReplicaHandle {
             tx,
             sent: Arc::new(AtomicU64::new(self.offset.load(Ordering::Acquire))),
@@ -394,8 +427,9 @@ impl ReplHub {
     /// applied downstream. Queue depth only shows what is stuck locally, and
     /// reads zero for a replica that has received frames but cannot apply them.
     pub(crate) async fn max_lag_frames(&self) -> u64 {
-        let senders = self.senders.lock().await;
-        senders
+        let stream = self.stream();
+        stream
+            .senders
             .iter()
             .map(|r| {
                 r.sent
@@ -408,11 +442,10 @@ impl ReplHub {
 
     pub(crate) fn new() -> ReplRegistry {
         Arc::new(ReplHub {
-            senders: tokio::sync::Mutex::new(Vec::new()),
+            stream: std::sync::Mutex::new(ReplStream::default()),
             count: AtomicUsize::new(0),
             run_id: generate_run_id(),
             offset: AtomicU64::new(0),
-            backlog: tokio::sync::Mutex::new(ReplBacklog::default()),
             backlog_bytes: AtomicUsize::new(0),
             queue_bytes: AtomicUsize::new(DEFAULT_REPL_QUEUE_BYTES),
             write_order: (0..WRITE_ORDER_STRIPES)
@@ -599,7 +632,8 @@ impl ReplHub {
         if requested_offset > current {
             return None;
         }
-        let backlog = self.backlog.lock().await;
+        let stream = self.stream();
+        let backlog = &stream.backlog;
         if requested_offset == current {
             return Some(Vec::new());
         }
@@ -994,7 +1028,8 @@ where
     }));
     let pending_bytes = Arc::new(AtomicUsize::new(0));
     {
-        let mut reg = replicas.senders.lock().await;
+        let mut stream = replicas.stream();
+        let reg = &mut stream.senders;
         reg.push(ReplicaHandle {
             tx,
             sent: Arc::clone(&sent),
@@ -1783,7 +1818,7 @@ mod write_order_tests {
         hub.configure_backlog(1024);
         hub.configure_queue_bytes(3);
         let (tx, _rx) = mpsc::channel(16);
-        hub.senders.lock().await.push(ReplicaHandle {
+        hub.stream().senders.push(ReplicaHandle {
             tx,
             sent: Arc::new(AtomicU64::new(0)),
             acked: Arc::new(AtomicU64::new(0)),
