@@ -1229,6 +1229,31 @@ pub(crate) async fn notify_flushdb(registry: &WatchRegistry, watched_before: Vec
     }
 }
 
+/// Announce a keyspace replaced wholesale (a replica's full
+/// resynchronisation) to exact-key watchers: each watched key with its value
+/// as it now stands, so a `WATCH` before the resync aborts the `EXEC` after
+/// it, as any write to the key would.
+///
+/// The current value, not FLUSHDB's nil: a WebSocket watcher may read this
+/// frame before the sync-gap close [`SyncRouter::invalidate_all`] sends it,
+/// and the current value is true where a nil would claim the key is gone.
+/// Live queries need nothing here — they exist only on WebSocket
+/// connections, which that close makes resubscribe.
+pub(crate) async fn notify_keyspace_replaced(registry: &WatchRegistry, store: &KeyValueStore) {
+    if registry.watched_keys.load(Ordering::Relaxed) == 0 {
+        return;
+    }
+    let watched: Vec<String> = {
+        let reg = registry.map.lock().await;
+        reg.keys().cloned().collect()
+    };
+    let changes: Vec<KeyChange<'_>> = watched
+        .into_iter()
+        .map(|key| KeyChange::current(key, None, store))
+        .collect();
+    fan_out(registry, &changes).await;
+}
+
 /// Post-write fan-out shared by the TCP and WS command paths: WebSocket sync
 /// broadcast, AOF/replication log, and watch notifications. Structured so that
 /// with no WS clients, no replicas, no AOF, and no watched keys — the common

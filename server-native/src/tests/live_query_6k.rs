@@ -22,7 +22,7 @@ fn store_state(store: &KeyValueStore, pattern: &str) -> BTreeMap<String, Value> 
 }
 
 /// A `qstate` reply as a map.
-fn qstate_map(reply: &Value, pattern: &str) -> BTreeMap<String, Value> {
+pub(super) fn qstate_map(reply: &Value, pattern: &str) -> BTreeMap<String, Value> {
     let Value::Array(Some(items)) = reply else {
         panic!("QSUB {pattern}: expected qstate, got {reply:?}");
     };

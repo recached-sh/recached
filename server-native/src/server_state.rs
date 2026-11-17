@@ -434,7 +434,10 @@ impl ServerState {
         self.is_replica.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn promote_to_primary(&self) {
+    /// Stop following a primary: accept writes, and enforce `store`'s caps,
+    /// which a replica leaves to its primary (see `KeyValueStore::set_follower`).
+    pub(crate) fn promote_to_primary(&self, store: &KeyValueStore) {
+        store.set_follower(false);
         self.is_replica.store(false, Ordering::Relaxed);
         info!("REPLICAOF NO ONE: promoted to primary — writes now accepted");
     }

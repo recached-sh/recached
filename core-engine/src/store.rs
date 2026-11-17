@@ -12,7 +12,7 @@ use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::BuildHasher;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2342,6 +2342,9 @@ pub struct KeyValueStore {
     reclaim_cursor: Arc<AtomicUsize>,
     /// Serializes capacity checks only when a key or memory cap is configured.
     capacity_gate: Arc<std::sync::Mutex<()>>,
+    /// Set while this store follows a primary (see [`Self::set_follower`]):
+    /// caps are accounted but not enforced, and nothing is evicted locally.
+    follower: Arc<AtomicBool>,
     /// Per-key write ordering, striped by key hash. See [`Self::order_keys`].
     write_order: Arc<[std::sync::Mutex<()>]>,
 }
@@ -2449,6 +2452,7 @@ impl KeyValueStore {
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
             reclaim_cursor: Arc::new(AtomicUsize::new(0)),
             capacity_gate: Arc::new(std::sync::Mutex::new(())),
+            follower: Arc::new(AtomicBool::new(false)),
             write_order: write_order_stripes(),
         }
     }
@@ -2471,6 +2475,7 @@ impl KeyValueStore {
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
             reclaim_cursor: Arc::new(AtomicUsize::new(0)),
             capacity_gate: Arc::new(std::sync::Mutex::new(())),
+            follower: Arc::new(AtomicBool::new(false)),
             write_order: write_order_stripes(),
         }
     }
@@ -2497,6 +2502,7 @@ impl KeyValueStore {
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
             reclaim_cursor: Arc::new(AtomicUsize::new(0)),
             capacity_gate: Arc::new(std::sync::Mutex::new(())),
+            follower: Arc::new(AtomicBool::new(false)),
             write_order: write_order_stripes(),
         }
     }
@@ -2670,6 +2676,13 @@ impl KeyValueStore {
     /// deletion so replication, AOF, browser sync, and watchers can observe the
     /// same keyspace transition as the local store.
     pub fn try_evict_for_memory_reporting(&self) -> (bool, Vec<String>) {
+        if self.is_follower() {
+            // The primary decides what is evicted; its DELs arrive in order.
+            let within = self
+                .max_memory_bytes
+                .is_none_or(|limit| self.approximate_memory_bytes() <= limit);
+            return (within, Vec::new());
+        }
         let _capacity_guard = self
             .capacity_gate
             .lock()
@@ -3212,6 +3225,33 @@ impl KeyValueStore {
         self.max_keys.is_some() || self.max_memory_bytes.is_some()
     }
 
+    /// Follow a primary's evictions instead of making our own (`true`), or
+    /// enforce this store's caps again (`false`, on promotion).
+    ///
+    /// A replica that evicted on its own diverged from its primary: the
+    /// primary's next `INCR` of an evicted key recreated it from zero, a
+    /// `NoEviction` replica refused a replicated write (the link then dropped
+    /// and resynchronised, again and again), and the removal reached none of
+    /// the replica's subscribers. A follower applies every write whatever its
+    /// caps, still accounting memory and keys, and removes a key only when
+    /// the primary's ordered `DEL` (its own eviction or expiry) says so, as
+    /// Redis replicas do with `replica-ignore-maxmemory yes`.
+    pub fn set_follower(&self, follower: bool) {
+        self.follower.store(follower, Ordering::Release);
+    }
+
+    /// Whether this store follows a primary's evictions (see
+    /// [`Self::set_follower`]).
+    pub fn is_follower(&self) -> bool {
+        self.follower.load(Ordering::Acquire)
+    }
+
+    /// Whether writes are admitted, evicted for and refused against the
+    /// configured caps: a cap is set and this store is not a follower.
+    fn enforces_caps(&self) -> bool {
+        self.has_capacity_limits() && !self.is_follower()
+    }
+
     /// Exact stored-key count, read without a lock. Expired physical entries
     /// remain counted until the bounded active-expiry task removes them.
     ///
@@ -3584,7 +3624,7 @@ impl KeyValueStore {
         &self,
         cmd: &Command,
     ) -> Option<(Value, Vec<String>)> {
-        if !self.has_capacity_limits() {
+        if !self.enforces_caps() {
             return Some(self.execute_reporting_ref(cmd));
         }
         let gate = self
@@ -3664,12 +3704,17 @@ impl KeyValueStore {
         K: AsRef<str> + Ord,
         C: std::borrow::Borrow<Command>,
     {
+        // Whether caps apply to this write, decided once: a promotion
+        // (`set_follower(false)`) landing mid-write must not let one write skip
+        // the capacity gate and then evict without it. A caller that brings
+        // the gate has already decided they do.
+        let enforce = gate.is_some() || self.enforces_caps();
         // The common write — one key, an uncapped store, a command that
         // takes exactly one slot — is accounted from what the command saw
         // under its own shard guard, with no lookups of its own.
         if let WriteScope::Keys(keys) = &scope
             && let [key] = keys.as_slice()
-            && !self.has_capacity_limits()
+            && !enforce
             && probe_eligible(cmd.borrow())
         {
             return (self.run_probed_write(key.as_ref(), cmd, exec), Vec::new());
@@ -3680,7 +3725,7 @@ impl KeyValueStore {
         // one short synchronous gate. Uncapped stores retain DashMap's normal
         // per-shard concurrency.
         let _capacity_guard = gate.or_else(|| {
-            self.has_capacity_limits().then(|| {
+            enforce.then(|| {
                 self.capacity_gate
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -3692,7 +3737,7 @@ impl KeyValueStore {
                 let _order = self.order_all();
                 let out = exec(self, cmd, None);
                 self.rebuild_metadata();
-                if self.max_memory_bytes.is_some() {
+                if self.max_memory_bytes.is_some() && enforce {
                     self.try_evict_for_memory_inner(&mut evicted);
                 }
                 out
@@ -3701,7 +3746,7 @@ impl KeyValueStore {
                 keys.sort_unstable();
                 keys.dedup();
                 let _order = self.order_keys(&keys);
-                if let Some(max) = self.max_keys {
+                if let Some(max) = self.max_keys.filter(|_| enforce) {
                     // Capped stores only: victim selection compares owned keys.
                     let touched: Vec<String> =
                         keys.iter().map(|key| key.as_ref().to_owned()).collect();
@@ -3719,7 +3764,10 @@ impl KeyValueStore {
                 // copy 8 MiB. Only a write that could actually cross the cap
                 // pays for the copy: one whose worst-case growth is unknown,
                 // or does not fit in what is left.
-                let rollback = match (self.max_memory_bytes, self.eviction_policy) {
+                let rollback = match (
+                    self.max_memory_bytes.filter(|_| enforce),
+                    self.eviction_policy,
+                ) {
                     (Some(limit), EvictionPolicy::NoEviction) => match growth_bound(cmd.borrow()) {
                         Some(bound) => memory_before.saturating_add(bound) > limit,
                         None => true,
@@ -3824,7 +3872,7 @@ impl KeyValueStore {
                     }
                 }
                 self.adjust_memory(before, after);
-                if self.max_memory_bytes.is_some() {
+                if self.max_memory_bytes.is_some() && enforce {
                     let within_limit = self.try_evict_for_memory_inner(&mut evicted);
                     if !within_limit
                         && self.approximate_memory_bytes() > memory_before
@@ -4233,7 +4281,7 @@ impl KeyValueStore {
                 hit: None,
             }
         };
-        if cmd.is_write() && self.has_capacity_limits() {
+        if cmd.is_write() && self.enforces_caps() {
             return None;
         }
         Some(match cmd {
@@ -9655,6 +9703,114 @@ mod capacity_tests {
         ]));
         assert!(matches!(r, Value::Error(_)), "got {r:?}");
         assert_eq!(s.execute(Command::DbSize), Value::Integer(2));
+    }
+
+    // ── Follower (replica) mode ───────────────────────────────────────────────
+
+    #[test]
+    fn a_follower_applies_writes_past_its_key_cap_without_evicting() {
+        // A replica must hold whatever its primary holds: evicting on its own
+        // dropped keys the primary kept, and an INCR of one then restarted
+        // from zero on the replica alone.
+        let s = KeyValueStore::with_config(Some(2), None, EvictionPolicy::AllKeysRandom);
+        s.set_follower(true);
+        for i in 0..5 {
+            assert_eq!(
+                set(&s, &format!("k{i}"), "1"),
+                Value::SimpleString("OK".into())
+            );
+        }
+        assert_eq!(s.execute(Command::DbSize), Value::Integer(5));
+        assert_eq!(
+            s.key_count(),
+            5,
+            "the key counter still follows the keyspace"
+        );
+        assert_eq!(s.evicted_count(), 0);
+        assert_eq!(s.execute(Command::Incr("k0".into())), Value::Integer(2));
+    }
+
+    #[test]
+    fn a_noeviction_follower_is_never_refused_for_capacity() {
+        // Refusing a replicated write broke the link, and the full resync
+        // that followed hit the same refusal.
+        let s = KeyValueStore::with_config(Some(1), Some(256), EvictionPolicy::NoEviction);
+        s.set_follower(true);
+        assert_eq!(
+            set(&s, "a", &"x".repeat(1_024)),
+            Value::SimpleString("OK".into())
+        );
+        assert_eq!(set(&s, "b", "y"), Value::SimpleString("OK".into()));
+        assert_eq!(s.execute(Command::DbSize), Value::Integer(2));
+        assert!(
+            s.approximate_memory_bytes() > 1_024,
+            "memory is still accounted"
+        );
+    }
+
+    #[test]
+    fn a_follower_reports_no_maintenance_eviction() {
+        let s = KeyValueStore::with_config(None, Some(4_096), EvictionPolicy::AllKeysRandom);
+        s.set_follower(true);
+        for i in 0..60 {
+            set(&s, &format!("k{i}"), &"x".repeat(200));
+        }
+        let (within, evicted) = s.try_evict_for_memory_reporting();
+        assert!(!within, "over its cap, and says so");
+        assert!(
+            evicted.is_empty(),
+            "but evicts nothing: the primary decides"
+        );
+        assert_eq!(s.execute(Command::DbSize), Value::Integer(60));
+    }
+
+    #[test]
+    fn a_promoted_follower_enforces_its_caps_again() {
+        let s = KeyValueStore::with_config(Some(3), None, EvictionPolicy::AllKeysRandom);
+        s.set_follower(true);
+        fill(&s, 6);
+        s.set_follower(false);
+        // The next write that adds a key makes room down to the cap.
+        assert_eq!(set(&s, "new", "v"), Value::SimpleString("OK".into()));
+        assert_eq!(s.execute(Command::DbSize), Value::Integer(3));
+        assert_eq!(s.get_current("new"), bulk("v"));
+
+        let refusing = KeyValueStore::with_max_keys(1);
+        refusing.set_follower(true);
+        fill(&refusing, 2);
+        refusing.set_follower(false);
+        assert!(matches!(set(&refusing, "c", "3"), Value::Error(_)));
+    }
+
+    #[test]
+    fn a_follower_store_has_the_same_contents_as_an_uncapped_one() {
+        // Same writes, same results, same accounting as a store with no caps
+        // at all: following changes only whether caps are enforced.
+        let follower = KeyValueStore::with_config(Some(2), Some(512), EvictionPolicy::AllKeysLru);
+        follower.set_follower(true);
+        let plain = KeyValueStore::new();
+        for s in [&follower, &plain] {
+            for i in 0..40 {
+                set(s, &format!("k{}", i % 13), &"v".repeat(i));
+                s.execute(Command::Incr(format!("n{}", i % 7)));
+                if i % 5 == 0 {
+                    s.execute(Command::Del(vec![format!("k{}", i % 11)]));
+                }
+            }
+        }
+        assert_eq!(
+            follower.execute(Command::DbSize),
+            plain.execute(Command::DbSize)
+        );
+        assert_eq!(follower.key_count(), plain.key_count());
+        assert_eq!(
+            follower.approximate_memory_bytes(),
+            plain.approximate_memory_bytes()
+        );
+        for i in 0..13 {
+            let k = format!("k{i}");
+            assert_eq!(follower.get_current(&k), plain.get_current(&k), "{k}");
+        }
     }
 
     // ── Memory-driven eviction ────────────────────────────────────────────────

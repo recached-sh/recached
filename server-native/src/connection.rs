@@ -955,7 +955,7 @@ pub(crate) async fn handle_tcp<S>(
                                                     continue 'parse;
                                                 }
                                                 Command::ReplicaOfNoOne => {
-                                                    state.promote_to_primary();
+                                                    state.promote_to_primary(&store);
                                                     if writer.write_all(b"+OK\r\n").await.is_err() { break 'outer; }
                                                     continue 'parse;
                                                 }
@@ -2166,7 +2166,7 @@ pub(crate) async fn handle_ws<S>(
                                         continue 'outer;
                                     }
                                     Command::ReplicaOfNoOne => {
-                                        state.promote_to_primary();
+                                        state.promote_to_primary(&store);
                                         ws_send!(b"+OK\r\n");
                                         continue 'outer;
                                     }

@@ -60,6 +60,8 @@ Recached is configured entirely through environment variables. There is no confi
 
 Eviction runs inline when a write would exceed `RECACHED_MAX_KEYS` or the logical `RECACHED_MAX_MEMORY` counter. Victim selection examines at most `RECACHED_EVICTION_SAMPLE` indexed candidates per eviction, independent of total key count. An implicit eviction is propagated as an ordered `DEL` to AOF, replicas, browser peers, and key watchers.
 
+**On a replica, caps are accounted but not enforced.** A replica applies its primary's evictions, which arrive as those ordered `DEL`s, and evicts nothing of its own, like Redis with `replica-ignore-maxmemory yes`. Evicting independently made a replica diverge: the primary's next `INCR` of a key the replica alone had evicted restarted from zero, and a `noeviction` replica refused a replicated write and resynchronised in a loop. Give a replica at least its primary's memory. `INFO` still reports its usage against its own caps, and they take effect when it is promoted with `REPLICAOF NO ONE`: the next write that needs room evicts down to them.
+
 | Policy | Behavior |
 |---|---|
 | `noeviction` | Write commands that would exceed the key or memory cap return an error, and the previous values remain intact. Existing keys are never evicted. Default behavior. |
