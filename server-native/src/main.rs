@@ -662,6 +662,17 @@ async fn run(
     }
 
     let is_replica_start = replicaof.is_some();
+    if is_replica_start {
+        // A replica applies its primary's evictions, never its own; caps are
+        // enforced again from promotion (`REPLICAOF NO ONE`).
+        store.set_follower(true);
+        if store.has_capacity_limits() {
+            info!(
+                "Replica: key and memory caps are not enforced while following a primary; \
+                 the primary's evictions are applied. They take effect on promotion."
+            );
+        }
+    }
     let replicas: ReplRegistry = ReplHub::new();
     // DEDUP-aware replication: on unless turned off. With it on, every replica
     // of this node must be 0.6 or later — older ones are refused at the

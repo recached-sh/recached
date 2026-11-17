@@ -21,6 +21,17 @@ pub(super) struct Node {
 
 /// A node with its own store, state and WebSocket listener (open sync mode).
 pub(super) async fn node(is_replica: bool, dedup: bool) -> Node {
+    node_with(is_replica, dedup, KeyValueStore::new(), SyncPolicy::open()).await
+}
+
+/// [`node`] with a given store (caps, eviction policy) and sync policy. A
+/// replica's store follows its primary's evictions, as `main.rs` sets it.
+pub(super) async fn node_with(
+    is_replica: bool,
+    dedup: bool,
+    store: KeyValueStore,
+    policy: SyncPolicy,
+) -> Node {
     let hub = ReplHub::new();
     hub.configure_dedup(dedup);
     // A primary only fans out once replication is enabled.
@@ -34,7 +45,9 @@ pub(super) async fn node(is_replica: bool, dedup: bool) -> Node {
         hub,
         is_replica,
     );
-    let store = Arc::new(KeyValueStore::new());
+    store.set_follower(is_replica);
+    let store = Arc::new(store);
+    let policy = Arc::new(policy);
     let tx = SyncRouter::new(256);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let ws = listener.local_addr().unwrap();
@@ -44,12 +57,13 @@ pub(super) async fn node(is_replica: bool, dedup: bool) -> Node {
     let watch = Arc::clone(&watches);
     tokio::spawn(async move {
         while let Ok((socket, peer)) = listener.accept().await {
-            let (s, t, st, ps, wr) = (
+            let (s, t, st, ps, wr, pol) = (
                 Arc::clone(&s),
                 t.clone(),
                 Arc::clone(&st),
                 Arc::clone(&pubsub),
                 Arc::clone(&watch),
+                Arc::clone(&policy),
             );
             tokio::spawn(async move {
                 handle_ws(
@@ -61,7 +75,7 @@ pub(super) async fn node(is_replica: bool, dedup: bool) -> Node {
                     ps,
                     wr,
                     st,
-                    Arc::new(SyncPolicy::open()),
+                    pol,
                     Arc::new(None),
                     peer.to_string(),
                 )
@@ -106,7 +120,7 @@ pub(super) async fn serve_replicas(primary: &Node) -> std::net::SocketAddr {
 }
 
 /// Follow `primary_addr` from `replica` until the link closes or `ms` pass.
-async fn follow_for(
+pub(super) async fn follow_for(
     replica: &Node,
     primary_addr: std::net::SocketAddr,
     resume: &mut ReplResume,
@@ -203,7 +217,7 @@ async fn a_promoted_replica_does_not_rerun_an_applied_write() {
             .load(Ordering::Acquire)
     );
 
-    replica.state.promote_to_primary();
+    replica.state.promote_to_primary(&replica.store);
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(r.cmd(&["DEDUP", "c1", "1", "INCR", "n"]).await, dup());
     assert_eq!(
@@ -236,7 +250,7 @@ async fn with_dedup_replication_off_a_retry_may_run_again_as_documented() {
             .load(Ordering::Acquire)
     );
 
-    replica.state.promote_to_primary();
+    replica.state.promote_to_primary(&replica.store);
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(r.cmd(&["DEDUP", "c1", "1", "INCR", "n"]).await, int(2));
 }
@@ -259,7 +273,7 @@ async fn a_no_op_write_replicates_its_mark() {
     p.cmd(&["DEL", "k"]).await;
     caught_up(&mut p, &replica, "t1").await;
 
-    replica.state.promote_to_primary();
+    replica.state.promote_to_primary(&replica.store);
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(
         r.cmd(&["DEDUP", "c1", "1", "SETNX", "k", "retry"]).await,
@@ -288,7 +302,7 @@ async fn a_permanent_refusal_replicates_and_is_answered_again() {
     assert_eq!(p.cmd(&["DEDUP", "c1", "3", "SET", "x", "y"]).await, ok());
     caught_up(&mut p, &replica, "t1").await;
 
-    replica.state.promote_to_primary();
+    replica.state.promote_to_primary(&replica.store);
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(r.cmd(&["DEDUP", "c1", "2", "INCR", "h"]).await, refused);
     assert_eq!(r.cmd(&["DEDUP", "c1", "3", "SET", "x", "y"]).await, dup());
@@ -311,7 +325,7 @@ async fn a_full_synchronization_carries_the_dedup_table() {
     follow(&replica, serve_replicas(&primary).await);
     caught_up(&mut p, &replica, "t1").await;
 
-    replica.state.promote_to_primary();
+    replica.state.promote_to_primary(&replica.store);
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(r.cmd(&["DEDUP", "c1", "7", "INCR", "n"]).await, dup());
     assert!(matches!(
@@ -348,7 +362,7 @@ async fn a_partial_resynchronization_carries_marks_from_the_backlog() {
     );
     wait_for(&replica.store, "n", bulk("1")).await;
 
-    replica.state.promote_to_primary();
+    replica.state.promote_to_primary(&replica.store);
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(r.cmd(&["DEDUP", "c1", "1", "INCR", "n"]).await, dup());
 }
