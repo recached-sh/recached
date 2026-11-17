@@ -80,9 +80,12 @@ async fn concurrent_writers_replicate_identically_to_two_replicas() {
     for w in spawn_writers(&primary, 8, 300) {
         w.await.unwrap();
     }
+    // One sentinel, applied by both replicas before either is compared: a
+    // sentinel per replica raced, since writing the second one left the
+    // first replica a write behind the primary it was compared with.
     let mut p = WsClient::connect(primary.ws).await;
-    caught_up(&mut p, &a, "a1").await;
-    caught_up(&mut p, &b, "b1").await;
+    caught_up(&mut p, &a, "done").await;
+    wait_for(&b.store, "sentinel", bulk("done")).await;
     assert_converged(&primary, &a, "replica a");
     assert_converged(&primary, &b, "replica b");
 
