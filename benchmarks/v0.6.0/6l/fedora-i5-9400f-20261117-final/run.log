@@ -1,0 +1,143 @@
+only 6 CPUs: the 8-worker runs will share CPUs with the load generator
+
+=== 06:20:30  recording host conditions
+
+=== 06:20:38  building recached 6k at 10c68541c3e3d6f1396ec0e6306ea48c6193a2f1
+    Finished `release` profile [optimized] target(s) in 2.80s
+
+=== 06:20:51  building recached 6l at 159d7e936040e3636721d3e49035569c6049d8ba
+   Compiling core-engine v0.6.0 (/home/<user>/recached-6l-bench/src-6l/core-engine)
+   Compiling recached v0.6.0 (/home/<user>/recached-6l-bench/src-6l/server-native)
+    Finished `release` profile [optimized] target(s) in 56.22s
+
+=== 06:21:49  A: in-process gated vs reserved capped writes
+   Compiling core-engine v0.6.0 (/home/<user>/recached-6l-bench/src-6l/core-engine)
+    Finished `release` profile [optimized] target(s) in 43.67s
+     Running unittests src/lib.rs (/home/<user>/recached-6l-bench/target-6l/release/deps/core_engine-6f0af8979dab8e46)
+workload,threads,gated_ops_s,reserved_ops_s,speedup,gated_p99_ns,reserved_p99_ns,fallback_pct
+new_keys,1,655517,683097,1.04,1675,1851,0.00
+new_keys,2,506070,1040510,2.06,9875,1835,0.00
+new_keys,4,439173,1237916,2.82,32444,2182,0.00
+new_keys,8,409332,1258607,3.07,75775,3641,0.00
+overwrite,1,2237844,2911915,1.30,439,327,0.00
+overwrite,2,1840280,4161470,2.26,6034,633,0.00
+overwrite,4,1483072,4828515,3.26,21562,757,0.00
+overwrite,8,1576986,4880569,3.09,38872,791,0.00
+incr,1,2294101,3060487,1.33,473,316,0.00
+incr,2,1733983,4178093,2.41,6392,640,0.00
+incr,4,1513098,5033663,3.33,22477,763,0.00
+incr,8,1542235,5069273,3.29,39021,824,0.00
+new_keys_uncapped,1,724362,737862,1.02,1852,1451,0.00
+new_keys_uncapped,2,1122025,1108072,0.99,1642,1735,0.00
+new_keys_uncapped,4,1312959,1335138,1.02,2047,2049,0.00
+new_keys_uncapped,8,1319571,1327082,1.01,4398,4389,0.00
+
+=== 06:24:21  B: capped SET/INCR worker scaling (6k, 6l off, 6l on) x 5
+
+=== 06:29:01  C: standard battery, no persistence
+date_utc: 2026-11-17T06:29:01Z
+host_os: Linux 7.3.3-300.fc45.x86_64 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz
+logical_cpus: 6
+governor: performance
+memory: 16300832 kB
+numa: 1
+load_average_at_start: 2.07, 1.75, 3.72
+pinning: servers=0-2 bench=3-5
+network: loopback (127.0.0.1)
+bench_tool: redis-benchmark 7.2.5
+bench_threads: 2
+profile: quick reps=5 single_worker=1 workers=4 persistence=none
+requests_per_run: 2000000
+server.baseline.binary: /home/<user>/recached-6l-bench/bin/recached-server-6k
+server.baseline.sha256: a3cb62c9c3ce4336f5310764ad8d98fdd772ee774ff004f3f71e597570ebd4fe
+server.baseline.version: recached-server 0.6.0
+server.recached.binary: /home/<user>/recached-6l-bench/bin/recached-server-6l
+server.recached.sha256: d3f569e9ccd74a09b1afcbe4f30a6fba46eac5a8bc6800b9786dd96c7fb601a1
+server.recached.version: recached-server 0.6.0
+server.redis.binary: /home/<user>/recached-6l-bench/bin/redis-server
+server.redis.sha256: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e
+server.redis.version: Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+server.valkey.binary: /home/<user>/recached-6l-bench/bin/valkey-server
+server.valkey.sha256: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205
+server.valkey.version: Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
+recached_build: release profile from Cargo.toml (opt-level=3, lto=thin, codegen-units=1, overflow-checks=true); allocator jemalloc
+### baseline
+### recached
+### redis
+### valkey
+# results: /home/<user>/recached-6l-bench/results-20261117T062030Z/C-battery/results.csv  /home/<user>/recached-6l-bench/results-20261117T062030Z/C-battery/memory.csv  /home/<user>/recached-6l-bench/results-20261117T062030Z/C-battery/conditions.txt
+# summary: python3 scripts/bench-summarize.py /home/<user>/recached-6l-bench/results-20261117T062030Z/C-battery
+
+=== 10:08:18  D: standard battery, AOF everysec
+date_utc: 2026-11-17T10:08:18Z
+host_os: Linux 7.3.3-300.fc45.x86_64 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz
+logical_cpus: 6
+governor: performance
+memory: 16300832 kB
+numa: 1
+load_average_at_start: 0.87, 1.30, 1.32
+pinning: servers=0-2 bench=3-5
+network: loopback (127.0.0.1)
+bench_tool: redis-benchmark 7.2.5
+bench_threads: 2
+profile: quick reps=5 single_worker=1 workers=4 persistence=aof-everysec
+requests_per_run: 2000000
+server.baseline.binary: /home/<user>/recached-6l-bench/bin/recached-server-6k
+server.baseline.sha256: a3cb62c9c3ce4336f5310764ad8d98fdd772ee774ff004f3f71e597570ebd4fe
+server.baseline.version: recached-server 0.6.0
+server.recached.binary: /home/<user>/recached-6l-bench/bin/recached-server-6l
+server.recached.sha256: d3f569e9ccd74a09b1afcbe4f30a6fba46eac5a8bc6800b9786dd96c7fb601a1
+server.recached.version: recached-server 0.6.0
+server.redis.binary: /home/<user>/recached-6l-bench/bin/redis-server
+server.redis.sha256: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e
+server.redis.version: Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+server.valkey.binary: /home/<user>/recached-6l-bench/bin/valkey-server
+server.valkey.sha256: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205
+server.valkey.version: Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
+recached_build: release profile from Cargo.toml (opt-level=3, lto=thin, codegen-units=1, overflow-checks=true); allocator jemalloc
+### baseline
+### recached
+### redis
+### valkey
+# results: /home/<user>/recached-6l-bench/results-20261117T062030Z/D-battery-aof/results.csv  /home/<user>/recached-6l-bench/results-20261117T062030Z/D-battery-aof/memory.csv  /home/<user>/recached-6l-bench/results-20261117T062030Z/D-battery-aof/conditions.txt
+# summary: python3 scripts/bench-summarize.py /home/<user>/recached-6l-bench/results-20261117T062030Z/D-battery-aof
+
+=== 15:16:37  E: RSS per small key
+date_utc: 2026-11-17T15:16:37Z
+host_os: Linux 7.3.3-300.fc45.x86_64 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz
+logical_cpus: 6
+governor: performance
+memory: 16300832 kB
+numa: 1
+load_average_at_start: 1.77, 1.94, 1.89
+pinning: servers=0-2 bench=3-5
+network: loopback (127.0.0.1)
+bench_tool: redis-benchmark 7.2.5
+bench_threads: 2
+profile: quick reps=3 single_worker=1 workers=4 persistence=none
+requests_per_run: 1000
+server.baseline.binary: /home/<user>/recached-6l-bench/bin/recached-server-6k
+server.baseline.sha256: a3cb62c9c3ce4336f5310764ad8d98fdd772ee774ff004f3f71e597570ebd4fe
+server.baseline.version: recached-server 0.6.0
+server.recached.binary: /home/<user>/recached-6l-bench/bin/recached-server-6l
+server.recached.sha256: d3f569e9ccd74a09b1afcbe4f30a6fba46eac5a8bc6800b9786dd96c7fb601a1
+server.recached.version: recached-server 0.6.0
+server.redis.binary: /home/<user>/recached-6l-bench/bin/redis-server
+server.redis.sha256: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e
+server.redis.version: Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+server.valkey.binary: /home/<user>/recached-6l-bench/bin/valkey-server
+server.valkey.sha256: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205
+server.valkey.version: Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
+recached_build: release profile from Cargo.toml (opt-level=3, lto=thin, codegen-units=1, overflow-checks=true); allocator jemalloc
+### baseline
+### recached
+### redis
+### valkey
+# results: /home/<user>/recached-6l-bench/results-20261117T062030Z/E-memory/results.csv  /home/<user>/recached-6l-bench/results-20261117T062030Z/E-memory/memory.csv  /home/<user>/recached-6l-bench/results-20261117T062030Z/E-memory/conditions.txt
+# summary: python3 scripts/bench-summarize.py /home/<user>/recached-6l-bench/results-20261117T062030Z/E-memory

@@ -1,0 +1,10 @@
+6k 10c68541c3e3d6f1396ec0e6306ea48c6193a2f1 recached-server 0.6.0
+6l 159d7e936040e3636721d3e49035569c6049d8ba recached-server 0.6.0
+redis Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+a3cb62c9c3ce4336f5310764ad8d98fdd772ee774ff004f3f71e597570ebd4fe  ./recached-server-6k
+d3f569e9ccd74a09b1afcbe4f30a6fba46eac5a8bc6800b9786dd96c7fb601a1  ./recached-server-6l
+0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b  ./redis-benchmark
+cdffafe108ded33fcff34f6fe89e0366e73579c50f0ebe5d2a185ce6c7cd7341  ./redis-cli
+d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e  ./redis-server
+8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205  ./valkey-server

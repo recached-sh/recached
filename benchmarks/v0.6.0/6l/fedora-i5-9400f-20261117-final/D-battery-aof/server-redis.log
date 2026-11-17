@@ -1,0 +1,40 @@
+460644:C 17 Nov 2026 22:04:33.084 # WARNING Memory overcommit must be enabled! Without it, a background save or replication may fail under low memory condition. Being disabled, it can also cause failures without low memory condition, see https://github.com/jemalloc/jemalloc/issues/1328. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect.
+460644:C 17 Nov 2026 22:04:33.084 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo
+460644:C 17 Nov 2026 22:04:33.084 * Redis version=7.2.5, bits=64, commit=00000000, modified=0, pid=460644, just started
+460644:C 17 Nov 2026 22:04:33.084 * Configuration loaded
+460644:M 17 Nov 2026 22:04:33.084 * monotonic clock: POSIX clock_gettime
+460644:M 17 Nov 2026 22:04:33.085 * Running mode=standalone, port=7420.
+460644:M 17 Nov 2026 22:04:33.085 * Server initialized
+460644:M 17 Nov 2026 22:04:33.113 * Creating AOF base file appendonly.aof.1.base.rdb on server start
+460644:M 17 Nov 2026 22:04:33.238 * Creating AOF incr file appendonly.aof.1.incr.aof on server start
+460644:M 17 Nov 2026 22:04:33.238 * Ready to accept connections tcp
+460644:M 17 Nov 2026 22:04:37.386 * Starting automatic rewriting of AOF on 6849502200% growth
+460644:M 17 Nov 2026 22:04:37.471 * Creating AOF incr file appendonly.aof.2.incr.aof on background rewrite
+460644:M 17 Nov 2026 22:04:37.476 * Background append only file rewriting started by pid 460668
+460668:C 17 Nov 2026 22:04:38.214 * Successfully created the temporary AOF base file temp-rewriteaof-bg-460668.aof
+460668:C 17 Nov 2026 22:04:38.216 * Fork CoW for AOF rewrite: current 29 MB, peak 29 MB, average 15 MB
+460644:M 17 Nov 2026 22:04:38.280 * Background AOF rewrite terminated with success
+460644:M 17 Nov 2026 22:04:38.280 * Successfully renamed the temporary AOF base file temp-rewriteaof-bg-460668.aof into appendonly.aof.2.base.rdb
+460644:M 17 Nov 2026 22:04:38.605 * Removing the history file appendonly.aof.1.incr.aof in the background
+460644:M 17 Nov 2026 22:04:38.605 * Removing the history file appendonly.aof.1.base.rdb in the background
+460644:M 17 Nov 2026 22:04:38.805 * Background AOF rewrite finished successfully
+460644:M 17 Nov 2026 22:04:41.167 * Starting automatic rewriting of AOF on 101% growth
+460644:M 17 Nov 2026 22:04:41.238 * Creating AOF incr file appendonly.aof.3.incr.aof on background rewrite
+460644:M 17 Nov 2026 22:04:41.243 * Background append only file rewriting started by pid 460678
+460678:C 17 Nov 2026 22:04:42.247 * Successfully created the temporary AOF base file temp-rewriteaof-bg-460678.aof
+460678:C 17 Nov 2026 22:04:42.250 * Fork CoW for AOF rewrite: current 27 MB, peak 27 MB, average 14 MB
+460644:M 17 Nov 2026 22:04:42.349 * Background AOF rewrite terminated with success
+460644:M 17 Nov 2026 22:04:42.350 * Successfully renamed the temporary AOF base file temp-rewriteaof-bg-460678.aof into appendonly.aof.3.base.rdb
+460644:M 17 Nov 2026 22:04:42.788 * Removing the history file appendonly.aof.2.incr.aof in the background
+460644:M 17 Nov 2026 22:04:42.788 * Removing the history file appendonly.aof.2.base.rdb in the background
+460644:M 17 Nov 2026 22:04:42.971 * Background AOF rewrite finished successfully
+460644:M 17 Nov 2026 22:04:44.898 * Starting automatic rewriting of AOF on 102% growth
+460644:M 17 Nov 2026 22:04:44.971 * Creating AOF incr file appendonly.aof.4.incr.aof on background rewrite
+460644:M 17 Nov 2026 22:04:44.976 * Background append only file rewriting started by pid 460684
+460684:C 17 Nov 2026 22:04:46.897 * Successfully created the temporary AOF base file temp-rewriteaof-bg-460684.aof
+460684:C 17 Nov 2026 22:04:46.899 * Fork CoW for AOF rewrite: current 140 MB, peak 140 MB, average 54 MB
+460644:M 17 Nov 2026 22:04:46.951 * Background AOF rewrite terminated with success
+460644:M 17 Nov 2026 22:04:46.951 * Successfully renamed the temporary AOF base file temp-rewriteaof-bg-460684.aof into appendonly.aof.4.base.rdb
+460644:M 17 Nov 2026 22:04:47.013 * Removing the history file appendonly.aof.3.incr.aof in the background
+460644:M 17 Nov 2026 22:04:47.013 * Removing the history file appendonly.aof.3.base.rdb in the background
+460644:M 17 Nov 2026 22:04:47.154 * Background AOF rewrite finished successfully
