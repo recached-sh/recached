@@ -1,0 +1,83 @@
+date_utc: 20261117T032253Z
+kernel: Linux 7.3.3-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Fri Nov  6 20:37:28 UTC 2026 x86_64
+os: Freedesktop SDK 26.08 (Flatpak runtime)
+virtualization: unknown
+cpu_split: server=0-2 bench=3-5
+reps: 5 phases: A B C D E
+governors:       6 performance 
+boost: no_turbo=0
+kernel_cmdline: BOOT_IMAGE=(hd0,gpt2)/vmlinuz-7.3.3-300.fc45.x86_64 root=UUID=7cd488aa-6b6e-4d07-a108-8cb5b28961f8 ro rootflags=subvol=root rhgb quiet
+load_at_start: 1.83 5.55 5.68
+memory: MemTotal:       16300832 kB
+--- lscpu
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           39 bits physical, 48 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  6
+On-line CPU(s) list:                     0-5
+Vendor ID:                               GenuineIntel
+Model name:                              Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz
+CPU family:                              6
+Model:                                   158
+Thread(s) per core:                      1
+Core(s) per socket:                      6
+Socket(s):                               1
+Stepping:                                13
+Microcode version:                       0x104
+CPU(s) scaling MHz:                      95%
+CPU max MHz:                             4100.0000
+CPU min MHz:                             800.0000
+BogoMIPS:                                5799.77
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf pni pclmulqdq dtes64 monitor ds_cpl vmx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid mpx rdseed adx smap clflushopt intel_pt xsaveopt xsavec xgetbv1 xsaves dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp vnmi md_clear flush_l1d arch_capabilities
+Virtualization:                          VT-x
+L1d cache:                               192 KiB (6 instances)
+L1i cache:                               192 KiB (6 instances)
+L2 cache:                                1.5 MiB (6 instances)
+L3 cache:                                9 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-5
+Vulnerability Gather data sampling:      Mitigation; Microcode
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Mitigation; Aligned branch/return thunks
+Vulnerability Itlb multihit:             KVM: Mitigation: Split huge pages
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Mitigation; Clear CPU buffers; SMT disabled
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Mitigation; Enhanced IBRS
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS SW sequence; BHI SW loop, KVM SW loop
+Vulnerability Srbds:                     Mitigation; Microcode
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Mitigation; IBPB before exit to userspace
+--- lscpu -e
+CPU NODE SOCKET CORE L1d:L1i:L2:L3 ONLINE    MAXMHZ   MINMHZ       MHZ
+  0    0      0    0 0:0:0:0          yes 4100.0000 800.0000 3900.0549
+  1    0      0    1 1:1:1:0          yes 4100.0000 800.0000 3909.1909
+  2    0      0    2 2:2:2:0          yes 4100.0000 800.0000 3894.1870
+  3    0      0    3 3:3:3:0          yes 4100.0000 800.0000 3900.2051
+  4    0      0    4 4:4:4:0          yes 4100.0000 800.0000 3904.3049
+  5    0      0    5 5:5:5:0          yes 4100.0000 800.0000 3898.5129
+--- top processes by CPU
+%CPU     PID COMMAND
+ 6.3     367 code
+ 3.5      66 code
+ 2.1      97 code
+ 1.9  144510 claude
+ 1.5     180 code
+ 1.1     202 code
+ 1.0     435 rust-analyzer
+ 1.0      22 code
+ 0.9  148279 next-server (v1
+ 0.8     683 claude
+ 0.0     160 code
+ 0.0     428 codex
+ 0.0    1349 rust-analyzer-p
+ 0.0    1347 rust-analyzer-p
+load_at_end: 0.70 1.11 1.46

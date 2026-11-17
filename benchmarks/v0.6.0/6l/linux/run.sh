@@ -40,10 +40,14 @@ set -euo pipefail
 WORK=${WORK:-$HOME/recached-6l-bench}
 REPO=${REPO:-https://github.com/recached-sh/recached.git}
 BASE_REF=${BASE_REF:-10c6854}                                   # 6K: dev after #101-#104
-NEW_REF=${NEW_REF:-origin/perf/v0.6l-capped-reservations}       # 6L-A + 6L-B
+NEW_REF=${NEW_REF:-origin/dev}                                  # 6L as merged
 REDIS_VERSION=${REDIS_VERSION:-7.2.5}
 VALKEY_VERSION=${VALKEY_VERSION:-9.1.0}
 REPS=${REPS:-5}
+# Requests per battery run. The first run used the profile default of
+# 100,000: rates came out quantized and CPU-seconds resolved to only +/-0.1
+# per million.
+REQUESTS=${REQUESTS:-2000000}
 PHASES=${PHASES:-"A B C D E"}
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -169,7 +173,7 @@ battery() {
   local persist=$1 out=$2
   RECACHED_BIN="$BIN/recached-server-6l" BASELINE_BIN="$BIN/recached-server-6k" \
     REDIS_BIN="$BIN/redis-server" VALKEY_BIN="$BIN/valkey-server" \
-    SERVERS="baseline recached redis valkey" PROFILE=quick REPS="$REPS" SINGLE=1 \
+    SERVERS="baseline recached redis valkey" PROFILE=quick REPS="$REPS" SINGLE=1 REQUESTS="$REQUESTS" \
     PERSIST="$persist" OUT="$out" MEM_KEYS="100000 1000000" MEM_SIZES="32" \
     bash "$SCRIPTS/bench-redis-valkey.sh"
   python3 "$SCRIPTS/bench-summarize.py" "$out" > "$out/summary.md" 2>&1 || true
@@ -191,6 +195,7 @@ if has E; then
 fi
 
 echo "load_at_end: $(cut -d' ' -f1-3 /proc/loadavg)" >> "$RES/conditions.txt"
-tarball="$WORK/recached-6l-linux-$(hostname -s)-$STAMP.tar.gz"
+host=$(hostname -s 2>/dev/null || hostname 2>/dev/null || cat /etc/hostname 2>/dev/null || echo linux)
+tarball="$WORK/recached-6l-linux-${host%%.*}-$STAMP.tar.gz"
 tar -czf "$tarball" -C "$WORK" "$(basename "$RES")"
 say "done. Send back: $tarball ($(du -h "$tarball" | cut -f1))"

@@ -1,0 +1,25 @@
+# binary:   /home/<user>/recached-6l-bench/bin/recached-server-6k
+# workload: -n 1000000 -c 64 -d 32 -r 1000000 -P 16
+# pinning:  server=0-2 bench=3-5
+
+### worker threads = 1
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"SET","453514.75","2.252","0.056","2.231","2.407","4.743","13.647"
+"INCR","435540.06","2.345","0.040","2.287","2.455","2.991","32.463"
+
+### worker threads = 2
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"SET","609384.50","1.672","0.048","1.655","2.431","4.655","13.879"
+"INCR","576701.25","1.768","0.048","1.711","2.487","3.431","33.471"
+
+### worker threads = 4
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"SET","431592.59","2.366","0.040","2.087","4.751","6.855","19.071"
+"INCR","407996.75","2.504","0.040","2.167","4.831","8.423","33.823"
+
+### worker threads = 8
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"SET","462962.94","2.206","0.040","1.879","4.991","7.119","20.143"
+"INCR","425713.06","2.400","0.040","2.079","4.999","8.887","29.663"
+
+# raw CSV in /home/<user>/recached-6l-bench/results-20261117T032253Z/B-capped/6k/rep3/scaling-t*.csv

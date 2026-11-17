@@ -1,0 +1,3 @@
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"SET","441111.59","2.315","0.056","2.295","2.447","5.151","13.767"
+"INCR","423728.84","2.411","0.056","2.351","2.527","8.063","27.631"
