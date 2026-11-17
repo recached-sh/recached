@@ -25,6 +25,7 @@ All notable changes to Recached are documented here.
 - The capacity lock is now a read/write lock: reserved writes share it, everything else holds it exclusively
 
 ### Performance — memory
+- **A keyspace loaded at once has a tighter key index.** A restart from a snapshot, a replica's full sync and a restore rebuild the index from the keyspace; each shard's ordered set is now built in one pass from a sorted run instead of key by key in hash order, which left its nodes about 70% full. Live heap of 1M restored 32-byte strings: 175.6 → 166.7 bytes per key (−5%); with a TTL 244.8 → 235.9. Keyspaces built by writes are unchanged (182.7)
 - **About two thirds less memory per small key than 0.5.1.** Linux RSS per key at 1M keys, 32-byte values (median of 3, fresh process each, Redis 7.2.5 and Valkey 9.1.0 measured alongside): strings 558.6 → 196.1 bytes (Redis 103.6, Valkey 81.7); with a TTL 642.4 → 265.4; three-field hashes 1,102.3 → 369.0. At 1 KiB and 4 KiB values Recached now uses less than either. How:
   - every key is one allocation, shared by the map and its secondary indexes (it was four copies; six with a TTL), and the all-keys index exists only under `allkeys-*` eviction
   - the keyspace table holds 24-byte pointer slots instead of 80-byte inline entries, so its unavoidable empty capacity costs a third as much

@@ -236,3 +236,51 @@ fn the_budgeted_expiry_sweep_reaches_every_ttl_key_across_shards() {
     assert_eq!(store.volatile_key_count(), 0);
     assert_eq!(store.key_count(), 0);
 }
+
+#[test]
+fn a_restored_keyspace_has_a_consistent_bulk_built_index() {
+    // `rebuild_metadata` builds each shard's ordered set in one pass from
+    // a sorted run (6L-E). The result must be the index key-by-key syncing
+    // would have built: same keys, in their own shards, with `all` and
+    // `volatile` consistent.
+    let source = KeyValueStore::with_config(None, None, EvictionPolicy::AllKeysLru);
+    for i in 0..5_000 {
+        let key = format!("r:{:05}", (i * 7919) % 5_000);
+        let opts = SetOptions {
+            expiry: (i % 3 == 0).then_some(SetExpiry::Ex(3_600)),
+            ..Default::default()
+        };
+        source.execute(Command::Set(key, "v".into(), opts));
+    }
+    let restored = KeyValueStore::with_config(None, None, EvictionPolicy::AllKeysLru);
+    restored.restore(source.snapshot());
+    assert_eq!(restored.key_count(), 5_000);
+    assert_eq!(restored.volatile_key_count(), source.volatile_key_count());
+    for (i, shard) in restored.index_all().iter().enumerate() {
+        let ordered: std::collections::BTreeSet<&str> =
+            shard.ordered.iter().map(|k| &**k).collect();
+        let all: std::collections::BTreeSet<&str> = shard.all.keys.iter().map(|k| &**k).collect();
+        assert_eq!(
+            ordered, all,
+            "shard {i}: all-keys sample set differs from ordered"
+        );
+        for key in &shard.ordered {
+            assert_eq!(index_shard(key), i, "{key} in shard {i}");
+            let entry = restored
+                .data
+                .get(&**key)
+                .expect("indexed key is in the map");
+            assert!(Arc::ptr_eq(key, entry.key()), "{key} indexed as a copy");
+        }
+        for key in &shard.volatile.keys {
+            assert!(ordered.contains(&**key), "volatile {key} not ordered");
+        }
+        for dense in [&shard.all, &shard.volatile] {
+            assert_eq!(dense.keys.len(), dense.positions.len());
+            for (position, key) in dense.keys.iter().enumerate() {
+                assert_eq!(dense.positions.get(key), Some(&position));
+            }
+        }
+    }
+    assert_eq!(scan_all(&restored, 10), keys_sorted(&restored));
+}
