@@ -17,6 +17,10 @@ All notable changes to Recached are documented here.
 - **A push stops at its token's expiry.** Pushes could still be forwarded in the moment between a token's deadline and the connection closing with `4002`
 - **An empty `RECACHED_PASSWORD` or `RECACHED_REPL_PASSWORD` is treated as unset.** It was a password that `AUTH ""` matched, while the multitenant profile and the public-replication-bind check both counted it as configured
 
+### Performance — experimental
+- **Capped writes can run concurrently** with `RECACHED_CAPPED_RESERVATIONS=on` (off by default). On a store with `RECACHED_MAX_KEYS` or `RECACHED_MAX_MEMORY`, every write took one store-wide lock, so capped `SET` did not scale past one worker. A write that provably fits now reserves its worst-case growth (and a key slot if it creates one) with atomic counters, and runs while other such writes do. A write that may evict, be refused or has no growth bound takes the lock exclusively, as before, so eviction never overlaps a reserved write. Caps hold under 8-thread races to the key and memory limits
+- The capacity lock is now a read/write lock: reserved writes share it, everything else holds it exclusively
+
 ### Performance — memory
 - **About two thirds less memory per small key than 0.5.1.** Linux RSS per key at 1M keys, 32-byte values (median of 3, fresh process each, Redis 7.2.5 and Valkey 9.1.0 measured alongside): strings 558.6 → 196.1 bytes (Redis 103.6, Valkey 81.7); with a TTL 642.4 → 265.4; three-field hashes 1,102.3 → 369.0. At 1 KiB and 4 KiB values Recached now uses less than either. How:
   - every key is one allocation, shared by the map and its secondary indexes (it was four copies; six with a TTL), and the all-keys index exists only under `allkeys-*` eviction

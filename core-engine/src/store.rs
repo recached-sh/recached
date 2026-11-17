@@ -2341,7 +2341,20 @@ pub struct KeyValueStore {
     /// Next keyspace shard [`Self::reclaim_capacity_step`] looks at.
     reclaim_cursor: Arc<AtomicUsize>,
     /// Serializes capacity checks only when a key or memory cap is configured.
-    capacity_gate: Arc<std::sync::Mutex<()>>,
+    ///
+    /// Held exclusively by every capped write that may evict, be refused or
+    /// grow without a known bound, by eviction and by the expiry sweeper.
+    /// Held *shared* by reserved writes ([`Self::try_reserved_write`]), which
+    /// can do none of those things: while one is in flight nothing is
+    /// evicted, and an exclusive holder always sees zero reservations.
+    capacity_gate: Arc<std::sync::RwLock<()>>,
+    /// Bytes and new keys pledged by in-flight reserved writes; see
+    /// [`Reservation`].
+    reserved_bytes: Arc<AtomicUsize>,
+    reserved_keys: Arc<AtomicUsize>,
+    /// Whether capped writes may take the reservation fast path. Off by
+    /// default: see [`Self::set_reserved_writes`].
+    reserved_writes: Arc<AtomicBool>,
     /// Set while this store follows a primary (see [`Self::set_follower`]):
     /// caps are accounted but not enforced, and nothing is evicted locally.
     follower: Arc<AtomicBool>,
@@ -2420,6 +2433,90 @@ fn write_order_stripes() -> Arc<[std::sync::Mutex<()>]> {
 /// necessary.
 const EVICTION_HEADROOM_DIVISOR: usize = 16;
 
+#[cfg(test)]
+thread_local! {
+    /// This thread's qualifying capped writes: (took the reservation fast
+    /// path, fell back to the gated path because it did not fit).
+    static RESERVED_OUTCOMES: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// A reserved write's pledge against the caps: `bytes` of memory growth and
+/// `keys` new keys, released on drop — on every exit path, a panic in the
+/// command included.
+///
+/// **Why concurrent reservations cannot jointly exceed a cap.** A reservation
+/// is *added first* and the caps are *read after*, all `SeqCst`:
+///
+/// - Two reservers are ordered by their `fetch_add`s; the later one's sum
+///   includes the earlier one's pledge (or, if that was released, the growth
+///   it pledged for — see the next point). So the last admitted reserver
+///   checked every outstanding pledge.
+/// - A writer publishes its growth (`memory_bytes`, `key_count`) *before* it
+///   releases its pledge. A reserver whose `fetch_add` follows that release
+///   synchronizes with it and so reads the published growth; one whose
+///   `fetch_add` precedes it counts the pledge, and perhaps the growth too —
+///   an over-count, which only refuses the fast path.
+/// - Growth never exceeds its pledge: `growth_bound` is an upper bound
+///   (40,000-trial test, `growth_bound_tests.rs`), and a created key is a
+///   key the reservation counted, decided under the key's stripe.
+///
+/// Nothing else changes memory or the key count meanwhile except downwards:
+/// evictions, sweeps and gated writes hold the capacity gate exclusively, so
+/// they never overlap a reservation. Hence at all times
+/// `memory + reserved ≤ target` and `keys + reserved_keys ≤ max` hold for
+/// what reserved writes added.
+struct Reservation<'a> {
+    store: &'a KeyValueStore,
+    bytes: usize,
+    keys: usize,
+}
+
+impl<'a> Reservation<'a> {
+    /// Pledge `bytes` and `keys`, or `None` (pledging nothing) when either
+    /// would cross a cap: memory's eviction threshold, so a reserved write
+    /// never makes eviction necessary, or the key cap itself.
+    fn try_new(store: &'a KeyValueStore, bytes: usize, keys: usize) -> Option<Self> {
+        let reservation = Reservation { store, bytes, keys };
+        let pledged_bytes = store
+            .reserved_bytes
+            .fetch_add(bytes, Ordering::SeqCst)
+            .saturating_add(bytes);
+        let pledged_keys = store
+            .reserved_keys
+            .fetch_add(keys, Ordering::SeqCst)
+            .saturating_add(keys);
+        if let Some(limit) = store.max_memory_bytes {
+            let target = limit - limit / EVICTION_HEADROOM_DIVISOR;
+            let memory = store.memory_bytes.load(Ordering::SeqCst);
+            if memory.saturating_add(pledged_bytes) > target {
+                return None;
+            }
+        }
+        if let Some(max) = store.max_keys
+            && keys > 0
+            && store
+                .key_count
+                .load(Ordering::SeqCst)
+                .saturating_add(pledged_keys)
+                > max
+        {
+            return None;
+        }
+        Some(reservation)
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        self.store
+            .reserved_bytes
+            .fetch_sub(self.bytes, Ordering::SeqCst);
+        self.store
+            .reserved_keys
+            .fetch_sub(self.keys, Ordering::SeqCst);
+    }
+}
+
 /// A store's key index and the counter it publishes its length to.
 fn new_index(track_all: bool) -> (Arc<std::sync::Mutex<KeyIndex>>, Arc<AtomicUsize>) {
     let index = KeyIndex::new(track_all);
@@ -2451,7 +2548,10 @@ impl KeyValueStore {
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
             reclaim_cursor: Arc::new(AtomicUsize::new(0)),
-            capacity_gate: Arc::new(std::sync::Mutex::new(())),
+            capacity_gate: Arc::new(std::sync::RwLock::new(())),
+            reserved_bytes: Arc::new(AtomicUsize::new(0)),
+            reserved_keys: Arc::new(AtomicUsize::new(0)),
+            reserved_writes: Arc::new(AtomicBool::new(false)),
             follower: Arc::new(AtomicBool::new(false)),
             write_order: write_order_stripes(),
         }
@@ -2474,7 +2574,10 @@ impl KeyValueStore {
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
             reclaim_cursor: Arc::new(AtomicUsize::new(0)),
-            capacity_gate: Arc::new(std::sync::Mutex::new(())),
+            capacity_gate: Arc::new(std::sync::RwLock::new(())),
+            reserved_bytes: Arc::new(AtomicUsize::new(0)),
+            reserved_keys: Arc::new(AtomicUsize::new(0)),
+            reserved_writes: Arc::new(AtomicBool::new(false)),
             follower: Arc::new(AtomicBool::new(false)),
             write_order: write_order_stripes(),
         }
@@ -2501,7 +2604,10 @@ impl KeyValueStore {
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
             reclaim_cursor: Arc::new(AtomicUsize::new(0)),
-            capacity_gate: Arc::new(std::sync::Mutex::new(())),
+            capacity_gate: Arc::new(std::sync::RwLock::new(())),
+            reserved_bytes: Arc::new(AtomicUsize::new(0)),
+            reserved_keys: Arc::new(AtomicUsize::new(0)),
+            reserved_writes: Arc::new(AtomicBool::new(false)),
             follower: Arc::new(AtomicBool::new(false)),
             write_order: write_order_stripes(),
         }
@@ -2685,7 +2791,7 @@ impl KeyValueStore {
         }
         let _capacity_guard = self
             .capacity_gate
-            .lock()
+            .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut evicted = Vec::new();
         let within_limit = self.try_evict_for_memory_inner(&mut evicted);
@@ -3172,7 +3278,7 @@ impl KeyValueStore {
         // already given back. Gate before stripes: the order capped writes use.
         let _capacity_guard = self.has_capacity_limits().then(|| {
             self.capacity_gate
-                .lock()
+                .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
         });
         let now = now_ms();
@@ -3244,6 +3350,14 @@ impl KeyValueStore {
     /// [`Self::set_follower`]).
     pub fn is_follower(&self) -> bool {
         self.follower.load(Ordering::Acquire)
+    }
+
+    /// Let capped writes that provably fit take the reservation fast path
+    /// (see [`Self::try_reserved_write`]) instead of serializing on the
+    /// capacity gate. Off by default and experimental: the server turns it on
+    /// only when `RECACHED_CAPPED_RESERVATIONS=on`.
+    pub fn set_reserved_writes(&self, on: bool) {
+        self.reserved_writes.store(on, Ordering::Release);
     }
 
     /// Whether writes are admitted, evicted for and refused against the
@@ -3627,9 +3741,17 @@ impl KeyValueStore {
         if !self.enforces_caps() {
             return Some(self.execute_reporting_ref(cmd));
         }
+        let exec = |store: &Self, cmd: &Command, probe: Option<&KeyProbe>| {
+            store
+                .execute_inner_ref(cmd, probe)
+                .unwrap_or_else(|| store.execute_inner(cmd.clone()))
+        };
+        if let Ok(out) = self.try_reserved_write(cmd, exec) {
+            return Some((out, Vec::new()));
+        }
         let gate = self
             .capacity_gate
-            .lock()
+            .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !self.fits_without_eviction(cmd) {
             return None;
@@ -3697,7 +3819,7 @@ impl KeyValueStore {
         &self,
         scope: WriteScope<K>,
         cmd: C,
-        gate: Option<std::sync::MutexGuard<'_, ()>>,
+        gate: Option<std::sync::RwLockWriteGuard<'_, ()>>,
         exec: impl FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
     ) -> (Value, Vec<String>)
     where
@@ -3719,6 +3841,14 @@ impl KeyValueStore {
         {
             return (self.run_probed_write(key.as_ref(), cmd, exec), Vec::new());
         }
+        let (cmd, exec) = if enforce && gate.is_none() {
+            match self.try_reserved_write(cmd, exec) {
+                Ok(out) => return (out, Vec::new()),
+                Err(back) => back,
+            }
+        } else {
+            (cmd, exec)
+        };
         let mut evicted = Vec::new();
 
         // Capacity checks and eviction choose across keys, so capped stores use
@@ -3727,7 +3857,7 @@ impl KeyValueStore {
         let _capacity_guard = gate.or_else(|| {
             enforce.then(|| {
                 self.capacity_gate
-                    .lock()
+                    .write()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
             })
         });
@@ -3941,6 +4071,17 @@ impl KeyValueStore {
         exec: impl FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
     ) -> Value {
         let _order = self.order_keys(std::slice::from_ref(&key));
+        self.run_probed_write_ordered(key, cmd, exec)
+    }
+
+    /// [`run_probed_write`](Self::run_probed_write) for a caller already
+    /// holding `key`'s write-order stripe.
+    fn run_probed_write_ordered<C>(
+        &self,
+        key: &str,
+        cmd: C,
+        exec: impl FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
+    ) -> Value {
         let probe = KeyProbe::default();
         let out = exec(self, cmd, Some(&probe));
         let Some((before, was)) = probe.before.get() else {
@@ -3965,6 +4106,66 @@ impl KeyValueStore {
         }
         self.adjust_memory(before, after.size);
         out
+    }
+
+    /// Run a capped write that provably fits without taking the capacity
+    /// gate exclusively: the reservation fast path (6L-B). `Err` hands the
+    /// command back, having changed nothing, when it does not qualify or does
+    /// not fit; the caller then takes the gated path.
+    ///
+    /// Qualifies: the fast path is on, the command names one key, is
+    /// [`probe_eligible`] and has a [`growth_bound`]. Such a write never
+    /// evicts, is never refused for capacity and is never rolled back, so it
+    /// needs none of what the exclusive gate protects. It holds the gate
+    /// *shared* — no eviction, sweep or gated write runs meanwhile — and its
+    /// key's write-order stripe, under which it decides whether it creates
+    /// the key: no other writer can create or remove that key in between.
+    ///
+    /// It then reserves its growth bound (and one key slot if it creates)
+    /// against the caps, executes exactly as an uncapped store's write does,
+    /// publishes its memory and key-count change, and only then releases the
+    /// reservation. See [`Reservation`] for why concurrent reserved writes
+    /// can never jointly exceed a cap.
+    fn try_reserved_write<C, F>(&self, cmd: C, exec: F) -> Result<Value, (C, F)>
+    where
+        C: std::borrow::Borrow<Command>,
+        F: FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
+    {
+        if !self.reserved_writes.load(Ordering::Acquire) || !probe_eligible(cmd.borrow()) {
+            return Err((cmd, exec));
+        }
+        let Some(bound) = growth_bound(cmd.borrow()) else {
+            return Err((cmd, exec));
+        };
+        let key = match mutation_scope(cmd.borrow()) {
+            MutationScope::Keys(keys) if keys.len() == 1 => keys.first().map(|k| (*k).to_owned()),
+            _ => None,
+        };
+        let Some(key) = key else {
+            return Err((cmd, exec));
+        };
+        let shared = self
+            .capacity_gate
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let order = self.order_keys(std::slice::from_ref(&key));
+        let creates =
+            !creating_keys(cmd.borrow()).is_empty() && !self.data.contains_key(key.as_str());
+        let Some(reservation) = Reservation::try_new(self, bound, usize::from(creates)) else {
+            #[cfg(test)]
+            RESERVED_OUTCOMES.with(|o| o.set((o.get().0, o.get().1 + 1)));
+            return Err((cmd, exec));
+        };
+        #[cfg(test)]
+        RESERVED_OUTCOMES.with(|o| o.set((o.get().0 + 1, o.get().1)));
+        let out = self.run_probed_write_ordered(&key, cmd, exec);
+        // Released after the write's memory and key-count change are
+        // published (inside `run_probed_write_ordered`), then the stripe and
+        // the shared gate.
+        drop(reservation);
+        drop(order);
+        drop(shared);
+        Ok(out)
     }
 
     /// Make room under the key-count cap for every key `cmd` may create,
@@ -13476,6 +13677,9 @@ mod match_plan_tests;
 
 #[cfg(test)]
 mod key_count_tests;
+
+#[cfg(test)]
+mod reservation_tests;
 
 #[cfg(test)]
 mod growth_bound_tests;

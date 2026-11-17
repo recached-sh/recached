@@ -269,7 +269,7 @@ fn eight_creators_racing_with_eviction_stay_at_the_cap() {
                     {
                         let _gate = store
                             .capacity_gate
-                            .lock()
+                            .write()
                             .unwrap_or_else(|p| p.into_inner());
                         assert!(store.data.len() <= MAX, "map over the cap");
                     }
