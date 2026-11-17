@@ -217,7 +217,7 @@ async fn a_promoted_replica_does_not_rerun_an_applied_write() {
             .load(Ordering::Acquire)
     );
 
-    replica.state.promote_to_primary(&replica.store);
+    replica.state.promote_to_primary(&replica.store).await;
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(r.cmd(&["DEDUP", "c1", "1", "INCR", "n"]).await, dup());
     assert_eq!(
@@ -250,7 +250,7 @@ async fn with_dedup_replication_off_a_retry_may_run_again_as_documented() {
             .load(Ordering::Acquire)
     );
 
-    replica.state.promote_to_primary(&replica.store);
+    replica.state.promote_to_primary(&replica.store).await;
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(r.cmd(&["DEDUP", "c1", "1", "INCR", "n"]).await, int(2));
 }
@@ -273,7 +273,7 @@ async fn a_no_op_write_replicates_its_mark() {
     p.cmd(&["DEL", "k"]).await;
     caught_up(&mut p, &replica, "t1").await;
 
-    replica.state.promote_to_primary(&replica.store);
+    replica.state.promote_to_primary(&replica.store).await;
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(
         r.cmd(&["DEDUP", "c1", "1", "SETNX", "k", "retry"]).await,
@@ -302,7 +302,7 @@ async fn a_permanent_refusal_replicates_and_is_answered_again() {
     assert_eq!(p.cmd(&["DEDUP", "c1", "3", "SET", "x", "y"]).await, ok());
     caught_up(&mut p, &replica, "t1").await;
 
-    replica.state.promote_to_primary(&replica.store);
+    replica.state.promote_to_primary(&replica.store).await;
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(r.cmd(&["DEDUP", "c1", "2", "INCR", "h"]).await, refused);
     assert_eq!(r.cmd(&["DEDUP", "c1", "3", "SET", "x", "y"]).await, dup());
@@ -325,7 +325,7 @@ async fn a_full_synchronization_carries_the_dedup_table() {
     follow(&replica, serve_replicas(&primary).await);
     caught_up(&mut p, &replica, "t1").await;
 
-    replica.state.promote_to_primary(&replica.store);
+    replica.state.promote_to_primary(&replica.store).await;
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(r.cmd(&["DEDUP", "c1", "7", "INCR", "n"]).await, dup());
     assert!(matches!(
@@ -362,7 +362,7 @@ async fn a_partial_resynchronization_carries_marks_from_the_backlog() {
     );
     wait_for(&replica.store, "n", bulk("1")).await;
 
-    replica.state.promote_to_primary(&replica.store);
+    replica.state.promote_to_primary(&replica.store).await;
     let mut r = WsClient::connect(replica.ws).await;
     assert_eq!(r.cmd(&["DEDUP", "c1", "1", "INCR", "n"]).await, dup());
 }

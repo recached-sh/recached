@@ -164,7 +164,7 @@ fn a_scan_cursor_holds_bounded_state() {
         .parse()
         .expect("number");
     let cursors = store.scan_cursors.lock().unwrap_or_else(|p| p.into_inner());
-    let session = cursors.get(&cursor).expect("a live session");
+    let session = cursors.sessions.get(&cursor).expect("a live session");
     let (keys, bytes) = session
         .frontier
         .bufs
@@ -180,6 +180,74 @@ fn a_scan_cursor_holds_bounded_state() {
         bytes <= INDEX_SHARDS * (SCAN_REFILL_BYTES + longest),
         "{bytes} key bytes buffered by one cursor"
     );
+}
+
+/// One `SCAN` page from `cursor`: the next cursor (0 when done).
+fn scan_page(store: &KeyValueStore, cursor: u64, count: usize) -> u64 {
+    let Value::Array(Some(parts)) = store.execute(Command::Scan(cursor, None, Some(count))) else {
+        panic!("SCAN reply is an array");
+    };
+    let Some(Value::BulkString(Some(next))) = parts.first() else {
+        panic!("SCAN reply starts with a cursor");
+    };
+    std::str::from_utf8(next)
+        .expect("utf-8 cursor")
+        .parse()
+        .expect("numeric cursor")
+}
+
+/// Key bytes the table charges, checked against what its sessions hold.
+fn scan_table_bytes(store: &KeyValueStore) -> (usize, usize) {
+    let table = store.scan_cursors.lock().unwrap_or_else(|p| p.into_inner());
+    let held: usize = table
+        .sessions
+        .values()
+        .map(|session| session.frontier.held_bytes())
+        .sum();
+    assert_eq!(held, table.bytes, "the table's byte count drifted");
+    (table.bytes, table.sessions.len())
+}
+
+#[test]
+fn scan_sessions_stay_within_a_byte_budget_across_cursors() {
+    // 6L review, R1. A refill takes each shard's first key whatever its
+    // size, so every session can hold one large key per shard, and a key
+    // deleted after it was buffered stays allocated by the session alone,
+    // outside `maxmemory`. Before the budget, 4,096 sessions of this kind
+    // could pin ~32 GiB.
+    let store = KeyValueStore::new();
+    let budget = 4 * 1024 * 1024;
+    store
+        .scan_cursors
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .byte_budget = budget;
+    let big = "k".repeat(64 * 1024);
+    let keys: Vec<String> = (0..256).map(|i| format!("{big}{i:04}")).collect();
+    for key in &keys {
+        set(&store, key);
+    }
+    // Each session buffers a 64 KiB key in every shard: ~1 MiB, ~2 MiB as
+    // charged with its resume positions.
+    let started: Vec<u64> = (0..40).map(|_| scan_page(&store, 0, 1)).collect();
+    assert!(started.iter().all(|&c| c != 0), "every iteration has more");
+    store.execute(Command::Del(keys.clone()));
+
+    let (bytes, live) = scan_table_bytes(&store);
+    assert!(bytes <= budget, "{bytes} key bytes held by {live} sessions");
+    assert!(live >= 1, "the newest session is kept");
+    assert!(
+        live < started.len(),
+        "{live} sessions: the budget gave none up"
+    );
+
+    // Finishing the sessions still live hands their bytes back.
+    for mut cursor in started {
+        while cursor != 0 {
+            cursor = scan_page(&store, cursor, 100);
+        }
+    }
+    assert_eq!(scan_table_bytes(&store), (0, 0));
 }
 
 #[test]

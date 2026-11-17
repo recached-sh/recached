@@ -896,7 +896,10 @@ async fn run(
                     continue;
                 }
                 sweep_expired_tick(&store_sweep, &state_sweep, &registry_sweep).await;
-                if store_sweep.max_memory_bytes().is_some() {
+                // A follower evicts nothing of its own (it applies its
+                // primary's evictions), so taking every stripe for it would
+                // only stall the replication link each tick (6L review, R4).
+                if store_sweep.max_memory_bytes().is_some() && !store_sweep.is_follower() {
                     // Eviction too can remove keys no client named.
                     let _write_guards = state_sweep.replicas.lock_all_writes().await;
                     let (_, evicted) = store_sweep.try_evict_for_memory_reporting();

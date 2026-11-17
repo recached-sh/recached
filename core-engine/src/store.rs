@@ -2188,15 +2188,83 @@ const MAX_SCAN_CURSORS: usize = 4096;
 /// Most keys one refill of a [`ScanFrontier`] takes from a shard.
 const SCAN_REFILL_KEYS: usize = 32;
 /// Most key bytes one refill takes from a shard, past its first key. With
-/// [`SCAN_REFILL_KEYS`], this bounds what a cursor holds — at most 16 shards'
-/// worth, and [`MAX_SCAN_CURSORS`] cursors — including keys deleted since
-/// they were buffered, whose memory a buffer keeps alive until it moves on.
+/// [`SCAN_REFILL_KEYS`], this bounds what one cursor holds: 16 shards' worth.
+/// A shard's first key is taken whatever its size, so that is up to 16 keys
+/// of the largest size allowed; [`MAX_SCAN_CURSOR_BYTES`] bounds the table.
 const SCAN_REFILL_BYTES: usize = 1024;
+
+/// Most key bytes all live `SCAN` sessions together may hold (6L review, R1).
+///
+/// A buffered key shares its allocation with the keyspace while it lives,
+/// but one deleted after it was buffered stays allocated until its session
+/// moves past it or is given up, outside `maxmemory` accounting. With 16
+/// shards a session may hold a key of up to 512 KiB per shard, so the
+/// session cap alone let 4,096 cursors pin ~32 GiB of deleted keys (one
+/// `String` per cursor before 6L: ~2 GiB). Past this budget the table gives
+/// up the sessions idle longest, as it does at [`MAX_SCAN_CURSORS`]. Normal
+/// sessions hold kilobytes, so it binds only on very large keys.
+const MAX_SCAN_CURSOR_BYTES: usize = 256 * 1024 * 1024;
 
 /// A live `SCAN` session (6L-C): where it is, and its merge frontier over
 /// the index shards.
 struct ScanSession {
     frontier: ScanFrontier,
+    /// [`ScanFrontier::held_bytes`] when it was stored, charged to its table.
+    bytes: usize,
+}
+
+/// The live `SCAN` sessions, by cursor token, and the key bytes they hold.
+///
+/// Tokens are issued in increasing order, so the first entry is the session
+/// that was last advanced longest ago (a session's cursor is replaced by a
+/// fresh token on every page).
+struct ScanTable {
+    sessions: BTreeMap<u64, ScanSession>,
+    /// Sum of the sessions' `bytes`.
+    bytes: usize,
+    /// [`MAX_SCAN_CURSOR_BYTES`], lowered by tests.
+    byte_budget: usize,
+}
+
+impl Default for ScanTable {
+    fn default() -> Self {
+        ScanTable {
+            sessions: BTreeMap::new(),
+            bytes: 0,
+            byte_budget: MAX_SCAN_CURSOR_BYTES,
+        }
+    }
+}
+
+impl ScanTable {
+    /// Take a session out for the length of a call.
+    fn take(&mut self, token: u64) -> Option<ScanSession> {
+        let session = self.sessions.remove(&token)?;
+        self.bytes = self.bytes.saturating_sub(session.bytes);
+        Some(session)
+    }
+
+    /// Store a session under `token`. At [`MAX_SCAN_CURSORS`] sessions, or
+    /// past the byte budget, give up the sessions idle longest first.
+    ///
+    /// This used to drop `HashMap::keys().next()` — an arbitrary entry — so
+    /// once abandoned cursors filled the table (`redis-cli --scan | head`, a
+    /// crashed job), each new page could end a *live* iteration: its next
+    /// call was answered `0, []` and the client stopped short, having missed
+    /// keys, with no error.
+    fn store(&mut self, token: u64, frontier: ScanFrontier) {
+        let bytes = frontier.held_bytes();
+        while self.sessions.len() >= MAX_SCAN_CURSORS
+            || (!self.sessions.is_empty() && self.bytes.saturating_add(bytes) > self.byte_budget)
+        {
+            let Some((_, oldest)) = self.sessions.pop_first() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(oldest.bytes);
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.sessions.insert(token, ScanSession { frontier, bytes });
+    }
 }
 
 /// A `SCAN` cursor's merge frontier over the [`INDEX_SHARDS`] index shards.
@@ -2247,6 +2315,17 @@ fn key_prefix(key: &str) -> u128 {
 }
 
 impl ScanFrontier {
+    /// Key bytes this frontier keeps alive: its buffered keys and each
+    /// shard's resume position (often the same allocation as the last
+    /// buffered key; counted twice, an upper bound).
+    fn held_bytes(&self) -> usize {
+        let buffered = self.bufs.iter().flat_map(|buf| buf.iter());
+        let positions = self.pos.iter().flatten();
+        buffered
+            .chain(positions)
+            .fold(0usize, |sum, key| sum.saturating_add(key.len()))
+    }
+
     fn new() -> Self {
         ScanFrontier {
             bufs: (0..INDEX_SHARDS).map(|_| VecDeque::new()).collect(),
@@ -2550,11 +2629,8 @@ pub struct KeyValueStore {
     /// Exact stored-key count, per shard: each installed shard's `len`,
     /// readable without its lock. See [`Self::key_count`].
     key_count: Arc<[Arc<ShardLen>]>,
-    /// Live `SCAN` sessions: cursor token → the last key that session was
-    /// returned. Tokens are issued in increasing order, so the map's first
-    /// entry is the session that was last advanced longest ago (a session's
-    /// cursor is replaced by a fresh token on every page).
-    scan_cursors: Arc<std::sync::Mutex<BTreeMap<u64, ScanSession>>>,
+    /// Live `SCAN` sessions. See [`ScanTable`].
+    scan_cursors: Arc<std::sync::Mutex<ScanTable>>,
     next_scan_cursor: Arc<AtomicU64>,
     expiry_cursor: Arc<AtomicUsize>,
     /// Next keyspace shard [`Self::reclaim_capacity_step`] looks at.
@@ -2755,7 +2831,7 @@ impl KeyValueStore {
             memory_bytes: Arc::new(AtomicUsize::new(0)),
             index,
             key_count,
-            scan_cursors: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+            scan_cursors: Arc::new(std::sync::Mutex::new(ScanTable::default())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
             reclaim_cursor: Arc::new(AtomicUsize::new(0)),
@@ -2781,7 +2857,7 @@ impl KeyValueStore {
             memory_bytes: Arc::new(AtomicUsize::new(0)),
             index,
             key_count,
-            scan_cursors: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+            scan_cursors: Arc::new(std::sync::Mutex::new(ScanTable::default())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
             reclaim_cursor: Arc::new(AtomicUsize::new(0)),
@@ -2811,7 +2887,7 @@ impl KeyValueStore {
             memory_bytes: Arc::new(AtomicUsize::new(0)),
             index,
             key_count,
-            scan_cursors: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+            scan_cursors: Arc::new(std::sync::Mutex::new(ScanTable::default())),
             next_scan_cursor: Arc::new(AtomicU64::new(1)),
             expiry_cursor: Arc::new(AtomicUsize::new(0)),
             reclaim_cursor: Arc::new(AtomicUsize::new(0)),
@@ -5272,7 +5348,7 @@ impl KeyValueStore {
                     self.scan_cursors
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .remove(&cursor)
+                        .take(cursor)
                 };
                 if cursor != 0 && session.is_none() {
                     return empty_scan();
@@ -5287,21 +5363,10 @@ impl KeyValueStore {
                 let candidates: Vec<String> = page.iter().map(|key| key.to_string()).collect();
                 let next_cursor = if has_more {
                     let token = self.next_scan_cursor.fetch_add(1, Ordering::Relaxed).max(1);
-                    let mut cursors = self
-                        .scan_cursors
+                    self.scan_cursors
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    // At the cap, give up the session idle longest. This
-                    // used to be `HashMap::keys().next()` — an arbitrary
-                    // entry — so once abandoned cursors filled the table
-                    // (`redis-cli --scan | head`, a crashed job), each new
-                    // page could end a *live* iteration: its next call was
-                    // answered `0, []` and the client stopped short, having
-                    // missed keys, with no error.
-                    if cursors.len() >= MAX_SCAN_CURSORS {
-                        cursors.pop_first();
-                    }
-                    cursors.insert(token, ScanSession { frontier });
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .store(token, frontier);
                     token
                 } else {
                     0

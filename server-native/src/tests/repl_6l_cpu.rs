@@ -88,7 +88,7 @@ async fn concurrent_writers_replicate_identically_to_two_replicas() {
 
     // DEDUP identities travelled with their writes: a promoted replica
     // answers a retry the primary applied with +DUP.
-    a.state.promote_to_primary(&a.store);
+    a.state.promote_to_primary(&a.store).await;
     let mut r = WsClient::connect(a.ws).await;
     assert_eq!(
         r.cmd(&["DEDUP", "c3", "1", "INCR", "d3"]).await,
