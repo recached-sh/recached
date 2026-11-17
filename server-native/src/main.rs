@@ -416,6 +416,18 @@ async fn run(
     // Eviction sample size — the knob Redis exposes as `maxmemory-samples`.
     // Configured before the store is shared, so no interior mutability is needed.
     store_inner.set_eviction_sample(env_limit("RECACHED_EVICTION_SAMPLE", 10));
+    // Experimental (6L-B): capped writes that provably fit run concurrently
+    // on reservations instead of one at a time behind the capacity gate.
+    // Off unless asked for, until its invariants have had independent review.
+    if matches!(
+        std::env::var("RECACHED_CAPPED_RESERVATIONS").as_deref(),
+        Ok("on" | "1" | "true")
+    ) {
+        store_inner.set_reserved_writes(true);
+        if max_keys.is_some() || max_memory_bytes.is_some() {
+            warn!("RECACHED_CAPPED_RESERVATIONS=on: experimental capped-write fast path enabled");
+        }
+    }
     let store = Arc::new(store_inner);
 
     // ── snapshot persistence ──────────────────────────────────────────────
