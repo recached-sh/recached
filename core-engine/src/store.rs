@@ -2977,14 +2977,35 @@ impl KeyValueStore {
     /// a snapshot's load filtering it and this rebuild — left it in the map
     /// for good, unreachable to the sweeper and missing from the key count.
     fn rebuild_metadata(&self) {
-        let mut index = self.fresh_index();
+        // Each shard's keys, gathered first and then built into its ordered
+        // set in one pass. Inserted one by one — in the map's hash order —
+        // the B-tree's nodes ended up ~70% full; built from a sorted run
+        // (`BTreeSet::from_iter` bulk-builds), nearly full. This is the
+        // index of every keyspace loaded at once: a restart from a snapshot,
+        // a replica's full sync, a restore (6L-E).
+        let mut keys: Vec<Vec<(Key, bool)>> = (0..INDEX_SHARDS).map(|_| Vec::new()).collect();
         let mut memory = 0usize;
         for entry in self.data.iter() {
-            index[index_shard(entry.key())].sync(
-                entry.key(),
-                Some((entry.value().deadline.get().is_some(), entry.key())),
-            );
+            if let Some(shard) = keys.get_mut(index_shard(entry.key())) {
+                shard.push((
+                    Arc::clone(entry.key()),
+                    entry.value().deadline.get().is_some(),
+                ));
+            }
             memory = memory.saturating_add(entry_size(entry.key(), entry.value()));
+        }
+        let mut index = self.fresh_index();
+        for (shard, mut shard_keys) in index.iter_mut().zip(keys) {
+            shard_keys.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            for (key, has_ttl) in &shard_keys {
+                if *has_ttl {
+                    shard.volatile.insert(key);
+                }
+                if shard.track_all {
+                    shard.all.insert(key);
+                }
+            }
+            shard.ordered = shard_keys.into_iter().map(|(key, _)| key).collect();
         }
         self.install_index(index);
         self.memory_bytes.store(memory, Ordering::Relaxed);

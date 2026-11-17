@@ -165,6 +165,27 @@ fn main() {
     report("deleted", &mut last);
     hset_all(&store, keys, &val);
     report("reloaded", &mut last);
+    // A restart's load (and a replica's full sync): the keyspace restored
+    // from a snapshot of itself into a fresh store, whose index is built in
+    // one pass instead of key by key. Reported as the restored store alone.
+    if std::env::var("RESTORE").is_ok_and(|v| v == "1") {
+        let snapshot = store.snapshot();
+        let restored = KeyValueStore::new();
+        restored.restore(snapshot);
+        let with_both = LIVE.load(Ordering::Relaxed);
+        encode(&[b"FLUSHDB"], &mut wire);
+        run(&store, &wire);
+        let original_gone = LIVE.load(Ordering::Relaxed);
+        let restored_bytes = original_gone.saturating_sub(base);
+        println!(
+            "restored       live {:>12} B  ({:>8.1} B/key)  (original flushed; was {} B with both)",
+            restored_bytes,
+            restored_bytes as f64 / keys.max(1) as f64,
+            with_both.saturating_sub(base),
+        );
+        drop(restored);
+        last = LIVE.load(Ordering::Relaxed);
+    }
     encode(&[b"FLUSHDB"], &mut wire);
     run(&store, &wire);
     report("flushed", &mut last);
