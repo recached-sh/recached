@@ -3603,15 +3603,21 @@ impl KeyValueStore {
         self.has_capacity_limits() && !self.is_follower()
     }
 
-    /// Exact stored-key count, read without a lock. Expired physical entries
+    /// Stored-key count, read without a lock. Expired physical entries
     /// remain counted until the bounded active-expiry task removes them.
     ///
-    /// The key index publishes its length on every change, under its lock,
-    /// after the map change it records — so this is never lower than the map
-    /// holds once the writer that created a key has finished, and capacity
-    /// admission, which runs under the capacity gate every capped write holds
-    /// to completion, reads it exactly. It used to be `DashMap::len()` there,
-    /// which read-locks all 64 shards on every capped write.
+    /// The sum of the index shards' published lengths ([`INDEX_SHARDS`]).
+    /// Each shard publishes on every change, under its lock, after the map
+    /// change it records. The count is **exact when no write is in flight**,
+    /// and capacity admission always reads it that way: under the capacity
+    /// gate held exclusively, or, for a reserved write, after synchronizing
+    /// with every published change (see `Reservation`).
+    ///
+    /// Read while other writes run (`DBSIZE`, `INFO`), the shards are summed
+    /// one at a time, so a write that evicts from one shard and creates in
+    /// another can be counted half-way: off by at most the writes in flight.
+    /// This was true of `DashMap::len()` before 6K too; a single counter was
+    /// exact but contended by every key creation (6L-C).
     pub fn key_count(&self) -> usize {
         self.key_count_ordered(Ordering::Acquire)
     }
