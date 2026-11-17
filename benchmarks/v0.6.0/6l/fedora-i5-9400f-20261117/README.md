@@ -1,5 +1,7 @@
 # 6L dedicated-Linux run, 2026-11-17
 
+> **Superseded** by the final run in [`../fedora-i5-9400f-20261117-final/`](../fedora-i5-9400f-20261117-final/README.md). That run used `dev` 159d7e9 with all of 6L, and 2M requests per run.
+
 Produced by `benchmarks/v0.6.0/6l/linux/run.sh` on the owner's Fedora machine. Build logs and server data directories are omitted. The username and hostname are redacted.
 
 ## Conditions
