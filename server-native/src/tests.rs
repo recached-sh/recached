@@ -6775,6 +6775,7 @@ mod sync_reliability;
 mod commands_v06;
 mod live_query_6k;
 mod multitenant;
+mod repl_cpu_bench;
 mod replica_6l;
 mod replication_dedup;
 mod request_path;

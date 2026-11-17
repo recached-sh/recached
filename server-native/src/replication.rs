@@ -367,6 +367,27 @@ impl ReplHub {
         self.count.store(reg.len(), Ordering::Relaxed);
     }
 
+    /// Attach an in-process replica that is handed every frame from now on,
+    /// for tests and benchmarks that need the fan-out without a socket.
+    #[cfg(test)]
+    pub(crate) async fn attach_test_replica(
+        &self,
+        capacity: usize,
+        max_queue_bytes: usize,
+    ) -> mpsc::Receiver<QueuedReplFrame> {
+        let (tx, rx) = mpsc::channel(capacity);
+        let mut reg = self.senders.lock().await;
+        reg.push(ReplicaHandle {
+            tx,
+            sent: Arc::new(AtomicU64::new(self.offset.load(Ordering::Acquire))),
+            acked: Arc::new(AtomicU64::new(0)),
+            pending_bytes: Arc::new(AtomicUsize::new(0)),
+            max_queue_bytes,
+        });
+        self.count.store(reg.len(), Ordering::Relaxed);
+        rx
+    }
+
     /// Frames the furthest-behind replica has yet to acknowledge.
     ///
     /// This is true lag: how much of what the primary sent has actually been
