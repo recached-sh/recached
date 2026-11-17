@@ -3,7 +3,8 @@
 //! Drives the real write path (`execute_ordered_write`: ordering stripes,
 //! store, AOF/replication log, fan-out) from several writer tasks on a
 //! primary with two in-process replicas attached, each drained by a task, and
-//! optionally one WebSocket subscriber routed everything. The Prometheus
+//! optionally `WS_SUBS` WebSocket subscribers routed everything, each doing
+//! what a connection does per push: build its message (`push_message`). The Prometheus
 //! recorder is installed, as in production, so per-write metric updates are
 //! paid for.
 //!
@@ -83,21 +84,31 @@ async fn run_once(writers: usize, ws: bool, ops_per_writer: usize) -> (f64, f64,
         }));
     }
     let gaps = Arc::new(AtomicU64::new(0));
-    let ws_drain = ws.then(|| {
-        let mut sub = tx.subscribe(Routes::Everything);
-        let gaps = Arc::clone(&gaps);
-        tokio::spawn(async move {
-            loop {
-                match sub.recv().await {
-                    Ok(push) => drop(push),
-                    Err(_) => {
-                        gaps.fetch_add(1, Ordering::Relaxed);
-                        break;
+    let ws_subs: usize = if ws {
+        std::env::var("WS_SUBS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8)
+    } else {
+        0
+    };
+    let ws_drains: Vec<_> = (0..ws_subs)
+        .map(|_| {
+            let mut sub = tx.subscribe(Routes::Everything);
+            let gaps = Arc::clone(&gaps);
+            tokio::spawn(async move {
+                loop {
+                    match sub.recv().await {
+                        Ok(push) => drop(std::hint::black_box(push_message(&push))),
+                        Err(_) => {
+                            gaps.fetch_add(1, Ordering::Relaxed);
+                            break;
+                        }
                     }
                 }
-            }
+            })
         })
-    });
+        .collect();
     let value = "v".repeat(32);
     let cpu0 = cpu_seconds();
     let t0 = std::time::Instant::now();
@@ -128,7 +139,7 @@ async fn run_once(writers: usize, ws: bool, ops_per_writer: usize) -> (f64, f64,
     let elapsed = t0.elapsed().as_secs_f64();
     let cpu = cpu_seconds() - cpu0;
     let ops = (writers * ops_per_writer) as f64;
-    if let Some(d) = ws_drain {
+    for d in ws_drains {
         d.abort();
     }
     for d in drains {
