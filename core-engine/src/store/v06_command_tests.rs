@@ -601,21 +601,29 @@ fn the_key_index_shares_the_maps_key_allocation() {
     // An overwrite and a TTL change must not swap in a fresh copy either.
     set(&s, "plain:1", "w");
     s.execute(Command::Expire("plain:2".into(), 100));
-    let index = s.index.lock().unwrap_or_else(|e| e.into_inner());
-    assert_eq!(index.ordered.len(), 64 * 3);
-    for indexed in &index.ordered {
+    let shards = s.index_all();
+    assert_eq!(
+        shards
+            .iter()
+            .map(|shard| shard.ordered.len())
+            .sum::<usize>(),
+        64 * 3
+    );
+    for indexed in shards.iter().flat_map(|shard| shard.ordered.iter()) {
         let entry = s.data.get(&**indexed).expect("indexed key is in the map");
         assert!(
             Arc::ptr_eq(indexed, entry.key()),
             "{indexed} is indexed as a copy of the map's key"
         );
     }
-    for volatile in &index.volatile.keys {
-        let ordered = index
-            .ordered
-            .get(&**volatile)
-            .expect("volatile key is ordered");
-        assert!(Arc::ptr_eq(volatile, ordered), "{volatile} volatile copy");
+    for index in &shards {
+        for volatile in &index.volatile.keys {
+            let ordered = index
+                .ordered
+                .get(&**volatile)
+                .expect("volatile key is ordered in its own shard");
+            assert!(Arc::ptr_eq(volatile, ordered), "{volatile} volatile copy");
+        }
     }
 }
 
@@ -755,9 +763,13 @@ fn reclaimed_shards_still_find_every_key() {
         "{} of {loaded} buckets left after reclaiming",
         keyspace_buckets(&s)
     );
-    let index = s.index.lock().unwrap_or_else(|e| e.into_inner());
-    assert!(index.volatile.keys.capacity() < 4 * 1024);
-    drop(index);
+    let shards = s.index_all();
+    let capacity: usize = shards
+        .iter()
+        .map(|shard| shard.volatile.keys.capacity())
+        .sum();
+    assert!(capacity < 4 * 1024, "{capacity}");
+    drop(shards);
 
     for i in (0..total).filter(|i| i % 400 == 0 || i % 400 == 1) {
         let key = format!("k{i}");

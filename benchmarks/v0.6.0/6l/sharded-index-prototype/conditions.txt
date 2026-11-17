@@ -1,0 +1,5 @@
+Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz
+8
+4
+Darwin 24.6.0
+load during runs: 5-40 (a parallel cargo build on the same host); variants interleaved

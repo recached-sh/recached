@@ -35,23 +35,33 @@ fn assert_accounting_exact(store: &KeyValueStore, what: &str) {
         memory,
         "{what}: memory counter drifted from the keyspace"
     );
-    let index = store.index.lock().unwrap_or_else(|p| p.into_inner());
+    let shards = store.index_all();
     assert_eq!(
         store.key_count(),
         keys.len(),
         "{what}: published key count disagrees with the keyspace"
     );
-    assert!(
-        Arc::ptr_eq(&index.len, &store.key_count),
-        "{what}: the installed index publishes to a counter nobody reads"
-    );
-    let ordered: BTreeSet<String> = index.ordered.iter().map(|k| k.to_string()).collect();
+    for (i, shard) in shards.iter().enumerate() {
+        assert!(
+            Arc::ptr_eq(&shard.len, &store.key_count[i]),
+            "{what}: installed shard {i} publishes to a counter nobody reads"
+        );
+        for key in &shard.ordered {
+            assert_eq!(index_shard(key), i, "{what}: {key} in the wrong shard");
+        }
+    }
+    let ordered: BTreeSet<String> = shards
+        .iter()
+        .flat_map(|shard| shard.ordered.iter().map(|k| k.to_string()))
+        .collect();
     assert_eq!(
         ordered, keys,
         "{what}: ordered index disagrees with the keyspace"
     );
-    let indexed_volatile: BTreeSet<String> =
-        index.volatile.keys.iter().map(|k| k.to_string()).collect();
+    let indexed_volatile: BTreeSet<String> = shards
+        .iter()
+        .flat_map(|shard| shard.volatile.keys.iter().map(|k| k.to_string()))
+        .collect();
     assert_eq!(
         indexed_volatile, volatile,
         "{what}: TTL index disagrees with the keyspace"
