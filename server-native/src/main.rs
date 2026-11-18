@@ -38,6 +38,7 @@
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+mod aof_stats;
 mod clients;
 mod config;
 mod connection;
@@ -55,6 +56,7 @@ mod watch;
 #[cfg(test)]
 mod tests;
 
+use aof_stats::*;
 use clients::*;
 use config::*;
 use connection::*;
@@ -493,6 +495,21 @@ async fn run(
             .into());
         }
     };
+    // Cross-connection AOF coalescing (6M): on unless turned off, which is
+    // there for A/B measurement and as an escape hatch. It changes only when
+    // a batch is written, never what a reply waits for.
+    let aof_coalesce_raw = std::env::var("RECACHED_AOF_COALESCE").unwrap_or_default();
+    let aof_coalesce = match aof_coalesce_raw.to_lowercase().as_str() {
+        "" | "on" | "1" | "true" => true,
+        "off" | "0" | "false" => false,
+        _ => {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("RECACHED_AOF_COALESCE must be on or off, not '{aof_coalesce_raw}'"),
+            )
+            .into());
+        }
+    };
 
     // Duplicate-suppression marks and refusals the AOF carries, merged into
     // the server state once it exists.
@@ -510,15 +527,17 @@ async fn run(
                             )
                         })?;
                 recovered_dedup = recovered;
+                w.set_coalescing(aof_coalesce);
                 let writer = Arc::new(w);
                 info!(
-                    "AOF enabled: {:?} (sync={})",
+                    "AOF enabled: {:?} (sync={}, coalesce={})",
                     path,
                     match aof_sync {
                         AofSync::Always => "always",
                         AofSync::EverySec => "everysec",
                         AofSync::No => "no",
-                    }
+                    },
+                    if aof_coalesce { "on" } else { "off" },
                 );
                 // `always` fsyncs inside the AOF lock, so every write in the
                 // process waits for one disk barrier — measured at roughly

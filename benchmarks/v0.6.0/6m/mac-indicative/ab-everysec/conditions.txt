@@ -1,0 +1,13 @@
+date_utc: 2026-11-18T02:26:04Z
+os: Darwin 24.6.0 Darwin Kernel Version 24.6.0: Sun Aug 23 20:30:56 PDT 2026; root:xnu-11417.140.69.712.69~1/RELEASE_X86_64 x86_64
+cpu: Intel(R) Core(TM) i5-8259U CPU @ 2.30GHz
+aof_fs: /dev/disk1s1 (macOS; indicative only)
+pin: 0 server= bench=
+extra_env: none
+bench: redis-benchmark 7.2.5 threads=2
+server.base: ~/recached-6m-bench/bin/recached-server-6m-off sha256=4d88f29b89719e654fa0b856fc691720b259f0855789f2d82995596ddebeb7af version=recached-server 0.6.0
+server.recached: ~/recached-6m-bench/bin/recached-server-6m sha256=2ce378e3cfc683129b7b9e7c618feb937853a1ece3bd17e778cbf9c57980de17 version=recached-server 0.6.0
+matrix: servers=[base recached] policies=[everysec] workers=[1 4] tests=[set] pipelines=[1 16] clients=[1 2 8 50 200] requests=50000 always_requests=20000 keyspace=100000 reps=1
+load_average_during_run: ~176 (host rebooted 19 min earlier; other workloads busy). Counters are exact; timing is NOT evidence.
+servers: base = 6M binary with RECACHED_AOF_COALESCE=off (the previous gate), recached = 6M default (coalescing on)
+source: dev 08e5a7d + uncommitted 6M changes; binary sha256 2ce378e3cfc683129b7b9e7c618feb937853a1ece3bd17e778cbf9c57980de17
