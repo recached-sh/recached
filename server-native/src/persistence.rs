@@ -264,26 +264,29 @@ struct AofShared {
     policy: AofSync,
     coalesce: Coalescer,
     stats: &'static AofStats,
-    /// Length of the file's whole-frame prefix — everything up to the end
-    /// of the last batch that was written in full — or [`LEN_UNKNOWN`]
-    /// until a batch first needs it. Only whoever performs a batch reads or
-    /// writes it, and performing is exclusive (`busy`, handed over under
-    /// the queue lock), so relaxed accesses are ordered by that lock.
-    good_len: std::sync::atomic::AtomicU64,
-    /// A failed write left bytes past `good_len` that could not be cut off.
-    /// Nothing is appended until they are: a frame written after a torn one
-    /// would make the whole file unreadable on replay.
-    torn: std::sync::atomic::AtomicBool,
+    /// Where a failed write's torn fragment starts, while it is still in
+    /// the file: [`NOT_TORN`], [`TORN_AT_UNKNOWN`], or the offset. Nothing
+    /// is appended until the fragment is gone, since a frame written after
+    /// a torn one makes the whole file unreadable on replay (or, with an
+    /// unlucky byte alignment, replays as a different command). Only
+    /// whoever performs a batch touches it, and performing is exclusive
+    /// (`busy`, handed over under the queue lock), so relaxed accesses are
+    /// ordered by that lock.
+    torn_at: std::sync::atomic::AtomicU64,
     /// Failures to inject into the next batches' writes, oldest first.
     #[cfg(test)]
     faults: std::sync::Mutex<VecDeque<AofFault>>,
-    /// Repairs (truncations back to `good_len`) still to fail, for tests.
+    /// Truncations still to fail, for tests.
     #[cfg(test)]
     failing_repairs: std::sync::atomic::AtomicU32,
 }
 
-/// [`AofShared::good_len`] before anything has measured the file.
-const LEN_UNKNOWN: u64 = u64::MAX;
+/// [`AofShared::torn_at`]: the file ends on a whole frame.
+const NOT_TORN: u64 = u64::MAX;
+/// [`AofShared::torn_at`]: a fragment is in the file and where it starts
+/// could not be worked out; appends wait for a truncation (the next
+/// snapshot) to remove it.
+const TORN_AT_UNKNOWN: u64 = u64::MAX - 1;
 
 /// A write failure a test makes the next batch suffer.
 #[cfg(test)]
@@ -477,16 +480,14 @@ impl AofShared {
         use std::sync::atomic::Ordering::Relaxed;
         let file = &self.file;
         if batch.truncate {
-            // Unknown until this succeeds: a failure part-way leaves the
-            // length to be measured again.
-            self.good_len.store(LEN_UNKNOWN, Relaxed);
-            file.set_len(0)?;
-            self.good_len.store(0, Relaxed);
-            self.torn.store(false, Relaxed);
+            // A failed ftruncate leaves the file as it was, so a fragment
+            // it would have removed is still tracked.
+            self.truncate_to(file, 0)?;
+            self.torn_at.store(NOT_TORN, Relaxed);
             file.sync_all()?;
         }
         if !batch.bytes.is_empty() {
-            let base = self.whole_frame_end(file)?;
+            self.remove_torn_fragment(file)?;
             let queued = batch
                 .opened
                 .map(|opened| opened.elapsed())
@@ -500,12 +501,10 @@ impl AofShared {
             let (written, result) = write_counted(file, &batch.bytes, self.stats);
             if let Err(e) = result {
                 if written > 0 {
-                    self.cut_back(file, base, written);
+                    self.cut_back(file, &batch.bytes, written);
                 }
                 return Err(e);
             }
-            let len = u64::try_from(batch.bytes.len()).unwrap_or(u64::MAX);
-            self.good_len.store(base.saturating_add(len), Relaxed);
             self.stats.record_batch(
                 batch.frames,
                 u64::try_from(batch.bytes.len()).unwrap_or(u64::MAX),
@@ -521,50 +520,84 @@ impl AofShared {
         Ok(())
     }
 
-    /// Where the next batch's bytes go: the end of the last whole frame.
-    /// Measured from the file the first time (after startup replay has cut
-    /// any torn tail), tracked afterwards. If an earlier failure left a
-    /// torn fragment that could not be cut off, cut it now — or fail this
-    /// batch too, rather than append a frame after a fragment.
-    fn whole_frame_end(&self, file: &std::fs::File) -> std::io::Result<u64> {
+    /// Before writing: if an earlier failure left a fragment the cut could
+    /// not remove, remove it now — or fail this batch too, rather than
+    /// append a frame after a fragment.
+    fn remove_torn_fragment(&self, file: &std::fs::File) -> std::io::Result<()> {
         use std::sync::atomic::Ordering::Relaxed;
-        let mut good = self.good_len.load(Relaxed);
-        if good == LEN_UNKNOWN {
-            good = file.metadata()?.len();
-            self.good_len.store(good, Relaxed);
+        let at = self.torn_at.load(Relaxed);
+        if at == NOT_TORN {
+            return Ok(());
         }
-        if self.torn.load(Relaxed) {
-            self.truncate_to(file, good).map_err(|e| {
+        if at == TORN_AT_UNKNOWN {
+            return Err(std::io::Error::other(
+                "AOF holds a torn frame at an unknown offset; refusing to append after it \
+                 until a snapshot truncates the file",
+            ));
+        }
+        // Never extend: a file already shorter than the fragment's start
+        // (truncated from outside) has no fragment left to remove.
+        if file.metadata()?.len() > at {
+            self.truncate_to(file, at).map_err(|e| {
                 std::io::Error::new(
                     e.kind(),
                     format!(
-                        "AOF holds a torn frame past offset {good} that cannot be removed ({e}); \
+                        "AOF holds a torn frame past offset {at} that cannot be removed ({e}); \
                          refusing to append after it"
                     ),
                 )
             })?;
-            self.torn.store(false, Relaxed);
-            warn!("AOF: removed the torn frame an earlier failed write left past offset {good}");
+            warn!("AOF: removed the torn frame an earlier failed write left past offset {at}");
         }
-        Ok(good)
+        self.torn_at.store(NOT_TORN, Relaxed);
+        Ok(())
     }
 
-    /// A write failed after `written` of its bytes reached the file: cut
-    /// them off, so the file ends on a whole frame again, as Redis does on
-    /// a partial AOF write. If that fails too, remember it: the next batch
-    /// retries the cut before it writes anything.
-    fn cut_back(&self, file: &std::fs::File, good: u64, written: usize) {
+    /// A write failed after `written` bytes of `bytes` reached the file:
+    /// cut off the torn frame among them, keeping the frames that landed
+    /// whole, so the file ends on a whole frame again, as Redis does on a
+    /// partial AOF write. If the cut fails, remember where it should go:
+    /// the next batch retries it before writing anything.
+    ///
+    /// Where the fragment starts is read from the file, not tracked: the
+    /// AOF is opened `O_APPEND` and appended to only by the batch being
+    /// performed (`busy`), so this write's bytes are the file's last
+    /// `written` bytes. That stays right when something outside the server
+    /// truncated or appended to the file earlier, and never extends it.
+    fn cut_back(&self, file: &std::fs::File, bytes: &[u8], written: usize) {
         use std::sync::atomic::Ordering::Relaxed;
         bump(&self.stats.torn_writes, 1);
-        match self.truncate_to(file, good) {
-            Ok(()) => {
-                warn!("AOF write failed after {written} byte(s); truncated back to offset {good}")
-            }
+        let whole = whole_frames_len(bytes, written);
+        let torn = u64::try_from(written.saturating_sub(whole)).unwrap_or(u64::MAX);
+        if torn == 0 {
+            // Every byte that landed belongs to a whole frame.
+            warn!("AOF write failed after {written} byte(s), on a frame boundary");
+            return;
+        }
+        let at = match file.metadata() {
+            Ok(meta) => meta.len().checked_sub(torn),
             Err(e) => {
-                self.torn.store(true, Relaxed);
+                error!("AOF write failed part-way and the file cannot be measured ({e})");
+                None
+            }
+        };
+        let Some(at) = at.filter(|&at| at < TORN_AT_UNKNOWN) else {
+            self.torn_at.store(TORN_AT_UNKNOWN, Relaxed);
+            error!(
+                "AOF write failed after {written} byte(s) and the torn frame cannot be located; \
+                 no further appends until a snapshot truncates the file"
+            );
+            return;
+        };
+        match self.truncate_to(file, at) {
+            Ok(()) => warn!(
+                "AOF write failed after {written} byte(s); cut the torn frame back to offset {at}"
+            ),
+            Err(e) => {
+                self.torn_at.store(at, Relaxed);
                 error!(
-                    "AOF write failed after {written} byte(s) and truncating back to offset \
-                     {good} failed too ({e}); no further appends until it succeeds"
+                    "AOF write failed after {written} byte(s) and cutting the torn frame back to \
+                     offset {at} failed too ({e}); no further appends until it succeeds"
                 );
             }
         }
@@ -692,6 +725,21 @@ impl AofShared {
             batch.done.complete(result);
         }
     }
+}
+
+/// How many leading bytes of `bytes[..written]` are whole RESP frames.
+/// Only on the failure path: a batch is a run of frames, so parsing them
+/// one after another stops at the first one that did not land in full.
+fn whole_frames_len(bytes: &[u8], written: usize) -> usize {
+    let landed = bytes.get(..written).unwrap_or(bytes);
+    let mut end = 0usize;
+    while let Some(rest) = landed.get(end..).filter(|rest| !rest.is_empty()) {
+        match Value::parse(rest) {
+            Ok((_, used)) if used > 0 => end = end.saturating_add(used),
+            _ => break,
+        }
+    }
+    end
 }
 
 /// `write_all`, counting each `write(2)` and its time. Returns how many
@@ -935,6 +983,9 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for AofGatedWriter<W> {
 impl AofWriter {
     pub(crate) async fn open(path: PathBuf, sync: AofSync) -> std::io::Result<Self> {
         let mut opts = tokio::fs::OpenOptions::new();
+        // `append`: every write lands at the end of the file, wherever
+        // anything else left it. `cut_back` relies on this to find a torn
+        // frame (the failed write's bytes are the file's last ones).
         opts.create(true).append(true);
         #[cfg(unix)]
         opts.mode(0o600);
@@ -953,8 +1004,7 @@ impl AofWriter {
                 policy: sync,
                 coalesce: Coalescer::new(true),
                 stats: &AOF_STATS,
-                good_len: std::sync::atomic::AtomicU64::new(LEN_UNKNOWN),
-                torn: std::sync::atomic::AtomicBool::new(false),
+                torn_at: std::sync::atomic::AtomicU64::new(NOT_TORN),
                 #[cfg(test)]
                 faults: std::sync::Mutex::new(VecDeque::new()),
                 #[cfg(test)]
@@ -2400,5 +2450,133 @@ mod gate_tests {
             [set("old", "0"), set("y", "2")].concat()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Something outside the server truncated the AOF (a `copytruncate`
+    /// log rotation, `: > file`), then a write tore: the cut must not
+    /// extend the file back to where it used to end, filling it with NULs
+    /// that make startup refuse it. Found in the 6M review (F2).
+    #[tokio::test]
+    async fn a_torn_write_after_an_outside_truncation_never_extends_the_file() {
+        let dir = scratch("torn_outside_truncate");
+        let path = dir.join("f.aof");
+        let w = AofWriter::open(path.clone(), AofSync::EverySec)
+            .await
+            .unwrap();
+        w.append(&set("a", "1")).await.unwrap();
+        w.append(&set("b", "2")).await.unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(0)
+            .unwrap();
+        w.inject_fault(AofFault::TornThenFail(5, ErrorKind::Other));
+        assert!(w.append(&set("c", "3")).await.is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"",
+            "cut back to empty, not extended"
+        );
+        w.append(&set("d", "4")).await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), set("d", "4"));
+        let store = KeyValueStore::new();
+        replay_aof_recovering(&store, &path, 0).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A torn frame whose cut failed, then a truncation whose ftruncate
+    /// fails too: the fragment must still be known, so the next append
+    /// removes it instead of landing after it. Found in the 6M review (F1).
+    #[tokio::test]
+    async fn a_failed_truncation_keeps_the_torn_fragment_tracked() {
+        let dir = scratch("torn_failed_truncate");
+        let path = dir.join("f.aof");
+        let w = AofWriter::open(path.clone(), AofSync::EverySec)
+            .await
+            .unwrap();
+        w.append(&set("a", "1")).await.unwrap();
+        // Two failing truncations: the cut, then the truncate's ftruncate(0).
+        w.inject_fault(AofFault::TornUnrepairable(9, ErrorKind::Other));
+        assert!(w.append(&set("b", "2")).await.is_err());
+        assert!(w.truncate().await.is_err(), "injected ftruncate(0) failure");
+        w.append(&set("d", "4")).await.unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            [set("a", "1"), set("d", "4")].concat()
+        );
+        let store = KeyValueStore::new();
+        replay_aof_recovering(&store, &path, 0).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Frames appended to the file by something else (a second server
+    /// misconfigured onto the same path) are not cut with a torn write:
+    /// the cut point comes from the file, not from what this writer last
+    /// wrote. Found in the 6M review (F3).
+    #[tokio::test]
+    async fn a_torn_write_keeps_frames_appended_from_outside() {
+        let dir = scratch("torn_outside_append");
+        let path = dir.join("f.aof");
+        let w = AofWriter::open(path.clone(), AofSync::EverySec)
+            .await
+            .unwrap();
+        w.append(&set("a", "1")).await.unwrap();
+        {
+            use std::io::Write as _;
+            let mut other = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap();
+            other.write_all(&set("other", "x")).unwrap();
+        }
+        w.inject_fault(AofFault::TornThenFail(5, ErrorKind::Other));
+        assert!(w.append(&set("c", "3")).await.is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            [set("a", "1"), set("other", "x")].concat()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The cut removes only the torn frame: frames of the failed batch that
+    /// reached the file whole stay, as their commands were applied. Found
+    /// in the 6M review (F4).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_torn_write_keeps_the_batch_frames_that_landed_whole() {
+        let dir = scratch("torn_keep_whole");
+        let path = dir.join("f.aof");
+        let w = Arc::new(
+            AofWriter::open(path.clone(), AofSync::EverySec)
+                .await
+                .unwrap(),
+        );
+        let (a, b) = (set("a", "1"), set("b", "2"));
+        // One batch [a, b]: all of a and 3 bytes of b land.
+        w.inject_fault(AofFault::TornThenFail(a.len() + 3, ErrorKind::Other));
+        let gate = AofGatedWriter::new(tokio::io::sink(), state());
+        let deferral = gate.deferral();
+        let mut socket = tokio::io::BufWriter::new(gate);
+        with_deferred_aof(deferral, async {
+            w.append_client_write(&a).await.unwrap();
+            w.append_client_write(&b).await.unwrap();
+            tokio::io::AsyncWriteExt::flush(&mut socket).await.unwrap();
+        })
+        .await;
+        assert_eq!(std::fs::read(&path).unwrap(), a);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn whole_frames_stop_at_the_first_partial_one() {
+        let (a, b) = (set("a", "1"), set("bb", "22"));
+        let both = [a.clone(), b.clone()].concat();
+        assert_eq!(whole_frames_len(&both, 0), 0);
+        assert_eq!(whole_frames_len(&both, 3), 0);
+        assert_eq!(whole_frames_len(&both, a.len()), a.len());
+        assert_eq!(whole_frames_len(&both, a.len() + 1), a.len());
+        assert_eq!(whole_frames_len(&both, both.len()), both.len());
+        // A written count past the buffer (cannot happen) is clamped.
+        assert_eq!(whole_frames_len(&both, both.len() + 10), both.len());
     }
 }
