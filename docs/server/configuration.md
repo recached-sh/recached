@@ -90,7 +90,20 @@ Recached persists data on the server with the same two mechanisms Redis uses —
 
 **Recovery order on restart:** the snapshot is loaded first, then AOF commands not covered by that snapshot are replayed on top. Each checkpoint records an AOF marker in the snapshot, so a crash after installing the snapshot but before truncating the AOF does not apply covered non-idempotent writes twice. Snapshot writes are atomic (write, fsync, rename, and directory fsync). Snapshot, AOF, or dedup corruption is a startup error rather than an empty-cache fallback. A clean shutdown attempts a final checkpoint and reports any failure.
 
-A checkpoint serializes all save triggers and pauses writes while it installs the durable snapshot and truncates the covered AOF. Reads continue. If a snapshot, AOF append, or fsync fails at runtime, Recached reports `MISCONF` for later writes until a `SAVE` succeeds; the failed checkpoint does not clear dirty state or truncate the AOF.
+A checkpoint serializes all save triggers and pauses writes while it installs the durable snapshot and truncates the covered AOF. Reads continue. If a snapshot, AOF append, or fsync fails at runtime under `everysec` or `no`, Recached reports `MISCONF` for later writes until a `SAVE` succeeds; the failed checkpoint does not clear dirty state or truncate the AOF.
+
+**AOF failures under `always` stop the server.** With `RECACHED_AOF_SYNC=always`, a write is acknowledged only after its AOF frame is written and `fdatasync`ed. If that write or fsync fails (disk full, an I/O error), the command has already changed memory but cannot be made durable. Recached therefore exits with status **74** (`EX_IOERR`) before the affected write, or any write after it, is answered. It never sends that write's normal reply, fans it out to replicas, or pushes it to watchers. The reason is logged and also written to stderr (`fatal: AOF … failed under appendfsync always`). Redis does the same. A failed AOF `fdatasync` during a checkpoint or the shutdown save (the flush after the checkpoint marker) has the same effect: after a failed fsync, a later one cannot be trusted to vouch for earlier writes. A torn frame is cut back to the last whole frame first, so the restart replays every acknowledged write.
+
+What a client sees: the connection closes without a reply, which is the unknown outcome of any crash. The write may or may not have reached the file. A `DEDUP`-wrapped retry after the restart is applied exactly once, either now or answered `+DUP`. A plain non-idempotent retry, like any retry after a crash, may apply twice. A supervisor (systemd `Restart=on-failure`, a container restart policy) restarts the server. If the disk is still full, it stops again on its next write, so alert on the exit status rather than relying on the restart. A failure of the snapshot's AOF truncation itself (its `ftruncate` or the `fsync` after it) does not stop the server when no write is waiting on it: `SAVE` fails and later writes get `MISCONF` as above, since the AOF still holds every acknowledged frame.
+
+One limit is shared with Redis. After a failed `fdatasync`, Linux may keep the unsynced pages in its page cache, and a restart replays them. A write the client was never told succeeded can therefore reappear after the restart, and be lost by a later power cut. A `DEDUP` retry of it is then answered `+DUP`. To rule this out, take a `SAVE` right after restarting from a fail-stop: the snapshot rewrites that state durably.
+
+| Policy | A failed AOF write or fsync | The affected write's reply | Later writes |
+|---|---|---|---|
+| AOF disabled | — | normal | normal |
+| `no` | latches persistence unhealthy | normal (it promised only a hand-off to the OS) | `MISCONF` until `SAVE` succeeds |
+| `everysec` | latches persistence unhealthy | normal (it promised durability within about a second, not before the reply) | `MISCONF` until `SAVE` succeeds |
+| `always` | **fail-stop**: exit 74 | never sent | none: the process has stopped |
 
 Two recached-specific durability properties worth knowing:
 

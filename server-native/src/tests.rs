@@ -6770,6 +6770,7 @@ mod sweep_notification {
     }
 }
 
+mod aof_fail_stop;
 mod sync_reliability;
 
 mod commands_v06;
