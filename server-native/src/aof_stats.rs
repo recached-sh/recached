@@ -55,6 +55,9 @@ pub(crate) struct AofStats {
     pub(crate) coalesce_gained: AtomicU64,
     /// Coalescing yields that gained nothing.
     pub(crate) coalesce_missed: AtomicU64,
+    /// Failed writes that left part of their batch in the file (cut back
+    /// to the last whole frame, or held until that succeeds).
+    pub(crate) torn_writes: AtomicU64,
     /// Frames per batch, log2 buckets.
     pub(crate) batch_hist: [AtomicU64; AOF_BATCH_BUCKETS],
 }
@@ -91,6 +94,7 @@ impl AofStats {
             gate_parked: ZERO,
             coalesce_gained: ZERO,
             coalesce_missed: ZERO,
+            torn_writes: ZERO,
             batch_hist: [ZERO; AOF_BATCH_BUCKETS],
         }
     }
@@ -138,6 +142,7 @@ impl AofStats {
              recached_aof_gate_parked:{}\r\n\
              recached_aof_coalesce_gained:{}\r\n\
              recached_aof_coalesce_missed:{}\r\n\
+             recached_aof_torn_writes:{}\r\n\
              recached_aof_batch_frames_log2_hist:{}\r\n",
             get(&self.batches),
             get(&self.frames),
@@ -155,6 +160,7 @@ impl AofStats {
             get(&self.gate_parked),
             get(&self.coalesce_gained),
             get(&self.coalesce_missed),
+            get(&self.torn_writes),
             hist,
         )
     }
