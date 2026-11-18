@@ -18,6 +18,9 @@
 #      perf record call graphs at 50 clients if perf is usable
 #   E. production soak (6L harness): 6l then 6m, capped reservations on and
 #      off. Long: 4 x SOAK_SECS. Off unless PHASES includes E.
+#   F. command CPU attribution (no persistence, 1 worker, 50 clients):
+#      perf stat instructions/cycles per request and flat perf profiles for
+#      LPUSH, SADD, MSET (and SET as the control), 6m vs Redis
 # and packs everything into one tarball.
 #
 # Usage (no root needed; nothing is installed system-wide):
@@ -46,7 +49,7 @@ REDIS_VERSION=${REDIS_VERSION:-7.2.5}
 VALKEY_VERSION=${VALKEY_VERSION:-9.1.0}
 REPS=${REPS:-3}
 REQUESTS=${REQUESTS:-1000000}
-PHASES=${PHASES:-"A B C D"}
+PHASES=${PHASES:-"A B C D F"}
 SOAK_SECS=${SOAK_SECS:-2400}
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -190,6 +193,51 @@ if has D; then
     done
   else
     echo "perf unavailable or not permitted (kernel.perf_event_paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null)); skipping call graphs" | tee "$RES/D-perf-skipped.txt"
+  fi
+fi
+
+if has F; then
+  say "F: command CPU attribution (perf)"
+  if command -v perf >/dev/null && perf stat -e instructions -- true >/dev/null 2>&1; then
+    for server in 6m redis; do
+      for test in set lpush sadd mset; do
+        for P in 1 16; do
+          dir="$RES/F-cmd/$server/$test-P$P"; mkdir -p "$dir/data"
+          if [[ $server == redis ]]; then
+            taskset -c "$SERVER_CPUS" "$BIN/redis-server" --port 6795 --bind 127.0.0.1 --save "" \
+              --appendonly no --dir "$dir/data" --protected-mode no >"$dir/server.log" 2>&1 &
+          else
+            RECACHED_BIND=127.0.0.1 RECACHED_PORT=6795 RECACHED_WS_PORT=6796 RECACHED_METRICS_PORT=0 \
+              RECACHED_SAVE_INTERVAL=0 RECACHED_SAVE_PATH="$dir/data/dump.rdb" RECACHED_WORKER_THREADS=1 \
+              taskset -c "$SERVER_CPUS" "$BIN/recached-server-$server" >"$dir/server.log" 2>&1 &
+          fi
+          spid=$!; sleep 1
+          n=2000000; [[ $test == mset ]] && n=400000
+          perf stat -x, -e task-clock,instructions,cycles,context-switches -p "$spid" -o "$dir/stat.csv" &
+          statpid=$!
+          taskset -c "$BENCH_CPUS" "$BENCH" -p 6795 -n "$n" -c 50 -P "$P" -d 32 -r 100000 -t "$test" \
+            --threads 2 --csv > "$dir/bench.csv" 2>/dev/null || true
+          kill -INT "$statpid" 2>/dev/null || true; wait "$statpid" 2>/dev/null || true
+          echo "requests,$n" >> "$dir/stat.csv"
+          if [[ $P == 16 ]]; then
+            perf record -F 1999 -g -p "$spid" -o "$dir/perf.data" -- sleep 8 >/dev/null 2>&1 &
+            ppid=$!
+            taskset -c "$BENCH_CPUS" "$BENCH" -p 6795 -n 100000000 -c 50 -P 16 -d 32 -r 100000 -t "$test" \
+              --threads 2 -q >/dev/null 2>&1 &
+            bpid=$!
+            wait "$ppid" || true; kill "$bpid" 2>/dev/null || true
+            perf report -i "$dir/perf.data" --no-children --stdio --sort sym -g none --percent-limit 0.3 \
+              > "$dir/flat.txt" 2>/dev/null || true
+            perf report -i "$dir/perf.data" --children --stdio --sort sym -g none --percent-limit 1 \
+              > "$dir/inclusive.txt" 2>/dev/null || true
+            rm -f "$dir/perf.data"
+          fi
+          kill -9 "$spid" 2>/dev/null || true; wait "$spid" 2>/dev/null || true
+        done
+      done
+    done
+  else
+    echo "perf unavailable or not permitted (kernel.perf_event_paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null)); try: sudo sysctl kernel.perf_event_paranoid=1" | tee "$RES/F-skipped.txt"
   fi
 fi
 

@@ -36,10 +36,11 @@ All but the last five are updated once per batch by its writer, never per comman
 | C | 50 clients: SET (existing/new), INCR, HSET, MSET, GET × everysec/none × 1/4 workers | 25–40 min |
 | D | `strace -c` at 1 and 50 clients; `perf record` call graphs if permitted | 10 min |
 | E | The 6L soak, run 4×: 6l/6m × reservations on/off (`PHASES=E`) | 4 × `SOAK_SECS` |
+| F | `perf stat` instructions and cycles per request, and flat/inclusive profiles: LPUSH, SADD, MSET, SET × P 1/16, 6m vs Redis, no persistence | 10 min |
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/recached-sh/recached/perf/v0.6m-aof-group-commit/benchmarks/v0.6.0/6m/linux/run.sh
-bash run.sh                          # A B C D
+bash run.sh                          # A B C D F
 PHASES="E" SOAK_SECS=2400 bash run.sh   # the soak, 4 x 40 min
 ```
 
