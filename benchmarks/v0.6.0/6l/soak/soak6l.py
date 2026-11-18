@@ -8,6 +8,11 @@
         Rate-limited background load, <rate> commands/s per connection.
         bg:  SET:GET 1:4 over bg:1..$BG_KEYS, 64 B values (keys exist: overwrites)
         ttl: SET ttl:<random> 32 B EX 10, pipelined 4 (creates; evictable)
+        big: large values ($BIG_SIZE B, default 128 KiB): 7 in 8 SET big:<1..5000>
+             EX 60 (evictable), 1 in 8 overwrite bigfix:<1..50> (no TTL)
+    memwatch <port> <seconds> <out.json>      INFO memory at 20 Hz: max used_memory, and every
+        sample above maxmemory. The engine's accounting is the invariant; there
+        is no sampling allowance.
     burst <port> <n> <size> <ttl-s>           n pipelined SET stall:<k> of <size> bytes EX <ttl>
     scan <port> <seconds> <bg> <stable> <out.json> [<metrics-url>]
         Full SCAN traversals in a loop, COUNT cycling 10/100/1000. Every key that
@@ -219,6 +224,8 @@ async def _reply(r):
 async def _load(kind, port, conns, rate, seconds, out):
     bg_keys = int(os.environ.get("BG_KEYS", "200000"))
     pipe = 4 if kind == "ttl" else 1
+    big = (os.urandom(int(os.environ.get("BIG_SIZE", "131072")) // 2 + 1).hex().encode()
+           [:int(os.environ.get("BIG_SIZE", "131072"))]) if kind == "big" else b""
     loop = asyncio.get_running_loop()
     end = loop.time() + seconds
     st = {"kind": kind, "conns": conns, "rate_per_conn": rate, "ops": 0, "errors": {}, "error_samples": [],
@@ -240,6 +247,11 @@ async def _load(kind, port, conns, rate, seconds, out):
                     if kind == "bg":
                         k = f"bg:{rnd.randint(1, bg_keys)}"
                         batch = [("SET", k, val)] if rnd.random() < 0.2 else [("GET", k)]
+                    elif kind == "big":
+                        if rnd.random() < 0.125:
+                            batch = [("SET", f"bigfix:{rnd.randint(1, 50)}", big)]
+                        else:
+                            batch = [("SET", f"big:{rnd.randint(1, 5000)}", big, "EX", 60)]
                     else:
                         batch = [("SET", f"ttl:{rnd.randint(1, 5_000_000)}", val, "EX", 10) for _ in range(pipe)]
                     t0 = time.perf_counter_ns()
@@ -277,6 +289,40 @@ async def _load(kind, port, conns, rate, seconds, out):
 
 def load(kind, port, conns, rate, seconds, out):
     asyncio.run(_load(kind, int(port), int(conns), float(rate), float(seconds), out))
+
+
+# ── memwatch ──────────────────────────────────────────────────────────────────
+def memwatch(port, seconds, out):
+    end = time.monotonic() + float(seconds)
+    st = {"samples": 0, "max_used": 0, "maxmemory": 0, "over": 0, "over_samples": [], "errors": 0,
+          "max_ratio": 0.0}
+    c = None
+    while time.monotonic() < end:
+        try:
+            if c is None:
+                c = Conn(port, timeout=5)
+            fields = dict(line.split(":", 1) for line in show(c.cmd("INFO", "memory")).splitlines()
+                          if ":" in line)
+            used, cap = int(fields["used_memory"]), int(fields["maxmemory"])
+            st["samples"] += 1
+            st["maxmemory"] = cap
+            st["max_used"] = max(st["max_used"], used)
+            if cap:
+                st["max_ratio"] = max(st["max_ratio"], used / cap)
+                if used > cap:
+                    st["over"] += 1
+                    if len(st["over_samples"]) < 20:
+                        st["over_samples"].append({"t": round(time.monotonic() - end + float(seconds), 2),
+                                                   "used": used, "maxmemory": cap})
+        except (OSError, ConnectionError, ValueError, KeyError):
+            st["errors"] += 1
+            c = None
+            time.sleep(0.5)
+            continue
+        time.sleep(0.05)
+    st["max_ratio"] = round(st["max_ratio"], 4)
+    json.dump(st, open(out, "w"))
+    print(json.dumps({k: st[k] for k in ("samples", "max_used", "maxmemory", "over", "max_ratio", "errors")}))
 
 
 # ── scan ──────────────────────────────────────────────────────────────────────
@@ -357,7 +403,7 @@ def scan(port, seconds, bg, stable, out, metrics_url=None):
 
 
 # ── compare ───────────────────────────────────────────────────────────────────
-VOLATILE = (b"ttl:", b"stall:")
+VOLATILE = (b"ttl:", b"stall:", b"big:")
 
 
 def _all_keys(c):
@@ -451,14 +497,38 @@ def verdict(outdir, max_keys):
     # Caps (6L-A follower mode, 6L-B reservations).
     check("replica evicted nothing of its own (follower mode)", num("replica_evicted_keys") == 0,
           f"replica evicted_keys {facts.get('replica_evicted_keys', '?')}")
+    membind = facts.get("memory_binding") == "1"
     check("primary's key cap was binding", num("primary_evicted_keys") > 0,
-          f"primary evicted_keys {facts.get('primary_evicted_keys', '?')} (0 means the soak never exercised eviction)",
-          info=num("primary_evicted_keys") == 0)
+          f"primary evicted_keys {facts.get('primary_evicted_keys', '?')} (0 means the soak never exercised eviction)"
+          + (" — memory-binding run: the key cap is set out of reach" if membind else ""),
+          info=membind or num("primary_evicted_keys") == 0)
+    if membind:
+        # The hard limit, not a monitoring allowance: any sample of the
+        # engine's own accounting above maxmemory fails the run.
+        need("memory: used_memory never above maxmemory (no tolerance)", j("memwatch.json"),
+             lambda d: d["samples"] > 100 and d["maxmemory"] > 0 and d["over"] == 0,
+             lambda d: f"{d['samples']} samples at 20 Hz, max used {d['max_used']} of {d['maxmemory']} "
+                       f"({d['max_ratio']:.1%}), {d['over']} above the limit")
+        need("memory cap was binding", j("memwatch.json"),
+             lambda d: d["max_ratio"] >= 0.9 and (num("primary_evicted_keys") > 0 or num("oom_refusals") > 0),
+             lambda d: f"peak {d['max_ratio']:.1%} of maxmemory, evicted {facts.get('primary_evicted_keys', '?')}, "
+                       f"OOM refusals {facts.get('oom_refusals', '?')} (not binding = not exercised: "
+                       f"lower MAX_MEMORY_BINDING and re-run)")
+        check("memory: used_memory after crash recovery within maxmemory",
+              0 < num("used_memory_after_recovery") <= num("maxmemory_after_recovery"),
+              f"{facts.get('used_memory_after_recovery', '?')} of {facts.get('maxmemory_after_recovery', '?')}")
+        need("large-value writer: only OOM refusals", j("load-big.json"),
+             lambda d: all(code == "OOM" for code in d["errors"]),
+             lambda d: f"{d['ops']} ops, errors {d['errors']} (OOM is the documented answer when nothing "
+                       f"evictable is left; anything else fails)")
     tol = int(num("primary_workers")) + 1
     check("DBSIZE never above the key cap", num("max_primary_dbsize") <= max_keys + tol,
           f"max sampled {facts.get('max_primary_dbsize', '?')}, cap {max_keys} (+{tol} in-flight tolerance)")
     for f, label in (("load-bg.json", "background load"), ("load-ttl.json", "TTL churn")):
-        need(f"{label}: no refused writes", j(f), lambda d: not d["errors"],
+        # With memory binding, OOM is the engine enforcing the limit; it is
+        # counted (oom_refusals) and every other error still fails.
+        need(f"{label}: no refused writes" + (" (other than OOM)" if membind else ""), j(f),
+             lambda d: not {k: v for k, v in d["errors"].items() if not (membind and k == "OOM")},
              lambda d: f"{d['ops']} ops at {d['ops_per_s']}/s, errors {d['errors']}, p99 "
                        f"{(d['latency_ms'] or {}).get('p99')} ms")
 
@@ -517,7 +587,7 @@ def verdict(outdir, max_keys):
 
 if __name__ == "__main__":
     cmds = {"cmd": cmd, "ping": ping, "preload": preload, "load": load, "burst": burst, "scan": scan,
-            "compare": compare, "info": info, "metric": metric, "verdict": verdict}
+            "compare": compare, "info": info, "metric": metric, "verdict": verdict, "memwatch": memwatch}
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         print(__doc__, file=sys.stderr)
         sys.exit(64)
