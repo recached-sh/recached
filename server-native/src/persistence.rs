@@ -240,9 +240,11 @@ pub(crate) enum AofSync {
 ///   it runs instead of queueing behind a disk barrier once a second.
 /// - `truncate` empties the file after everything appended before it was
 ///   written, and before anything appended after it.
-/// - An I/O failure is reported to exactly the appends of the batch it hit,
-///   and is not sticky: the next batch tries the file again, so a later
-///   `SAVE` can recover persistence as before.
+/// - Under `everysec` and `no`, an I/O failure is reported to exactly the
+///   appends of the batch it hit, and is not sticky: the next batch tries
+///   the file again, so a later `SAVE` can recover persistence as before.
+///   Under `always`, a batch with appends that fails is a fail-stop (see
+///   [`FailStop`]): the process ends before any of them is acknowledged.
 /// - Cancellation-safe: the inline leader performs a batch with no `.await`
 ///   in between, and a blocking-pool drain completes and hands over on its
 ///   own, so a dropped append (a client disconnecting) never strands the
@@ -273,13 +275,52 @@ struct AofShared {
     /// (`busy`, handed over under the queue lock), so relaxed accesses are
     /// ordered by that lock.
     torn_at: std::sync::atomic::AtomicU64,
+    /// `always` only: a batch with appends failed to become durable, so the
+    /// process is stopping (see [`AofShared::fail_stop`]). Once set,
+    /// nothing more is written and every batch fails.
+    stopped: std::sync::atomic::AtomicBool,
+    /// What [`AofShared::fail_stop`] does after latching `stopped`.
+    on_fail_stop: FailStop,
     /// Failures to inject into the next batches' writes, oldest first.
     #[cfg(test)]
     faults: std::sync::Mutex<VecDeque<AofFault>>,
+    /// A failure to inject into the first batch whose bytes contain the
+    /// marker, for the subprocess harness (see [`AofWriter::open`]).
+    #[cfg(test)]
+    armed: std::sync::Mutex<Option<(Vec<u8>, AofFault)>>,
     /// Truncations still to fail, for tests.
     #[cfg(test)]
     failing_repairs: std::sync::atomic::AtomicU32,
+    /// `fdatasync`s still to fail, for tests.
+    #[cfg(test)]
+    failing_syncs: std::sync::atomic::AtomicU32,
 }
+
+/// What an `always` writer does when a batch it had to make durable fails.
+///
+/// The contract of `always` is that a write is acknowledged only once its
+/// AOF frame is `fdatasync`ed. Its command has already changed memory by
+/// then, so once the frame cannot be made durable the process holds state
+/// ahead of its log, and every waiter in the batch would otherwise resume
+/// and answer as before. Redis stops for the same reason ("Can't recover
+/// from AOF write error when the AOF fsync policy is 'always'. Exiting").
+/// See "AOF failures under `always`" in `docs/server/configuration.md`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FailStop {
+    /// Production: log, then end the process from the thread that saw the
+    /// failure, before the batch is completed — so no waiter of it, or of
+    /// any batch after it, ever resumes, on any transport.
+    Exit,
+    /// In-process tests: latch `stopped` and complete the batch, and
+    /// every later one, with an error.
+    #[cfg(test)]
+    Latch,
+}
+
+/// The exit status of a fail-stop: `EX_IOERR` from `sysexits.h`, distinct
+/// from the status 1 of a startup error, so a supervisor or a test can tell
+/// the two apart.
+pub(crate) const AOF_FAIL_STOP_EXIT_CODE: i32 = 74;
 
 /// [`AofShared::torn_at`]: the file ends on a whole frame.
 const NOT_TORN: u64 = u64::MAX;
@@ -301,6 +342,32 @@ pub(crate) enum AofFault {
     /// As `TornThenFail`, and the next two repairs (truncations) fail too:
     /// the one right after the failure and the next batch's retry.
     TornUnrepairable(usize, ErrorKind),
+    /// The write succeeds; the next `fdatasync` fails.
+    FsyncFails(ErrorKind),
+}
+
+#[cfg(test)]
+impl AofFault {
+    /// Parse the subprocess harness's spelling: `fail:<kind>`, `short:<n>`,
+    /// `torn:<n>:<kind>`, `fsync:<kind>`, with `<kind>` `enospc` or `eio`
+    /// (an `Other` error).
+    pub(crate) fn parse(spec: &str) -> Option<Self> {
+        fn kind(s: &str) -> Option<ErrorKind> {
+            match s {
+                "enospc" => Some(ErrorKind::StorageFull),
+                "eio" => Some(ErrorKind::Other),
+                _ => None,
+            }
+        }
+        let parts: Vec<&str> = spec.split(':').collect();
+        match parts.as_slice() {
+            ["fail", k] => Some(AofFault::Fail(kind(k)?)),
+            ["short", n] => Some(AofFault::Short(n.parse().ok()?)),
+            ["torn", n, k] => Some(AofFault::TornThenFail(n.parse().ok()?, kind(k)?)),
+            ["fsync", k] => Some(AofFault::FsyncFails(kind(k)?)),
+            _ => None,
+        }
+    }
 }
 
 /// Whether a connection gate defers its lead to the end of the scheduler
@@ -478,6 +545,9 @@ impl AofShared {
 
     fn perform(&self, batch: &AofBatch) -> std::io::Result<()> {
         use std::sync::atomic::Ordering::Relaxed;
+        if self.is_stopped() {
+            return Err(stopped_error());
+        }
         let file = &self.file;
         if batch.truncate {
             // A failed ftruncate leaves the file as it was, so a fragment
@@ -515,9 +585,85 @@ impl AofShared {
         // `always`: the appends of this batch are acknowledged only once
         // durable, so the fsync belongs here — one per batch.
         if self.policy == AofSync::Always && !batch.bytes.is_empty() {
-            sync_counted(file, self.stats)?;
+            self.sync()?;
         }
         Ok(())
+    }
+
+    /// [`sync_counted`] on the AOF, after applying an injected failure.
+    fn sync(&self) -> std::io::Result<()> {
+        #[cfg(test)]
+        if self
+            .failing_syncs
+            .fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |n| n.checked_sub(1),
+            )
+            .is_ok()
+        {
+            bump(&self.stats.fsyncs, 1);
+            return Err(std::io::Error::other("injected fdatasync failure"));
+        }
+        sync_counted(&self.file, self.stats)
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The outcome to complete `batch` with. Under `always`, a batch that
+    /// carried appends and failed is a fail-stop: none of its appends may
+    /// be acknowledged, and in production this does not return. A failed
+    /// batch with no appends (a truncation, a flush anchor) only reports
+    /// its error: the file still holds every acknowledged frame, and no
+    /// write waits on it. `everysec` and `no` are unchanged: the error goes
+    /// to the batch's waiters, which latch persistence unhealthy.
+    fn settle(&self, batch: &AofBatch, result: std::io::Result<()>) -> std::io::Result<()> {
+        let result = match result {
+            Err(e) if self.policy == AofSync::Always && batch.frames > 0 => {
+                self.fail_stop("aof_write", &e);
+                Err(e)
+            }
+            other => other,
+        };
+        // A fail-stop that began elsewhere (`flush`'s fsync runs outside
+        // `busy`) may still be ending the process: a batch completed now,
+        // even with an error, would resume waiters whose callers treat an
+        // error as "record it" and still fan out and reply. Never complete.
+        if self.is_stopped() && self.on_fail_stop == FailStop::Exit {
+            park_until_exit();
+        }
+        result
+    }
+
+    /// An `always` write or `fdatasync` failed: latch `stopped`, so no
+    /// later batch is written or completed with success, then stop.
+    ///
+    /// In production this ends the process here, on the thread performing
+    /// the batch and before completing it, so no waiter of the batch — on
+    /// any transport, deferred or not — resumes to send a reply, fan the
+    /// write out to replicas or watchers, or run another command. It holds
+    /// no lock (performing is exclusive through `busy`, not a held guard)
+    /// and needs none: `process::exit` runs no destructors, and std's exit
+    /// hook only `try_lock`s stdout. Later batches cannot start, because
+    /// this one never releases `busy`. Replies of batches already durable
+    /// may or may not reach their clients before the process ends; those
+    /// clients see a connection reset for a write that *is* durable, which
+    /// is the unknown outcome any crash gives and a DEDUP retry resolves.
+    #[cold]
+    fn fail_stop(&self, operation: &'static str, error: &std::io::Error) {
+        if self.stopped.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            // Already stopping; this batch failed because of it.
+            return;
+        }
+        match self.on_fail_stop {
+            FailStop::Exit => exit_after_aof_failure(operation, error),
+            #[cfg(test)]
+            FailStop::Latch => {
+                error!(operation, error = %error, "AOF fail-stop (latched for a test)");
+            }
+        }
     }
 
     /// Before writing: if an earlier failure left a fragment the cut could
@@ -627,7 +773,21 @@ impl AofShared {
             .faults
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .pop_front();
+            .pop_front()
+            .or_else(|| {
+                let mut armed = self
+                    .armed
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let hit = armed.as_ref().is_some_and(|(marker, _)| {
+                    bytes.windows(marker.len()).any(|w| w == marker.as_slice())
+                });
+                if hit {
+                    armed.take().map(|(_, f)| f)
+                } else {
+                    None
+                }
+            });
         let torn = |n: usize| -> (usize, std::io::Result<()>) {
             let head = bytes.get(..n.min(bytes.len())).unwrap_or_default();
             let mut f = file;
@@ -654,6 +814,11 @@ impl AofShared {
                 self.failing_repairs
                     .fetch_add(2, std::sync::atomic::Ordering::Relaxed);
                 (torn(n).0, Err(kind.into()))
+            }
+            Some(AofFault::FsyncFails(_)) => {
+                self.failing_syncs
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                write_counted(file, bytes, self.stats)
             }
         }
     }
@@ -699,6 +864,10 @@ impl AofShared {
             if !batch.bytes.is_empty() {
                 bump(&self.stats.inline_batches, 1);
             }
+            // Before releasing `busy`: a fail-stop must not let another
+            // leader start. (Inline batches never carry `always` appends,
+            // which need the disk, so this is belt and braces.)
+            let result = self.settle(&batch, result);
             self.lock().busy = false;
             batch.done.complete(result);
         }
@@ -722,6 +891,7 @@ impl AofShared {
             if !batch.bytes.is_empty() {
                 bump(&self.stats.blocking_batches, 1);
             }
+            let result = self.settle(&batch, result);
             batch.done.complete(result);
         }
     }
@@ -765,6 +935,90 @@ fn write_counted(
         }
     }
     (written, Ok(()))
+}
+
+/// In-process tests latch a fail-stop rather than end the test runner; the
+/// subprocess harness (`tests::aof_fail_stop`) runs the real exit, by
+/// setting `RECACHED_TEST_AOF_FAIL_STOP=exit` for its child. Test builds
+/// only: a release binary has no such variable.
+#[cfg(test)]
+fn test_fail_stop() -> FailStop {
+    // Only in the harness's child: a stray export in a developer's or CI's
+    // environment must not make the test runner itself exit.
+    if std::env::var_os("RECACHED_FAIL_STOP_CHILD").is_none() {
+        return FailStop::Latch;
+    }
+    match std::env::var("RECACHED_TEST_AOF_FAIL_STOP").as_deref() {
+        Ok("exit") => FailStop::Exit,
+        _ => FailStop::Latch,
+    }
+}
+
+/// `RECACHED_TEST_AOF_FAULT=<fault>@<marker>`: the first batch whose bytes
+/// contain `<marker>` suffers `<fault>` ([`AofFault::parse`]). Test builds
+/// only, for the subprocess harness's child.
+#[cfg(test)]
+fn test_armed_fault() -> Option<(Vec<u8>, AofFault)> {
+    std::env::var_os("RECACHED_FAIL_STOP_CHILD")?;
+    let spec = std::env::var("RECACHED_TEST_AOF_FAULT").ok()?;
+    let (fault, marker) = spec.split_once('@')?;
+    let fault = AofFault::parse(fault).unwrap_or_else(|| panic!("bad test fault {spec:?}"));
+    Some((marker.as_bytes().to_vec(), fault))
+}
+
+/// A thread that finds the writer stopped under [`FailStop::Exit`] while
+/// another thread is ending the process: block here, completing nothing,
+/// until the process is gone.
+#[cold]
+fn park_until_exit() -> ! {
+    loop {
+        std::thread::park();
+    }
+}
+
+/// The error every batch gets once an `always` writer has stopped.
+fn stopped_error() -> std::io::Error {
+    std::io::Error::other(
+        "the AOF stopped after a failed write or fsync under appendfsync always; \
+         nothing more is written",
+    )
+}
+
+/// The production [`FailStop::Exit`]: report, then end the process.
+///
+/// Logged through `tracing` (the operator's log) and written straight to
+/// stderr as well, so the reason survives a log pipeline that drops the
+/// last lines of a dying process. A failed stderr write is ignored: there
+/// is nothing left to report it to, and panicking here instead would
+/// unwind the drain thread and leave its batch's waiters parked rather
+/// than stop the process.
+#[cold]
+fn exit_after_aof_failure(operation: &'static str, error: &std::io::Error) -> ! {
+    use std::io::Write as _;
+    // `error!` writes stdout synchronously; if stdout is a stalled pipe it
+    // could block here and the process would never exit (or be restarted).
+    // The watchdog exits regardless. `process::exit` itself only
+    // `try_lock`s stdout. A failed spawn just leaves the direct path.
+    let _watchdog = std::thread::Builder::new()
+        .name("aof-fail-stop".into())
+        .spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            std::process::exit(AOF_FAIL_STOP_EXIT_CODE)
+        });
+    let _ignored = writeln!(
+        std::io::stderr(),
+        "recached-server: fatal: AOF {operation} failed under appendfsync always ({error}); \
+         exiting with status {AOF_FAIL_STOP_EXIT_CODE} before acknowledging the write"
+    );
+    error!(
+        operation,
+        error = %error,
+        exit_code = AOF_FAIL_STOP_EXIT_CODE,
+        "Can't recover from an AOF write error when appendfsync is 'always': exiting \
+         before any affected write is acknowledged. Fix the disk, then restart; the AOF \
+         replays every acknowledged write"
+    );
+    std::process::exit(AOF_FAIL_STOP_EXIT_CODE)
 }
 
 /// `sync_data`, counted.
@@ -849,6 +1103,10 @@ pub(crate) struct AofGatedWriter<W> {
     waiting_on: Option<Arc<AofShared>>,
     /// This settle already yielded once; later tickets lead at once.
     yielded: bool,
+    /// A batch of this connection failed under `always`: every later write
+    /// fails too, so a caller that ignores one error and flushes again
+    /// (QUIT, a protocol error) cannot release the replies held behind it.
+    poisoned: bool,
 }
 
 impl<W> AofGatedWriter<W> {
@@ -860,6 +1118,7 @@ impl<W> AofGatedWriter<W> {
             waiting: None,
             waiting_on: None,
             yielded: false,
+            poisoned: false,
         }
     }
 
@@ -869,30 +1128,40 @@ impl<W> AofGatedWriter<W> {
         Arc::clone(&self.deferred)
     }
 
-    fn poll_settled(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+    /// Wait until every batch this connection queued is written. An error
+    /// latches persistence unhealthy; under `always` it is a fail-stop
+    /// (see [`FailStop`]), and the socket write fails instead of passing
+    /// on replies that would claim durability.
+    fn poll_settled(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
         use std::task::Poll;
+        if self.poisoned {
+            return Poll::Ready(Err(withheld()));
+        }
         loop {
             if let Some(waiting) = &mut self.waiting {
                 match waiting.as_mut().poll(cx) {
                     Poll::Pending => return Poll::Pending,
                     Poll::Ready(result) => {
                         self.waiting = None;
-                        self.waiting_on = None;
+                        let shared = self.waiting_on.take();
                         if let Err(e) = result {
-                            self.state.record_persistence_failure("aof_append", &e);
+                            self.failed(shared.as_deref(), e)?;
                         }
                     }
                 }
             }
             let Some((shared, done)) = self.deferred.pop() else {
                 self.yielded = false;
-                return Poll::Ready(());
+                return Poll::Ready(Ok(()));
             };
             if let Some(result) = done.result.get() {
                 // Another task already wrote it.
                 if let Err((kind, message)) = result {
                     let e = std::io::Error::new(*kind, message.clone());
-                    self.state.record_persistence_failure("aof_append", &e);
+                    self.failed(Some(&shared), e)?;
                 }
                 continue;
             }
@@ -916,6 +1185,27 @@ impl<W> AofGatedWriter<W> {
             }
         }
     }
+}
+
+impl<W> AofGatedWriter<W> {
+    /// One of this connection's batches failed. Latch persistence
+    /// unhealthy, as for any AOF failure; if its writer stopped (`always`),
+    /// fail the socket write too, so the replies behind it are never sent.
+    fn failed(&mut self, shared: Option<&AofShared>, e: std::io::Error) -> std::io::Result<()> {
+        self.state.record_persistence_failure("aof_append", &e);
+        if shared.is_some_and(AofShared::is_stopped) {
+            self.poisoned = true;
+            return Err(withheld());
+        }
+        Ok(())
+    }
+}
+
+fn withheld() -> std::io::Error {
+    std::io::Error::new(
+        ErrorKind::BrokenPipe,
+        "reply withheld: an AOF write of this connection failed under appendfsync always",
+    )
 }
 
 /// Wait for a gate's batch, counting the waits another task's write made park.
@@ -946,7 +1236,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for AofGatedWriter<W> {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
-        std::task::ready!(self.poll_settled(cx));
+        std::task::ready!(self.poll_settled(cx))?;
         std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
     }
 
@@ -954,7 +1244,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for AofGatedWriter<W> {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        std::task::ready!(self.poll_settled(cx));
+        std::task::ready!(self.poll_settled(cx))?;
         std::pin::Pin::new(&mut self.inner).poll_flush(cx)
     }
 
@@ -962,7 +1252,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for AofGatedWriter<W> {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        std::task::ready!(self.poll_settled(cx));
+        std::task::ready!(self.poll_settled(cx))?;
         std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 
@@ -971,7 +1261,7 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for AofGatedWriter<W> {
         cx: &mut std::task::Context<'_>,
         bufs: &[std::io::IoSlice<'_>],
     ) -> std::task::Poll<std::io::Result<usize>> {
-        std::task::ready!(self.poll_settled(cx));
+        std::task::ready!(self.poll_settled(cx))?;
         std::pin::Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
     }
 
@@ -1005,10 +1295,19 @@ impl AofWriter {
                 coalesce: Coalescer::new(true),
                 stats: &AOF_STATS,
                 torn_at: std::sync::atomic::AtomicU64::new(NOT_TORN),
+                stopped: std::sync::atomic::AtomicBool::new(false),
+                #[cfg(not(test))]
+                on_fail_stop: FailStop::Exit,
+                #[cfg(test)]
+                on_fail_stop: test_fail_stop(),
                 #[cfg(test)]
                 faults: std::sync::Mutex::new(VecDeque::new()),
                 #[cfg(test)]
+                armed: std::sync::Mutex::new(test_armed_fault()),
+                #[cfg(test)]
                 failing_repairs: std::sync::atomic::AtomicU32::new(0),
+                #[cfg(test)]
+                failing_syncs: std::sync::atomic::AtomicU32::new(0),
             }),
         })
     }
@@ -1089,9 +1388,10 @@ impl AofWriter {
     /// the socket. Elsewhere it is `append`.
     ///
     /// A deferred append reports `Ok`; a write failure is recorded by the
-    /// connection when it settles. Either way the client's reply is the
-    /// same: an AOF failure never changed it, only latched persistence
-    /// unhealthy for later writes.
+    /// connection when it settles. Under `everysec` and `no` the client's
+    /// reply is the same either way: the failure only latches persistence
+    /// unhealthy for later writes. Under `always` the process stops before
+    /// the reply is sent (see [`FailStop`]).
     pub(crate) async fn append_client_write(&self, resp: &[u8]) -> std::io::Result<()> {
         let deferred = AOF_DEFERRED.try_with(Arc::clone).ok();
         match deferred {
@@ -1115,9 +1415,28 @@ impl AofWriter {
             .wait()
             .await?;
         let shared = Arc::clone(&self.shared);
-        tokio::task::spawn_blocking(move || sync_counted(&shared.file, shared.stats))
-            .await
-            .map_err(|e| std::io::Error::other(format!("AOF fsync task failed: {e}")))?
+        tokio::task::spawn_blocking(move || {
+            if shared.is_stopped() {
+                return Err(stopped_error());
+            }
+            if shared.is_stopped() && shared.on_fail_stop == FailStop::Exit {
+                park_until_exit();
+            }
+            let result = shared.sync();
+            // `always`: every acknowledged frame was synced by its own
+            // batch, but after a failed fdatasync the kernel may have
+            // dropped dirty pages and a later one can report success
+            // regardless, so no later sync could be trusted to vouch for
+            // a write either. Stop, as for a batch's own fsync.
+            if let Err(e) = &result
+                && shared.policy == AofSync::Always
+            {
+                shared.fail_stop("aof_fsync", e);
+            }
+            result
+        })
+        .await
+        .map_err(|e| std::io::Error::other(format!("AOF fsync task failed: {e}")))?
     }
 
     /// Empty the file after everything appended so far, before anything
@@ -2358,6 +2677,14 @@ mod gate_tests {
             w.append(&set("a", "1")).await.unwrap();
             w.inject_fault(AofFault::TornThenFail(9, ErrorKind::StorageFull));
             assert!(w.append(&set("b", "2")).await.is_err());
+            if policy == AofSync::Always {
+                // A fail-stop (latched in tests): nothing more is written,
+                // and the file was still cut back for the restart.
+                assert!(w.append(&set("c", "3")).await.is_err());
+                assert_eq!(std::fs::read(&path).unwrap(), set("a", "1"));
+                let _ = std::fs::remove_dir_all(&dir);
+                continue;
+            }
             w.append(&set("c", "3")).await.unwrap();
             let on_disk = std::fs::read(&path).unwrap();
             assert_eq!(on_disk, [set("a", "1"), set("c", "3")].concat());
@@ -2578,5 +2905,219 @@ mod gate_tests {
         assert_eq!(whole_frames_len(&both, both.len()), both.len());
         // A written count past the buffer (cannot happen) is clamped.
         assert_eq!(whole_frames_len(&both, both.len() + 10), both.len());
+    }
+
+    // ── 6N-0B: `always` fail-stop (latched in-process; the real exit is
+    // covered end to end by `tests::aof_fail_stop`) ───────────────────────
+
+    /// Every append sharing a failed `always` batch fails, and so does
+    /// every later batch: nothing is written once the writer stopped.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_always_failure_fails_the_whole_batch_and_every_later_one() {
+        for fault in [
+            AofFault::Fail(ErrorKind::StorageFull),
+            AofFault::TornThenFail(5, ErrorKind::Other),
+            AofFault::FsyncFails(ErrorKind::Other),
+        ] {
+            let dir = scratch("always_stop");
+            let path = dir.join("f.aof");
+            let w = Arc::new(
+                AofWriter::open(path.clone(), AofSync::Always)
+                    .await
+                    .unwrap(),
+            );
+            w.append(&set("a", "1")).await.unwrap();
+            w.inject_fault(fault);
+            // Queued together before anyone leads: one batch of three.
+            let (d1, d2, d3) = (
+                w.queue_only(false, |b| b.push_frame(&set("b", "2"))),
+                w.queue_only(false, |b| b.push_frame(&set("c", "3"))),
+                w.queue_only(false, |b| b.push_frame(&set("d", "4"))),
+            );
+            assert!(Arc::ptr_eq(&d1, &d3), "one shared batch");
+            w.shared.lead();
+            for done in [d1, d2, d3] {
+                assert!(
+                    done.wait().await.is_err(),
+                    "{fault:?}: a waiter resumed with success"
+                );
+            }
+            assert!(w.shared.is_stopped(), "{fault:?}");
+            let before = std::fs::read(&path).unwrap();
+            let err = w.append(&set("e", "5")).await.unwrap_err();
+            assert!(err.to_string().contains("stopped"), "{err}");
+            assert!(w.flush().await.is_err(), "{fault:?}: flush after a stop");
+            assert_eq!(
+                std::fs::read(&path).unwrap(),
+                before,
+                "{fault:?}: written after the stop"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Under `always` the gate refuses to pass replies once its batch
+    /// failed, so the connection's buffered `+OK`s never reach the client.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn the_gate_withholds_replies_behind_a_failed_always_batch() {
+        let dir = scratch("gate_withhold");
+        let w = Arc::new(
+            AofWriter::open(dir.join("f.aof"), AofSync::Always)
+                .await
+                .unwrap(),
+        );
+        w.inject_fault(AofFault::Fail(ErrorKind::StorageFull));
+        let gate = AofGatedWriter::new(Vec::<u8>::new(), state());
+        let deferral = gate.deferral();
+        let mut socket = tokio::io::BufWriter::new(gate);
+        let flushed = with_deferred_aof(deferral, async {
+            w.append_client_write(&set("a", "1")).await.unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut socket, b"+OK\r\n")
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::flush(&mut socket).await
+        })
+        .await;
+        assert!(flushed.is_err(), "the reply was released");
+        assert!(
+            socket.get_ref().inner.is_empty(),
+            "bytes reached the socket"
+        );
+        // Sticky (6N-0 review F2): a caller that ignores the error and
+        // flushes again (QUIT, a protocol error) finds no ticket left to
+        // fail on, and must still not release the buffered reply.
+        assert!(tokio::io::AsyncWriteExt::flush(&mut socket).await.is_err());
+        assert!(
+            tokio::io::AsyncWriteExt::write_all(socket.get_mut(), b"+OK\r\n")
+                .await
+                .is_err()
+        );
+        assert!(
+            socket.get_ref().inner.is_empty(),
+            "bytes reached the socket on a retry"
+        );
+        assert!(!socket.get_ref().state.persistence_is_healthy());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `everysec` keeps its contract: the reply passes, persistence latches
+    /// unhealthy (later writes fail closed), and the writer keeps working.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn everysec_failures_still_pass_replies_and_do_not_stop() {
+        let dir = scratch("everysec_pass");
+        let w = Arc::new(
+            AofWriter::open(dir.join("f.aof"), AofSync::EverySec)
+                .await
+                .unwrap(),
+        );
+        w.inject_fault(AofFault::Fail(ErrorKind::StorageFull));
+        let gate = AofGatedWriter::new(Vec::<u8>::new(), state());
+        let deferral = gate.deferral();
+        let mut socket = tokio::io::BufWriter::new(gate);
+        with_deferred_aof(deferral, async {
+            w.append_client_write(&set("a", "1")).await.unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut socket, b"+OK\r\n")
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::flush(&mut socket).await.unwrap();
+        })
+        .await;
+        assert_eq!(socket.get_ref().inner, b"+OK\r\n");
+        assert!(!socket.get_ref().state.persistence_is_healthy());
+        assert!(!w.shared.is_stopped());
+        w.inject_fault(AofFault::FsyncFails(ErrorKind::Other));
+        w.append(&set("b", "2")).await.unwrap();
+        assert!(
+            w.flush().await.is_err(),
+            "the ticker's fsync failure is reported"
+        );
+        assert!(!w.shared.is_stopped(), "everysec never stops");
+        w.append(&set("c", "3")).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed `fdatasync` from `flush` (checkpoint, shutdown) is a
+    /// fail-stop under `always`.
+    #[tokio::test]
+    async fn an_always_flush_fsync_failure_stops() {
+        let dir = scratch("always_flush");
+        let w = AofWriter::open(dir.join("f.aof"), AofSync::Always)
+            .await
+            .unwrap();
+        w.append(&set("a", "1")).await.unwrap();
+        w.shared
+            .failing_syncs
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(w.flush().await.is_err());
+        assert!(w.shared.is_stopped());
+        assert!(w.append(&set("b", "2")).await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A truncation that fails with no append in its batch acknowledged
+    /// nothing, so under `always` it is reported (SAVE fails, persistence
+    /// latches unhealthy) but is not a fail-stop: the file still holds
+    /// every acknowledged frame.
+    #[tokio::test]
+    async fn an_always_truncation_failure_alone_does_not_stop() {
+        let dir = scratch("always_truncate");
+        let path = dir.join("f.aof");
+        let w = AofWriter::open(path.clone(), AofSync::Always)
+            .await
+            .unwrap();
+        w.append(&set("a", "1")).await.unwrap();
+        w.shared
+            .failing_repairs
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(w.truncate().await.is_err());
+        assert!(!w.shared.is_stopped());
+        w.append(&set("b", "2")).await.unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            [set("a", "1"), set("b", "2")].concat()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An append that joins a truncation's batch is a frame of it: if the
+    /// truncation fails, that append was not written, so it stops.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_always_truncation_failure_with_appends_in_its_batch_stops() {
+        let dir = scratch("always_truncate_frames");
+        let w = AofWriter::open(dir.join("f.aof"), AofSync::Always)
+            .await
+            .unwrap();
+        w.shared
+            .failing_repairs
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        let truncated = w.queue_only(true, |b| b.truncate = true);
+        let joined = w.queue_only(false, |b| b.push_frame(&set("a", "1")));
+        assert!(Arc::ptr_eq(&truncated, &joined));
+        w.shared.lead();
+        assert!(joined.wait().await.is_err());
+        assert!(w.shared.is_stopped());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn harness_fault_specs_parse() {
+        assert!(matches!(
+            AofFault::parse("fail:enospc"),
+            Some(AofFault::Fail(ErrorKind::StorageFull))
+        ));
+        assert!(matches!(
+            AofFault::parse("short:3"),
+            Some(AofFault::Short(3))
+        ));
+        assert!(matches!(
+            AofFault::parse("torn:9:eio"),
+            Some(AofFault::TornThenFail(9, ErrorKind::Other))
+        ));
+        assert!(matches!(
+            AofFault::parse("fsync:eio"),
+            Some(AofFault::FsyncFails(ErrorKind::Other))
+        ));
+        assert!(AofFault::parse("fail:bogus").is_none());
+        assert!(AofFault::parse("explode").is_none());
     }
 }
