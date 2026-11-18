@@ -309,10 +309,12 @@ pub(crate) enum AofFault {
 /// on one worker with 50 clients every command was its own `write(2)`
 /// (6M-A: 100,000 `SET`s → 100,000 batches of one frame). A gate now
 /// `yield_now`s first. Tokio wakes yielded tasks only once the worker has
-/// run every other ready task and polled the I/O driver — or at its periodic
-/// maintenance tick, every `event_interval` (61) polls, so the wait is
-/// bounded even on a worker that never idles — and by then the other ready
-/// connections have queued their frames into the same open batch. The first
+/// run every other ready task in its queue (and whatever it then steals
+/// from other workers) and polled the I/O driver — or at its periodic
+/// maintenance tick, every `event_interval` (61) polls, which is the hard
+/// bound on the wait even for a worker that never idles — and by then the
+/// other ready connections have queued their frames into the same open
+/// batch. The first
 /// gate to resume writes it for all of them; the rest find it written.
 ///
 /// The yield costs an extra scheduler pass (an `epoll_wait(0)` when nothing
@@ -1982,6 +1984,7 @@ mod gate_tests {
 
     struct Run {
         batches: u64,
+        fsyncs: u64,
         frames: u64,
         early_replies: u64,
         on_disk: Vec<u8>,
@@ -2058,6 +2061,7 @@ mod gate_tests {
         let _ = std::fs::remove_dir_all(&dir);
         Run {
             batches: stats.batches.load(Ordering::Relaxed),
+            fsyncs: stats.fsyncs.load(Ordering::Relaxed),
             frames: stats.frames.load(Ordering::Relaxed),
             early_replies: early.load(Ordering::SeqCst),
             on_disk,
@@ -2109,6 +2113,12 @@ mod gate_tests {
                 assert_eq!(run.early_replies, 0, "{name} P={frames_each}");
                 assert!(holds_every_frame(&run.on_disk, 32, frames_each), "{name}");
                 assert_eq!(run.frames, 32 * frames_each as u64, "{name}");
+                // `always`: every batch that carried frames was fdatasynced
+                // before it completed (`perform`), and replies wait for
+                // completion — the file check above cannot see an fsync.
+                if policy == AofSync::Always {
+                    assert_eq!(run.fsyncs, run.batches, "always: one fdatasync per batch");
+                }
             }
         }
     }
