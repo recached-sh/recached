@@ -262,6 +262,97 @@ struct AofShared {
     queue: std::sync::Mutex<AofQueue>,
     file: std::fs::File,
     policy: AofSync,
+    coalesce: Coalescer,
+    stats: &'static AofStats,
+    /// Failures to inject into the next batches' writes, oldest first.
+    #[cfg(test)]
+    faults: std::sync::Mutex<VecDeque<AofFault>>,
+}
+
+/// A write failure a test makes the next batch suffer.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AofFault {
+    /// The write fails before any byte reaches the file.
+    Fail(ErrorKind),
+    /// The first `write(2)` takes only this many bytes; the rest follow.
+    Short(usize),
+    /// This many bytes reach the file, then the write fails: a torn frame.
+    TornThenFail(usize, ErrorKind),
+}
+
+/// Whether a connection gate defers its lead to the end of the scheduler
+/// pass, so that other connections' appends join the same `write(2)`.
+///
+/// Redis writes the AOF once per event-loop iteration, after every ready
+/// client has run. A tokio worker has no such hook, so a gate that led as
+/// soon as its connection flushed wrote that one connection's frames alone:
+/// on one worker with 50 clients every command was its own `write(2)`
+/// (6M-A: 100,000 `SET`s → 100,000 batches of one frame). A gate now
+/// `yield_now`s first. Tokio wakes yielded tasks only once the worker has
+/// run every other ready task in its queue (and whatever it then steals
+/// from other workers) and polled the I/O driver — or at its periodic
+/// maintenance tick, every `event_interval` (61) polls, which is the hard
+/// bound on the wait even for a worker that never idles — and by then the
+/// other ready connections have queued their frames into the same open
+/// batch. The first
+/// gate to resume writes it for all of them; the rest find it written.
+///
+/// The yield costs an extra scheduler pass (an `epoll_wait(0)` when nothing
+/// else is ready), which is pure loss with one client. So it is adaptive:
+/// after [`COALESCE_MISSES`] yields in a row that no other append joined,
+/// the next [`COALESCE_BACKOFF`] gates lead at once, then it probes again.
+/// The heuristic only decides *when* a batch is written, never what a
+/// write covers or what a reply waits for, so a racy decision is harmless.
+struct Coalescer {
+    enabled: std::sync::atomic::AtomicBool,
+    /// Gates still to lead at once before the next probe.
+    skip: std::sync::atomic::AtomicU32,
+    /// Consecutive yields that no other append joined.
+    misses: std::sync::atomic::AtomicU32,
+}
+
+/// Yields in a row that gained nothing before coalescing backs off.
+const COALESCE_MISSES: u32 = 2;
+/// Gates that lead at once after a back-off, before the next probe.
+const COALESCE_BACKOFF: u32 = 32;
+
+impl Coalescer {
+    fn new(enabled: bool) -> Self {
+        Coalescer {
+            enabled: std::sync::atomic::AtomicBool::new(enabled),
+            skip: std::sync::atomic::AtomicU32::new(0),
+            misses: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// Whether this gate should yield before leading.
+    fn should_yield(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        if !self.enabled.load(Relaxed) {
+            return false;
+        }
+        // Decrement while positive; at zero, probe.
+        self.skip
+            .fetch_update(Relaxed, Relaxed, |skip| skip.checked_sub(1))
+            .is_err()
+    }
+
+    /// Record whether a yield let another append join (or another task
+    /// write the batch).
+    fn observe(&self, gained: bool, stats: &AofStats) {
+        use std::sync::atomic::Ordering::Relaxed;
+        if gained {
+            bump(&stats.coalesce_gained, 1);
+            self.misses.store(0, Relaxed);
+            return;
+        }
+        bump(&stats.coalesce_missed, 1);
+        if self.misses.fetch_add(1, Relaxed).saturating_add(1) >= COALESCE_MISSES {
+            self.misses.store(0, Relaxed);
+            self.skip.store(COALESCE_BACKOFF, Relaxed);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -275,6 +366,10 @@ struct AofQueue {
 
 struct AofBatch {
     bytes: Vec<u8>,
+    /// Logical appends in `bytes`, for [`AOF_STATS`].
+    frames: u64,
+    /// When the first append joined, for [`AOF_STATS`].
+    opened: Option<std::time::Instant>,
     /// Empty the file before writing this batch's bytes.
     truncate: bool,
     /// No further appends may join (a flush or truncate is anchored to it).
@@ -290,6 +385,10 @@ struct AofDone {
 }
 
 impl AofDone {
+    fn is_complete(&self) -> bool {
+        self.result.get().is_some()
+    }
+
     async fn wait(&self) -> std::io::Result<()> {
         loop {
             let notified = self.notify.notified();
@@ -318,10 +417,20 @@ impl AofBatch {
     fn new() -> Self {
         AofBatch {
             bytes: Vec::new(),
+            frames: 0,
+            opened: None,
             truncate: false,
             sealed: false,
             done: Arc::new(AofDone::default()),
         }
+    }
+
+    fn push_frame(&mut self, frame: &[u8]) {
+        if self.opened.is_none() {
+            self.opened = Some(std::time::Instant::now());
+        }
+        self.bytes.extend_from_slice(frame);
+        self.frames = self.frames.saturating_add(1);
     }
 
     /// Whether performing this batch waits on the disk, and so must not run
@@ -333,27 +442,76 @@ impl AofBatch {
 
 impl AofShared {
     fn lock(&self) -> std::sync::MutexGuard<'_, AofQueue> {
-        self.queue
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        match self.queue.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                bump(&self.stats.lock_contended, 1);
+                self.queue
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+            }
+        }
     }
 
     fn perform(&self, batch: &AofBatch) -> std::io::Result<()> {
-        use std::io::Write as _;
-        let mut file = &self.file;
+        let file = &self.file;
         if batch.truncate {
             file.set_len(0)?;
             file.sync_all()?;
         }
         if !batch.bytes.is_empty() {
-            file.write_all(&batch.bytes)?;
+            let queued = batch
+                .opened
+                .map(|opened| opened.elapsed())
+                .unwrap_or_default();
+            // Arc count minus the batch's own: the tasks sharing this write.
+            let waiters =
+                u64::try_from(Arc::strong_count(&batch.done).saturating_sub(1)).unwrap_or(u64::MAX);
+            #[cfg(test)]
+            self.write_with_fault(file, &batch.bytes)?;
+            #[cfg(not(test))]
+            write_counted(file, &batch.bytes, self.stats)?;
+            self.stats.record_batch(
+                batch.frames,
+                u64::try_from(batch.bytes.len()).unwrap_or(u64::MAX),
+                waiters,
+                queued,
+            );
         }
         // `always`: the appends of this batch are acknowledged only once
         // durable, so the fsync belongs here — one per batch.
         if self.policy == AofSync::Always && !batch.bytes.is_empty() {
-            file.sync_data()?;
+            sync_counted(file, self.stats)?;
         }
         Ok(())
+    }
+
+    /// [`write_counted`], after applying the next injected fault, if any.
+    #[cfg(test)]
+    fn write_with_fault(&self, file: &std::fs::File, bytes: &[u8]) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let fault = self
+            .faults
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pop_front();
+        match fault {
+            None => write_counted(file, bytes, self.stats),
+            Some(AofFault::Fail(kind)) => Err(kind.into()),
+            Some(AofFault::Short(n)) => {
+                let (head, tail) = bytes.split_at(n.min(bytes.len()));
+                let mut f = file;
+                f.write_all(head)?;
+                write_counted(file, tail, self.stats)
+            }
+            Some(AofFault::TornThenFail(n, kind)) => {
+                let head = bytes.get(..n.min(bytes.len())).unwrap_or_default();
+                let mut f = file;
+                f.write_all(head)?;
+                Err(kind.into())
+            }
+        }
     }
 
     /// Lead: perform queued batches until none is left. Inline batches run
@@ -364,6 +522,7 @@ impl AofShared {
             let batch = {
                 let mut queue = self.lock();
                 if queue.busy {
+                    bump(&self.stats.lead_busy, 1);
                     return;
                 }
                 let Some(front) = queue.batches.front() else {
@@ -393,6 +552,9 @@ impl AofShared {
                     .expect("the front batch was seen two lines above")
             };
             let result = self.perform(&batch);
+            if !batch.bytes.is_empty() {
+                bump(&self.stats.inline_batches, 1);
+            }
             self.lock().busy = false;
             batch.done.complete(result);
         }
@@ -413,9 +575,43 @@ impl AofShared {
                 }
             };
             let result = self.perform(&batch);
+            if !batch.bytes.is_empty() {
+                bump(&self.stats.blocking_batches, 1);
+            }
             batch.done.complete(result);
         }
     }
+}
+
+/// `write_all`, counting each `write(2)` and its time.
+fn write_counted(
+    mut file: &std::fs::File,
+    mut bytes: &[u8],
+    stats: &AofStats,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    while !bytes.is_empty() {
+        let started = std::time::Instant::now();
+        let result = file.write(bytes);
+        bump(&stats.write_calls, 1);
+        bump(&stats.write_ns, nanos(started.elapsed()));
+        match result {
+            Ok(0) => return Err(ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = bytes.get(n..).unwrap_or_default(),
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// `sync_data`, counted.
+fn sync_counted(file: &std::fs::File, stats: &AofStats) -> std::io::Result<()> {
+    let started = std::time::Instant::now();
+    let result = file.sync_data();
+    bump(&stats.fsyncs, 1);
+    bump(&stats.fsync_ns, nanos(started.elapsed()));
+    result
 }
 
 tokio::task_local! {
@@ -475,12 +671,22 @@ impl DeferredAof {
 /// first leads and waits for them. No reply can therefore precede the AOF
 /// write of any command before it on the connection, which is what an
 /// acknowledgement promised before.
+///
+/// Leading is deferred once per settle (see [`Coalescer`]), so that the
+/// other connections ready on the worker queue their frames first and one
+/// `write(2)` covers all of them. Deferring moves only *when* the batch is
+/// written: the reply still waits for it.
 pub(crate) struct AofGatedWriter<W> {
     inner: W,
     deferred: Arc<DeferredAof>,
     state: Arc<ServerState>,
     waiting:
         Option<std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>>,
+    /// The writer `waiting` is for: a gate dropped mid-yield has not led yet,
+    /// so `Drop` leads it.
+    waiting_on: Option<Arc<AofShared>>,
+    /// This settle already yielded once; later tickets lead at once.
+    yielded: bool,
 }
 
 impl<W> AofGatedWriter<W> {
@@ -490,6 +696,8 @@ impl<W> AofGatedWriter<W> {
             deferred: Arc::new(DeferredAof::default()),
             state,
             waiting: None,
+            waiting_on: None,
+            yielded: false,
         }
     }
 
@@ -507,6 +715,7 @@ impl<W> AofGatedWriter<W> {
                     Poll::Pending => return Poll::Pending,
                     Poll::Ready(result) => {
                         self.waiting = None;
+                        self.waiting_on = None;
                         if let Err(e) = result {
                             self.state.record_persistence_failure("aof_append", &e);
                         }
@@ -514,19 +723,55 @@ impl<W> AofGatedWriter<W> {
                 }
             }
             let Some((shared, done)) = self.deferred.pop() else {
+                self.yielded = false;
                 return Poll::Ready(());
             };
-            // Nobody may be writing yet: queued appends do not lead.
-            shared.lead();
-            self.waiting = Some(Box::pin(async move { done.wait().await }));
+            if let Some(result) = done.result.get() {
+                // Another task already wrote it.
+                if let Err((kind, message)) = result {
+                    let e = std::io::Error::new(*kind, message.clone());
+                    self.state.record_persistence_failure("aof_append", &e);
+                }
+                continue;
+            }
+            self.waiting_on = Some(Arc::clone(&shared));
+            if !self.yielded && shared.coalesce.should_yield() {
+                self.yielded = true;
+                // Everyone holding the batch's completion now: anyone more
+                // after the yield joined this write.
+                let holders = Arc::strong_count(&done);
+                self.waiting = Some(Box::pin(async move {
+                    tokio::task::yield_now().await;
+                    let gained = done.is_complete() || Arc::strong_count(&done) > holders;
+                    shared.coalesce.observe(gained, shared.stats);
+                    shared.lead();
+                    gate_wait(&shared, &done).await
+                }));
+            } else {
+                // Nobody may be writing yet: queued appends do not lead.
+                shared.lead();
+                self.waiting = Some(Box::pin(async move { gate_wait(&shared, &done).await }));
+            }
         }
     }
 }
 
+/// Wait for a gate's batch, counting the waits another task's write made park.
+async fn gate_wait(shared: &AofShared, done: &AofDone) -> std::io::Result<()> {
+    if !done.is_complete() {
+        bump(&shared.stats.gate_parked, 1);
+    }
+    done.wait().await
+}
+
 impl<W> Drop for AofGatedWriter<W> {
     /// A connection that closes with batches queued still gets them
-    /// written: lead them, without waiting.
+    /// written: lead them, without waiting — including one it was still
+    /// yielding before leading.
     fn drop(&mut self) {
+        if let Some(shared) = self.waiting_on.take() {
+            shared.lead();
+        }
         while let Some((shared, _)) = self.deferred.pop() {
             shared.lead();
         }
@@ -592,8 +837,42 @@ impl AofWriter {
                 queue: std::sync::Mutex::new(AofQueue::default()),
                 file,
                 policy: sync,
+                coalesce: Coalescer::new(true),
+                stats: &AOF_STATS,
+                #[cfg(test)]
+                faults: std::sync::Mutex::new(VecDeque::new()),
             }),
         })
+    }
+
+    /// Turn cross-connection coalescing (see [`Coalescer`]) on or off.
+    /// `RECACHED_AOF_COALESCE=off` sets it off, for A/B measurement.
+    pub(crate) fn set_coalescing(&self, enabled: bool) {
+        self.shared
+            .coalesce
+            .enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Count this writer's batches in `stats` instead of the process-wide
+    /// [`AOF_STATS`], so a test can read its own numbers.
+    #[cfg(test)]
+    fn with_private_stats(mut self) -> (Self, &'static AofStats) {
+        let stats: &'static AofStats = Box::leak(Box::new(AofStats::new()));
+        let shared =
+            Arc::get_mut(&mut self.shared).expect("a freshly opened writer has no other handle");
+        shared.stats = stats;
+        (self, stats)
+    }
+
+    /// Make the next batch's write suffer `fault`.
+    #[cfg(test)]
+    pub(crate) fn inject_fault(&self, fault: AofFault) {
+        self.shared
+            .faults
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push_back(fault);
     }
 
     /// Queue work onto the open batch — or, when `fresh`, onto a new batch
@@ -629,7 +908,7 @@ impl AofWriter {
     }
 
     pub(crate) async fn append(&self, resp: &[u8]) -> std::io::Result<()> {
-        self.enqueue(false, |batch| batch.bytes.extend_from_slice(resp))
+        self.enqueue(false, |batch| batch.push_frame(resp))
             .wait()
             .await
     }
@@ -649,7 +928,7 @@ impl AofWriter {
         let deferred = AOF_DEFERRED.try_with(Arc::clone).ok();
         match deferred {
             Some(deferred) => {
-                let done = self.queue_only(false, |batch| batch.bytes.extend_from_slice(resp));
+                let done = self.queue_only(false, |batch| batch.push_frame(resp));
                 deferred.push(&self.shared, done);
                 Ok(())
             }
@@ -668,7 +947,7 @@ impl AofWriter {
             .wait()
             .await?;
         let shared = Arc::clone(&self.shared);
-        tokio::task::spawn_blocking(move || shared.file.sync_data())
+        tokio::task::spawn_blocking(move || sync_counted(&shared.file, shared.stats))
             .await
             .map_err(|e| std::io::Error::other(format!("AOF fsync task failed: {e}")))?
     }
@@ -1514,3 +1793,373 @@ mod durability_tests {
 }
 
 // ── Expiry propagation ────────────────────────────────────────────────────────
+
+/// The connection gate under concurrency: coalescing across connections,
+/// acknowledgement order, cross-connection file order, cancellation and
+/// failure. Each test reads its writer's private [`AofStats`].
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::task::Poll;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "recached_gate_{}_{}_{}",
+            name,
+            std::process::id(),
+            next_conn_id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    fn state() -> Arc<ServerState> {
+        ServerState::for_tests(
+            Arc::new(SnapshotConfig {
+                path: std::env::temp_dir().join("recached_gate_unused.rdb"),
+                last_save: std::sync::atomic::AtomicI64::new(0),
+                checkpoint_id: AtomicU64::new(0),
+            }),
+            ReplHub::new(),
+            false,
+        )
+    }
+
+    fn frame(tag: &str) -> Vec<u8> {
+        format!("*2\r\n$3\r\nTAG\r\n${}\r\n{}\r\n", tag.len(), tag).into_bytes()
+    }
+
+    /// A socket that checks, on every byte it is handed, that the AOF file
+    /// already holds the frame of the command it answers.
+    struct ProbeSocket {
+        aof: PathBuf,
+        frame: Vec<u8>,
+        early: Arc<AtomicU64>,
+    }
+
+    impl tokio::io::AsyncWrite for ProbeSocket {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let on_disk = std::fs::read(&self.aof).unwrap_or_default();
+            if !on_disk.windows(self.frame.len()).any(|w| w == self.frame) {
+                self.early.fetch_add(1, Ordering::SeqCst);
+            }
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct Run {
+        batches: u64,
+        fsyncs: u64,
+        frames: u64,
+        early_replies: u64,
+        on_disk: Vec<u8>,
+        healthy: bool,
+    }
+
+    /// `clients` connections become ready together; each appends one frame
+    /// through its gate (`frames_each` with a pipeline) and replies.
+    async fn connections(
+        name: &str,
+        policy: AofSync,
+        clients: usize,
+        frames_each: usize,
+        coalesce: bool,
+        fault: Option<AofFault>,
+    ) -> Run {
+        let dir = scratch(name);
+        let path = dir.join("f.aof");
+        let (w, stats) = AofWriter::open(path.clone(), policy)
+            .await
+            .unwrap()
+            .with_private_stats();
+        w.set_coalescing(coalesce);
+        if let Some(fault) = fault {
+            w.inject_fault(fault);
+        }
+        let w = Arc::new(w);
+        let state = state();
+        let early = Arc::new(AtomicU64::new(0));
+        let barrier = Arc::new(tokio::sync::Barrier::new(clients));
+        let mut tasks = Vec::new();
+        for c in 0..clients {
+            let (w, state, early, barrier, path) = (
+                Arc::clone(&w),
+                Arc::clone(&state),
+                Arc::clone(&early),
+                Arc::clone(&barrier),
+                path.clone(),
+            );
+            tasks.push(tokio::spawn(async move {
+                let last = frame(&format!("c{c}f{}", frames_each - 1));
+                let gate = AofGatedWriter::new(
+                    ProbeSocket {
+                        aof: path,
+                        frame: last,
+                        early,
+                    },
+                    Arc::clone(&state),
+                );
+                let mut socket = tokio::io::BufWriter::new(gate);
+                let deferral = socket.get_ref().deferral();
+                barrier.wait().await;
+                with_deferred_aof(deferral, async {
+                    for f in 0..frames_each {
+                        w.append_client_write(&frame(&format!("c{c}f{f}")))
+                            .await
+                            .unwrap();
+                        tokio::io::AsyncWriteExt::write_all(&mut socket, b"+OK\r\n")
+                            .await
+                            .unwrap();
+                    }
+                    tokio::io::AsyncWriteExt::flush(&mut socket).await.unwrap();
+                })
+                .await;
+            }));
+        }
+        for task in tasks {
+            tokio::time::timeout(std::time::Duration::from_secs(10), task)
+                .await
+                .expect("no gate may hang")
+                .unwrap();
+        }
+        let on_disk = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        Run {
+            batches: stats.batches.load(Ordering::Relaxed),
+            fsyncs: stats.fsyncs.load(Ordering::Relaxed),
+            frames: stats.frames.load(Ordering::Relaxed),
+            early_replies: early.load(Ordering::SeqCst),
+            on_disk,
+            healthy: state.persistence_is_healthy(),
+        }
+    }
+
+    fn holds_every_frame(on_disk: &[u8], clients: usize, frames_each: usize) -> bool {
+        (0..clients).all(|c| {
+            (0..frames_each).all(|f| {
+                let fr = frame(&format!("c{c}f{f}"));
+                on_disk.windows(fr.len()).filter(|w| *w == fr).count() == 1
+            })
+        })
+    }
+
+    /// The 6M-A finding, as a test: fifty connections ready on one worker
+    /// used to cost fifty `write(2)`s. With coalescing they share a few; with
+    /// it off — the old behaviour, kept as the control — each is its own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn fifty_connections_on_one_worker_share_their_aof_write() {
+        let on = connections("coalesce_on", AofSync::EverySec, 50, 1, true, None).await;
+        assert_eq!(on.frames, 50);
+        assert!(
+            on.batches <= 3,
+            "50 ready connections took {} writes with coalescing",
+            on.batches
+        );
+        assert_eq!(on.early_replies, 0, "a reply preceded its AOF write");
+        assert!(holds_every_frame(&on.on_disk, 50, 1));
+
+        let off = connections("coalesce_off", AofSync::EverySec, 50, 1, false, None).await;
+        assert_eq!(off.batches, 50, "the control: one write per connection");
+        assert_eq!(off.early_replies, 0);
+        assert!(holds_every_frame(&off.on_disk, 50, 1));
+    }
+
+    /// No reply byte reaches a socket before the frame of the command it
+    /// answers is in the file — across policies, pipelines and workers.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn no_reply_precedes_its_aof_write_under_any_policy() {
+        for (name, policy) in [
+            ("no", AofSync::No),
+            ("everysec", AofSync::EverySec),
+            ("always", AofSync::Always),
+        ] {
+            for frames_each in [1, 16] {
+                let run = connections(name, policy, 32, frames_each, true, None).await;
+                assert_eq!(run.early_replies, 0, "{name} P={frames_each}");
+                assert!(holds_every_frame(&run.on_disk, 32, frames_each), "{name}");
+                assert_eq!(run.frames, 32 * frames_each as u64, "{name}");
+                // `always`: every batch that carried frames was fdatasynced
+                // before it completed (`perform`), and replies wait for
+                // completion — the file check above cannot see an fsync.
+                if policy == AofSync::Always {
+                    assert_eq!(run.fsyncs, run.batches, "always: one fdatasync per batch");
+                }
+            }
+        }
+    }
+
+    /// Frames keep the order they were queued in, across connections and
+    /// workers: appends are numbered under a lock, as the store's ordering
+    /// stripes number conflicting writes, and the file must count up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn frames_from_many_connections_keep_their_queue_order() {
+        let dir = scratch("order");
+        let path = dir.join("f.aof");
+        let w = Arc::new(
+            AofWriter::open(path.clone(), AofSync::EverySec)
+                .await
+                .unwrap(),
+        );
+        let state = state();
+        let order = Arc::new(tokio::sync::Mutex::new(0u64));
+        let mut tasks = Vec::new();
+        for _ in 0..50 {
+            let (w, state, order) = (Arc::clone(&w), Arc::clone(&state), Arc::clone(&order));
+            tasks.push(tokio::spawn(async move {
+                let gate = AofGatedWriter::new(tokio::io::sink(), state);
+                let deferral = gate.deferral();
+                let mut socket = tokio::io::BufWriter::new(gate);
+                with_deferred_aof(deferral, async {
+                    for _ in 0..40 {
+                        for _ in 0..4 {
+                            let mut next = order.lock().await;
+                            w.append_client_write(&frame(&format!("{:08}", *next)))
+                                .await
+                                .unwrap();
+                            *next += 1;
+                        }
+                        tokio::io::AsyncWriteExt::write_all(&mut socket, b"+OK\r\n")
+                            .await
+                            .unwrap();
+                        tokio::io::AsyncWriteExt::flush(&mut socket).await.unwrap();
+                    }
+                })
+                .await;
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+        w.flush().await.unwrap();
+        let on_disk = std::fs::read(&path).unwrap();
+        let mut offset = 0;
+        let mut expected = 0u64;
+        while offset < on_disk.len() {
+            let (value, used) = Value::parse(&on_disk[offset..]).expect("whole frames");
+            offset += used;
+            let Value::Array(Some(items)) = value else {
+                panic!("not a frame")
+            };
+            let Some(Value::BulkString(Some(tag))) = items.get(1) else {
+                panic!("no tag")
+            };
+            assert_eq!(
+                std::str::from_utf8(tag).unwrap(),
+                format!("{expected:08}"),
+                "frame out of queue order"
+            );
+            expected += 1;
+        }
+        assert_eq!(expected, 50 * 40 * 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A connection dropped while its gate is yielding — before it led —
+    /// still gets its frame written, by the drop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_gate_dropped_mid_yield_still_writes_its_frame() {
+        let dir = scratch("drop_mid_yield");
+        let path = dir.join("f.aof");
+        let (w, stats) = AofWriter::open(path.clone(), AofSync::EverySec)
+            .await
+            .unwrap()
+            .with_private_stats();
+        let w = Arc::new(w);
+        let mut gate = AofGatedWriter::new(tokio::io::sink(), state());
+        let deferral = gate.deferral();
+        with_deferred_aof(deferral, w.append_client_write(&frame("orphan")))
+            .await
+            .unwrap();
+        // One poll: the gate yields (coalescing probes on a fresh writer)
+        // and has not led yet.
+        let pending = std::future::poll_fn(|cx| {
+            Poll::Ready(std::pin::Pin::new(&mut gate).poll_flush(cx).is_pending())
+        })
+        .await;
+        assert!(pending, "the gate should be yielding before it leads");
+        assert_eq!(stats.batches.load(Ordering::Relaxed), 0, "nothing led yet");
+        drop(gate);
+        assert_eq!(stats.batches.load(Ordering::Relaxed), 1, "the drop led it");
+        let on_disk = std::fs::read(&path).unwrap();
+        assert_eq!(on_disk, frame("orphan"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed shared write reaches every connection in it: none hangs,
+    /// and persistence is latched unhealthy.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_failed_shared_write_reaches_every_waiter() {
+        for fault in [
+            AofFault::Fail(ErrorKind::StorageFull),
+            AofFault::TornThenFail(7, ErrorKind::Other),
+        ] {
+            let run = connections("fail_shared", AofSync::EverySec, 20, 1, true, Some(fault)).await;
+            assert!(!run.healthy, "{fault:?}: the failure must latch unhealthy");
+        }
+    }
+
+    /// A short `write(2)` is finished, not mistaken for success or failure.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_short_write_is_completed() {
+        let run = connections(
+            "short",
+            AofSync::EverySec,
+            20,
+            2,
+            true,
+            Some(AofFault::Short(5)),
+        )
+        .await;
+        assert!(run.healthy);
+        assert_eq!(run.early_replies, 0);
+        assert!(holds_every_frame(&run.on_disk, 20, 2));
+    }
+
+    /// One client: coalescing finds nobody to wait for and backs off, so
+    /// most flushes lead at once instead of paying a scheduler pass.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_lone_client_backs_coalescing_off() {
+        let dir = scratch("lone");
+        let path = dir.join("f.aof");
+        let (w, stats) = AofWriter::open(path.clone(), AofSync::EverySec)
+            .await
+            .unwrap()
+            .with_private_stats();
+        let gate = AofGatedWriter::new(tokio::io::sink(), state());
+        let deferral = gate.deferral();
+        let mut socket = tokio::io::BufWriter::new(gate);
+        with_deferred_aof(deferral, async {
+            for i in 0..340 {
+                w.append_client_write(&frame(&i.to_string())).await.unwrap();
+                tokio::io::AsyncWriteExt::write_all(&mut socket, b"+OK\r\n")
+                    .await
+                    .unwrap();
+                tokio::io::AsyncWriteExt::flush(&mut socket).await.unwrap();
+            }
+        })
+        .await;
+        let yields = stats.coalesce_gained.load(Ordering::Relaxed)
+            + stats.coalesce_missed.load(Ordering::Relaxed);
+        // Two misses, then 32 straight leads: 340 flushes → 20 probes.
+        assert_eq!(yields, 20, "probes with one client");
+        assert_eq!(stats.batches.load(Ordering::Relaxed), 340);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

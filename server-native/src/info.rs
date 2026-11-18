@@ -742,10 +742,16 @@ pub(crate) fn render_info(
                      rdb_changes_since_last_save:{}\r\n\
                      rdb_last_save_time:{}\r\n\
                      rdb_bgsave_in_progress:0\r\n\
-                     aof_enabled:{}\r\n",
+                     aof_enabled:{}\r\n\
+                     {}",
                     store.dirty_count(),
                     last_save,
                     u8::from(facts.aof_enabled),
+                    if facts.aof_enabled {
+                        AOF_STATS.render()
+                    } else {
+                        String::new()
+                    },
                 )
             }
             "stats" => {
