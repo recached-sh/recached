@@ -40,6 +40,13 @@ STABLE_KEYS=${STABLE_KEYS:-20000}
 TTL_ROOM=${TTL_ROOM:-3000}             # key-cap headroom for TTL keys; the TTL churn (EX 10) keeps far more live
 RESERVATIONS=${RESERVATIONS:-on}
 MAX_MEMORY=${MAX_MEMORY:-2gb}
+# MEMORY_BINDING=1 (6N-0 run 5): the memory limit binds instead of the key
+# cap — a large-value writer (BIG_RATE x BIG_SIZE per s) on top of the usual
+# load, the key cap set out of reach, and INFO memory sampled at 20 Hz.
+MEMORY_BINDING=${MEMORY_BINDING:-0}
+if [[ $MEMORY_BINDING == 1 ]]; then MAX_MEMORY=${MAX_MEMORY_BINDING:-192mb}; fi
+BIG_RATE=${BIG_RATE:-40}
+export BIG_SIZE=${BIG_SIZE:-131072}
 PRIMARY_WORKERS=${PRIMARY_WORKERS:-3}
 REPLICA_WORKERS=${REPLICA_WORKERS:-1}
 PRIMARY_CPUS=${PRIMARY_CPUS:-0-2}
@@ -57,6 +64,7 @@ export BG_KEYS
 # Every key without a TTL the run can create; the cap leaves TTL_ROOM above it.
 NONTTL=$(( BG_KEYS + STABLE_KEYS + 400 + 2 * WS_CLIENTS + 3 * NARROW_CLIENTS + SOAK_SECS * 20 + 1000 ))
 MAX_KEYS=$(( NONTTL + TTL_ROOM ))
+[[ $MEMORY_BINDING == 1 ]] && MAX_KEYS=$(( NONTTL + 10000000 ))
 
 command -v node >/dev/null || { echo "missing: node (22+)"; exit 1; }
 [[ $(node -p 'process.versions.node.split(".")[0]') -ge 22 ]] || { echo "node 22+ required (global WebSocket)"; exit 1; }
@@ -120,12 +128,14 @@ wait_replica_synced() {
   echo "settings: SOAK_SECS=$SOAK_SECS WS_CLIENTS=$WS_CLIENTS ROUTE_CLIENTS=$ROUTE_CLIENTS NARROW_CLIENTS=$NARROW_CLIENTS"
   echo "          REPLICA_CLIENTS=$REPLICA_CLIENTS BG_KEYS=$BG_KEYS STABLE_KEYS=$STABLE_KEYS MAX_KEYS=$MAX_KEYS"
   echo "          MAX_MEMORY=$MAX_MEMORY RESERVATIONS=$RESERVATIONS workers $PRIMARY_WORKERS/$REPLICA_WORKERS"
+  echo "          MEMORY_BINDING=$MEMORY_BINDING BIG_RATE=$BIG_RATE BIG_SIZE=$BIG_SIZE"
   echo "          cpus primary=$PRIMARY_CPUS replica=$REPLICA_CPUS load=$LOAD_CPUS"
   echo "          stall every ${STALL_EVERY}s for ${STALL_SECS}s (burst $BURST_N x 64 KiB), replica restart every ${RESTART_EVERY}s"
 } >"$OUT/conditions.txt" 2>&1
 : >"$OUT/facts.txt"
 fact primary_workers "$PRIMARY_WORKERS"
 fact max_keys "$MAX_KEYS"
+fact memory_binding "$MEMORY_BINDING"
 
 start_primary
 PY preload $P "$BG_KEYS" "$STABLE_KEYS" | tee -a "$OUT/soak.log"
@@ -160,6 +170,12 @@ $(TS "$LOAD_CPUS") python3 -I "$HERE/soak6l.py" scan $P "$D" "$BG_KEYS" "$STABLE
 $(TS "$LOAD_CPUS") python3 -I "$HERE/soak6l.py" scan $R "$D" "$BG_KEYS" "$STABLE_KEYS" "$OUT/scan-replica.json" \
   "http://127.0.0.1:$RMET/metrics" >"$OUT/logs/scan-replica.log" 2>&1 & SCR=$!
 LOADERS=($WSW $LBG $LTT $LED $CAS $PRB $SCP $SCR $NAR $WSC "${RG[@]}")
+if [[ $MEMORY_BINDING == 1 ]]; then
+  $(TS "$LOAD_CPUS") python3 -I "$HERE/soak6l.py" load big $P 4 $(( BIG_RATE / 4 )) "$D" "$OUT/load-big.json" \
+    >"$OUT/logs/load-big.log" 2>&1 & LOADERS+=($!)
+  $(TS "$LOAD_CPUS") python3 -I "$HERE/soak6l.py" memwatch $P "$D" "$OUT/memwatch.json" \
+    >"$OUT/logs/memwatch.log" 2>&1 & LOADERS+=($!)
+fi
 
 # ── run, with failure injection ───────────────────────────────────────────────
 stalls=0; stall_resyncs=0; last_stall=-1000; restarts=0
@@ -202,6 +218,12 @@ PY compare $P $R "$OUT/compare-quiesced.json" | tee -a "$OUT/soak.log"
 python3 -I "$HERE/ledger.py" verify $R "$OUT/ledger.json" >"$OUT/ledger-replica.json" 2>&1
 log "ledger on replica: $(cat "$OUT/ledger-replica.json")"
 fact primary_evicted_keys "$(PY info $P evicted_keys)"
+fact oom_refusals "$(python3 -c 'import json,sys
+t=0
+for f in sys.argv[1:]:
+    try: t+=json.load(open(f))["errors"].get("OOM",0)
+    except (OSError,ValueError): pass
+print(t)' "$OUT/load-bg.json" "$OUT/load-ttl.json" "$OUT/load-big.json")"
 fact replica_evicted_keys "$(PY info $R evicted_keys)"
 fact max_primary_dbsize "$(awk -F, 'NR > 1 && $5 ~ /^[0-9]+$/ && $5 > m { m = $5 } END { print m + 0 }' "$OUT/samples.csv")"
 fact replica_full_resyncs_total_before_crash "$(metric $RMET recached_replica_full_resync_total)"
@@ -217,6 +239,8 @@ fact recovery_ms $(( (re - rs) / 1000000 ))
 log "primary restarted from snapshot + AOF in $(( (re - rs) / 1000000 )) ms"
 python3 -I "$HERE/ledger.py" verify $P "$OUT/ledger.json" >"$OUT/ledger-recovered.json" 2>&1
 log "ledger after crash recovery: $(cat "$OUT/ledger-recovered.json")"
+fact used_memory_after_recovery "$(PY info $P used_memory)"
+fact maxmemory_after_recovery "$(PY info $P maxmemory)"
 sleep 10
 c=$(python3 -I "$HERE/repl_check.py" converge $P $R 1 120); log "replica converge after the primary's restart: $c"
 PY compare $P $R "$OUT/compare-recovered.json" | tee -a "$OUT/soak.log"

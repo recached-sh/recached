@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 #
-# Recached 6M: dedicated-Linux kit for cross-connection AOF group commit.
+# Recached 6M / 6N-0: dedicated-Linux kit for cross-connection AOF group
+# commit and the v0.6.0 release-candidate validation.
 #
 # Builds, from source and at exact commits (separate CARGO_TARGET_DIRs):
-#   6l    Recached dev after Phase 6L (default 08e5a7d)
-#   6m    the 6M branch (default origin/perf/v0.6m-aof-group-commit)
+#   6l    Recached dev after Phase 6L (BASE_REF, default 08e5a7d)
+#   6m    the build under test: NEW_REF, an explicit commit SHA (required;
+#         no default — 6N-0 found the old default, a feature branch, had
+#         diverged from dev). Or NEW_BIN: a prebuilt binary, verified
+#         against NEW_SHA256. "6m-off" is the same binary with coalescing
+#         off: the closest build to "6M before coalescing".
 #   redis 7.2.5   valkey 9.1.0
 # then runs, server and load generator pinned to disjoint CPUs:
 #   A. AOF execution profile, 1 worker: 6l vs 6m vs 6m with coalescing off
@@ -21,12 +26,24 @@
 #   F. command CPU attribution (no persistence, 1 worker, 50 clients):
 #      perf stat instructions/cycles per request and flat perf profiles for
 #      LPUSH, SADD, MSET (and SET as the control), 6m vs Redis
+# 6N-0 phases (the default):
+#   G. release matrix, SET: 6l / 6m / 6m-off / Redis / Valkey; 1 and 4
+#      workers; P=1 and 16; 1, 8, 50, 100 clients; AOF off / everysec /
+#      always. Throughput, p50/p95/p99, CPU/op, RSS, AOF counters.
+#   H. coverage 6M never measured: HGET and new-key INCR (Redis-comparable);
+#      replication-enabled AOF; AOF with WebSocket subscribers and with
+#      WATCH / QSUB observers (Recached-specific, reported apart)
+#   I. rate-limited, equal-throughput latency (valkey-benchmark --rps;
+#      skipped, and said so, if the built valkey-benchmark lacks it)
+#   E. (opt-in) the soak, plus a fifth run with a binding memory cap
 # and packs everything into one tarball.
 #
 # Usage (no root needed; nothing is installed system-wide):
-#   bash run.sh                          # A B C D, ~1.5-2.5 h
-#   PHASES="A" REPS=1 bash run.sh        # quick look
-#   PHASES="E" SOAK_SECS=2400 bash run.sh   # the soak alone (4 runs)
+#   NEW_REF=<40-hex dev SHA> bash run.sh                 # G H I, ~3-4 h
+#   NEW_REF=<sha> PHASES="G" REPS=1 bash run.sh          # quick look
+#   NEW_REF=<sha> PHASES="E" SOAK_SECS=2400 bash run.sh  # the soak (5 runs)
+#   NEW_REF=<sha> NEW_BIN=./recached-server NEW_SHA256=<hex> bash run.sh
+#                                         # test a recorded RC binary as-is
 #   SERVER_CPUS=0-2 BENCH_CPUS=3-5 bash run.sh
 #
 # Before running, for numbers worth publishing: close other workloads,
@@ -41,16 +58,36 @@
 
 set -euo pipefail
 
-WORK=${WORK:-$HOME/recached-6m-bench}
+WORK=${WORK:-$HOME/recached-6n0-bench}
 REPO=${REPO:-https://github.com/recached-sh/recached.git}
 BASE_REF=${BASE_REF:-08e5a7d}                                 # dev after 6L (#120)
-NEW_REF=${NEW_REF:-origin/perf/v0.6m-aof-group-commit}
+# The build under test must be named by commit: a branch name moves, and the
+# old default (a feature branch) resolved to history dev never had.
+NEW_REF=${NEW_REF:-}
+if [[ ! $NEW_REF =~ ^[0-9a-f]{7,40}$ ]]; then
+  echo "NEW_REF must be the commit SHA under test (7-40 hex digits), got '${NEW_REF:-unset}'." >&2
+  echo "Example: NEW_REF=\$(git rev-parse origin/dev) bash run.sh" >&2
+  exit 2
+fi
+NEW_BIN=${NEW_BIN:-}          # optional prebuilt binary of NEW_REF
+NEW_SHA256=${NEW_SHA256:-}    # required with NEW_BIN; checked if set otherwise
+if [[ -n $NEW_BIN && -z $NEW_SHA256 ]]; then echo "NEW_BIN needs NEW_SHA256" >&2; exit 2; fi
 REDIS_VERSION=${REDIS_VERSION:-7.2.5}
 VALKEY_VERSION=${VALKEY_VERSION:-9.1.0}
 REPS=${REPS:-3}
 REQUESTS=${REQUESTS:-1000000}
-PHASES=${PHASES:-"A B C D F"}
+PHASES=${PHASES:-"G H I"}
+RATES=${RATES:-"25000 50000 100000"}   # phase I, requests/s
 SOAK_SECS=${SOAK_SECS:-2400}
+
+# The kit's scripts come from this checkout, not from the tree under test, so
+# any kit version can measure any commit (an RC cut before a kit change still
+# gets the kit's workloads). Its commit is recorded with the results.
+KIT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+[[ -f $KIT/6m/aof-profile.sh && -f $KIT/6l/soak/soak.sh && -f $KIT/6n-0/observers.mjs ]] || {
+  echo "run.sh must be run from a recached checkout (benchmarks/v0.6.0/6m/linux/run.sh)" >&2; exit 2; }
+KIT_SHA=$(git -C "$KIT" rev-parse HEAD 2>/dev/null || echo unknown)
+KIT_DIRTY=$(git -C "$KIT" status --porcelain -- . 2>/dev/null | wc -l | tr -d ' ')
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 RES="$WORK/results-$STAMP"
@@ -80,6 +117,10 @@ say "recording host conditions"
   echo "sandbox: $([[ -n ${FLATPAK_ID:-} || -f /.flatpak-info ]] && echo flatpak || ([[ -f /run/.toolboxenv ]] && echo toolbox) || echo none)"
   echo "cpu_split: server=$SERVER_CPUS bench=$BENCH_CPUS"
   echo "reps: $REPS phases: $PHASES requests: $REQUESTS"
+  echo "kit: $KIT_SHA ($KIT_DIRTY locally modified files under benchmarks/v0.6.0)"
+  echo "refs: base=$BASE_REF new=$NEW_REF new_bin=${NEW_BIN:-built} new_sha256=${NEW_SHA256:-unpinned}"
+  echo "rustc: $(rustc --version 2>/dev/null)  cargo: $(cargo --version 2>/dev/null)"
+  echo "profile: release (--locked), debug=line-tables-only, strip=false (for perf); NEW_BIN as given"
   echo "governors: $(cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null | sort | uniq -c | tr '\n' ' ' || echo n/a)"
   echo "boost: $(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null || cat /sys/devices/system/cpu/intel_pstate/no_turbo 2>/dev/null | sed 's/^/no_turbo=/' || echo n/a)"
   echo "load_at_start: $(cut -d' ' -f1-3 /proc/loadavg)"
@@ -89,22 +130,48 @@ say "recording host conditions"
   echo "--- top processes by CPU"; ps -eo pcpu,pid,comm --sort=-pcpu | head -15
 } > "$RES/conditions.txt"
 
+sha256_of() { sha256sum "$1" | cut -d' ' -f1; }
 build_recached() {
-  local label=$1 ref=$2 tree="$WORK/src-$1"
+  local label=$1 ref=$2 prebuilt=${3:-} tree="$WORK/src-$1"
   if [[ ! -d "$WORK/repo" ]]; then git clone --quiet "$REPO" "$WORK/repo"; fi
   git -C "$WORK/repo" fetch --quiet origin '+refs/heads/*:refs/remotes/origin/*'
-  local sha; sha=$(git -C "$WORK/repo" rev-parse "$ref^{commit}")
-  if [[ -d $tree ]]; then git -C "$tree" checkout --quiet --detach "$sha"
+  local sha
+  sha=$(git -C "$WORK/repo" rev-parse --verify --quiet "$ref^{commit}") || {
+    echo "$label: '$ref' does not resolve to a commit in $REPO" >&2; exit 2; }
+  if [[ -d $tree ]]; then git -C "$tree" checkout --quiet --force --detach "$sha"
   else git -C "$WORK/repo" worktree add --quiet --detach "$tree" "$sha"; fi
-  say "building recached $label at $sha"
-  # line-tables-only + unstripped so perf can attribute samples.
-  (cd "$tree" && CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=false \
-    CARGO_TARGET_DIR="$WORK/target-$label" cargo build --release --locked -p recached --bin recached-server)
-  cp "$WORK/target-$label/release/recached-server" "$BIN/recached-server-$label"
-  echo "$label $sha $("$BIN/recached-server-$label" --version)" >> "$RES/binaries.txt"
+  # Provenance: the tree is exactly that commit, with no local edits.
+  [[ $(git -C "$tree" rev-parse HEAD) == "$sha" ]] || { echo "$label: $tree is not at $sha" >&2; exit 2; }
+  [[ -z $(git -C "$tree" status --porcelain --untracked-files=no) ]] || {
+    echo "$label: $tree has local changes; refusing to measure a dirty tree" >&2; exit 2; }
+  if [[ -n $prebuilt ]]; then
+    say "using prebuilt recached $label for $sha: $prebuilt"
+    cp "$prebuilt" "$BIN/recached-server-$label"
+  else
+    say "building recached $label at $sha"
+    # Its own target dir per label: a shared one can hand back a binary
+    # built from another tree. line-tables-only + unstripped for perf.
+    (cd "$tree" && CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_PROFILE_RELEASE_STRIP=false \
+      CARGO_TARGET_DIR="$WORK/target-$label" cargo build --release --locked -p recached --bin recached-server)
+    cp "$WORK/target-$label/release/recached-server" "$BIN/recached-server-$label"
+  fi
+  local sum; sum=$(sha256_of "$BIN/recached-server-$label")
+  if [[ $label == 6m && -n $NEW_SHA256 && $sum != "$NEW_SHA256" ]]; then
+    echo "6m: binary sha256 $sum does not match NEW_SHA256 $NEW_SHA256" >&2; exit 2
+  fi
+  echo "$sum" > "$BIN/recached-server-$label.sha256"
+  echo "$label $sha sha256=$sum $("$BIN/recached-server-$label" --version)" >> "$RES/binaries.txt"
 }
 build_recached 6l "$BASE_REF"
-build_recached 6m "$NEW_REF"
+build_recached 6m "$NEW_REF" "$NEW_BIN"
+# Before every phase: the binaries are still the ones recorded above.
+verify_bins() {
+  local label
+  for label in 6l 6m; do
+    [[ $(sha256_of "$BIN/recached-server-$label") == "$(cat "$BIN/recached-server-$label.sha256")" ]] || {
+      echo "recached-server-$label changed since it was recorded; stopping" >&2; exit 3; }
+  done
+}
 
 build_kv() {
   local name=$1 version=$2 url=$3 dir="$WORK/$1-$2"
@@ -118,6 +185,7 @@ build_kv() {
     }
     cp "$dir/src/$name-server" "$BIN/$name-server"
     if [[ $name == redis ]]; then cp "$dir/src/redis-benchmark" "$dir/src/redis-cli" "$BIN/"; fi
+    if [[ $name == valkey ]]; then cp "$dir/src/valkey-benchmark" "$BIN/" 2>/dev/null || true; fi
   fi
   echo "$name $("$BIN/$name-server" --version)" >> "$RES/binaries.txt"
 }
@@ -125,7 +193,7 @@ build_kv redis "$REDIS_VERSION" "https://download.redis.io/releases/redis-$REDIS
 build_kv valkey "$VALKEY_VERSION" "https://github.com/valkey-io/valkey/archive/refs/tags/$VALKEY_VERSION.tar.gz"
 (cd "$BIN" && sha256sum ./*) >> "$RES/binaries.txt"
 export BENCH="$BIN/redis-benchmark" CLI="$BIN/redis-cli"
-PROFILE="$WORK/src-6m/benchmarks/v0.6.0/6m/aof-profile.sh"
+PROFILE="$KIT/6m/aof-profile.sh"
 
 # 6m-off: the 6M binary with coalescing switched off — the same code as 6M
 # otherwise, so 6m vs 6m-off isolates the change and 6l vs 6m-off isolates
@@ -147,6 +215,43 @@ profile_off() {
   env RECACHED_BIN="$BIN/recached-server-6m" BASE_BIN="$wrap_off" OUT="$out" REPS="$REPS" \
     REQUESTS="$REQUESTS" SERVERS=base "$@" bash "$PROFILE"
 }
+
+if has G; then
+  verify_bins
+  say "G: 6N-0 release matrix (SET)"
+  profile "$RES/G-matrix" SERVERS="base recached redis valkey" WORKERS="1 4" \
+    POLICIES="none everysec always" PIPELINES="1 16" CLIENTS="1 8 50 100" TESTS=set
+  profile_off "$RES/G-matrix-6m-off" WORKERS="1 4" POLICIES="everysec always" PIPELINES="1 16" \
+    CLIENTS="1 8 50 100" TESTS=set
+fi
+if has H; then
+  verify_bins
+  say "H: coverage 6M never measured"
+  # Redis-comparable commands.
+  profile "$RES/H-hget-incrnew" SERVERS="base recached redis valkey" WORKERS="1 4" \
+    POLICIES="none everysec" PIPELINES="1 16" CLIENTS="1 8 50 100" TESTS="hget incr-new"
+  # Recached-specific: every write on the per-command append path.
+  profile "$RES/H-repl-aof" SERVERS="base recached" WORKERS="1 4" POLICIES="everysec always" \
+    PIPELINES="1 16" CLIENTS="1 8 50 100" TESTS=set EXTRA_ENV="RECACHED_REPL_ENABLE=1 RECACHED_REPL_PORT=6710"
+  profile "$RES/H-ws-subscribers" SERVERS="base recached" WORKERS="1 4" POLICIES="everysec" \
+    PIPELINES="1 16" CLIENTS="8 50" TESTS=set OBSERVER="ws-sync:200:key:*"
+  profile "$RES/H-watch-observers" SERVERS="base recached" WORKERS="1 4" POLICIES="everysec" \
+    PIPELINES="1 16" CLIENTS="8 50" TESTS=set OBSERVER="tcp-watch:50:200"
+  profile "$RES/H-qsub-observers" SERVERS="base recached" WORKERS="1 4" POLICIES="everysec" \
+    PIPELINES="1 16" CLIENTS="8 50" TESTS=set OBSERVER="ws-qsub:100:key:0000000000*"
+fi
+if has I; then
+  verify_bins
+  say "I: rate-limited, equal-throughput latency"
+  if [[ -x $BIN/valkey-benchmark ]] && "$BIN/valkey-benchmark" --help 2>&1 | grep -q -- '--rps'; then
+    for rate in $RATES; do
+      profile "$RES/I-rate-$rate" SERVERS="base recached redis valkey" WORKERS=1 POLICIES="none everysec" \
+        PIPELINES=1 CLIENTS="50 100" TESTS=set RATE="$rate" RATE_BENCH="$BIN/valkey-benchmark"
+    done
+  else
+    echo "valkey-benchmark $VALKEY_VERSION has no --rps: no rate-limited run (not measured)" | tee "$RES/I-skipped.txt"
+  fi
+fi
 
 if has A; then
   say "A: AOF profile, 1 worker"
@@ -242,8 +347,9 @@ if has F; then
 fi
 
 if has E; then
-  say "E: production soak, 6l and 6m, reservations on and off (4 x ${SOAK_SECS}s)"
-  SOAK="$WORK/src-6m/benchmarks/v0.6.0/6l/soak/soak.sh"
+  verify_bins
+  say "E: production soak, 6l and 6m ($NEW_REF), reservations on and off, + binding memory cap (5 x ${SOAK_SECS}s)"
+  SOAK="$KIT/6l/soak/soak.sh"
   for label in 6l 6m; do
     for res in on off; do
       out="$RES/E-soak/$label-reservations-$res"
@@ -251,13 +357,18 @@ if has E; then
         bash "$SOAK" || echo "soak $label reservations=$res: FAIL (see $out/verdict.txt)"
     done
   done
+  # Run 5: the memory limit, not the key cap, binds (MEMORY_BINDING=1).
+  out="$RES/E-soak/6m-memory-binding-reservations-on"
+  SERVER_BIN="$BIN/recached-server-6m" RESERVATIONS=on MEMORY_BINDING=1 SOAK_SECS="$SOAK_SECS" OUT="$out" \
+    bash "$SOAK" || echo "soak 6m memory-binding: FAIL (see $out/verdict.txt)"
 fi
 
 for d in "$RES"/*/; do
-  [[ -f $d/results.csv ]] && python3 "$WORK/src-6m/benchmarks/v0.6.0/6m/summarize.py" "$d" > "$d/summary.md" 2>&1 || true
+  [[ -f $d/results.csv ]] && python3 "$KIT/6m/summarize.py" "$d" > "$d/summary.md" 2>&1 || true
 done
 echo "load_at_end: $(cut -d' ' -f1-3 /proc/loadavg)" >> "$RES/conditions.txt"
 host=$(hostname -s 2>/dev/null || cat /etc/hostname 2>/dev/null || echo linux)
-tarball="$WORK/recached-6m-linux-${host%%.*}-$STAMP.tar.gz"
+verify_bins
+tarball="$WORK/recached-6n0-linux-${host%%.*}-$STAMP.tar.gz"
 tar -czf "$tarball" -C "$WORK" "$(basename "$RES")"
-say "done. Send back: $tarball ($(du -h "$tarball" | cut -f1))"
+say "done. Send back: $tarball ($(du -h "$tarball" | cut -f1)); raw data belongs under benchmarks/v0.6.0/6n-0/"

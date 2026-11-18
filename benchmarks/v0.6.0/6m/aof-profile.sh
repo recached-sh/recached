@@ -24,13 +24,21 @@
 #   SERVERS ["recached"]  any of: base recached redis valkey
 #   POLICIES ["everysec"] any of: none no everysec always
 #   WORKERS ["1"]  CLIENTS ["1 2 4 8 16 32 50 100 200"]  PIPELINES ["1"]
-#   TESTS ["set"]  any of: set set-new incr hset mset get
+#   TESTS ["set"]  any of: set set-new incr incr-new hset hget mset get
 #   REQUESTS [200000]  ALWAYS_REQUESTS [20000] (`always` fsyncs per batch)
 #   KEYSPACE [100000]
 #   REPS [1]  BENCH_THREADS [2]
 #   EXTRA_ENV [""]  extra VAR=value words for Recached servers, e.g.
 #     "RECACHED_REPL_ENABLE=1 RECACHED_REPL_PORT=6710" to measure the
 #     per-command append path a replication listener puts every write on
+#   OBSERVER [""]  "<mode>:<count>:<arg>" for 6n-0/observers.mjs, started
+#     against Recached servers before each load (ws-sync / ws-qsub /
+#     tcp-watch): writes they would see take the per-command append path.
+#     Recached-specific: Redis/Valkey cells are skipped when it is set.
+#   RATE [""]  requests/s for an open-loop, rate-limited load (equal
+#     throughput across servers, so latency compares like for like). Needs
+#     RATE_BENCH, a valkey-benchmark that supports --rps; refuses to run
+#     (rather than run closed-loop) when it does not.
 
 set -euo pipefail
 
@@ -57,9 +65,21 @@ SERVER_CPUS=${SERVER_CPUS:-}
 BENCH_CPUS=${BENCH_CPUS:-}
 STRACE=${STRACE:-0}
 EXTRA_ENV=${EXTRA_ENV:-}
+OBSERVER=${OBSERVER:-}
+RATE=${RATE:-}
+RATE_BENCH=${RATE_BENCH:-}
+HERE=$(cd "$(dirname "$0")" && pwd)
+OBSERVERS_JS=${OBSERVERS_JS:-$HERE/../6n-0/observers.mjs}
 PORT=${PORT:-6700}
 
 [[ -x $BENCH && -x $CLI ]] || { echo "BENCH and CLI must point at redis-benchmark and redis-cli" >&2; exit 1; }
+if [[ -n $RATE ]]; then
+  [[ -x $RATE_BENCH ]] && "$RATE_BENCH" --help 2>&1 | grep -q -- '--rps' || {
+    echo "RATE=$RATE needs RATE_BENCH pointing at a valkey-benchmark with --rps (got '${RATE_BENCH:-unset}')" >&2; exit 2; }
+fi
+if [[ -n $OBSERVER ]]; then
+  command -v node >/dev/null && [[ -f $OBSERVERS_JS ]] || { echo "OBSERVER needs node 22+ and $OBSERVERS_JS" >&2; exit 2; }
+fi
 mkdir -p "$OUT"
 OS=$(uname -s)
 
@@ -139,7 +159,9 @@ bench_args() {
     set)     a+=(-r "$KEYSPACE" -t set) ;;
     set-new) a+=(-r 100000000000 -t set) ;;   # effectively always a new key
     incr)    a+=(-r "$KEYSPACE" -t incr) ;;
+    incr-new) a+=(-r 100000000000 INCR "counter:__rand_int__") ;;   # a new key almost every time
     hset)    a+=(-r "$KEYSPACE" -t hset) ;;
+    hget)    a+=(-r "$KEYSPACE" HGET myhash "element:__rand_int__") ;;   # the fields `-t hset` writes
     mset)    a+=(-r "$KEYSPACE" -t mset) ;;
     get)     a+=(-r "$KEYSPACE" -t get) ;;
     *) echo "unknown test $test" >&2; exit 1 ;;
@@ -153,7 +175,7 @@ populate() {
   case $test in
     set|get|mset) "$BENCH" -p "$PORT" -n "$KEYSPACE" -c 20 -P 64 -r "$KEYSPACE" -d 32 -t set -q >/dev/null 2>&1 ;;
     incr) "$BENCH" -p "$PORT" -n "$KEYSPACE" -c 20 -P 64 -r "$KEYSPACE" -t incr -q >/dev/null 2>&1 ;;
-    hset) "$BENCH" -p "$PORT" -n "$KEYSPACE" -c 20 -P 64 -r "$KEYSPACE" -t hset -q >/dev/null 2>&1 ;;
+    hset|hget) "$BENCH" -p "$PORT" -n "$KEYSPACE" -c 20 -P 64 -r "$KEYSPACE" -t hset -q >/dev/null 2>&1 ;;
   esac
 }
 
@@ -171,6 +193,7 @@ populate() {
   fi
   echo "pin: $PIN server=$SERVER_CPUS bench=$BENCH_CPUS"
   echo "extra_env: ${EXTRA_ENV:-none}"
+  echo "observer: ${OBSERVER:-none}  rate: ${RATE:-closed-loop}${RATE:+ via $RATE_BENCH}"
   echo "bench: $("$BENCH" --version 2>/dev/null | head -1) threads=$BENCH_THREADS"
   for s in $SERVERS; do
     b=$(server_bin "$s")
@@ -181,7 +204,7 @@ populate() {
 cat "$OUT/conditions.txt"
 
 CSV="$OUT/results.csv"
-[[ -f $CSV ]] || echo "server,policy,workers,test,pipeline,clients,rep,requests,rps,p50_ms,p99_ms,server_cpu_s,cpu_us_per_op,counters" > "$CSV"
+[[ -f $CSV ]] || echo "server,policy,workers,test,pipeline,clients,rep,requests,rps,p50_ms,p99_ms,server_cpu_s,cpu_us_per_op,counters,p95_ms,rss_kb,observer,rate" > "$CSV"
 
 for rep in $(seq 1 "$REPS"); do
 for policy in $POLICIES; do
@@ -189,6 +212,8 @@ for workers in $WORKERS; do
 for server in $SERVERS; do
   # Redis has one execution thread whatever `workers` says: run it once.
   if [[ $server == redis && $workers != "${WORKERS%% *}" ]]; then continue; fi
+  # Observers are a Recached feature: no Redis/Valkey equivalent to compare.
+  if [[ -n $OBSERVER && ( $server == redis || $server == valkey ) ]]; then continue; fi
   for test in $TESTS; do
   for pipeline in $PIPELINES; do
   for clients in $CLIENTS; do
@@ -196,15 +221,33 @@ for server in $SERVERS; do
     [[ $policy == always ]] && requests=$ALWAYS_REQUESTS
     start_server "$server" "$policy" "$workers"
     populate "$test"
+    OBS_PID=""
+    if [[ -n $OBSERVER ]]; then
+      IFS=: read -r omode ocount oarg <<<"$OBSERVER"
+      obs_out="$OUT/observer-$server-$policy-w$workers-$test-P$pipeline-c$clients-r$rep"
+      KEYSPACE=$KEYSPACE ${pre_bench[@]+"${pre_bench[@]}"} node "$OBSERVERS_JS" "$omode" 127.0.0.1 "$PORT" \
+        $((PORT + 1)) "$ocount" "$oarg" 100000 "$obs_out.json" >"$obs_out.log" 2>&1 &
+      OBS_PID=$!
+      for _ in $(seq 240); do grep -q READY "$obs_out.log" 2>/dev/null && break; sleep 0.25; done
+      grep -q "READY $ocount/$ocount subscribed, 0 errors" "$obs_out.log" || {
+        echo "observers did not all subscribe: $(cat "$obs_out.log")" >&2; exit 1; }
+    fi
     before_cpu=$(cpu_seconds "$SERVER_PID")
     before_ctr=""; [[ $server == recached || $server == base ]] && before_ctr=$(aof_counters)
     args=(); while IFS= read -r a; do args+=("$a"); done < <(bench_args "$test" "$pipeline" "$clients" "$requests")
-    row=$(${pre_bench[@]+"${pre_bench[@]}"} "$BENCH" "${args[@]}" 2>/dev/null | tail -n 1)
+    if [[ -n $RATE ]]; then
+      row=$(${pre_bench[@]+"${pre_bench[@]}"} "$RATE_BENCH" --rps "$RATE" "${args[@]}" 2>/dev/null | tail -n 1)
+    else
+      row=$(${pre_bench[@]+"${pre_bench[@]}"} "$BENCH" "${args[@]}" 2>/dev/null | tail -n 1)
+    fi
     after_cpu=$(cpu_seconds "$SERVER_PID")
+    rss_kb=$(ps -o rss= -p "$SERVER_PID" 2>/dev/null | tr -d ' ')
+    [[ -n $OBS_PID ]] && { kill "$OBS_PID" 2>/dev/null || true; wait "$OBS_PID" 2>/dev/null || true; }
     after_ctr=""; [[ $server == recached || $server == base ]] && after_ctr=$(aof_counters)
     # row: "test","rps","avg","min","p50","p95","p99","max"
     rps=$(echo "$row" | cut -d, -f2 | tr -d '"')
     p50=$(echo "$row" | cut -d, -f5 | tr -d '"')
+    p95=$(echo "$row" | cut -d, -f6 | tr -d '"')
     p99=$(echo "$row" | cut -d, -f7 | tr -d '"')
     cpu=$(awk -v a="$before_cpu" -v b="$after_cpu" 'BEGIN { printf "%.3f", b - a }')
     us_per_op=$(awk -v c="$cpu" -v n="$requests" 'BEGIN { printf "%.3f", c * 1e6 / n }')
@@ -227,7 +270,7 @@ for k, v in b.items():
 print(" ".join(out))
 PY
 )
-    echo "$server,$policy,$workers,$test,$pipeline,$clients,$rep,$requests,$rps,$p50,$p99,$cpu,$us_per_op,$delta" | tee -a "$CSV"
+    echo "$server,$policy,$workers,$test,$pipeline,$clients,$rep,$requests,$rps,$p50,$p99,$cpu,$us_per_op,$delta,$p95,$rss_kb,${OBSERVER//,/;},$RATE" | tee -a "$CSV"
     stop_server
 
     if [[ $STRACE == 1 && $OS == Linux && $server != valkey ]]; then
