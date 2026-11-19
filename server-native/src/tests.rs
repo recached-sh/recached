@@ -4085,6 +4085,7 @@ fn test_facts() -> ServerFacts {
         tls_enabled: true,
         auth_enabled: true,
         aof_enabled: true,
+        aof_fanout: "coalesced",
     }
 }
 
@@ -4217,6 +4218,10 @@ fn info_persistence_always_reports_loading_zero() {
         "1700000000"
     );
     assert_eq!(f[&("persistence".into(), "aof_enabled".into())], "1");
+    assert_eq!(
+        f[&("persistence".into(), "recached_aof_fanout".into())],
+        "coalesced"
+    );
 }
 
 #[test]
@@ -6773,6 +6778,7 @@ mod sweep_notification {
 mod aof_fail_stop;
 mod sync_reliability;
 
+mod coalesced_fanout;
 mod commands_v06;
 mod dedup_ack_order;
 mod live_query_6k;

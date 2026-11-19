@@ -160,6 +160,10 @@ fn start(dir: &Path, opts: Opts<'_>) -> Server {
         if let Some(fault) = opts.fault {
             cmd.env("RECACHED_TEST_AOF_FAULT", fault);
         }
+        // The suite's own mode, when it is run in one (see `AofFanout`).
+        if let Ok(mode) = std::env::var("RECACHED_AOF_FANOUT") {
+            cmd.env("RECACHED_AOF_FANOUT", mode);
+        }
         if let Some(hold) = opts.hold {
             cmd.env("RECACHED_TEST_AOF_HOLD", hold);
         }

@@ -511,6 +511,13 @@ async fn run(
         }
     };
 
+    // How writes that wait for their own AOF stage append (6N-C Option D):
+    // `inline` unless set. Only `inline` and `coalesced` exist; anything else
+    // is refused rather than silently run as the default.
+    let aof_fanout_raw = std::env::var("RECACHED_AOF_FANOUT").unwrap_or_default();
+    let aof_fanout = AofFanout::parse(&aof_fanout_raw)
+        .map_err(|message| std::io::Error::new(ErrorKind::InvalidInput, message))?;
+
     // Duplicate-suppression marks and refusals the AOF carries, merged into
     // the server state once it exists.
     let mut recovered_dedup = RecoveredDedup::default();
@@ -528,9 +535,10 @@ async fn run(
                         })?;
                 recovered_dedup = recovered;
                 w.set_coalescing(aof_coalesce);
+                w.set_fanout(aof_fanout);
                 let writer = Arc::new(w);
                 info!(
-                    "AOF enabled: {:?} (sync={}, coalesce={})",
+                    "AOF enabled: {:?} (sync={}, coalesce={}, fanout={})",
                     path,
                     match aof_sync {
                         AofSync::Always => "always",
@@ -538,6 +546,7 @@ async fn run(
                         AofSync::No => "no",
                     },
                     if aof_coalesce { "on" } else { "off" },
+                    aof_fanout.as_str(),
                 );
                 // `always` fsyncs inside the AOF lock, so every write in the
                 // process waits for one disk barrier — measured at roughly
@@ -998,6 +1007,7 @@ async fn run(
         tls_enabled: tls_acceptor.is_some(),
         auth_enabled: global_password.is_some(),
         aof_enabled: state.aof.is_some(),
+        aof_fanout: aof_fanout.as_str(),
     });
 
     // ── listeners ─────────────────────────────────────────────────────────
