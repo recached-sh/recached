@@ -309,6 +309,11 @@ struct AofShared {
 /// [`AofWriter::hold_batch_containing`]; the subprocess harness's child arms
 /// it from `RECACHED_TEST_AOF_HOLD=<ms>@<marker>`, which releases after
 /// `<ms>` (an injected fault on the same batch then strikes after the hold).
+///
+/// It blocks the *thread* performing the batch. Under `no` and `everysec`
+/// that is a tokio worker (`lead` performs inline), so a test using it needs
+/// a multi-thread runtime with a worker to spare; on a current-thread
+/// runtime the hold stalls everything until its time limit.
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct AofHold {
@@ -351,6 +356,8 @@ impl AofHold {
         let mut state = self.lock();
         state.marker = Some(marker.to_vec());
         state.limit = Some(limit);
+        // Counted per arming, so `wait_until_held` waits for this one.
+        state.held = 0;
     }
 
     fn release(&self) {
