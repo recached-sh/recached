@@ -1,0 +1,13 @@
+date_utc: 2026-11-18T19:49:03Z
+rc_sha: e6fcd5bcac3fc15a171ee7800340d77501c4bfc8
+rc_bin: /home/<user>/recached-6n1-bench/target-rc/release/recached-server sha256=4d682ef120ca8d944290e6438c6bc9e361a27652a1fec9234b33eab13ace804e version=recached-server 0.6.0
+kit_sha: d6c0d40f9578f036eead1d6d02c974df480c3b62 dirty=0
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+load_at_start: 0.06 0.97 2.19 2/1583 2198302
+cpus: server=0-2 bench=3-5 reps=3 requests=1000000 run=[D]
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b

@@ -1,0 +1,3 @@
+recached_replication_disconnects_total{reason="queue_bytes"} 7
+recached_replication_syncs_total{type="full"} 16
+recached_replicas_connected 1

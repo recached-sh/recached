@@ -1,0 +1,1 @@
+{"clients":100,"pushes":958493,"leaks":0,"leakSamples":[],"narrowings":39854,"widenings":39854,"revokeCloses":19904,"revokeMissing":0,"unexpectedCloses":0,"closeReasons":{},"inScopeAfterNarrow":239181,"tokenFailures":0,"tokenFailureSamples":[],"qsubs":19954,"qsubFailures":0,"reopenFailures":0,"writes":1439538,"writeErrors":0}

@@ -1,0 +1,25 @@
+      9   WARN recached_server: TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+      9   WARN recached_server: Replication to the primary is PLAINTEXT — the password and the entire keyspace cross the network unencrypted, and the primary's identity is not verified. Set RECACHED_REPL_TLS_CA, or keep replication on a private network.
+      9   WARN recached_server: IP allowlist DISABLED. Accepting all connections.
+      9   WARN recached_server::connection: WS conn 9 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 99 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 98 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 97 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 96 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 95 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 94 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 93 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 92 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 91 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 90 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 8 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 89 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 88 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 87 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 86 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 85 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 84 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 83 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 82 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 81 lagged, missed mutations; closing so the client resynchronises
+      9   WARN recached_server::connection: WS conn 79 lagged, missed mutations; closing so the client resynchronises

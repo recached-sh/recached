@@ -1,0 +1,1 @@
+{"kind": "bg", "conns": 12, "rate_per_conn": 300.0, "ops": 8615790, "errors": {}, "error_samples": [], "reconnects": 0, "latency_ms": {"n": 500000, "p50": 0.274, "p99": 1.766, "p999": 16.519, "max": 938.724}, "ops_per_s": 3590}

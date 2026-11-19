@@ -1,0 +1,1 @@
+{"kind": "ttl", "conns": 4, "rate_per_conn": 1000.0, "ops": 9571812, "errors": {}, "error_samples": [], "reconnects": 0, "latency_ms": {"n": 500000, "p50": 1.426, "p99": 4.255, "p999": 23.962, "max": 1004.546}, "ops_per_s": 3988}
