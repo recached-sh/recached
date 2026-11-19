@@ -725,12 +725,15 @@ pub(crate) async fn record_dedup_refusal(state: &ServerState, client: &str, id: 
 }
 
 /// Record the DEDUP refusal of a command refused before it ran, which so
-/// holds none of its own stripes: a WebSocket administrative command refused
-/// on a scoped connection (6N-C PR 0b, RV-6).
+/// holds none of its own stripes: a WebSocket command refused on a scoped
+/// connection, as administrative or for a key outside its scopes (6N-C PR
+/// 0b, RV-6).
 ///
-/// It used to take the refused command's stripes, and for `FLUSHDB` that is
-/// every stripe with the unordered gate closed: any token holder could take
-/// the global write barrier, plus an fsync under `always`, once per message.
+/// It used to take the refused command's stripes: for `FLUSHDB` every
+/// stripe with the unordered gate closed, and for a keyed command one per
+/// key, so a refused `DEL` of a few thousand keys took nearly all of them.
+/// Any token holder could take a global write barrier, plus an fsync under
+/// `always`, once per message.
 /// The refusal changes no data; what it must not do is fall inside a
 /// checkpoint or a sub-replica cut, which the identity's single stripe
 /// already prevents ([`ReplHub::lock_identity`]). `dedup_order` orders it

@@ -163,6 +163,47 @@ async fn a_refused_flushdb_does_not_stall_unrelated_writers() {
     assert_eq!(writer.await.unwrap(), Value::SimpleString("OK".into()));
 }
 
+/// The keyed branch (6N-C PR 0b review, High): a refused `DEL` naming
+/// thousands of keys, one outside the token's scope, used to take one
+/// stripe per key — nearly all 256, with the unordered gate closed — across
+/// its refusal's append. Held mid-append, it must leave a writer on another
+/// stripe, and the all-write barrier itself, free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_many_key_del_does_not_stall_unrelated_writers() {
+    let node = node("refusal_keys", AofSync::EverySec).await;
+    let addr = serve_strict(&node).await;
+    let mut ws = scoped(addr, "alice").await;
+    let identity = namespaced_dedup_client("alice", "deleter-0b");
+    node.aof.hold_batch_containing(identity.as_bytes());
+    let mut args: Vec<String> = refused_flushdb("deleter-0b", 1);
+    args.truncate(3);
+    args.push("DEL".into());
+    args.extend((0..2_000).map(|i| format!("tenant:alice:k{i}")));
+    args.push("tenant:bob:out-of-scope".into());
+    send(&mut ws, &args).await;
+    node.aof.wait_until_held().await;
+
+    let free = key_off_stripe(&identity);
+    let (writer, returned) =
+        tcp_write(&node, Command::Set(free, b"v".to_vec(), Default::default()));
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), returned)
+            .await
+            .expect("an unrelated writer was stalled by a keyed refusal")
+            .unwrap(),
+        Value::SimpleString("OK".into())
+    );
+    node.aof.release_hold();
+    let reply = ws.recv_frame(5_000).await.expect("the refusal reply");
+    assert!(
+        String::from_utf8_lossy(&reply).starts_with("-NOSCOPE"),
+        "{}",
+        String::from_utf8_lossy(&reply)
+    );
+    assert!(remembers_refusal(&node.state, &identity, 1));
+    assert_eq!(writer.await.unwrap(), Value::SimpleString("OK".into()));
+}
+
 /// End to end: a checkpoint started while a refusal is being recorded
 /// finishes after it, and the refusal survives the checkpoint's AOF
 /// truncate in the sidecar it writes.

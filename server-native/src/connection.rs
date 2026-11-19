@@ -1632,6 +1632,12 @@ pub(crate) async fn handle_ws<S>(
                                         && let Some((client, id)) = &dedup_id
                                     {
                                         refusal_pace.pace().await;
+                                        // The pace may have outlasted the token.
+                                        if token_lapsed(scope_expires_at) {
+                                            record_scope_denial("token_expired");
+                                            ws_close!(WS_CLOSE_TOKEN_EXPIRED, "sync token expired; present a fresh token");
+                                            break 'outer;
+                                        }
                                         record_unexecuted_dedup_refusal(&state, client, *id, REASON)
                                             .await;
                                     }
@@ -1676,19 +1682,23 @@ pub(crate) async fn handle_ws<S>(
                                         };
                                         // Refused for good: remembered, so a
                                         // replay is refused again rather than
-                                        // answered as a duplicate. Under the
-                                        // write's ordering guards, as on the
-                                        // write path: a checkpoint holds them
-                                        // all from the sidecars to the AOF
-                                        // truncate, and a refusal recorded in
-                                        // that window would be in neither.
+                                        // answered as a duplicate. Under its
+                                        // identity's stripe, not the refused
+                                        // command's: those are one per key, so
+                                        // a refused `DEL` of thousands of keys
+                                        // took nearly every stripe (6N-C PR 0b
+                                        // review). The identity's stripe still
+                                        // keeps the refusal out of a checkpoint
+                                        // window and a replica cut.
                                         if let Some((client, id)) = &dedup_id {
                                             refusal_pace.pace().await;
-                                            let _checkpoint = state
-                                                .replicas
-                                                .lock_commands(std::slice::from_ref(&cmd))
+                                            if token_lapsed(scope_expires_at) {
+                                                record_scope_denial("token_expired");
+                                                ws_close!(WS_CLOSE_TOKEN_EXPIRED, "sync token expired; present a fresh token");
+                                                break 'outer;
+                                            }
+                                            record_unexecuted_dedup_refusal(&state, client, *id, &reason)
                                                 .await;
-                                            record_dedup_refusal(&state, client, *id, &reason).await;
                                         }
                                         ws_send!(&Value::Error(reason).serialize());
                                         continue;

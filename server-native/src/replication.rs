@@ -512,8 +512,9 @@ impl ReplHub {
         subscription
     }
 
-    /// The stripes for one ordinary write on the ordered path. The only
-    /// stripe taker that leaves [`UnorderedGate`] open: a write on this path
+    /// The stripes for one ordinary write on the ordered path. One of the
+    /// two stripe takers that leave [`UnorderedGate`] open (the other is
+    /// [`lock_identity`](Self::lock_identity), which touches no key): a write on this path
     /// either has consumers (so no write is unordered) or conflicts only with
     /// unordered writes that nothing observes the order of. The store's own
     /// write-order stripes still serialize the two in the keyspace.
