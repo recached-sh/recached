@@ -1991,9 +1991,14 @@ pub(crate) async fn handle_ws<S>(
                                 // write barriers. A slow client therefore cannot pause
                                 // unrelated writers.
                                 let snapshot_started = std::time::Instant::now();
-                                let (qstate, examined) = {
+                                let (qstate, examined, aof_tail) = {
                                     let _snapshot_guards =
                                         state.replicas.lock_all_writes().await;
+                                    // The cut's end in the AOF queue: a deferred TCP
+                                    // write in this snapshot may not be written yet
+                                    // (6N-C PR 0c, RV-8). Waited for below, after the
+                                    // stripes are released.
+                                    let aof_tail = state.aof.as_ref().and_then(|aof| aof.tail());
                                     let (qstate, examined) = initial_qstate_counted(
                                         &store,
                                         &pattern,
@@ -2011,7 +2016,7 @@ pub(crate) async fn handle_ws<S>(
                                         }
                                         Err(limit) => Err(limit),
                                     };
-                                    (qstate, examined)
+                                    (qstate, examined, aof_tail)
                                 };
                                 // Taken under every write barrier, so this is
                                 // also how long writers waited for it.
@@ -2036,6 +2041,23 @@ pub(crate) async fn handle_ws<S>(
                                         continue 'outer;
                                     }
                                 };
+                                // Nothing in `qstate` may reach the browser before
+                                // its write reached the AOF stage that write's own
+                                // reply waits for. Waited for here, outside every
+                                // stripe, so a browser repeating QSUB during a disk
+                                // stall cannot stall unrelated writers; keychanges
+                                // queued meanwhile are delivered after `qstate`, by
+                                // this same task. Under `always` a failed batch
+                                // stops the server: close rather than show a value
+                                // that was never made durable.
+                                if let Some(tail) = aof_tail
+                                    && let Err(e) = tail.settled().await
+                                {
+                                    state.record_persistence_failure("aof_append", &e);
+                                    if tail.writer_stopped() {
+                                        break 'outer;
+                                    }
+                                }
                                 // Tagged reply so clients can recognise it among
                                 // interleaved frames: ["qstate", pattern, k, v, ...]
                                 let mut items = Vec::with_capacity(kvs.len() * 2 + 2);
