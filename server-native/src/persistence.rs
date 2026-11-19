@@ -193,7 +193,7 @@ pub(crate) async fn load_snapshot(
 
 // ── AOF ───────────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum AofSync {
     Always,
     EverySec,
@@ -294,6 +294,107 @@ struct AofShared {
     /// `fdatasync`s still to fail, for tests.
     #[cfg(test)]
     failing_syncs: std::sync::atomic::AtomicU32,
+    /// Holds the performer before a marked batch, for tests (see [`AofHold`]).
+    #[cfg(test)]
+    hold: AofHold,
+}
+
+/// Test hook: hold whoever performs a batch whose bytes contain a marker,
+/// before it writes anything, until the test releases it (or a time limit
+/// passes). One-shot: the first marked batch is held, later ones are not.
+///
+/// This is how a test lands a second connection's command inside the window
+/// between a write's place in the AOF queue and its `write(2)`/`fdatasync`,
+/// deterministically. In-process tests arm it with
+/// [`AofWriter::hold_batch_containing`]; the subprocess harness's child arms
+/// it from `RECACHED_TEST_AOF_HOLD=<ms>@<marker>`, which releases after
+/// `<ms>` (an injected fault on the same batch then strikes after the hold).
+///
+/// It blocks the *thread* performing the batch. Under `no` and `everysec`
+/// that is a tokio worker (`lead` performs inline), so a test using it needs
+/// a multi-thread runtime with a worker to spare; on a current-thread
+/// runtime the hold stalls everything until its time limit.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct AofHold {
+    state: std::sync::Mutex<AofHoldState>,
+    released: std::sync::Condvar,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct AofHoldState {
+    marker: Option<Vec<u8>>,
+    limit: Option<std::time::Duration>,
+    /// Batches held so far.
+    held: u32,
+}
+
+#[cfg(test)]
+impl AofHold {
+    fn from_env() -> Self {
+        let hold = AofHold::default();
+        if std::env::var_os("RECACHED_FAIL_STOP_CHILD").is_some()
+            && let Ok(spec) = std::env::var("RECACHED_TEST_AOF_HOLD")
+        {
+            let (ms, marker) = spec
+                .split_once('@')
+                .unwrap_or_else(|| panic!("bad test hold {spec:?}"));
+            let ms: u64 = ms
+                .parse()
+                .unwrap_or_else(|_| panic!("bad test hold {spec:?}"));
+            hold.arm(marker.as_bytes(), std::time::Duration::from_millis(ms));
+        }
+        hold
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, AofHoldState> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn arm(&self, marker: &[u8], limit: std::time::Duration) {
+        let mut state = self.lock();
+        state.marker = Some(marker.to_vec());
+        state.limit = Some(limit);
+        // Counted per arming, so `wait_until_held` waits for this one.
+        state.held = 0;
+    }
+
+    fn release(&self) {
+        self.lock().marker = None;
+        self.released.notify_all();
+    }
+
+    fn held(&self) -> u32 {
+        self.lock().held
+    }
+
+    /// Block the performing thread while `bytes` holds the armed marker.
+    fn wait_if_marked(&self, bytes: &[u8]) {
+        let mut state = self.lock();
+        let hit = state
+            .marker
+            .as_ref()
+            .is_some_and(|m| !m.is_empty() && bytes.windows(m.len()).any(|w| w == m.as_slice()));
+        if !hit {
+            return;
+        }
+        state.held = state.held.saturating_add(1);
+        let deadline =
+            std::time::Instant::now() + state.limit.unwrap_or(std::time::Duration::from_secs(10));
+        while state.marker.is_some() {
+            let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                break;
+            };
+            state = self
+                .released
+                .wait_timeout(state, left)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
+        // One-shot: whatever ended the hold, later batches pass.
+        state.marker = None;
+    }
 }
 
 /// What an `always` writer does when a batch it had to make durable fails.
@@ -548,6 +649,8 @@ impl AofShared {
         if self.is_stopped() {
             return Err(stopped_error());
         }
+        #[cfg(test)]
+        self.hold.wait_if_marked(&batch.bytes);
         let file = &self.file;
         if batch.truncate {
             // A failed ftruncate leaves the file as it was, so a fragment
@@ -1308,8 +1411,38 @@ impl AofWriter {
                 failing_repairs: std::sync::atomic::AtomicU32::new(0),
                 #[cfg(test)]
                 failing_syncs: std::sync::atomic::AtomicU32::new(0),
+                #[cfg(test)]
+                hold: AofHold::from_env(),
             }),
         })
+    }
+
+    /// Hold the next batch containing `marker` before its write, until
+    /// [`release_hold`](Self::release_hold) (or ten seconds). See [`AofHold`].
+    #[cfg(test)]
+    pub(crate) fn hold_batch_containing(&self, marker: &[u8]) {
+        self.shared
+            .hold
+            .arm(marker, std::time::Duration::from_secs(10));
+    }
+
+    /// Let a held batch go on.
+    #[cfg(test)]
+    pub(crate) fn release_hold(&self) {
+        self.shared.hold.release();
+    }
+
+    /// Wait until a performer is held, failing the test after five seconds.
+    #[cfg(test)]
+    pub(crate) async fn wait_until_held(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while self.shared.hold.held() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no AOF batch was held"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
     }
 
     /// Turn cross-connection coalescing (see [`Coalescer`]) on or off.

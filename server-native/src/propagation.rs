@@ -707,14 +707,21 @@ pub(crate) fn dedup_replay_reply(replay: DedupReplay) -> Value {
 /// A DEDUP write was refused. A permanent refusal is remembered — in memory
 /// and in the AOF — so its replay is refused again; a transient one is left
 /// for the client to retry.
+///
+/// Logged first, then remembered (6N-C, RV-9): a replay answered from the
+/// remembered refusal — the WebSocket early-replay path reads it without
+/// `dedup_order` — must not see it before its frame has reached the AOF
+/// stage a write would wait for. Remembered first, a replay could be told
+/// "refused" and a crash then lose the refusal, after which the same replay
+/// was answered `+DUP` (or ran) instead.
 pub(crate) async fn record_dedup_refusal(state: &ServerState, client: &str, id: u64, error: &str) {
     if core_engine::resp::is_transient_refusal(error) {
         counter!("recached_sync_write_refusals_total", "class" => "transient").increment(1);
         return;
     }
     counter!("recached_sync_write_refusals_total", "class" => "permanent").increment(1);
-    state.remember_dedup_refusal(client, id, error);
     state.log_dedup_outcome(client, id, Some(error)).await;
+    state.remember_dedup_refusal(client, id, error);
 }
 
 /// Release one connection's ephemeral holds while keeping the affected keys
