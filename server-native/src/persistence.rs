@@ -377,6 +377,12 @@ impl AofHold {
     /// last polled the driver, and with no other worker woken nothing would
     /// fire the test's own timers or socket reads until the hold timed out.
     fn wait_if_marked(&self, bytes: &[u8]) {
+        // Unarmed or unmarked — every batch of every other test — costs one
+        // lock and nothing else: no hand-off of the worker, which would
+        // change the scheduling the coalescing tests measure.
+        if !self.is_marked(bytes) {
+            return;
+        }
         let worker = tokio::runtime::Handle::try_current()
             .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
         if worker {
@@ -384,6 +390,13 @@ impl AofHold {
         } else {
             self.wait_if_marked_here(bytes);
         }
+    }
+
+    fn is_marked(&self, bytes: &[u8]) -> bool {
+        self.lock()
+            .marker
+            .as_ref()
+            .is_some_and(|m| !m.is_empty() && bytes.windows(m.len()).any(|w| w == m.as_slice()))
     }
 
     fn wait_if_marked_here(&self, bytes: &[u8]) {
