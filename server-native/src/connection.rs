@@ -2122,6 +2122,15 @@ pub(crate) async fn handle_ws<S>(
                                         break 'outer;
                                     }
                                 }
+                                // The wait runs inside this command, so the token
+                                // timer below was not polled meanwhile: a disk stall
+                                // may have outlasted the token (6N-C integration
+                                // review, M2). Nothing goes out under a lapsed one.
+                                if token_lapsed(scope_expires_at) {
+                                    record_scope_denial("token_expired");
+                                    ws_close!(WS_CLOSE_TOKEN_EXPIRED, "sync token expired; present a fresh token");
+                                    break 'outer;
+                                }
                                 // Tagged reply so clients can recognise it among
                                 // interleaved frames: ["qstate", pattern, k, v, ...]
                                 let mut items = Vec::with_capacity(kvs.len() * 2 + 2);
