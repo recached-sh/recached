@@ -14,7 +14,7 @@ use super::*;
 use std::time::Duration;
 
 /// Serve WebSocket clients for `node` (open sync mode).
-async fn serve_ws(node: &Node) -> std::net::SocketAddr {
+pub(super) async fn serve_ws(node: &Node) -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (store, state, tx, watches) = (
@@ -54,7 +54,7 @@ async fn serve_ws(node: &Node) -> std::net::SocketAddr {
 
 /// A socket routed for `other:*` only, so a write to `qk:*` has no push
 /// candidate and (with no live query yet) defers.
-async fn narrowed(addr: std::net::SocketAddr) -> WsClient {
+pub(super) async fn narrowed(addr: std::net::SocketAddr) -> WsClient {
     let mut ws = WsClient::connect(addr).await;
     let reply = ws.cmd(&["SYNC", "other:*"]).await;
     assert!(!matches!(reply, Value::Error(_)), "{reply:?}");

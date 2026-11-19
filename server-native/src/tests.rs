@@ -6781,6 +6781,7 @@ mod sync_reliability;
 mod coalesced_fanout;
 mod commands_v06;
 mod dedup_ack_order;
+mod integration_6nc;
 mod live_query_6k;
 mod multitenant;
 mod qsub_aof_cut;
