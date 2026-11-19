@@ -1619,15 +1619,38 @@ async fn apply_repl_frame(
     // DEDUP identities, when the primary streams them: the AOF's own record
     // formats, applied the way AOF replay applies them, and passed on the way
     // a primary passes on its own writes.
+    //
+    // A record that changes no data still holds a real ordering stripe —
+    // the client id's — while it checks the link and applies (6N-C PR 0d,
+    // RV-7). Applied with none, as before, it could commit and fan out
+    // between a sub-replica's cut (`handle_replica`'s all-write barrier,
+    // which reads the offset and the DEDUP table) and that sub-replica's
+    // registration, and reach it through neither; and it was applied after
+    // `REPLICAOF NO ONE`. `lock_commands(&[])` would take no stripe at all
+    // (6N-B round 2, NEW-3), so the client id is passed as an explicit key.
+    //
+    // Logged before it is remembered, as on the primary: this node's
+    // WebSocket clients may read the outcome (early replay), and must not
+    // before it is in this node's AOF.
     match dedup_record(&value) {
         Some(DedupRecord::Refused(client, id, error)) => {
-            state.remember_dedup_refusal(&client, id, &error);
+            let _order = state
+                .replicas
+                .lock_commands_and_keys(&[], std::iter::once(client.as_str()))
+                .await;
+            still_following(state)?;
             state.log_dedup_outcome(&client, id, Some(&error)).await;
+            state.remember_dedup_refusal(&client, id, &error);
             return Ok(());
         }
         Some(DedupRecord::Mark(client, id)) if is_dedup_mark_only(&value) => {
-            state.commit_dedup(&client, id);
+            let _order = state
+                .replicas
+                .lock_commands_and_keys(&[], std::iter::once(client.as_str()))
+                .await;
+            still_following(state)?;
             state.log_dedup_outcome(&client, id, None).await;
+            state.commit_dedup(&client, id);
             return Ok(());
         }
         Some(DedupRecord::Mark(client, id)) => {
@@ -1726,9 +1749,11 @@ async fn apply_dedup_envelope(
             format!("replicated command failed: {error}"),
         ));
     }
-    state.commit_dedup(client, id);
-    // Logged, then announced, then pushed, as for a bare replicated write.
+    // Logged, then the mark committed (RV-14: before, the mark was readable
+    // before the frame was appended), then announced, then pushed, as for a
+    // bare replicated write.
     state.on_write_identified(&bare, Some((client, id))).await;
+    state.commit_dedup(client, id);
     notify_write(watches, &cmd, store).await;
     if tx.would_route(&cmd) {
         tx.send(Arc::new(SyncPush::for_command(
@@ -2015,5 +2040,186 @@ mod write_order_tests {
         let (offset, bytes) = read_repl_frame(&mut socket).await.unwrap();
         assert_eq!(offset, 2);
         assert_eq!(bytes, b"two");
+    }
+}
+
+/// 6N-C PR 0d (RV-7, NEW-3, RV-14): replicated DEDUP records that change no
+/// data are ordered like writes on a replica, and are refused once it stops
+/// following.
+#[cfg(test)]
+mod dedup_order_tests {
+    use super::*;
+
+    struct Replica {
+        store: KeyValueStore,
+        state: Arc<ServerState>,
+        tx: SyncTx,
+        watches: WatchRegistry,
+    }
+
+    fn replica() -> Replica {
+        let hub = ReplHub::new();
+        hub.configure_dedup(true);
+        // Chained: this replica serves sub-replicas of its own.
+        hub.configure_backlog(1 << 20);
+        let state = ServerState::for_tests(
+            Arc::new(SnapshotConfig {
+                path: std::env::temp_dir().join("recached_0d_unused.rdb"),
+                last_save: std::sync::atomic::AtomicI64::new(0),
+                checkpoint_id: AtomicU64::new(0),
+            }),
+            hub,
+            true,
+        );
+        let store = KeyValueStore::new();
+        store.set_follower(true);
+        Replica {
+            store,
+            state,
+            tx: SyncRouter::new(16),
+            watches: WatchHub::new(),
+        }
+    }
+
+    fn knows(state: &ServerState, client: &str, id: u64) -> bool {
+        state.dedup_table().into_iter().any(|(c, hwm, refused)| {
+            c == client && (hwm.is_some_and(|h| h >= id) || refused.iter().any(|(r, _)| *r == id))
+        })
+    }
+
+    fn apply(r: &Arc<Replica>, frame: Vec<u8>) -> tokio::task::JoinHandle<std::io::Result<()>> {
+        let r = Arc::clone(r);
+        tokio::spawn(async move {
+            apply_repl_frame(&r.store, &r.state, &r.tx, &r.watches, &frame).await
+        })
+    }
+
+    /// The RV-7 counterexample, as a sub-replica's attach performs it: under
+    /// the all-write barrier it reads the DEDUP table, then registers its
+    /// stream. A record arriving meanwhile must be in exactly one of them —
+    /// before the fix it committed and fanned out under the barrier, before
+    /// the sub-replica's registration, and reached it through neither.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_record_racing_a_sub_replica_cut_lands_in_the_table_or_the_stream() {
+        for (name, frame) in [
+            ("mark", dedup_mark_frame("racer-0d", 5)),
+            (
+                "refusal",
+                dedup_refusal_frame("racer-0d", 5, "ERR refused for good"),
+            ),
+        ] {
+            let r = Arc::new(replica());
+            let barrier = r.state.replicas.lock_all_writes().await;
+            let task = apply(&r, frame);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(!task.is_finished(), "{name}: applied under the barrier");
+            let in_table = knows(&r.state, "racer-0d", 5);
+            let mut stream = r
+                .state
+                .replicas
+                .attach_test_replica(64, usize::MAX >> 1)
+                .await;
+            drop(barrier);
+            task.await.unwrap().unwrap();
+            let in_stream = tokio::time::timeout(Duration::from_secs(2), stream.recv())
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|q| q.frame.bytes.windows(8).any(|w| w == b"racer-0d"));
+            assert!(
+                in_table ^ in_stream,
+                "{name}: in table {in_table}, in stream {in_stream}"
+            );
+            assert!(
+                knows(&r.state, "racer-0d", 5),
+                "{name}: applied after the cut"
+            );
+        }
+    }
+
+    /// A record still waiting for its stripe when the node is promoted
+    /// (`REPLICAOF NO ONE` flips the role under the all-write barrier) is
+    /// refused, which ends the link, and leaves no trace.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_record_pending_across_a_promotion_is_refused() {
+        for (name, frame) in [
+            ("mark", dedup_mark_frame("late-0d", 9)),
+            (
+                "refusal",
+                dedup_refusal_frame("late-0d", 9, "ERR refused for good"),
+            ),
+        ] {
+            let r = Arc::new(replica());
+            let barrier = r.state.replicas.lock_all_writes().await;
+            let task = apply(&r, frame);
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            // What `promote_to_primary` does under its barrier.
+            r.state.is_replica.store(false, Ordering::Relaxed);
+            drop(barrier);
+            assert!(
+                task.await.unwrap().is_err(),
+                "{name}: applied after promotion"
+            );
+            assert!(!knows(&r.state, "late-0d", 9), "{name}: left a trace");
+        }
+    }
+
+    /// After `REPLICAOF NO ONE` has completed, a record is refused outright.
+    #[tokio::test]
+    async fn a_record_after_replicaof_no_one_is_refused() {
+        let r = Arc::new(replica());
+        r.state.promote_to_primary(&r.store).await;
+        assert!(
+            apply(&r, dedup_mark_frame("after-0d", 1))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            apply(&r, dedup_refusal_frame("after-0d", 2, "ERR x"))
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert!(!knows(&r.state, "after-0d", 1));
+        assert!(!knows(&r.state, "after-0d", 2));
+    }
+
+    /// The stripe is the client id's own: a record for one client waits for
+    /// a write holding that stripe and does not wait for unrelated keys.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_record_takes_its_clients_stripe_only() {
+        let r = Arc::new(replica());
+        let held = r
+            .state
+            .replicas
+            .lock_commands_and_keys(&[], std::iter::once("striped-0d"))
+            .await;
+        let task = apply(&r, dedup_mark_frame("striped-0d", 1));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!task.is_finished(), "took no stripe (NEW-3)");
+        drop(held);
+        task.await.unwrap().unwrap();
+        // An unrelated stripe does not block it.
+        let unrelated = loop {
+            let key = format!("unrelated-{}", next_conn_id());
+            if ReplHub::stripe_for(&key) != ReplHub::stripe_for("striped-0d") {
+                break key;
+            }
+        };
+        let _other = r
+            .state
+            .replicas
+            .lock_commands_and_keys(&[], std::iter::once(unrelated.as_str()))
+            .await;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            apply(&r, dedup_mark_frame("striped-0d", 2)),
+        )
+        .await
+        .expect("blocked by an unrelated stripe")
+        .unwrap()
+        .unwrap();
+        assert!(knows(&r.state, "striped-0d", 2));
     }
 }
