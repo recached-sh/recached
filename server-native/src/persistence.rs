@@ -552,6 +552,11 @@ struct AofQueue {
     batches: std::collections::VecDeque<AofBatch>,
     /// A leader is performing a batch: everyone else only queues.
     busy: bool,
+    /// The completion of the newest batch ever queued. Batches are performed
+    /// in queue order, so once it completes every append queued before it
+    /// was taken has been performed too — even one whose batch has already
+    /// left `batches` and is being written. See [`AofWriter::tail`].
+    newest: Option<Arc<AofDone>>,
 }
 
 struct AofBatch {
@@ -1373,6 +1378,41 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for AofGatedWriter<W> {
     }
 }
 
+/// A point in the AOF queue, from [`AofWriter::tail`].
+///
+/// Holding one keeps a reference to its batch's completion, which the
+/// batch statistics (`waiters`) and the coalescer's "did another append
+/// join" check count; a waiting QSUB can therefore read as one more joiner.
+/// Both are heuristics and metrics only: they decide when a batch is
+/// written, never what it covers or what a reply waits for.
+pub(crate) struct AofTail {
+    shared: Arc<AofShared>,
+    done: Arc<AofDone>,
+}
+
+impl AofTail {
+    /// Wait until every append queued before the tail was taken has been
+    /// performed: written under `no` and `everysec`, written and
+    /// `fdatasync`ed under `always`. Leads first, so the wait never depends
+    /// on another task leading the batch. Holds nothing while it waits;
+    /// cancelling it strands nothing (the lead already ran or handed the
+    /// batch to the blocking pool).
+    ///
+    /// The error is the tail batch's own: under `everysec`/`no` a failure
+    /// is non-fatal (persistence latches unhealthy, as for any write);
+    /// under `always` the writer has stopped, see [`Self::writer_stopped`].
+    pub(crate) async fn settled(&self) -> std::io::Result<()> {
+        self.shared.lead();
+        gate_wait(&self.shared, &self.done).await
+    }
+
+    /// Whether the AOF stopped after a failure under `always`. Nothing a
+    /// failed batch held may be shown to a client then.
+    pub(crate) fn writer_stopped(&self) -> bool {
+        self.shared.is_stopped()
+    }
+}
+
 impl AofWriter {
     pub(crate) async fn open(path: PathBuf, sync: AofSync) -> std::io::Result<Self> {
         let mut opts = tokio::fs::OpenOptions::new();
@@ -1495,7 +1535,9 @@ impl AofWriter {
                     if let Some(open) = open {
                         open.sealed = true;
                     }
-                    queue.batches.push_back(AofBatch::new());
+                    let batch = AofBatch::new();
+                    queue.newest = Some(Arc::clone(&batch.done));
+                    queue.batches.push_back(batch);
                     queue
                         .batches
                         .back_mut()
@@ -1505,6 +1547,25 @@ impl AofWriter {
             edit(batch);
             Arc::clone(&batch.done)
         }
+    }
+
+    /// Where the AOF queue ends now: the newest batch, unless it has
+    /// already completed (then `None` — everything queued so far is
+    /// performed).
+    ///
+    /// Taken under the all-write barrier, this covers every client write
+    /// committed before the barrier, deferred ones included: a deferred
+    /// write queues its frame under its stripes before the store change
+    /// becomes reachable, so its frame is in this batch or an earlier one.
+    /// QSUB uses it to send `qstate` only once what it shows has reached
+    /// the AOF stage a reply would wait for (6N-C PR 0c, RV-8).
+    pub(crate) fn tail(&self) -> Option<AofTail> {
+        let queue = self.shared.lock();
+        let done = queue.newest.as_ref().filter(|done| !done.is_complete())?;
+        Some(AofTail {
+            shared: Arc::clone(&self.shared),
+            done: Arc::clone(done),
+        })
     }
 
     pub(crate) async fn append(&self, resp: &[u8]) -> std::io::Result<()> {

@@ -16,13 +16,13 @@
 use super::*;
 use std::time::Duration;
 
-struct Node {
-    store: Arc<KeyValueStore>,
-    state: Arc<ServerState>,
-    aof: Arc<AofWriter>,
-    tx: SyncTx,
-    watches: WatchRegistry,
-    dir: PathBuf,
+pub(super) struct Node {
+    pub(super) store: Arc<KeyValueStore>,
+    pub(super) state: Arc<ServerState>,
+    pub(super) aof: Arc<AofWriter>,
+    pub(super) tx: SyncTx,
+    pub(super) watches: WatchRegistry,
+    pub(super) dir: PathBuf,
 }
 
 impl Drop for Node {
@@ -32,7 +32,7 @@ impl Drop for Node {
     }
 }
 
-async fn node(name: &str, policy: AofSync) -> Node {
+pub(super) async fn node(name: &str, policy: AofSync) -> Node {
     let dir = std::env::temp_dir().join(format!(
         "recached_0a_{name}_{}_{}",
         std::process::id(),
@@ -73,8 +73,9 @@ fn dedup(client: &str, id: u64, inner: Command) -> Command {
 /// reply reaches the socket. The receiver gets the command's result as soon
 /// as the command returns — before the gate is flushed — so a test can tell
 /// a deferred AOF wait (the command returns at once) from an inline one;
-/// the task's own result is the reply, once the gate let it through.
-fn tcp_write(
+/// the task's own result is the reply, once the gate let it through, or
+/// `-WITHHELD …` when the gate refused to send it.
+pub(super) fn tcp_write(
     node: &Node,
     cmd: Command,
 ) -> (
@@ -97,16 +98,25 @@ fn tcp_write(
         })
         .await;
         let _ = returned_tx.send(reply.clone());
-        tokio::io::AsyncWriteExt::write_all(&mut socket, &reply.serialize())
-            .await
-            .unwrap();
-        tokio::io::AsyncWriteExt::flush(&mut socket).await.unwrap();
-        reply
+        // The gate fails the socket write when the batch failed under
+        // `always`: the reply is withheld, which the caller sees as WITHHELD.
+        let sent = async {
+            tokio::io::AsyncWriteExt::write_all(&mut socket, &reply.serialize()).await?;
+            tokio::io::AsyncWriteExt::flush(&mut socket).await
+        }
+        .await;
+        match sent {
+            Ok(()) => reply,
+            Err(e) => Value::Error(format!("WITHHELD {e}")),
+        }
     });
     (task, returned)
 }
 
-async fn finished_within<T>(task: &mut tokio::task::JoinHandle<T>, wait: Duration) -> Option<T> {
+pub(super) async fn finished_within<T>(
+    task: &mut tokio::task::JoinHandle<T>,
+    wait: Duration,
+) -> Option<T> {
     match tokio::time::timeout(wait, task).await {
         Ok(result) => Some(result.unwrap()),
         Err(_) => None,
