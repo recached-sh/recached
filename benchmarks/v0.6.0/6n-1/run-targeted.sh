@@ -96,7 +96,8 @@ fi
 # ── B: replication-enabled AOF vs no listener ─────────────────────────────────
 P=6700 PREPL=6710 R=6720
 b_run() {   # b_run <mode standalone|replicated> <rep>
-  local mode=$1 rep=$2 d="$OUT/B/$mode-r$rep"
+  local mode=$1 rep=$2
+  local d="$OUT/B/$mode-r$rep"
   rm -rf "$d"; mkdir -p "$d/p" "$d/r"
   local -a penv=(RECACHED_BIND=127.0.0.1 RECACHED_PORT=$P RECACHED_WS_PORT=$((P + 1)) RECACHED_METRICS_PORT=0
     RECACHED_SAVE_INTERVAL=0 RECACHED_SAVE_PATH="$d/p/dump.rdb" RECACHED_AOF_PATH="$d/p/appendonly.aof"
