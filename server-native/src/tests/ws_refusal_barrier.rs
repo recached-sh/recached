@@ -365,3 +365,88 @@ async fn a_refusal_flood_is_paced_and_stalls_no_one() {
         "cross-tenant refusal"
     );
 }
+
+/// 6N-C integration review, L1: a replica records no DEDUP refusal of its
+/// own. A scoped client's refused write on a replica is still answered, but
+/// nothing reaches the replica's DEDUP table, AOF or sub-replicas.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replica_records_no_refusal_of_its_own() {
+    let node = node("refusal_replica", AofSync::EverySec).await;
+    node.state.replicas.configure_dedup(true);
+    node.state.replicas.configure_backlog(1 << 20);
+    node.state
+        .is_replica
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut stream = node
+        .state
+        .replicas
+        .attach_test_replica(64, usize::MAX >> 1)
+        .await;
+    let addr = serve_strict(&node).await;
+    let mut ws = scoped(addr, "alice").await;
+    let identity = namespaced_dedup_client("alice", "replica-0b");
+    send(&mut ws, &refused_flushdb("replica-0b", 1)).await;
+    let reply = ws
+        .recv_frame(5_000)
+        .await
+        .expect("the refusal is still answered");
+    assert!(String::from_utf8_lossy(&reply).starts_with("-NOSCOPE"));
+    assert!(
+        !remembers_refusal(&node.state, &identity, 1),
+        "a replica recorded a refusal"
+    );
+    let on_disk = std::fs::read(node.dir.join("append.aof")).unwrap_or_default();
+    assert!(
+        !on_disk
+            .windows(identity.len())
+            .any(|w| w == identity.as_bytes())
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), stream.recv())
+            .await
+            .is_err(),
+        "a replica fanned a refusal out to its sub-replicas"
+    );
+}
+
+/// 6N-C integration review, M2: a QSUB whose AOF tail wait outlasts the
+/// token sends no `qstate`; the socket is closed as the token timer would.
+/// The wait here is for a deferred TCP write to a key this socket is not
+/// routed for — the tail covers every queued batch, related or not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_qsub_whose_wait_outlasts_the_token_sends_no_qstate() {
+    let node = node("qsub_expiry", AofSync::EverySec).await;
+    let addr = serve_strict(&node).await;
+    let mut ws = WsClient::connect(addr).await;
+    let expiring = mint_sync_token(
+        SECRET,
+        &format!("rw=tenant:alice:*|{}|sub=alice", unix_now_secs() + 2),
+    );
+    let reply = ws.cmd(&["SYNC", "TOKEN", &expiring]).await;
+    assert!(!matches!(reply, Value::Error(_)), "{reply:?}");
+
+    node.aof.hold_batch_containing(b"other:stall");
+    let (_writer, returned) = tcp_write(
+        &node,
+        Command::Set("other:stall".into(), b"v".to_vec(), Default::default()),
+    );
+    node.aof.wait_until_held().await;
+    tokio::time::timeout(Duration::from_secs(5), returned)
+        .await
+        .expect("the unrelated write must defer")
+        .unwrap();
+    ws.send(&["QSUB", "tenant:alice:*"]).await;
+    // Let the token lapse while QSUB waits for the held batch.
+    tokio::time::sleep(Duration::from_millis(2_600)).await;
+    node.aof.release_hold();
+    let next = tokio::time::timeout(Duration::from_secs(3), ws.ws.next())
+        .await
+        .expect("the socket was neither closed nor sent anything");
+    assert!(
+        matches!(
+            next,
+            None | Some(Err(_)) | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))
+        ),
+        "sent under a lapsed token: {next:?}"
+    );
+}
