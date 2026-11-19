@@ -257,6 +257,49 @@ pub(crate) struct AofWriter {
     pub(crate) path: PathBuf,
     pub(crate) sync: AofSync,
     shared: Arc<AofShared>,
+    /// How a write whose AOF wait cannot be deferred to its connection
+    /// appends (`RECACHED_AOF_FANOUT`, see [`AofFanout`]).
+    fanout: std::sync::atomic::AtomicU8,
+}
+
+/// `RECACHED_AOF_FANOUT`: how a write that must wait for its own AOF stage
+/// before its effects fan out — one observed by replicas, WebSocket routes,
+/// watchers or live queries, or arriving over WebSocket — makes its append.
+///
+/// Both modes keep today's ordering model exactly: the write holds its
+/// write-order stripes from its store change, through its append and the
+/// wait for its AOF stage, to its replication, WATCH, QSUB and WebSocket
+/// fan-out, which runs afterwards on the writer's own task. They differ only
+/// in *when* the writer leads its batch, which decides how many other
+/// writers' frames share that `write(2)` (and `fdatasync` under `always`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AofFanout {
+    /// Lead at once (the default, and the behaviour before 6N-C). With 50
+    /// replicated clients every command was its own `write(2)` (6N-1 B).
+    Inline,
+    /// Queue the frame, yield once through the [`Coalescer`] so other ready
+    /// writers can join the open batch, then lead and wait (6N-C Option D).
+    Coalesced,
+}
+
+impl AofFanout {
+    /// Parse `RECACHED_AOF_FANOUT`; empty means the default.
+    pub(crate) fn parse(raw: &str) -> Result<Self, String> {
+        match raw.to_ascii_lowercase().as_str() {
+            "" | "inline" => Ok(AofFanout::Inline),
+            "coalesced" => Ok(AofFanout::Coalesced),
+            _ => Err(format!(
+                "RECACHED_AOF_FANOUT must be inline or coalesced, not '{raw}'"
+            )),
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            AofFanout::Inline => "inline",
+            AofFanout::Coalesced => "coalesced",
+        }
+    }
 }
 
 /// State shared between appenders and whoever is writing.
@@ -265,6 +308,12 @@ struct AofShared {
     file: std::fs::File,
     policy: AofSync,
     coalesce: Coalescer,
+    /// The coalesced fan-out path's own heuristic ([`AofWriter::append_coalesced`]).
+    /// Separate from the gate's: its writers yield while holding stripes
+    /// (all of them, for a capped store's evicting writes or EXEC), where a
+    /// yield may gain nothing, and its misses must neither back the gate's
+    /// coalescing off nor be masked by the gate's gains.
+    coalesce_inline: Coalescer,
     stats: &'static AofStats,
     /// Where a failed write's torn fragment starts, while it is still in
     /// the file: [`NOT_TORN`], [`TORN_AT_UNKNOWN`], or the offset. Nothing
@@ -1345,6 +1394,24 @@ fn withheld() -> std::io::Error {
     )
 }
 
+/// Leads the writer's queue when dropped, unless disarmed: a coalesced
+/// append cancelled during its yield must not leave its batch unwritten.
+struct LeadOnDrop<'a>(Option<&'a Arc<AofShared>>);
+
+impl LeadOnDrop<'_> {
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for LeadOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(shared) = self.0.take() {
+            shared.lead();
+        }
+    }
+}
+
 /// Wait for a gate's batch, counting the waits another task's write made park.
 async fn gate_wait(shared: &AofShared, done: &AofDone) -> std::io::Result<()> {
     if !done.is_complete() {
@@ -1457,7 +1524,7 @@ impl AofWriter {
         #[cfg(unix)]
         restrict_permissions(&file).await;
         let file = file.into_std().await;
-        Ok(Self {
+        let writer = Self {
             path,
             sync,
             shared: Arc::new(AofShared {
@@ -1465,6 +1532,7 @@ impl AofWriter {
                 file,
                 policy: sync,
                 coalesce: Coalescer::new(true),
+                coalesce_inline: Coalescer::new(true),
                 stats: &AOF_STATS,
                 torn_at: std::sync::atomic::AtomicU64::new(NOT_TORN),
                 stopped: std::sync::atomic::AtomicBool::new(false),
@@ -1483,7 +1551,35 @@ impl AofWriter {
                 #[cfg(test)]
                 hold: AofHold::from_env(),
             }),
-        })
+            fanout: std::sync::atomic::AtomicU8::new(0),
+        };
+        // Test builds: every writer a test opens starts in the mode
+        // `RECACHED_AOF_FANOUT` names, so the whole suite can be run in
+        // either mode (CI runs the server suite once more in `coalesced`).
+        // A value it cannot parse fails the test rather than quietly
+        // running it inline.
+        #[cfg(test)]
+        writer.set_fanout(
+            AofFanout::parse(&std::env::var("RECACHED_AOF_FANOUT").unwrap_or_default())
+                .unwrap_or_else(|e| panic!("test run: {e}")),
+        );
+        Ok(writer)
+    }
+
+    /// Set how non-deferred client writes append (see [`AofFanout`]).
+    pub(crate) fn set_fanout(&self, mode: AofFanout) {
+        self.fanout.store(
+            u8::from(mode == AofFanout::Coalesced),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    pub(crate) fn fanout(&self) -> AofFanout {
+        if self.fanout.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            AofFanout::Inline
+        } else {
+            AofFanout::Coalesced
+        }
     }
 
     /// Hold the next batch containing `marker` before its write, until
@@ -1517,16 +1613,17 @@ impl AofWriter {
     /// Turn cross-connection coalescing (see [`Coalescer`]) on or off.
     /// `RECACHED_AOF_COALESCE=off` sets it off, for A/B measurement.
     pub(crate) fn set_coalescing(&self, enabled: bool) {
-        self.shared
-            .coalesce
-            .enabled
-            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+        for coalescer in [&self.shared.coalesce, &self.shared.coalesce_inline] {
+            coalescer
+                .enabled
+                .store(enabled, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// Count this writer's batches in `stats` instead of the process-wide
     /// [`AOF_STATS`], so a test can read its own numbers.
     #[cfg(test)]
-    fn with_private_stats(mut self) -> (Self, &'static AofStats) {
+    pub(crate) fn with_private_stats(mut self) -> (Self, &'static AofStats) {
         let stats: &'static AofStats = Box::leak(Box::new(AofStats::new()));
         let shared =
             Arc::get_mut(&mut self.shared).expect("a freshly opened writer has no other handle");
@@ -1601,6 +1698,43 @@ impl AofWriter {
         self.enqueue(false, |batch| batch.push_frame(resp))
             .wait()
             .await
+    }
+
+    /// [`append`](Self::append), giving other ready writers one chance to
+    /// join the batch before this one leads it ([`AofFanout::Coalesced`]).
+    ///
+    /// Queue the frame — its place in the file fixed now, under the
+    /// caller's stripes — then, if the [`Coalescer`] says a yield is worth
+    /// it, `yield_now` once: tokio resumes this task only after running the
+    /// other ready tasks on this worker, which queue their frames into the
+    /// same open batch. Then lead (performing the batch for everyone in it,
+    /// or finding it written) and wait for the batch's outcome, exactly as
+    /// `append` does. The result is the same as `append`'s: `Ok` once the
+    /// frame is written (and `fdatasync`ed under `always`), the batch's
+    /// error otherwise, and under `always` a failed batch is a fail-stop
+    /// before anyone resumes.
+    ///
+    /// The caller keeps its stripes across the yield; that is the point —
+    /// its fan-out still follows its own AOF stage, in its own ordering
+    /// context. Writers of other stripes are what join. Cancellation is
+    /// safe: dropped during the yield, the guard leads the batch, so no
+    /// frame is left queued with nobody to write it. Off a tokio runtime,
+    /// or with coalescing off or backed off, it is `append`.
+    pub(crate) async fn append_coalesced(&self, resp: &[u8]) -> std::io::Result<()> {
+        let done = self.queue_only(false, |batch| batch.push_frame(resp));
+        let shared = &self.shared;
+        if tokio::runtime::Handle::try_current().is_ok() && shared.coalesce_inline.should_yield() {
+            // Everyone holding the batch's completion now: anyone more after
+            // the yield joined this write.
+            let holders = Arc::strong_count(&done);
+            let lead_on_drop = LeadOnDrop(Some(shared));
+            tokio::task::yield_now().await;
+            lead_on_drop.disarm();
+            let gained = done.is_complete() || Arc::strong_count(&done) > holders;
+            shared.coalesce_inline.observe(gained, shared.stats);
+        }
+        shared.lead();
+        gate_wait(shared, &done).await
     }
 
     /// [`append`](Self::append) for a client write, which may *defer* the

@@ -52,6 +52,8 @@ pub(crate) struct ServerFacts {
     pub(crate) tls_enabled: bool,
     pub(crate) auth_enabled: bool,
     pub(crate) aof_enabled: bool,
+    /// `RECACHED_AOF_FANOUT`, as configured (reported only with an AOF).
+    pub(crate) aof_fanout: &'static str,
 }
 
 impl Default for ServerFacts {
@@ -65,6 +67,7 @@ impl Default for ServerFacts {
             tls_enabled: false,
             auth_enabled: false,
             aof_enabled: false,
+            aof_fanout: "inline",
         }
     }
 }
@@ -748,7 +751,11 @@ pub(crate) fn render_info(
                     last_save,
                     u8::from(facts.aof_enabled),
                     if facts.aof_enabled {
-                        AOF_STATS.render()
+                        format!(
+                            "recached_aof_fanout:{}\r\n{}",
+                            facts.aof_fanout,
+                            AOF_STATS.render()
+                        )
                     } else {
                         String::new()
                     },

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 const SECRET: &str = "ws-refusal-test-secret-0123456789abcdef";
 
-fn token_for(entries: &str, sub: &str) -> String {
+pub(super) fn token_for(entries: &str, sub: &str) -> String {
     mint_sync_token(
         SECRET,
         &format!("{entries}|{}|sub={sub}", unix_now_secs() + 3600),
@@ -25,7 +25,7 @@ fn token_for(entries: &str, sub: &str) -> String {
 }
 
 /// Serve strict-mode WebSocket clients for `node`.
-async fn serve_strict(node: &Node) -> std::net::SocketAddr {
+pub(super) async fn serve_strict(node: &Node) -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (store, state, tx, watches) = (
@@ -63,7 +63,7 @@ async fn serve_strict(node: &Node) -> std::net::SocketAddr {
     addr
 }
 
-async fn scoped(addr: std::net::SocketAddr, sub: &str) -> WsClient {
+pub(super) async fn scoped(addr: std::net::SocketAddr, sub: &str) -> WsClient {
     let mut ws = WsClient::connect(addr).await;
     let reply = ws
         .cmd(&[

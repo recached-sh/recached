@@ -662,6 +662,13 @@ impl ServerState {
             let frame = wrapped.as_deref().unwrap_or(resp);
             let result = if may_defer && dedup.is_none() && !self.replicas.is_enabled() {
                 aof.append_client_write(frame).await
+            } else if aof.fanout() == AofFanout::Coalesced && dedup.is_none() {
+                // Still waited for here, under the caller's stripes, before
+                // the fan-out below: only when the batch is led changes.
+                // Not for a DEDUP write: it holds the process-wide
+                // `dedup_order`, so no other DEDUP write can join its batch
+                // and its yield would only hold everyone else's back.
+                aof.append_coalesced(frame).await
             } else {
                 aof.append(frame).await
             };
