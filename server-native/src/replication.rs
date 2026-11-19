@@ -1428,13 +1428,23 @@ where
             None
         };
         let count = entries.len();
-        {
+        let clients = {
             // Behind the all-write barrier, as a QSUB snapshot is: a live
             // query registered on this replica must not snapshot a keyspace
             // that is half replaced (the prefix plan would read the fresh,
             // empty index installed at the start of `replace`).
             let _barrier = state.replicas.lock_all_writes().await;
             store.replace(entries);
+            // The DEDUP table with the data, under the same barrier (6N-C
+            // PR 0d): installed after it, a sub-replica's cut (or a QSUB, or
+            // a WebSocket replay on this node) could pair the new keyspace
+            // with the old marks, and nothing would stream the new table to
+            // that sub-replica afterwards.
+            let clients = table.map(|table| {
+                let clients = table.len();
+                state.replace_dedup_table(table);
+                clients
+            });
             // Every client of this replica holds a copy, and live-query
             // snapshots, of the keyspace just replaced; keys deleted on the
             // primary while the link was down are simply gone, with no DEL
@@ -1451,11 +1461,10 @@ where
                 );
             }
             counter!("recached_replica_full_resync_total").increment(1);
-        }
-        match table {
-            Some(table) => {
-                let clients = table.len();
-                state.replace_dedup_table(table);
+            clients
+        };
+        match clients {
+            Some(clients) => {
                 info!("Replica: full snapshot loaded ({count} entries, {clients} DEDUP client(s))");
             }
             None => info!("Replica: full snapshot loaded ({} entries)", count),
@@ -2094,13 +2103,14 @@ mod dedup_order_tests {
         })
     }
 
-    /// The RV-7 counterexample, as a sub-replica's attach performs it: under
-    /// the all-write barrier it reads the DEDUP table, then registers its
-    /// stream. A record arriving meanwhile must be in exactly one of them —
-    /// before the fix it committed and fanned out under the barrier, before
-    /// the sub-replica's registration, and reached it through neither.
+    /// The RV-7 counterexample, in the order that loses it: under the
+    /// all-write barrier a sub-replica's attach reads the DEDUP table, then
+    /// registers its stream. A record arriving after the table was read must
+    /// not commit and fan out before the registration — it would reach the
+    /// sub-replica through neither — so it must wait for the barrier and
+    /// arrive in the stream.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_record_racing_a_sub_replica_cut_lands_in_the_table_or_the_stream() {
+    async fn a_record_racing_a_sub_replica_cut_reaches_the_sub_replica() {
         for (name, frame) in [
             ("mark", dedup_mark_frame("racer-0d", 5)),
             (
@@ -2110,10 +2120,13 @@ mod dedup_order_tests {
         ] {
             let r = Arc::new(replica());
             let barrier = r.state.replicas.lock_all_writes().await;
+            assert!(
+                !knows(&r.state, "racer-0d", 5),
+                "{name}: in the cut's table"
+            );
             let task = apply(&r, frame);
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert!(!task.is_finished(), "{name}: applied under the barrier");
-            let in_table = knows(&r.state, "racer-0d", 5);
             let mut stream = r
                 .state
                 .replicas
@@ -2126,10 +2139,7 @@ mod dedup_order_tests {
                 .ok()
                 .flatten()
                 .is_some_and(|q| q.frame.bytes.windows(8).any(|w| w == b"racer-0d"));
-            assert!(
-                in_table ^ in_stream,
-                "{name}: in table {in_table}, in stream {in_stream}"
-            );
+            assert!(in_stream, "{name}: reached the sub-replica through neither");
             assert!(
                 knows(&r.state, "racer-0d", 5),
                 "{name}: applied after the cut"
