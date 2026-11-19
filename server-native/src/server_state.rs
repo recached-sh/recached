@@ -413,9 +413,20 @@ impl ServerState {
         replicas: ReplRegistry,
         is_replica: bool,
     ) -> Arc<Self> {
+        Self::for_tests_with_aof(snap, replicas, is_replica, None)
+    }
+
+    /// [`for_tests`](Self::for_tests) with an AOF.
+    #[cfg(test)]
+    pub(crate) fn for_tests_with_aof(
+        snap: Arc<SnapshotConfig>,
+        replicas: ReplRegistry,
+        is_replica: bool,
+        aof: Option<Arc<AofWriter>>,
+    ) -> Arc<Self> {
         Arc::new(ServerState {
             snap,
-            aof: None,
+            aof,
             replicas,
             is_replica: AtomicBool::new(is_replica),
             dedup: std::sync::Mutex::new(HashMap::new()),
@@ -630,6 +641,16 @@ impl ServerState {
     /// write before that wait: no replica stream (fanned out right after
     /// this), and — the caller's part — no push receiver or watcher. Those
     /// keep seeing a write only once it is in the AOF, as before.
+    ///
+    /// A DEDUP write never defers (6N-C, finding O1). Its mark is committed
+    /// as soon as this returns, and a replay on *another* connection is
+    /// answered `+DUP` from that mark — through a gate that holds no ticket
+    /// for the original batch. Deferred, the `+DUP` could leave before the
+    /// original's `write(2)` (or its `fdatasync` under `always`), and a
+    /// failure of that batch then lost a write a client was told was
+    /// applied. Waiting here commits every mark after its frame's AOF stage,
+    /// which also covers the WebSocket early-replay path, which reads marks
+    /// without `dedup_order`.
     pub(crate) async fn on_write_logged(
         &self,
         resp: &[u8],
@@ -639,7 +660,7 @@ impl ServerState {
         let wrapped = dedup.map(|(client, id)| dedup_wrap(client, id, resp));
         if let Some(aof) = &self.aof {
             let frame = wrapped.as_deref().unwrap_or(resp);
-            let result = if may_defer && !self.replicas.is_enabled() {
+            let result = if may_defer && dedup.is_none() && !self.replicas.is_enabled() {
                 aof.append_client_write(frame).await
             } else {
                 aof.append(frame).await

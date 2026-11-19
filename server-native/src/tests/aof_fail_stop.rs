@@ -119,6 +119,9 @@ struct Opts<'a> {
     fault: Option<&'a str>,
     workers: usize,
     replication: bool,
+    /// `RECACHED_TEST_AOF_HOLD=<ms>@<marker>`: hold the batch performer on
+    /// the first batch holding `<marker>` for `<ms>` before its write.
+    hold: Option<&'a str>,
 }
 
 const ALWAYS: Opts<'static> = Opts {
@@ -126,6 +129,7 @@ const ALWAYS: Opts<'static> = Opts {
     fault: None,
     workers: 1,
     replication: false,
+    hold: None,
 };
 
 fn start(dir: &Path, opts: Opts<'_>) -> Server {
@@ -155,6 +159,9 @@ fn start(dir: &Path, opts: Opts<'_>) -> Server {
             .stderr(Stdio::from(out));
         if let Some(fault) = opts.fault {
             cmd.env("RECACHED_TEST_AOF_FAULT", fault);
+        }
+        if let Some(hold) = opts.hold {
+            cmd.env("RECACHED_TEST_AOF_HOLD", hold);
         }
         if opts.replication {
             cmd.env("RECACHED_REPL_ENABLE", "1")
@@ -481,6 +488,57 @@ fn a_dedup_retry_after_a_fail_stop_is_applied_exactly_once() {
             "{fault}: {retry:?}"
         );
         assert_eq!(get(&server.addr, "boomctr"), bulk("1"), "{fault}");
+        drop(server);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// 6N-C PR 0a (finding O1): a replay of a DEDUP write on another connection,
+/// sent while the original's batch is still being made durable, must not be
+/// answered `+DUP` — that batch then fails, and the process stops with the
+/// write in neither memory nor the file. The batch is held for long enough
+/// that the replay surely arrives inside the window; before the fix it was
+/// answered at once from the mark the deferred original had committed.
+#[test]
+fn a_dedup_replay_during_a_failing_always_batch_is_never_answered() {
+    for fault in ["fsync:eio", "fail:eio"] {
+        let dir = scratch("dedupreplay");
+        let spec = format!("{fault}@boomdup");
+        let mut server = start(
+            &dir,
+            Opts {
+                fault: Some(&spec),
+                hold: Some("800@boomdup"),
+                workers: 2,
+                ..ALWAYS
+            },
+        );
+        let write = ["DEDUP", "client-replay-0a", "1", "INCR", "boomdup"];
+        let mut first = Conn::open(&server.addr);
+        first.send(&write);
+        std::thread::sleep(Duration::from_millis(200));
+        let mut second = Conn::open(&server.addr);
+        let replay = second.cmd(&write);
+        assert_eq!(
+            replay,
+            None,
+            "{fault}: the replay was answered while the original's batch was failing; log:\n{}",
+            server.log_tail()
+        );
+        assert_eq!(first.reply(), None, "{fault}: the original was answered");
+        server.expect_fail_stop();
+        drop(server);
+
+        // Nobody was answered, so either outcome is allowed; the retry
+        // resolves it to exactly one application.
+        let server = start(&dir, ALWAYS);
+        let mut c = Conn::open(&server.addr);
+        let retry = c.cmd(&write).expect("retry answered");
+        assert!(
+            retry == Value::Integer(1) || retry == Value::SimpleString("DUP".into()),
+            "{fault}: {retry:?}"
+        );
+        assert_eq!(get(&server.addr, "boomdup"), bulk("1"), "{fault}");
         drop(server);
         let _ = std::fs::remove_dir_all(&dir);
     }
