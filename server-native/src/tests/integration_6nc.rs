@@ -64,11 +64,14 @@ async fn dedup_and_qsub_never_answer_from_an_unwritten_batch() {
         assert!(node.state.dedup_replay("int-0a0c", 1).is_none());
 
         node.aof.release_hold();
-        assert_eq!(original.await.unwrap(), Value::Integer(1), "{policy:?}");
+        // The two identical writes race for `dedup_order`: whichever wins
+        // applies it, the other is the replay. Exactly one of each.
+        let mut answers = [original.await.unwrap(), replay.await.unwrap()];
+        answers.sort_by_key(|v| matches!(v, Value::SimpleString(_)));
         assert_eq!(
-            replay.await.unwrap(),
-            Value::SimpleString("DUP".into()),
-            "{policy:?}"
+            answers,
+            [Value::Integer(1), Value::SimpleString("DUP".into())],
+            "{policy:?}: not applied exactly once"
         );
         assert_eq!(plain.await.unwrap(), Value::SimpleString("OK".into()));
         let frame = ws.recv_frame(5_000).await.expect("qstate");
