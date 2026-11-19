@@ -111,9 +111,10 @@ b_run() {   # b_run <mode standalone|replicated> <rep>
     env RECACHED_BIND=127.0.0.1 RECACHED_PORT=$R RECACHED_WS_PORT=$((R + 1)) RECACHED_METRICS_PORT=0 \
       RECACHED_SAVE_INTERVAL=0 RECACHED_SAVE_PATH="$d/r/dump.rdb" RECACHED_REPLICAOF=127.0.0.1:$PREPL \
       RECACHED_WORKER_THREADS=1 taskset -c "${SERVER_CPUS##*-}" "$RC_BIN" >"$d/replica.log" 2>&1 & rpid=$!
-    local n=0
-    for _ in $(seq 240); do n=$("$CLI" -p $R dbsize 2>/dev/null || echo 0); (( ${n:-0} >= 100000 )) && break; sleep 0.25; done
-    (( ${n:-0} >= 100000 )) || { echo "B: replica did not complete its first sync" >&2; kill -9 $ppid $rpid; exit 1; }
+    # -r draws keys with replacement: the populate leaves ~63% of the key space.
+    local n=0 want; want=$("$CLI" -p $P dbsize)
+    for _ in $(seq 240); do n=$("$CLI" -p $R dbsize 2>/dev/null || echo 0); (( ${n:-0} >= want )) && break; sleep 0.25; done
+    (( ${n:-0} >= want )) || { echo "B: replica has $n of $want keys after its first sync" >&2; kill -9 $ppid $rpid; exit 1; }
     taskset -c "$BENCH_CPUS" python3 -I "$KIT/6l/soak/repl_check.py" probe $P $R 100000 >"$d/lag-probe.txt" 2>&1 & local prb=$!
   fi
   local c0 a0 c1 a1 tck; tck=$(getconf CLK_TCK)
