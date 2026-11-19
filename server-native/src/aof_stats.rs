@@ -3,8 +3,9 @@
 //! Everything here is updated by whoever *performs* a batch — once per batch,
 //! never once per command — so the cost is a handful of relaxed atomic adds
 //! per `write(2)`. The exceptions — `lock_contended`, `lead_busy`,
-//! `gate_parked`, and the two coalescing counters — count at most once per
-//! connection flush, and mostly events that are already slow paths.
+//! `gate_parked`, and the coalescing counters — count a few times at most
+//! per connection flush or coalesced append, and mostly events that are
+//! already slow paths.
 //!
 //! They exist to answer one question with numbers instead of guesses: how
 //! many logical writes share each physical write, and where the time between
@@ -50,11 +51,23 @@ pub(crate) struct AofStats {
     /// Connection-gate waits that found their batch not yet written and
     /// may park for another task's write.
     pub(crate) gate_parked: AtomicU64,
-    /// Coalescing yields after which the batch had gained an append (or had
-    /// been written by another task).
+    /// Connection-gate coalescing yields after which the batch had gained a
+    /// holder or had been written by another task.
     pub(crate) coalesce_gained: AtomicU64,
-    /// Coalescing yields that gained nothing.
+    /// Connection-gate coalescing yields that gained nothing.
     pub(crate) coalesce_missed: AtomicU64,
+    /// Times the connection gate's coalescing backed off.
+    pub(crate) coalesce_backoffs: AtomicU64,
+    /// Coalesced fan-out yields (`RECACHED_AOF_FANOUT=coalesced`) after
+    /// which another writer's frame had joined the batch after this one.
+    pub(crate) fanout_coalesce_gained: AtomicU64,
+    /// Coalesced fan-out yields that no frame joined after this one.
+    pub(crate) fanout_coalesce_missed: AtomicU64,
+    /// Times the coalesced fan-out path backed off.
+    pub(crate) fanout_coalesce_backoffs: AtomicU64,
+    /// Coalesced fan-out appends that found their batch already completed
+    /// (written, or failed) by another writer, and so did not lead.
+    pub(crate) fanout_found_written: AtomicU64,
     /// Failed writes that left part of their batch in the file (cut back
     /// to the last whole frame, or held until that succeeds).
     pub(crate) torn_writes: AtomicU64,
@@ -94,6 +107,11 @@ impl AofStats {
             gate_parked: ZERO,
             coalesce_gained: ZERO,
             coalesce_missed: ZERO,
+            coalesce_backoffs: ZERO,
+            fanout_coalesce_gained: ZERO,
+            fanout_coalesce_missed: ZERO,
+            fanout_coalesce_backoffs: ZERO,
+            fanout_found_written: ZERO,
             torn_writes: ZERO,
             batch_hist: [ZERO; AOF_BATCH_BUCKETS],
         }
@@ -142,6 +160,11 @@ impl AofStats {
              recached_aof_gate_parked:{}\r\n\
              recached_aof_coalesce_gained:{}\r\n\
              recached_aof_coalesce_missed:{}\r\n\
+             recached_aof_coalesce_backoffs:{}\r\n\
+             recached_aof_fanout_coalesce_gained:{}\r\n\
+             recached_aof_fanout_coalesce_missed:{}\r\n\
+             recached_aof_fanout_coalesce_backoffs:{}\r\n\
+             recached_aof_fanout_found_written:{}\r\n\
              recached_aof_torn_writes:{}\r\n\
              recached_aof_batch_frames_log2_hist:{}\r\n",
             get(&self.batches),
@@ -160,6 +183,11 @@ impl AofStats {
             get(&self.gate_parked),
             get(&self.coalesce_gained),
             get(&self.coalesce_missed),
+            get(&self.coalesce_backoffs),
+            get(&self.fanout_coalesce_gained),
+            get(&self.fanout_coalesce_missed),
+            get(&self.fanout_coalesce_backoffs),
+            get(&self.fanout_found_written),
             get(&self.torn_writes),
             hist,
         )
@@ -184,5 +212,22 @@ mod tests {
         // 0 and 1 → bucket 0; 2, 3 → 1; 4 → 2; 50 → 5; u64::MAX → last.
         assert_eq!(hist, vec![2, 2, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1]);
         assert!(stats.render().contains("recached_aof_batches:7\r\n"));
+        // The coalesced fan-out path reports apart from the connection gate.
+        for field in [
+            "coalesce_gained",
+            "coalesce_missed",
+            "coalesce_backoffs",
+            "fanout_coalesce_gained",
+            "fanout_coalesce_missed",
+            "fanout_coalesce_backoffs",
+            "fanout_found_written",
+        ] {
+            assert!(
+                stats
+                    .render()
+                    .contains(&format!("\r\nrecached_aof_{field}:0\r\n")),
+                "INFO lacks {field}"
+            );
+        }
     }
 }

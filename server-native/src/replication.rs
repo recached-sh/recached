@@ -23,6 +23,11 @@ impl QueuedReplFrame {
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.frame.bytes
     }
+
+    /// The frame's replication offset, for tests outside this module.
+    pub(crate) fn offset(&self) -> u64 {
+        self.frame.offset
+    }
 }
 
 impl Drop for QueuedReplFrame {
