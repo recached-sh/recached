@@ -1,0 +1,1 @@
+{"primary_keys": 269067, "replica_keys": 269067, "compared": 269067, "volatile_primary": 0, "volatile_replica": 0, "only_primary": 0, "only_replica": 0, "value_mismatch": 0, "samples": {"only_primary": [], "only_replica": [], "value_mismatch": []}, "identical": true}

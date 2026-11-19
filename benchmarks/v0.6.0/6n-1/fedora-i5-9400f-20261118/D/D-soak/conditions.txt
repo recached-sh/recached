@@ -1,0 +1,20 @@
+date: 2026-11-18T19:49:04Z
+Linux dennis-fedora 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64 GNU/Linux
+CPU(s):                                  6
+Model name:                              Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz
+Thread(s) per core:                      1
+CPU(s) scaling MHz:                      97%
+CPU max MHz:                             4100.0000
+CPU min MHz:                             800.0000
+governor: performance
+load: 0.06 0.97 2.19 2/1591 2198346
+flatpak: no
+node: v24.18.0  python: Python 3.15.2
+server: /home/<user>/recached-6n1-bench/target-rc/release/recached-server recached-server 0.6.0
+server sha256: 4d682ef120ca8d944290e6438c6bc9e361a27652a1fec9234b33eab13ace804e
+settings: SOAK_SECS=2400 WS_CLIENTS=600 ROUTE_CLIENTS=150 NARROW_CLIENTS=100
+          REPLICA_CLIENTS=100 BG_KEYS=200000 STABLE_KEYS=20000 MAX_KEYS=273900
+          MAX_MEMORY=2gb RESERVATIONS=off workers 3/1
+          MEMORY_BINDING=0 BIG_RATE=40 BIG_SIZE=131072
+          cpus primary=0-2 replica=3 load=4-5
+          stall every 300s for 15s (burst 600 x 64 KiB), replica restart every 240s

@@ -1,0 +1,4 @@
+      7   WARN recached_server::replication: Replica byte queue full — disconnecting so it can resync
+      2   WARN recached_server: TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+      2   WARN recached_server: Replication server ENABLED on port 7710 WITHOUT a password, on loopback only. It serves the entire keyspace to whoever connects — set RECACHED_REPL_PASSWORD before binding any other interface.
+      2   WARN recached_server: IP allowlist DISABLED. Accepting all connections.

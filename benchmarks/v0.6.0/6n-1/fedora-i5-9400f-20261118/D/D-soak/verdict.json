@@ -1,0 +1,168 @@
+{
+ "pass": true,
+ "rows": [
+  {
+   "check": "ledger after primary crash recovery",
+   "result": "PASS",
+   "detail": "330000152 acknowledged INCRs, lost 0, dedup mismatch 0"
+  },
+  {
+   "check": "ledger on the replica",
+   "result": "PASS",
+   "detail": "lost 0, dedup mismatch 0"
+  },
+  {
+   "check": "WATCH/MULTI/EXEC compare-and-set",
+   "result": "PASS",
+   "detail": "1949689 committed, 1538907 aborted, racer 1835525, exact True"
+  },
+  {
+   "check": "DEDUP retries (probe writer)",
+   "result": "PASS",
+   "detail": "12000 firsts, 12000 DUP, wrong 0, applied 12000"
+  },
+  {
+   "check": "replica == primary (quiesced)",
+   "result": "PASS",
+   "detail": "269067 keys; only primary 0, only replica 0, value mismatch 0"
+  },
+  {
+   "check": "replica == primary (after the primary's crash recovery)",
+   "result": "PASS",
+   "detail": "269067 keys; only primary 0, only replica 0, value mismatch 0"
+  },
+  {
+   "check": "replica evicted nothing of its own (follower mode)",
+   "result": "PASS",
+   "detail": "replica evicted_keys 0"
+  },
+  {
+   "check": "primary's key cap was binding",
+   "result": "PASS",
+   "detail": "primary evicted_keys 7173225 (0 means the soak never exercised eviction)"
+  },
+  {
+   "check": "DBSIZE never above the key cap",
+   "result": "PASS",
+   "detail": "max sampled 273900, cap 273900 (+4 in-flight tolerance)"
+  },
+  {
+   "check": "background load: no refused writes",
+   "result": "PASS",
+   "detail": "8615790 ops at 3590/s, errors {}, p99 1.766 ms"
+  },
+  {
+   "check": "TTL churn: no refused writes",
+   "result": "PASS",
+   "detail": "9571812 ops at 3988/s, errors {}, p99 4.255 ms"
+  },
+  {
+   "check": "each replica stall forced a full resync",
+   "result": "PASS",
+   "detail": "7 stalls, 7 full resyncs of the live replica"
+  },
+  {
+   "check": "replica WebSocket clients closed with 4001 on full resync",
+   "result": "PASS",
+   "detail": "closes by code {'1006': 800, '4001': 1500}, reconnects 2300, leaks 0"
+  },
+  {
+   "check": "no cross-scope push (ws-clients)",
+   "result": "PASS",
+   "detail": "251986 pushes, leaks 0"
+  },
+  {
+   "check": "no cross-scope push (route-G)",
+   "result": "PASS",
+   "detail": "0 pushes, leaks 0 (no writes target this group: it tests renewal, churn or backpressure)"
+  },
+  {
+   "check": "no cross-scope push (route-H)",
+   "result": "PASS",
+   "detail": "0 pushes, leaks 0 (no writes target this group: it tests renewal, churn or backpressure)"
+  },
+  {
+   "check": "no cross-scope push (route-J)",
+   "result": "PASS",
+   "detail": "0 pushes, leaks 0 (no writes target this group: it tests renewal, churn or backpressure)"
+  },
+  {
+   "check": "no cross-scope push (narrow)",
+   "result": "PASS",
+   "detail": "958493 pushes, leaks 0"
+  },
+  {
+   "check": "no cross-scope push (replica-ws)",
+   "result": "PASS",
+   "detail": "39655 pushes, leaks 0"
+  },
+  {
+   "check": "token renewal (route G)",
+   "result": "PASS",
+   "detail": "120200 renewals, 0 failures"
+  },
+  {
+   "check": "QSUB churn (route H)",
+   "result": "PASS",
+   "detail": "24050 QSUB/QUNSUB, 0 failures"
+  },
+  {
+   "check": "scope narrowing",
+   "result": "PASS",
+   "detail": "39854 narrowings, 19904 4003 closes for revoked QSUBs (missing 0), unexpected closes 0, in-scope pushes after narrowing 239181, token failures 0"
+  },
+  {
+   "check": "SCAN exactly once, byte order (primary)",
+   "result": "PASS",
+   "detail": "356 traversals (0 interrupted, 0 overlapped a full resync): missing 0, duplicates 0, order violations 0"
+  },
+  {
+   "check": "SCAN exactly once, byte order (replica)",
+   "result": "PASS",
+   "detail": "335 traversals (14 interrupted, 0 overlapped a full resync): missing 0, duplicates 0, order violations 0"
+  },
+  {
+   "check": "no panics",
+   "result": "PASS",
+   "detail": "0 'panicked at' lines in server logs"
+  },
+  {
+   "check": "primary RSS growth over the second half",
+   "result": "INFO",
+   "detail": "16.2% (first-half end 256960 kB, end 298504 kB)"
+  },
+  {
+   "check": "primary restart from snapshot + AOF",
+   "result": "INFO",
+   "detail": "9359 ms"
+  },
+  {
+   "check": "replica lag p50/p99/max ms (arrived probes)",
+   "result": "INFO",
+   "detail": "0.089 1.369 3179.593; 43 timeouts (expected during stalls and restarts)"
+  }
+ ],
+ "facts": {
+  "primary_workers": "3",
+  "max_keys": "273900",
+  "memory_binding": "0",
+  "stalls": "7",
+  "replica_full_resyncs_during_stalls": "7",
+  "replica_restarts": "8",
+  "primary_evicted_keys": "7173225",
+  "oom_refusals": "0",
+  "replica_evicted_keys": "0",
+  "max_primary_dbsize": "273900",
+  "replica_full_resyncs_total_before_crash": "1",
+  "recovery_ms": "9359",
+  "used_memory_after_recovery": "34130306",
+  "maxmemory_after_recovery": "2147483648",
+  "replica_full_resyncs_after_crash": "1",
+  "panics": "0",
+  "replica_lag": "0.089 1.369 3179.593",
+  "probe_timeouts": "43",
+  "rss_mid_kb": "256960",
+  "rss_end_kb": "298504",
+  "rss_second_half_growth_pct": "16.2"
+ }
+}

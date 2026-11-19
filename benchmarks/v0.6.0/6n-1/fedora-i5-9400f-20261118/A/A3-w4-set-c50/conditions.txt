@@ -1,0 +1,15 @@
+date_utc: 2026-11-18T19:38:48Z
+os: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz
+virtualization: none
+unknown
+governors:       6 performance 
+aof_fs: btrfs
+pin: 1 server=0-2 bench=3-5
+extra_env: none
+observer: none  rate: closed-loop
+bench: redis-benchmark 7.2.5 threads=2
+server.base: /home/<user>/recached-6n1-bench/results-20261118T165242Z/AB/recached-coalesce-off sha256=3814cc523cd4b4f7f31809ceb51c7ed8dae7488b1fa8a8c921d950bcef0a6d3f version=recached-server 0.6.0
+server.recached: /home/<user>/recached-6n1-bench/target-rc/release/recached-server sha256=4d682ef120ca8d944290e6438c6bc9e361a27652a1fec9234b33eab13ace804e version=recached-server 0.6.0
+server.valkey: /home/<user>/recached-6l-bench/bin/valkey-server sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 version=Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+matrix: servers=[base recached valkey] policies=[everysec] workers=[4] tests=[set] pipelines=[1 16] clients=[50] requests=1000000 always_requests=20000 keyspace=100000 reps=3

@@ -1,0 +1,30 @@
+PASS  ledger after primary crash recovery                        330000152 acknowledged INCRs, lost 0, dedup mismatch 0
+PASS  ledger on the replica                                      lost 0, dedup mismatch 0
+PASS  WATCH/MULTI/EXEC compare-and-set                           1949689 committed, 1538907 aborted, racer 1835525, exact True
+PASS  DEDUP retries (probe writer)                               12000 firsts, 12000 DUP, wrong 0, applied 12000
+PASS  replica == primary (quiesced)                              269067 keys; only primary 0, only replica 0, value mismatch 0
+PASS  replica == primary (after the primary's crash recovery)    269067 keys; only primary 0, only replica 0, value mismatch 0
+PASS  replica evicted nothing of its own (follower mode)         replica evicted_keys 0
+PASS  primary's key cap was binding                              primary evicted_keys 7173225 (0 means the soak never exercised eviction)
+PASS  DBSIZE never above the key cap                             max sampled 273900, cap 273900 (+4 in-flight tolerance)
+PASS  background load: no refused writes                         8615790 ops at 3590/s, errors {}, p99 1.766 ms
+PASS  TTL churn: no refused writes                               9571812 ops at 3988/s, errors {}, p99 4.255 ms
+PASS  each replica stall forced a full resync                    7 stalls, 7 full resyncs of the live replica
+PASS  replica WebSocket clients closed with 4001 on full resync  closes by code {'1006': 800, '4001': 1500}, reconnects 2300, leaks 0
+PASS  no cross-scope push (ws-clients)                           251986 pushes, leaks 0
+PASS  no cross-scope push (route-G)                              0 pushes, leaks 0 (no writes target this group: it tests renewal, churn or backpressure)
+PASS  no cross-scope push (route-H)                              0 pushes, leaks 0 (no writes target this group: it tests renewal, churn or backpressure)
+PASS  no cross-scope push (route-J)                              0 pushes, leaks 0 (no writes target this group: it tests renewal, churn or backpressure)
+PASS  no cross-scope push (narrow)                               958493 pushes, leaks 0
+PASS  no cross-scope push (replica-ws)                           39655 pushes, leaks 0
+PASS  token renewal (route G)                                    120200 renewals, 0 failures
+PASS  QSUB churn (route H)                                       24050 QSUB/QUNSUB, 0 failures
+PASS  scope narrowing                                            39854 narrowings, 19904 4003 closes for revoked QSUBs (missing 0), unexpected closes 0, in-scope pushes after narrowing 239181, token failures 0
+PASS  SCAN exactly once, byte order (primary)                    356 traversals (0 interrupted, 0 overlapped a full resync): missing 0, duplicates 0, order violations 0
+PASS  SCAN exactly once, byte order (replica)                    335 traversals (14 interrupted, 0 overlapped a full resync): missing 0, duplicates 0, order violations 0
+PASS  no panics                                                  0 'panicked at' lines in server logs
+INFO  primary RSS growth over the second half                    16.2% (first-half end 256960 kB, end 298504 kB)
+INFO  primary restart from snapshot + AOF                        9359 ms
+INFO  replica lag p50/p99/max ms (arrived probes)                0.089 1.369 3179.593; 43 timeouts (expected during stalls and restarts)
+
+PASS: 28 of 28 checks pass or are informational
