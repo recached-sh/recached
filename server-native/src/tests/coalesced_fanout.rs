@@ -674,7 +674,17 @@ async fn skipping_the_lead_strands_nothing_when_the_next_writer_is_cancelled() {
         let on_disk = std::fs::read(&path).unwrap();
         assert_eq!(occurrences(&on_disk, &fa), 1, "{policy:?}");
         assert_eq!(occurrences(&on_disk, &fc), 1, "{policy:?}");
-        assert!(w.tail().is_none(), "{policy:?}: something is still queued");
+        // Under `always` the frame is in the file before its batch's
+        // `fdatasync` and completion, so wait for that (without leading,
+        // which could hide a stranded batch) rather than check at once.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while w.tail().is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{policy:?}: something is still queued"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
