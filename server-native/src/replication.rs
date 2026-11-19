@@ -148,9 +148,11 @@ pub(crate) struct UnorderedGate {
     closed: AtomicUsize,
     in_flight: [PaddedCount; UNORDERED_SLOTS],
     /// WebSocket push receivers registered through
-    /// [`ReplHub::subscribe_pushes`] — the only way the server subscribes.
-    /// Read by every unordered write: a count of connections, routed or
-    /// not, so registering one keeps every later write on the ordered path.
+    /// [`ReplHub::subscribe_pushes`] and [`ReplHub::route_pushes`]: the
+    /// connections routed something. Read by every unordered write; a
+    /// connection is counted, with the gate closed, before its routes are
+    /// published, so registering one keeps every later write on the ordered
+    /// path. An unauthenticated socket, routed nothing, is not counted.
     push_receivers: AtomicUsize,
 }
 
@@ -493,23 +495,76 @@ impl ReplHub {
         hasher.finish() as usize % WRITE_ORDER_STRIPES
     }
 
-    /// Subscribe to write pushes as a consumer, routed `routes` to begin
-    /// with: with the unordered path closed, so every write either completed
-    /// before the subscription or sees the receiver (see [`UnorderedGate`]).
-    /// The count is raised before the gate reopens and lowered when the
-    /// returned subscription drops.
+    /// Subscribe to write pushes, routed `routes` to begin with.
+    ///
+    /// A connection routed something is a consumer of write order: it is
+    /// counted as a push receiver (see [`UnorderedGate`]) with the unordered
+    /// path closed, so every write either completed before the subscription
+    /// or sees the receiver. A connection routed [`Routes::Nothing`] — one
+    /// that has not authenticated, or a strict one without a token — is
+    /// pushed nothing, so it is not counted and closes nothing (6N-C PR 0e,
+    /// RV-12): an unauthenticated socket used to force every writer on the
+    /// server off the unordered fast path. It is counted by
+    /// [`route_pushes`](Self::route_pushes) once it is routed. The count is
+    /// lowered when the subscription drops.
     pub(crate) async fn subscribe_pushes(
         self: &Arc<Self>,
         tx: &SyncTx,
         routes: Routes<'_>,
     ) -> SyncSubscription {
+        if matches!(routes, Routes::Nothing) {
+            return tx.subscribe(routes);
+        }
         let _closed = self.unordered.close().await;
         let mut subscription = tx.subscribe(routes);
-        self.unordered.push_receivers.fetch_add(1, Ordering::SeqCst);
-        subscription.receiver = Some(PushReceiver {
-            hub: Arc::clone(self),
-        });
+        subscription.receiver = Some(self.count_push_receiver());
         subscription
+    }
+
+    /// Replace what `subscription` is routed. Returns once the new routes
+    /// are published (and counted): every write that routes afterwards sees
+    /// them.
+    ///
+    /// The first time a subscription is routed something it becomes a push
+    /// receiver, with the unordered path closed exactly as in
+    /// [`subscribe_pushes`](Self::subscribe_pushes): a write still on that
+    /// path finishes first, and so is visible to everything the connection
+    /// reads after its routes change. Routed nothing again, it stops being
+    /// counted; that needs no gate, since a write that still sees the count
+    /// only takes the ordered path needlessly.
+    pub(crate) async fn route_pushes(
+        self: &Arc<Self>,
+        subscription: &mut SyncSubscription,
+        routes: Routes<'_>,
+    ) {
+        let routed = !matches!(routes, Routes::Nothing);
+        match (routed, subscription.receiver.is_some()) {
+            (true, false) => {
+                let _closed = self.unordered.close().await;
+                subscription.set_routes(routes);
+                subscription.receiver = Some(self.count_push_receiver());
+            }
+            (false, true) => {
+                subscription.set_routes(routes);
+                subscription.receiver = None;
+            }
+            _ => subscription.set_routes(routes),
+        }
+    }
+
+    /// Count one push receiver; uncounted when the returned value drops.
+    /// Callers hold the unordered gate closed.
+    fn count_push_receiver(self: &Arc<Self>) -> PushReceiver {
+        self.unordered.push_receivers.fetch_add(1, Ordering::SeqCst);
+        PushReceiver {
+            hub: Arc::clone(self),
+        }
+    }
+
+    /// Push receivers counted now, for tests.
+    #[cfg(test)]
+    pub(crate) fn push_receiver_count(&self) -> usize {
+        self.unordered.push_receivers.load(Ordering::SeqCst)
     }
 
     /// The stripes for one ordinary write on the ordered path. One of the

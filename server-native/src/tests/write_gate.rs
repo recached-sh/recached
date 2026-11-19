@@ -266,6 +266,43 @@ async fn websocket_subscription_waits_for_an_unordered_write() {
     assert_eq!(writer.reply().await, Value::SimpleString("OK".into()));
 }
 
+/// 6N-C PR 0e: a socket that authenticates while an unordered write is in
+/// flight is counted with the gate closed, so the write completes before
+/// AUTH is answered, and every read the socket makes afterwards sees it.
+/// Before AUTH the socket is not counted, which is why the write could take
+/// the unordered path at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn websocket_auth_waits_for_an_unordered_write() {
+    let _serial = SERIAL.lock().await;
+    let srv = super::spawn_ws_server_policy(SyncPolicy::open(), None, Some("pw")).await;
+    let mut ws = super::WsClient::connect(srv.tcp_addr).await;
+    assert!(matches!(ws.cmd(&["GET", "x"]).await, Value::Error(_)));
+    assert_eq!(srv.state.replicas.push_receiver_count(), 0);
+
+    let _pause = Pause::arm("wsauth:k");
+    let (store, state) = (Arc::clone(&srv.store), Arc::clone(&srv.state));
+    let writer = tokio::task::spawn_blocking(move || {
+        crate::propagation::try_execute_unordered(
+            &core_engine::cmd::Command::Set("wsauth:k".into(), b"v".to_vec(), Default::default()),
+            &state,
+            &WatchHub::new(),
+            &store,
+        )
+    });
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert_eq!(ws.cmd(&["AUTH", "pw"]).await, super::ok());
+    assert_eq!(
+        srv.store
+            .execute(core_engine::cmd::Command::Get("wsauth:k".into())),
+        bulk("v"),
+        "AUTH was answered while an unordered write was still in flight"
+    );
+    assert!(
+        writer.await.unwrap().is_some(),
+        "the write took the unordered path"
+    );
+}
+
 /// An ephemeral claim closes the gate: a plain SET in flight on the claimed
 /// key lands before the claim, so the claim (not the SET) owns the key and
 /// the SET is not deleted when the claiming connection goes away later.

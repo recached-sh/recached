@@ -1231,12 +1231,14 @@ pub(crate) async fn handle_ws<S>(
     // Everything that reads or writes data still waits for the token.
     let token_is_auth = strict && sync_policy.token_auth;
     let mut is_authenticated = password.is_none() || token_is_auth;
-    // Subscribing makes this socket a push consumer, so it happens with the
-    // unordered fast path closed (see `UnorderedGate`): every write either
-    // completed before the subscription or sees the receiver. What it is
-    // routed follows what it may see (see `SyncRouter`): nothing before AUTH,
-    // nothing on a strict socket until a token, and everything on an open
-    // one until `SYNC` narrows it.
+    // What this socket is routed follows what it may see (see `SyncRouter`):
+    // nothing before AUTH, nothing on a strict socket until a token, and
+    // everything on an open one until `SYNC` narrows it. Once routed
+    // something it is a push consumer, registered with the unordered fast
+    // path closed (see `UnorderedGate`): every write either completed before
+    // or sees the receiver. Routed nothing, it is not counted, so an
+    // unauthenticated socket cannot force writers off the fast path (6N-C
+    // PR 0e, RV-12).
     let mut rx = state
         .replicas
         .subscribe_pushes(&tx, open_routes(strict, is_authenticated))
@@ -1416,7 +1418,10 @@ pub(crate) async fn handle_ws<S>(
                             // Routed from here on, before the reply, so every write after it
                             // reaches this socket (it holds no scopes yet: SYNC needs AUTH).
                             if is_authenticated && !was_authenticated {
-                                rx.set_routes(open_routes(strict, true));
+                                state
+                                    .replicas
+                                    .route_pushes(&mut rx, open_routes(strict, true))
+                                    .await;
                             }
                             ws_send!(&resp);
                             if disconnect { break; }
@@ -1567,7 +1572,10 @@ pub(crate) async fn handle_ws<S>(
                                     // reply goes out: a write that routed
                                     // too early to see them had finished, so
                                     // every read after the reply sees it.
-                                    rx.set_routes(Routes::Grants(&token.grants));
+                                    state
+                                        .replicas
+                                        .route_pushes(&mut rx, Routes::Grants(&token.grants))
+                                        .await;
                                     sync_scopes = Some(token.grants);
                                     if let Some(exp) = scope_expires_at {
                                         let remaining_ms = exp

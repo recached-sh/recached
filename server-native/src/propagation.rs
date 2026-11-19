@@ -540,9 +540,10 @@ fn enter_unordered<'a>(
     watch_registry: &WatchRegistry,
 ) -> Option<UnorderedPass<'a>> {
     let pass = state.replicas.unordered.try_enter()?;
-    // `has_push_receivers` counts every WebSocket connection, routed or not:
-    // one that is not routed yet may be any moment, and its routes are
-    // published without closing the gate (see `SyncRouter`).
+    // `has_push_receivers` counts every WebSocket connection routed
+    // something. One routed nothing (not authenticated, or no token yet) is
+    // pushed nothing; it is counted, with this gate closed, before its first
+    // routes are published (`ReplHub::route_pushes`).
     if state.replicas.unordered.has_push_receivers()
         || state.needs_write_log()
         || !watch_registry.is_empty()
