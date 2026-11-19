@@ -753,7 +753,12 @@ pub(crate) async fn record_unexecuted_dedup_refusal(
     // recorded would be fanned out to its sub-replicas and outlive its role
     // with no `still_following` check (6N-C integration review, L1). Checked
     // under the stripe, which a promotion's all-write barrier excludes. The
-    // client is still answered; a replay is evaluated afresh.
+    // client is still answered, and that permanent answer is remembered
+    // nowhere: a replay is evaluated afresh. That is safe for a client that
+    // replays in order (the SDK outbox does), since the primary then sees the
+    // refused id first and records the refusal itself; a client that skips
+    // ahead after a lost reply could later be answered `+DUP` for it. The
+    // reply is not changed to `READONLY`, so no client sees a new answer.
     if state.is_replica() {
         return;
     }
