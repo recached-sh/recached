@@ -3,9 +3,9 @@
 //! Everything here is updated by whoever *performs* a batch — once per batch,
 //! never once per command — so the cost is a handful of relaxed atomic adds
 //! per `write(2)`. The exceptions — `lock_contended`, `lead_busy`,
-//! `gate_parked`, and the coalescing counters — count at most once per
-//! connection flush or coalesced append, and mostly events that are already
-//! slow paths.
+//! `gate_parked`, and the coalescing counters — count a few times at most
+//! per connection flush or coalesced append, and mostly events that are
+//! already slow paths.
 //!
 //! They exist to answer one question with numbers instead of guesses: how
 //! many logical writes share each physical write, and where the time between
@@ -65,8 +65,8 @@ pub(crate) struct AofStats {
     pub(crate) fanout_coalesce_missed: AtomicU64,
     /// Times the coalesced fan-out path backed off.
     pub(crate) fanout_coalesce_backoffs: AtomicU64,
-    /// Coalesced fan-out appends that found their batch already written by
-    /// another writer, and so did not lead.
+    /// Coalesced fan-out appends that found their batch already completed
+    /// (written, or failed) by another writer, and so did not lead.
     pub(crate) fanout_found_written: AtomicU64,
     /// Failed writes that left part of their batch in the file (cut back
     /// to the last whole frame, or held until that succeeds).
@@ -212,5 +212,22 @@ mod tests {
         // 0 and 1 → bucket 0; 2, 3 → 1; 4 → 2; 50 → 5; u64::MAX → last.
         assert_eq!(hist, vec![2, 2, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1]);
         assert!(stats.render().contains("recached_aof_batches:7\r\n"));
+        // The coalesced fan-out path reports apart from the connection gate.
+        for field in [
+            "coalesce_gained",
+            "coalesce_missed",
+            "coalesce_backoffs",
+            "fanout_coalesce_gained",
+            "fanout_coalesce_missed",
+            "fanout_coalesce_backoffs",
+            "fanout_found_written",
+        ] {
+            assert!(
+                stats
+                    .render()
+                    .contains(&format!("\r\nrecached_aof_{field}:0\r\n")),
+                "INFO lacks {field}"
+            );
+        }
     }
 }

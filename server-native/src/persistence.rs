@@ -1523,10 +1523,11 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for AofGatedWriter<W> {
 /// A point in the AOF queue, from [`AofWriter::tail`].
 ///
 /// Holding one keeps a reference to its batch's completion, which the
-/// batch statistics (`waiters`) and the coalescer's "did another append
-/// join" check count; a waiting QSUB can therefore read as one more joiner.
-/// Both are heuristics and metrics only: they decide when a batch is
-/// written, never what it covers or what a reply waits for.
+/// batch statistics (`waiters`) and the connection gate's coalescer ("did
+/// the batch gain a holder") count; a waiting QSUB can therefore read as one
+/// more joiner there. The coalesced fan-out path counts frames instead, so
+/// it does not. Both are heuristics and metrics only: they decide when a
+/// batch is written, never what it covers or what a reply waits for.
 pub(crate) struct AofTail {
     shared: Arc<AofShared>,
     done: Arc<AofDone>,
@@ -1796,6 +1797,8 @@ impl AofWriter {
             // one, alone — before its own writers join it. Each writer of
             // that batch leads it after its own yield (or on drop), so it
             // is not left unwritten.
+            // (Counted as "found written" whether the batch succeeded or
+            // failed: either way it is complete.)
             bump(&shared.stats.fanout_found_written, 1);
         } else {
             shared.lead();

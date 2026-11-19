@@ -492,9 +492,19 @@ struct Pipelines {
 /// every frame lands once, in its writer's order, that no append returns
 /// before its frame is in the file, and that nothing is left queued.
 async fn pipelines(name: &str, clients: usize, depth: usize, serialized: bool) -> Pipelines {
+    pipelines_under(AofSync::EverySec, name, clients, depth, serialized).await
+}
+
+async fn pipelines_under(
+    policy: AofSync,
+    name: &str,
+    clients: usize,
+    depth: usize,
+    serialized: bool,
+) -> Pipelines {
     let dir = scratch(name);
     let path = dir.join("f.aof");
-    let (w, stats) = AofWriter::open(path.clone(), AofSync::EverySec)
+    let (w, stats) = AofWriter::open(path.clone(), policy)
         .await
         .unwrap()
         .with_private_stats();
@@ -812,4 +822,55 @@ async fn pipelined_replicated_writes_keep_one_order_everywhere() {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// Test C on four workers, the shape a multi-worker server runs in: inline
+/// leaders on several threads hand the writer role over through `busy`,
+/// tasks migrate between threads across their yields, and under `always`
+/// batches drain on the blocking pool. Every frame still lands once, in its
+/// writer's order; no append returns before its frame is written; nothing
+/// is left queued; and no yield counts as a gain without a shared batch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pipelined_writers_on_four_workers_strand_nothing() {
+    for policy in [AofSync::No, AofSync::EverySec, AofSync::Always] {
+        let run = pipelines_under(policy, &format!("mw_{policy:?}"), 32, 16, false).await;
+        assert!(
+            run.gained <= run.shared_frames,
+            "{policy:?}: {} gains, {} frames in shared batches",
+            run.gained,
+            run.shared_frames
+        );
+    }
+}
+
+/// A flush that seals the batch while its writer yields adds no frame: the
+/// yield is a miss, and the writer finds its batch written.
+#[tokio::test(flavor = "current_thread")]
+async fn a_batch_sealed_by_a_flush_is_a_miss() {
+    use std::task::Poll;
+    let dir = scratch("sealed");
+    let path = dir.join("f.aof");
+    let (w, stats) = AofWriter::open(path.clone(), AofSync::EverySec)
+        .await
+        .unwrap()
+        .with_private_stats();
+    let f = frame("sealed");
+    let a = w.append_coalesced(&f);
+    tokio::pin!(a);
+    assert!(futures_util::poll!(a.as_mut()).is_pending());
+    w.flush().await.unwrap();
+    // Joins a fresh batch after the sealed one, not A's.
+    let g = frame("later");
+    w.append(&g).await.unwrap();
+    assert!(matches!(
+        futures_util::poll!(a.as_mut()),
+        Poll::Ready(Ok(()))
+    ));
+    assert_eq!(relaxed(&stats.fanout_coalesce_gained), 0);
+    assert_eq!(relaxed(&stats.fanout_coalesce_missed), 1);
+    assert_eq!(relaxed(&stats.fanout_found_written), 1);
+    let on_disk = std::fs::read(&path).unwrap();
+    assert_eq!(occurrences(&on_disk, &f), 1);
+    assert_eq!(occurrences(&on_disk, &g), 1);
+    let _ = std::fs::remove_dir_all(&dir);
 }
