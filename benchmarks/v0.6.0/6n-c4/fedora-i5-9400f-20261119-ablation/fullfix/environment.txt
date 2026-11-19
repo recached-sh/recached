@@ -1,0 +1,16 @@
+date_utc: 2026-11-19T06:46:34Z
+rc_sha: 41403f2f24a79fe3dbaa0a23a16e803751d55476
+rc_bin: /home/dennispaler/recached-6nc4-bench/bin/rc-diag-fullfix sha256=62c0fcc214e4cbdd9f8fcf0b42dbbc3f8ed2d0b2fc0d9addb49db1dfbc0f13b6 version=recached-server 0.6.0
+kit_sha: 41403f2f24a79fe3dbaa0a23a16e803751d55476 run-m1.sh sha256=b89046d7e64603118bfd15ab3af6f3baddb62cd3e698e6d9a631ca4caa0914b4
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 2.21 2.22 2.28 2/1619 2885174
+perf: absent
+cpus: server=0-2 bench=3-5 reps=2 requests=1000000 cells=rc-inline-P16 rc-coalesced-P1 rc-coalesced-P16
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bin: unknown
+loadavg_at_end: 2.06 2.17 2.26 1/1612 2890991
