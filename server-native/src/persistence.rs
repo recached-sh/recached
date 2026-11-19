@@ -308,6 +308,12 @@ struct AofShared {
     file: std::fs::File,
     policy: AofSync,
     coalesce: Coalescer,
+    /// The coalesced fan-out path's own heuristic ([`AofWriter::append_coalesced`]).
+    /// Separate from the gate's: its writers yield while holding stripes
+    /// (all of them, for a capped store's evicting writes or EXEC), where a
+    /// yield may gain nothing, and its misses must neither back the gate's
+    /// coalescing off nor be masked by the gate's gains.
+    coalesce_inline: Coalescer,
     stats: &'static AofStats,
     /// Where a failed write's torn fragment starts, while it is still in
     /// the file: [`NOT_TORN`], [`TORN_AT_UNKNOWN`], or the offset. Nothing
@@ -1526,6 +1532,7 @@ impl AofWriter {
                 file,
                 policy: sync,
                 coalesce: Coalescer::new(true),
+                coalesce_inline: Coalescer::new(true),
                 stats: &AOF_STATS,
                 torn_at: std::sync::atomic::AtomicU64::new(NOT_TORN),
                 stopped: std::sync::atomic::AtomicBool::new(false),
@@ -1549,12 +1556,13 @@ impl AofWriter {
         // Test builds: every writer a test opens starts in the mode
         // `RECACHED_AOF_FANOUT` names, so the whole suite can be run in
         // either mode (CI runs the server suite once more in `coalesced`).
+        // A value it cannot parse fails the test rather than quietly
+        // running it inline.
         #[cfg(test)]
-        if let Ok(mode) =
+        writer.set_fanout(
             AofFanout::parse(&std::env::var("RECACHED_AOF_FANOUT").unwrap_or_default())
-        {
-            writer.set_fanout(mode);
-        }
+                .unwrap_or_else(|e| panic!("test run: {e}")),
+        );
         Ok(writer)
     }
 
@@ -1605,10 +1613,11 @@ impl AofWriter {
     /// Turn cross-connection coalescing (see [`Coalescer`]) on or off.
     /// `RECACHED_AOF_COALESCE=off` sets it off, for A/B measurement.
     pub(crate) fn set_coalescing(&self, enabled: bool) {
-        self.shared
-            .coalesce
-            .enabled
-            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+        for coalescer in [&self.shared.coalesce, &self.shared.coalesce_inline] {
+            coalescer
+                .enabled
+                .store(enabled, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// Count this writer's batches in `stats` instead of the process-wide
@@ -1714,7 +1723,7 @@ impl AofWriter {
     pub(crate) async fn append_coalesced(&self, resp: &[u8]) -> std::io::Result<()> {
         let done = self.queue_only(false, |batch| batch.push_frame(resp));
         let shared = &self.shared;
-        if tokio::runtime::Handle::try_current().is_ok() && shared.coalesce.should_yield() {
+        if tokio::runtime::Handle::try_current().is_ok() && shared.coalesce_inline.should_yield() {
             // Everyone holding the batch's completion now: anyone more after
             // the yield joined this write.
             let holders = Arc::strong_count(&done);
@@ -1722,7 +1731,7 @@ impl AofWriter {
             tokio::task::yield_now().await;
             lead_on_drop.disarm();
             let gained = done.is_complete() || Arc::strong_count(&done) > holders;
-            shared.coalesce.observe(gained, shared.stats);
+            shared.coalesce_inline.observe(gained, shared.stats);
         }
         shared.lead();
         gate_wait(shared, &done).await

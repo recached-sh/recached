@@ -83,11 +83,14 @@ jobs:
       - name: Run tests
         run: cargo test --locked --workspace --all-features
 
-      # 6N-C Option D: the server suite once more with every AOF writer the
-      # tests open in the opt-in coalesced fan-out mode (the default stays
-      # inline), so both modes keep every ordering and durability test.
+      # 6N-C Option D: the server's in-crate suite once more with every AOF
+      # writer the tests open in the opt-in coalesced fan-out mode (the
+      # default stays inline), so both modes keep every ordering and
+      # durability test, the fail-stop subprocess child included. The
+      # `tests/` harnesses clear the environment of the binaries they spawn,
+      # so they would only re-run inline: `--bins` leaves them out.
       - name: Run the server suite with RECACHED_AOF_FANOUT=coalesced
-        run: cargo test --locked -p recached --all-features
+        run: cargo test --locked -p recached --all-features --bins
         env:
           RECACHED_AOF_FANOUT: coalesced
 

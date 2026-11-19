@@ -101,8 +101,12 @@ async fn fifty_ready_writers_share_writes_only_when_coalesced() {
         assert_eq!(early, 0);
         let (coalesced, early) = ready_appenders(policy, true).await;
         assert_eq!(early, 0, "{policy:?}: an append returned before its write");
+        // Under `always` the first batch is drained on the blocking pool
+        // while the rest queue, so the split depends on when that thread
+        // runs; a few writes either way, against 50.
+        let bound = if policy == AofSync::Always { 6 } else { 3 };
         assert!(
-            coalesced <= 3,
+            coalesced <= bound,
             "{policy:?}: 50 ready coalesced writers took {coalesced} writes"
         );
         if policy != AofSync::Always {
@@ -247,7 +251,11 @@ async fn replicated_writes_coalesce_and_keep_their_order() {
                 let reply =
                     execute_ordered_write(&cmd, &tx, c as u64 + 1, &state, &watches, &store).await;
                 assert_eq!(reply, Value::SimpleString("OK".into()));
-                if occurrences(&std::fs::read(&path).unwrap(), value.as_bytes()) == 0 {
+                if occurrences(
+                    &std::fs::read(&path).unwrap(),
+                    format!("{value}\r\n").as_bytes(),
+                ) == 0
+                {
                     early.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
             }));
