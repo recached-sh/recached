@@ -145,6 +145,41 @@ async fn a_strict_socket_counts_once_routed_by_a_token() {
     settles_to(&srv, 0).await;
 }
 
+/// `RECACHED_WS_AUTH=token`: a strict server whose sockets need no RESP
+/// password. Such a socket is authenticated from the start but routed
+/// nothing until its token, so it is not counted until then; token expiry
+/// closes it and releases the count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_token_auth_socket_counts_only_from_its_token() {
+    let policy = SyncPolicy {
+        token_auth: true,
+        ..SyncPolicy::strict(SECRET)
+    };
+    let srv = spawn_ws_server_policy(policy, None, Some("pw")).await;
+    let mut ws = WsClient::connect(srv.tcp_addr).await;
+    assert!(matches!(
+        ws.cmd(&["GET", "tenant:a:x"]).await,
+        Value::Error(_)
+    ));
+    assert_eq!(receivers(&srv), 0, "counted before its token");
+    assert!(fast_path(&srv));
+    // A token that expires in about a second.
+    let token = mint_sync_token(SECRET, &format!("rw=tenant:a:*|{}", unix_now_secs() + 2));
+    let reply = ws.cmd(&["SYNC", "TOKEN", &token]).await;
+    assert!(!matches!(reply, Value::Error(_)), "{reply:?}");
+    assert_eq!(receivers(&srv), 1);
+    // The expiry closes the socket; the count goes with it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while receivers(&srv) != 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "expiry left the count"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(fast_path(&srv));
+}
+
 /// Many sockets connecting, authenticating (or not) and going away at once
 /// leave no count behind.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
