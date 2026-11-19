@@ -6787,6 +6787,7 @@ mod security_v06_regressions;
 mod sync_routing;
 mod write_gate;
 mod ws_auth;
+mod ws_refusal_barrier;
 
 #[tokio::test]
 async fn empty_lines_between_commands_are_ignored_like_redis() {
