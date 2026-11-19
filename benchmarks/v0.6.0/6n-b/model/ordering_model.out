@@ -1,0 +1,49 @@
+== inline: 322 states, 0 violation kind(s)
+== naive: 2890 states, 9 violation kind(s)
+   P1: W1 acknowledged before its effects were released
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> L.perform -> W1.ack
+   P1: W2 acknowledged before its effects were released
+     e.g. W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W2.ack
+   P2: full-sync snapshot exposes a write not yet in the AOF
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> F.lock_all -> F.snapshot+register
+   P3: EXEC committed although a write to the watched key preceded it
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> E.lock -> E.check+exec
+   P4: replica diverged at quiescence (primary 101, replica 102)
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> E.lock -> E.check+exec -> L.perform -> W1.ack -> L.release -> E.unlock -> W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W2.ack -> F.lock_all -> F.snapshot+register -> L.release
+   P4: replica diverged at quiescence (primary 102, replica 103)
+     e.g. E.lock -> E.check+exec -> L.perform -> L.release -> E.unlock -> W1.lock -> W1.apply+stage -> W1.unlock -> F.lock_all -> F.snapshot+register -> W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W1.ack -> W2.ack -> L.release
+   P4: replica diverged at quiescence (primary 102, replica 104)
+     e.g. E.lock -> E.check+exec -> L.perform -> L.release -> E.unlock -> W1.lock -> W1.apply+stage -> W1.unlock -> W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W1.ack -> W2.ack -> F.lock_all -> F.snapshot+register -> L.release
+   P4: replica diverged at quiescence (primary 2, replica 3)
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> F.lock_all -> F.snapshot+register -> W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W1.ack -> W2.ack -> L.release -> E.lock -> E.check+exec -> E.unlock
+   P4: replica diverged at quiescence (primary 2, replica 4)
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W1.ack -> W2.ack -> F.lock_all -> F.snapshot+register -> L.release -> E.lock -> E.check+exec -> E.unlock
+== dirty-only: 2002 states, 7 violation kind(s)
+   P1: W1 acknowledged before its effects were released
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> L.perform -> W1.ack
+   P1: W2 acknowledged before its effects were released
+     e.g. W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W2.ack
+   P2: full-sync snapshot exposes a write not yet in the AOF
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> F.lock_all -> F.snapshot+register
+   P4: replica diverged at quiescence (primary 102, replica 103)
+     e.g. E.lock -> E.check+exec -> L.perform -> L.release -> E.unlock -> W1.lock -> W1.apply+stage -> W1.unlock -> F.lock_all -> F.snapshot+register -> W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W1.ack -> W2.ack -> L.release
+   P4: replica diverged at quiescence (primary 102, replica 104)
+     e.g. E.lock -> E.check+exec -> L.perform -> L.release -> E.unlock -> W1.lock -> W1.apply+stage -> W1.unlock -> W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W1.ack -> W2.ack -> F.lock_all -> F.snapshot+register -> L.release
+   P4: replica diverged at quiescence (primary 2, replica 3)
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> E.lock -> E.check+exec -> E.unlock -> F.lock_all -> F.snapshot+register -> W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W1.ack -> W2.ack -> L.release
+   P4: replica diverged at quiescence (primary 2, replica 4)
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W1.ack -> W2.ack -> E.lock -> E.check+exec -> E.unlock -> F.lock_all -> F.snapshot+register -> L.release
+== drain-only: 1642 states, 3 violation kind(s)
+   P1: W1 acknowledged before its effects were released
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> L.perform -> W1.ack
+   P1: W2 acknowledged before its effects were released
+     e.g. W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W2.ack
+   P3: EXEC committed although a write to the watched key preceded it
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> E.lock -> E.check+exec
+== dirty+drain: 1204 states, 2 violation kind(s)
+   P1: W1 acknowledged before its effects were released
+     e.g. W1.lock -> W1.apply+stage -> W1.unlock -> L.perform -> W1.ack
+   P1: W2 acknowledged before its effects were released
+     e.g. W2.lock -> W2.apply+stage -> W2.unlock -> L.perform -> W2.ack
+== fixed: 916 states, 0 violation kind(s)
+RESULT: as expected
