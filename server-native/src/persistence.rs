@@ -572,25 +572,44 @@ impl AofFault {
 /// the next [`COALESCE_BACKOFF`] gates lead at once, then it probes again.
 /// The heuristic only decides *when* a batch is written, never what a
 /// write covers or what a reply waits for, so a racy decision is harmless.
+///
+/// Two instances exist (see [`CoalescePath`]): the connection gate's and the
+/// coalesced fan-out path's. They judge a yield differently. The gate counts
+/// a yield as a gain when its batch was written by another task or gained a
+/// holder; the fan-out path counts one only when another frame joined its
+/// batch after its own (6N-C4), since "written by another task" is just as
+/// true of a batch that stayed at one frame.
 struct Coalescer {
     enabled: std::sync::atomic::AtomicBool,
     /// Gates still to lead at once before the next probe.
     skip: std::sync::atomic::AtomicU32,
     /// Consecutive yields that no other append joined.
     misses: std::sync::atomic::AtomicU32,
+    /// Which counters in [`AofStats`] its observations go to.
+    path: CoalescePath,
+}
+
+/// Which append path a [`Coalescer`] serves, for its counters.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CoalescePath {
+    /// The connection gate that settles deferred appends ([`AofGatedWriter`]).
+    Gate,
+    /// [`AofWriter::append_coalesced`] (`RECACHED_AOF_FANOUT=coalesced`).
+    Fanout,
 }
 
 /// Yields in a row that gained nothing before coalescing backs off.
-const COALESCE_MISSES: u32 = 2;
+pub(crate) const COALESCE_MISSES: u32 = 2;
 /// Gates that lead at once after a back-off, before the next probe.
-const COALESCE_BACKOFF: u32 = 32;
+pub(crate) const COALESCE_BACKOFF: u32 = 32;
 
 impl Coalescer {
-    fn new(enabled: bool) -> Self {
+    fn new(enabled: bool, path: CoalescePath) -> Self {
         Coalescer {
             enabled: std::sync::atomic::AtomicBool::new(enabled),
             skip: std::sync::atomic::AtomicU32::new(0),
             misses: std::sync::atomic::AtomicU32::new(0),
+            path,
         }
     }
 
@@ -606,19 +625,32 @@ impl Coalescer {
             .is_err()
     }
 
-    /// Record whether a yield let another append join (or another task
-    /// write the batch).
+    /// Record whether a yield gained (see [`Coalescer`] for what each path
+    /// counts as a gain); after [`COALESCE_MISSES`] misses in a row, back off.
     fn observe(&self, gained: bool, stats: &AofStats) {
         use std::sync::atomic::Ordering::Relaxed;
+        let (gained_count, missed_count, backoff_count) = match self.path {
+            CoalescePath::Gate => (
+                &stats.coalesce_gained,
+                &stats.coalesce_missed,
+                &stats.coalesce_backoffs,
+            ),
+            CoalescePath::Fanout => (
+                &stats.fanout_coalesce_gained,
+                &stats.fanout_coalesce_missed,
+                &stats.fanout_coalesce_backoffs,
+            ),
+        };
         if gained {
-            bump(&stats.coalesce_gained, 1);
+            bump(gained_count, 1);
             self.misses.store(0, Relaxed);
             return;
         }
-        bump(&stats.coalesce_missed, 1);
+        bump(missed_count, 1);
         if self.misses.fetch_add(1, Relaxed).saturating_add(1) >= COALESCE_MISSES {
             self.misses.store(0, Relaxed);
             self.skip.store(COALESCE_BACKOFF, Relaxed);
+            bump(backoff_count, 1);
         }
     }
 }
@@ -655,11 +687,22 @@ struct AofBatch {
 struct AofDone {
     result: std::sync::OnceLock<Result<(), (ErrorKind, String)>>,
     notify: tokio::sync::Notify,
+    /// Frames in the batch so far, mirroring [`AofBatch::frames`]: stored
+    /// under the queue lock as each joins, final once the batch is taken.
+    /// A coalesced append compares it with its own frame's position to tell
+    /// whether anyone joined after it ([`AofWriter::append_coalesced`]).
+    /// Only a heuristic reads it, so relaxed is enough.
+    frames: std::sync::atomic::AtomicU64,
 }
 
 impl AofDone {
     fn is_complete(&self) -> bool {
         self.result.get().is_some()
+    }
+
+    /// Frames in the batch now (see [`AofDone::frames`]).
+    fn frames(&self) -> u64 {
+        self.frames.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     async fn wait(&self) -> std::io::Result<()> {
@@ -704,6 +747,9 @@ impl AofBatch {
         }
         self.bytes.extend_from_slice(frame);
         self.frames = self.frames.saturating_add(1);
+        self.done
+            .frames
+            .store(self.frames, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Whether performing this batch waits on the disk, and so must not run
@@ -1531,8 +1577,8 @@ impl AofWriter {
                 queue: std::sync::Mutex::new(AofQueue::default()),
                 file,
                 policy: sync,
-                coalesce: Coalescer::new(true),
-                coalesce_inline: Coalescer::new(true),
+                coalesce: Coalescer::new(true, CoalescePath::Gate),
+                coalesce_inline: Coalescer::new(true, CoalescePath::Fanout),
                 stats: &AOF_STATS,
                 torn_at: std::sync::atomic::AtomicU64::new(NOT_TORN),
                 stopped: std::sync::atomic::AtomicBool::new(false),
@@ -1707,9 +1753,12 @@ impl AofWriter {
     /// caller's stripes — then, if the [`Coalescer`] says a yield is worth
     /// it, `yield_now` once: tokio resumes this task only after running the
     /// other ready tasks on this worker, which queue their frames into the
-    /// same open batch. Then lead (performing the batch for everyone in it,
-    /// or finding it written) and wait for the batch's outcome, exactly as
-    /// `append` does. The result is the same as `append`'s: `Ok` once the
+    /// same open batch. Then lead (performing the batch for everyone in it)
+    /// unless another writer already wrote it, and wait for the batch's
+    /// outcome, exactly as `append` does. A yield counts as a gain for the
+    /// back-off only if another frame joined the batch after this one.
+    /// Every frame queued here has a writer that leads it after its yield
+    /// or on drop. The result is the same as `append`'s: `Ok` once the
     /// frame is written (and `fdatasync`ed under `always`), the batch's
     /// error otherwise, and under `always` a failed batch is a fail-stop
     /// before anyone resumes.
@@ -1721,19 +1770,36 @@ impl AofWriter {
     /// frame is left queued with nobody to write it. Off a tokio runtime,
     /// or with coalescing off or backed off, it is `append`.
     pub(crate) async fn append_coalesced(&self, resp: &[u8]) -> std::io::Result<()> {
-        let done = self.queue_only(false, |batch| batch.push_frame(resp));
+        // This frame's position in its batch: 1 if it opened the batch.
+        let mut position = 0;
+        let done = self.queue_only(false, |batch| {
+            batch.push_frame(resp);
+            position = batch.frames;
+        });
         let shared = &self.shared;
         if tokio::runtime::Handle::try_current().is_ok() && shared.coalesce_inline.should_yield() {
-            // Everyone holding the batch's completion now: anyone more after
-            // the yield joined this write.
-            let holders = Arc::strong_count(&done);
             let lead_on_drop = LeadOnDrop(Some(shared));
             tokio::task::yield_now().await;
             lead_on_drop.disarm();
-            let gained = done.is_complete() || Arc::strong_count(&done) > holders;
+            // A gain only if another writer's frame joined this batch after
+            // this one (6N-C4). Not that the batch completed or that its
+            // completion gained holders: at pipeline depth 16 nearly every
+            // yield found its batch written by another writer with one or
+            // two frames in it, counted that as a gain, and never backed off.
+            let gained = done.frames() > position;
             shared.coalesce_inline.observe(gained, shared.stats);
         }
-        shared.lead();
+        if done.is_complete() {
+            // Another writer, resuming first, wrote this batch. Leading now
+            // would only write the batch opened since — at pipeline depth
+            // 16, the next command of a pipeline that resumed before this
+            // one, alone — before its own writers join it. Each writer of
+            // that batch leads it after its own yield (or on drop), so it
+            // is not left unwritten.
+            bump(&shared.stats.fanout_found_written, 1);
+        } else {
+            shared.lead();
+        }
         gate_wait(shared, &done).await
     }
 
