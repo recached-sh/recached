@@ -1379,6 +1379,12 @@ impl<W: AsyncWrite + Unpin> AsyncWrite for AofGatedWriter<W> {
 }
 
 /// A point in the AOF queue, from [`AofWriter::tail`].
+///
+/// Holding one keeps a reference to its batch's completion, which the
+/// batch statistics (`waiters`) and the coalescer's "did another append
+/// join" check count; a waiting QSUB can therefore read as one more joiner.
+/// Both are heuristics and metrics only: they decide when a batch is
+/// written, never what it covers or what a reply waits for.
 pub(crate) struct AofTail {
     shared: Arc<AofShared>,
     done: Arc<AofDone>,

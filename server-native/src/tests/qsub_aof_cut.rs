@@ -126,7 +126,7 @@ async fn waiting_qsubs_do_not_hold_writers_during_a_disk_stall() {
     for (i, ws) in sockets.iter_mut().enumerate() {
         ws.send(&["QSUB", "qk:*"]).await;
         if i == 0 {
-            // One socket also subscribes and unsubscribes another pattern.
+            // One socket also unsubscribes and re-subscribes the pattern.
             ws.send(&["QUNSUB", "qk:*"]).await;
             ws.send(&["QSUB", "qk:*"]).await;
         }
@@ -177,11 +177,17 @@ async fn an_always_failure_never_emits_the_qstate() {
     ws.send(&["QSUB", "qk:*"]).await;
     assert_eq!(ws.recv_frame(200).await, None);
     node.aof.release_hold();
-    // Closed with nothing sent: `recv_frame` skips the close frame.
-    assert_eq!(
-        ws.recv_frame(3_000).await,
-        None,
-        "a qstate showing an undurable write was sent"
+    // Closed with nothing sent: the next thing on the socket is its end,
+    // within the time limit (a QSUB still waiting would time out instead).
+    let next = tokio::time::timeout(Duration::from_secs(3), ws.ws.next())
+        .await
+        .expect("the socket was neither closed nor sent anything: QSUB hung");
+    assert!(
+        matches!(
+            next,
+            None | Some(Err(_)) | Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)))
+        ),
+        "a qstate showing an undurable write was sent: {next:?}"
     );
     let reply = finished_within(&mut set, Duration::from_secs(3))
         .await
@@ -192,7 +198,8 @@ async fn an_always_failure_never_emits_the_qstate() {
     );
 }
 
-/// With no AOF, and with nothing pending, QSUB answers at once as before.
+/// With nothing pending in the AOF, QSUB answers at once as before. (With
+/// no AOF there is no tail to wait for; the live-query suites run that way.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nothing_pending_means_no_wait() {
     let node = node("qsub_idle", AofSync::EverySec).await;
