@@ -724,6 +724,29 @@ pub(crate) async fn record_dedup_refusal(state: &ServerState, client: &str, id: 
     state.remember_dedup_refusal(client, id, error);
 }
 
+/// Record the DEDUP refusal of a command refused before it ran, which so
+/// holds none of its own stripes: a WebSocket administrative command refused
+/// on a scoped connection (6N-C PR 0b, RV-6).
+///
+/// It used to take the refused command's stripes, and for `FLUSHDB` that is
+/// every stripe with the unordered gate closed: any token holder could take
+/// the global write barrier, plus an fsync under `always`, once per message.
+/// The refusal changes no data; what it must not do is fall inside a
+/// checkpoint or a sub-replica cut, which the identity's single stripe
+/// already prevents ([`ReplHub::lock_identity`]). `dedup_order` orders it
+/// with DEDUP writes of the same identity, as on the write path; the lock
+/// order is the write path's, `dedup_order` → stripe.
+pub(crate) async fn record_unexecuted_dedup_refusal(
+    state: &ServerState,
+    client: &str,
+    id: u64,
+    error: &str,
+) {
+    let _dedup_order = state.dedup_order.lock().await;
+    let _identity = state.replicas.lock_identity(client).await;
+    record_dedup_refusal(state, client, id, error).await;
+}
+
 /// Release one connection's ephemeral holds while keeping the affected keys
 /// locked from the last-holder decision through the final DEL/SREM. This closes
 /// the disconnect race where a concurrent writer could recreate a key between

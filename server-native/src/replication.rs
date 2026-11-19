@@ -17,6 +17,14 @@ pub(crate) struct QueuedReplFrame {
     pending_bytes: Arc<AtomicUsize>,
 }
 
+#[cfg(test)]
+impl QueuedReplFrame {
+    /// The frame's bytes, for tests outside this module.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.frame.bytes
+    }
+}
+
 impl Drop for QueuedReplFrame {
     fn drop(&mut self) {
         self.pending_bytes
@@ -592,6 +600,24 @@ impl ReplHub {
             _stripes: guards,
             _closed: closed,
         }
+    }
+
+    /// The one stripe of a DEDUP client identity, for recording a DEDUP
+    /// outcome that changes no data and runs no command — a WebSocket write
+    /// refused before it ran (6N-C PR 0b, RV-6).
+    ///
+    /// One stripe is enough to exclude every barrier that must not split
+    /// such a record: a checkpoint (`ServerState::save`, which holds every
+    /// stripe from its sidecar to its AOF truncate), a sub-replica's cut
+    /// (`handle_replica`, which reads the offset and the DEDUP table under
+    /// every stripe — the record is also a replication frame) and a
+    /// promotion. It leaves [`UnorderedGate`] open: the record touches no
+    /// key, so it has no order to observe against an unordered write. It
+    /// blocks only writers that hash to the same stripe, and only for its
+    /// own AOF append. The refused command's own stripes, which for
+    /// `FLUSHDB` are all of them, are not taken.
+    pub(crate) async fn lock_identity(&self, client: &str) -> OrderGuards<'_> {
+        self.lock_stripes(&[], std::iter::once(client), None).await
     }
 
     /// The all-write barrier: every stripe, with [`UnorderedGate`] closed and

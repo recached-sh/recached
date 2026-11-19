@@ -117,6 +117,45 @@ pub(crate) fn forwards_push(
 /// connection, but it is one arm of the connection's `select!` among several:
 /// without this, pushes taken in the moments between the deadline and that
 /// arm winning were still forwarded under the expired token.
+/// DEDUP refusals one WebSocket connection may have recorded per second
+/// before it is paced. Each one is an AOF append (an fsync under `always`)
+/// and, on a primary, a replication frame; a legitimate client is refused
+/// rarely, since a refused write is a bug or a token that no longer fits.
+pub(crate) const REFUSALS_PER_SECOND: u32 = 32;
+
+/// Per-connection pacing of recorded DEDUP refusals (6N-C PR 0b). Past
+/// [`REFUSALS_PER_SECOND`] in a one-second window, the connection waits for
+/// the next window before its refusal is recorded. Nothing else changes: the
+/// same refusal is recorded and answered, only later, and the wait holds no
+/// lock, so it slows the flooding connection alone.
+pub(crate) struct RefusalPace {
+    window: std::time::Instant,
+    used: u32,
+}
+
+impl RefusalPace {
+    pub(crate) fn new() -> Self {
+        RefusalPace {
+            window: std::time::Instant::now(),
+            used: 0,
+        }
+    }
+
+    pub(crate) async fn pace(&mut self) {
+        let elapsed = self.window.elapsed();
+        if elapsed >= Duration::from_secs(1) {
+            self.window = std::time::Instant::now();
+            self.used = 0;
+        } else if self.used >= REFUSALS_PER_SECOND {
+            counter!("recached_sync_refusals_paced_total").increment(1);
+            tokio::time::sleep(Duration::from_secs(1).saturating_sub(elapsed)).await;
+            self.window = std::time::Instant::now();
+            self.used = 0;
+        }
+        self.used = self.used.saturating_add(1);
+    }
+}
+
 fn token_lapsed(expires_at: Option<u64>) -> bool {
     expires_at.is_some_and(|exp| unix_now_secs() >= exp)
 }
@@ -1241,6 +1280,8 @@ pub(crate) async fn handle_ws<S>(
     // too: accepting one would raise the duplicate mark past the deferred
     // write, whose replay would then be skipped as already applied.
     let mut dedup_deferred: HashSet<String> = HashSet::new();
+    // Paces the DEDUP refusals this socket can make the server record.
+    let mut refusal_pace = RefusalPace::new();
 
     // Replies go out as *text* frames whenever the RESP bytes are valid UTF-8,
     // which is the overwhelming majority and is what every existing client
@@ -1581,14 +1622,18 @@ pub(crate) async fn handle_ws<S>(
                                     // Only once a token is in force — before
                                     // that, the connection may not touch the
                                     // dedup state at all.
+                                    //
+                                    // Not under the command's stripes, which for
+                                    // FLUSHDB are every stripe: the refusal changes no
+                                    // data and takes only its identity's stripe (6N-C
+                                    // PR 0b). Paced per connection, so a client cannot
+                                    // turn refusals into a stream of AOF appends.
                                     if sync_scopes.is_some()
                                         && let Some((client, id)) = &dedup_id
                                     {
-                                        let _checkpoint = state
-                                            .replicas
-                                            .lock_commands(std::slice::from_ref(&cmd))
+                                        refusal_pace.pace().await;
+                                        record_unexecuted_dedup_refusal(&state, client, *id, REASON)
                                             .await;
-                                        record_dedup_refusal(&state, client, *id, REASON).await;
                                     }
                                     ws_send!(&Value::Error(REASON.to_string()).serialize());
                                     continue;
@@ -1638,6 +1683,7 @@ pub(crate) async fn handle_ws<S>(
                                         // truncate, and a refusal recorded in
                                         // that window would be in neither.
                                         if let Some((client, id)) = &dedup_id {
+                                            refusal_pace.pace().await;
                                             let _checkpoint = state
                                                 .replicas
                                                 .lock_commands(std::slice::from_ref(&cmd))

@@ -311,9 +311,9 @@ struct AofShared {
 /// `<ms>` (an injected fault on the same batch then strikes after the hold).
 ///
 /// It blocks the *thread* performing the batch. Under `no` and `everysec`
-/// that is a tokio worker (`lead` performs inline), so a test using it needs
-/// a multi-thread runtime with a worker to spare; on a current-thread
-/// runtime the hold stalls everything until its time limit.
+/// that is a tokio worker (`lead` performs inline): on a multi-thread
+/// runtime the hold uses `block_in_place`, so the runtime goes on; on a
+/// current-thread runtime it stalls everything until its time limit.
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct AofHold {
@@ -370,7 +370,23 @@ impl AofHold {
     }
 
     /// Block the performing thread while `bytes` holds the armed marker.
+    ///
+    /// On a multi-thread runtime's worker the wait runs in `block_in_place`,
+    /// which hands the worker's other duties — driving timers and sockets —
+    /// to another thread. A worker blocked plainly could be the one that
+    /// last polled the driver, and with no other worker woken nothing would
+    /// fire the test's own timers or socket reads until the hold timed out.
     fn wait_if_marked(&self, bytes: &[u8]) {
+        let worker = tokio::runtime::Handle::try_current()
+            .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+        if worker {
+            tokio::task::block_in_place(|| self.wait_if_marked_here(bytes));
+        } else {
+            self.wait_if_marked_here(bytes);
+        }
+    }
+
+    fn wait_if_marked_here(&self, bytes: &[u8]) {
         let mut state = self.lock();
         let hit = state
             .marker
