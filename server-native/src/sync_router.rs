@@ -556,7 +556,8 @@ impl SyncRouter {
     }
 
     /// Register a subscriber with its initial routes. Callers that need the
-    /// `UnorderedGate` guarantee go through `ReplHub::subscribe_pushes`.
+    /// `UnorderedGate` guarantee go through `ReplHub::subscribe_pushes`, and
+    /// change routes through `ReplHub::route_pushes`.
     pub(crate) fn subscribe(self: &Arc<Self>, routes: Routes<'_>) -> SyncSubscription {
         let (tx, rx) = mpsc::channel(self.capacity);
         let mailbox = Arc::new(Mailbox {
