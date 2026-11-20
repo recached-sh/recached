@@ -90,6 +90,13 @@ pub(crate) struct ReplInfo {
     pub(crate) connected: usize,
     pub(crate) queue_depth: usize,
     pub(crate) lag_frames: u64,
+    /// The newest replication offset (in frames) this node fanned out.
+    pub(crate) offset: u64,
+    /// Socket flushes and frames written by replica senders (6N-C5).
+    pub(crate) send_flushes: u64,
+    pub(crate) send_frames: u64,
+    /// The deepest replica queue a sender found when it woke (6N-C5).
+    pub(crate) send_queue_peak: u64,
 }
 
 /// Last keyspace walk, refreshed every 5s by the metrics sampler.
@@ -784,12 +791,20 @@ pub(crate) fn render_info(
                      connected_slaves:{}\r\n\
                      connected_replicas:{}\r\n\
                      recached_replication_queue_depth:{}\r\n\
-                     recached_replication_lag_frames:{}\r\n",
+                     recached_replication_lag_frames:{}\r\n\
+                     recached_replication_offset:{}\r\n\
+                     recached_replication_send_flushes:{}\r\n\
+                     recached_replication_send_frames:{}\r\n\
+                     recached_replication_send_queue_peak:{}\r\n",
                     if is_replica { "slave" } else { "master" },
                     repl.connected,
                     repl.connected,
                     repl.queue_depth,
                     repl.lag_frames,
+                    repl.offset,
+                    repl.send_flushes,
+                    repl.send_frames,
+                    repl.send_queue_peak,
                 )
             }
             "keyspace" => {

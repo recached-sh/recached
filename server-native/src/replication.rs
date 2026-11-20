@@ -104,6 +104,20 @@ pub(crate) struct ReplHub {
     /// False while following a pre-0.6 primary, or one with
     /// `RECACHED_REPL_DEDUP=off` — a promoted replica then holds no marks.
     pub(crate) upstream_dedup: AtomicBool,
+    /// Socket flushes by replica senders, summed over replicas (6N-C5). Each
+    /// flush is one send burst, so the kernel's share of a replicated write
+    /// (the socket send, and the replica's acknowledgement that answers it)
+    /// scales with flushes per write: `send_frames / send_flushes` is the
+    /// batching a sender achieved.
+    send_flushes: AtomicU64,
+    /// Frames written by replica senders, summed over replicas. Live
+    /// frames only: a partial resynchronization's backlog frames are written
+    /// before the stream starts and are not counted.
+    send_frames: AtomicU64,
+    /// The deepest queue a replica sender found when it woke, in frames:
+    /// how far writers ran ahead of it (against the channel capacity,
+    /// `RECACHED_REPL_BUFFER`, which disconnects the replica when full).
+    send_queue_peak: AtomicU64,
 }
 
 const WRITE_ORDER_STRIPES: usize = 256;
@@ -473,7 +487,56 @@ impl ReplHub {
             unordered: UnorderedGate::new(),
             dedup: AtomicBool::new(true),
             upstream_dedup: AtomicBool::new(false),
+            send_flushes: AtomicU64::new(0),
+            send_frames: AtomicU64::new(0),
+            send_queue_peak: AtomicU64::new(0),
         })
+    }
+
+    /// The replication numbers `INFO` reports.
+    pub(crate) async fn info(&self) -> ReplInfo {
+        let (send_flushes, send_frames) = self.send_stats();
+        let send_queue_peak = self.send_queue_peak();
+        ReplInfo {
+            connected: self.count.load(Ordering::Relaxed),
+            queue_depth: self.max_queue_depth().await,
+            lag_frames: self.max_lag_frames().await,
+            offset: self.current_offset(),
+            send_flushes,
+            send_frames,
+            send_queue_peak,
+        }
+    }
+
+    /// The offset of the newest frame this node has fanned out.
+    pub(crate) fn current_offset(&self) -> u64 {
+        self.offset.load(Ordering::Acquire)
+    }
+
+    /// The deepest queue a replica sender found when it woke, since startup.
+    pub(crate) fn send_queue_peak(&self) -> u64 {
+        self.send_queue_peak.load(Ordering::Relaxed)
+    }
+
+    /// Note the queue depth a sender found when it woke.
+    fn record_wake(&self, queued: usize) {
+        self.send_queue_peak
+            .fetch_max(queued as u64, Ordering::Relaxed);
+    }
+
+    /// `(flushes, frames)` written by replica senders since startup (live
+    /// frames; see `send_frames`).
+    pub(crate) fn send_stats(&self) -> (u64, u64) {
+        (
+            self.send_flushes.load(Ordering::Relaxed),
+            self.send_frames.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Count one sender flush of `frames` frames.
+    fn record_send(&self, frames: u64) {
+        self.send_flushes.fetch_add(1, Ordering::Relaxed);
+        self.send_frames.fetch_add(frames, Ordering::Relaxed);
     }
 
     pub(crate) fn configure_dedup(&self, on: bool) {
@@ -1201,6 +1264,7 @@ where
         tokio::select! {
             frame = rx.recv() => {
                 let Some(queued) = frame else { break };
+                replicas.record_wake(rx.len() + 1);
                 write_repl_frame(&mut wr, &queued.frame).await?;
                 // Everything already queued goes out in the same flush, up to
                 // a bound so a busy primary still flushes regularly. Frames
@@ -1217,6 +1281,7 @@ where
                     }
                 }
                 wr.flush().await?;
+                replicas.record_send(batched as u64);
             }
             res = rd.read_exact(&mut ack_buf) => {
                 // A replica that closes its read side, or one running a build

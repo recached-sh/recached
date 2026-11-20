@@ -942,11 +942,7 @@ pub(crate) async fn handle_tcp<S>(
                                                     continue 'parse;
                                                 }
                                                 Command::Info(sections) => {
-                                                    let repl = ReplInfo {
-                                                        connected: state.replicas.count.load(Ordering::Relaxed),
-                                                        queue_depth: state.replicas.max_queue_depth().await,
-                                                        lag_frames: state.replicas.max_lag_frames().await,
-                                                    };
+                                                    let repl = state.replicas.info().await;
                                                     let body = render_info(
                                                         sections,
                                                         server_facts(),
@@ -2211,11 +2207,7 @@ pub(crate) async fn handle_ws<S>(
                                         continue 'outer;
                                     }
                                     Command::Info(sections) => {
-                                        let repl = ReplInfo {
-                                            connected: state.replicas.count.load(Ordering::Relaxed),
-                                            queue_depth: state.replicas.max_queue_depth().await,
-                                            lag_frames: state.replicas.max_lag_frames().await,
-                                        };
+                                        let repl = state.replicas.info().await;
                                         let body = render_info(
                                             sections,
                                             server_facts(),
