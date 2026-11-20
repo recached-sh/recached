@@ -1,0 +1,34 @@
+date_utc: 2026-11-20T09:53:55Z
+rc_bin[pr2]: /home/dennispaler/recached-6nc5-bench/bin/rc-pr2 sha256=fedfa458e43df6ae1c7cfc1a535c77742a5abb9a6812478bc6c866abb9068de5 source=4b7e860ecca7beae2f315a0752dbce67b119e6ed version=recached-server 0.6.0
+rc_bin[f2]: /home/dennispaler/recached-6nc5-bench/bin/rc-mw-abl3 sha256=f2c3df4216748e7b5d7196679f407f6a94ce68bd934f0997cda734c13b0e073d source=unknown version=recached-server 0.6.0
+rc_bin[f1]: /home/dennispaler/recached-6nc5-bench/bin/rc-mw-abl3 sha256=f2c3df4216748e7b5d7196679f407f6a94ce68bd934f0997cda734c13b0e073d source=5011ce6409cf3e5c2ca47ca761013f6dd8a74b44 version=recached-server 0.6.0
+rc_bin[base]: /home/dennispaler/recached-6nc5-bench/bin/rc-base sha256=2ac8601c7f4c5ba14eea7733e94b2a7d7e7d42b7c134ceb36e9f7557efa20710 source=c61b92033a49d7a01ecb71ae7a09a2b9bf9212bb version=recached-server 0.6.0
+rc_bin[f1f2]: /home/dennispaler/recached-6nc5-bench/bin/rc-mw-abl3 sha256=f2c3df4216748e7b5d7196679f407f6a94ce68bd934f0997cda734c13b0e073d source=unknown version=recached-server 0.6.0
+kit_sha: 21519d6820576fb99ed9038cea6c25d368ba8dfb run-c5.sh sha256=7fb8bee33be11305b4d2957d93d96c9a2e43b9f6a77352f0b01dba85dba06e43
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 0.78 1.76 2.14 6/1674 186597
+perf: absent perf_event_paranoid=2 uprof=/home/dennispaler/recached-6nc5-bench/uprof sha256=93aa43d37198729ef1c4b7c1d9e30084454ccb37b94ec72f0ce30391b6467afa
+cpus: server=0-2 bench=3-5 reps=5 requests_p1=1000000 requests_p16=10000000 bench_threads=2
+primary_env: none
+label_env: LABEL_ENV_f2=RECACHED_C5_ABL=f2
+label_env: LABEL_ENV_f1=RECACHED_C5_ABL=f1
+label_env: LABEL_ENV_f1f2=RECACHED_C5_ABL=f1f2
+cells: pr2/rc-inline-w4 base/rc-coalesced-w4 pr2/rc-coalesced-w4 f1/rc-coalesced-w4 f2/rc-coalesced-w4 f1f2/rc-coalesced-w4
+record_cells: none freq=2999
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: rustc 1.98.0 (88d9e12ae 2026-08-18)
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+ 167226 root      20   0       0      0      0 I  23.9   0.0   0:18.60 kworker+
+   2656 dennisp+  39  19  852504  42432  14832 S  19.1   0.3   1:29.80 localse+
+   8714 dennisp+  20   0   12.8g 699588 251772 S  19.1   4.3   7:44.62 firefox
+  10742 dennisp+  20   0 4108652 965140 145748 S  19.1   5.9   8:59.81 Isolate+
+   5510 dennisp+  20   0 1448.1g 389304  97924 S   9.6   2.4   3:25.64 code
+   2300 dennisp+  20   0 3549536 186952  79992 S   4.8   1.1   4:24.78 gnome-s+
+   7572 dennisp+  20   0 5729168 349504 128580 S   4.8   2.1   0:41.94 claude
+loadavg_at_end: 5.58 4.49 3.25 3/1725 221253

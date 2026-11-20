@@ -1,0 +1,29 @@
+date_utc: 2026-11-20T10:21:02Z
+rc_bin[pr2]: /home/dennispaler/recached-6nc5-bench/bin/rc-pr2 sha256=fedfa458e43df6ae1c7cfc1a535c77742a5abb9a6812478bc6c866abb9068de5 source=b7698cab6dbc584a6d5add9d42f0265cbc1665b4 version=recached-server 0.6.0
+rc_bin[nosync]: /home/dennispaler/recached-6nc5-bench/bin/rc-pr2 sha256=fedfa458e43df6ae1c7cfc1a535c77742a5abb9a6812478bc6c866abb9068de5 source=b7698cab6dbc584a6d5add9d42f0265cbc1665b4 version=recached-server 0.6.0
+kit_sha: efcf7f01cf3b129041bd405d435879f254d66040 run-c5.sh sha256=7fb8bee33be11305b4d2957d93d96c9a2e43b9f6a77352f0b01dba85dba06e43
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 0.66 1.86 2.44 3/1643 263325
+perf: absent perf_event_paranoid=2 uprof=/home/dennispaler/recached-6nc5-bench/uprof sha256=93aa43d37198729ef1c4b7c1d9e30084454ccb37b94ec72f0ce30391b6467afa
+cpus: server=0-2 bench=3-5 reps=5 requests_p1=1000000 requests_p16=10000000 bench_threads=2
+primary_env: none
+label_env: LABEL_ENV_nosync=RECACHED_AOF_SYNC=no
+cells: pr2/rc-inline-w2 pr2/rc-coalesced-w2 nosync/rc-inline-w4 nosync/rc-coalesced-w4
+record_cells: none freq=2999
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: unknown
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+ 167224 root      20   0       0      0      0 I   9.5   0.0   0:31.06 kworker+
+   2300 dennisp+  20   0 3549504 183952  77340 S   4.7   1.1   5:16.63 gnome-s+
+   4169 dennisp+  20   0   52.6g  84996  65332 S   4.7   0.5   2:06.11 code
+   5510 dennisp+  20   0 1448.1g 376400  98072 S   4.7   2.3   4:41.84 code
+ 263385 dennisp+  20   0  235420   6112   3932 R   4.7   0.0   0:00.01 top
+      1 root      20   0   37452  14868  10292 S   0.0   0.1   0:02.58 systemd
+      2 root      20   0       0      0      0 S   0.0   0.0   0:00.01 kthreadd
+loadavg_at_end: 5.51 3.34 2.90 1/1649 286034

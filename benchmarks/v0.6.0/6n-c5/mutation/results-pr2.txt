@@ -1,0 +1,9 @@
+killed   flush-every-wake by: aborting_the_sender_before_its_round_flush_strands_nothing a_round_of_writers_shares_one_flush 
+killed   no-drain-while-held by: large_frames_do_not_overflow_a_batching_sender one_round_of_pipelines_is_drained_as_it_is_queued 
+killed   no-drain by: a_burst_larger_than_one_flush_is_capped_and_ordered one_round_of_pipelines_is_drained_as_it_is_queued 
+killed   uncapped-buffer by: a_burst_larger_than_one_flush_is_capped_and_ordered 
+killed   never-flush-at-round-end by: a_burst_larger_than_one_flush_is_capped_and_ordered acknowledgements_are_still_read a_round_of_writers_shares_one_flush concurrent_writers_stream_exactly_the_backlog large_frames_do_not_overflow_a_batching_sender 
+SURVIVED re-arm-each-wake
+killed   no-flush-count by: a_burst_larger_than_one_flush_is_capped_and_ordered a_round_of_writers_shares_one_flush 
+killed   frame-count-off-by-one by: a_burst_larger_than_one_flush_is_capped_and_ordered 
+killed   no-small-channel-guard by: a_small_channel_is_drained_on_every_wake 
