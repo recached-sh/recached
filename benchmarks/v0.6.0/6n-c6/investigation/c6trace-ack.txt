@@ -1,0 +1,394 @@
+TRACE got=10112 of 40960
+W0 r0 start offset=0
+S drain depth=128 first_offset=1 unflushed=0 pending=false
+W1 r0 start offset=128
+S drain depth=128 first_offset=129 unflushed=128 pending=true
+W2 r0 start offset=256
+S drain depth=128 first_offset=257 unflushed=256 pending=true
+W3 r0 start offset=384
+S drain depth=128 first_offset=385 unflushed=384 pending=true
+S full flush n=512
+W4 r0 start offset=512
+S drain depth=128 first_offset=513 unflushed=0 pending=false
+W5 r0 start offset=640
+S drain depth=128 first_offset=641 unflushed=128 pending=true
+W6 r0 start offset=768
+S drain depth=128 first_offset=769 unflushed=256 pending=true
+W7 r0 start offset=896
+S drain depth=128 first_offset=897 unflushed=384 pending=true
+S full flush n=512
+W8 r0 start offset=1024
+S drain depth=128 first_offset=1025 unflushed=0 pending=false
+W9 r0 start offset=1152
+S drain depth=128 first_offset=1153 unflushed=128 pending=true
+W10 r0 start offset=1280
+S drain depth=128 first_offset=1281 unflushed=256 pending=true
+W11 r0 start offset=1408
+S drain depth=128 first_offset=1409 unflushed=384 pending=true
+S full flush n=512
+W12 r0 start offset=1536
+S drain depth=128 first_offset=1537 unflushed=0 pending=false
+W13 r0 start offset=1664
+S drain depth=128 first_offset=1665 unflushed=128 pending=true
+W14 r0 start offset=1792
+S drain depth=128 first_offset=1793 unflushed=256 pending=true
+W15 r0 start offset=1920
+S drain depth=128 first_offset=1921 unflushed=384 pending=true
+S full flush n=512
+W16 r0 start offset=2048
+S drain depth=128 first_offset=2049 unflushed=0 pending=false
+W17 r0 start offset=2176
+S drain depth=128 first_offset=2177 unflushed=128 pending=true
+W18 r0 start offset=2304
+S drain depth=128 first_offset=2305 unflushed=256 pending=true
+W19 r0 start offset=2432
+S drain depth=128 first_offset=2433 unflushed=384 pending=true
+S full flush n=512
+W20 r0 start offset=2560
+S drain depth=128 first_offset=2561 unflushed=0 pending=false
+W21 r0 start offset=2688
+S drain depth=128 first_offset=2689 unflushed=128 pending=true
+W22 r0 start offset=2816
+S drain depth=128 first_offset=2817 unflushed=256 pending=true
+W23 r0 start offset=2944
+S drain depth=128 first_offset=2945 unflushed=384 pending=true
+S full flush n=512
+W24 r0 start offset=3072
+S drain depth=128 first_offset=3073 unflushed=0 pending=false
+W25 r0 start offset=3200
+S drain depth=128 first_offset=3201 unflushed=128 pending=true
+W26 r0 start offset=3328
+S drain depth=128 first_offset=3329 unflushed=256 pending=true
+W27 r0 start offset=3456
+S drain depth=128 first_offset=3457 unflushed=384 pending=true
+S full flush n=512
+W28 r0 start offset=3584
+S drain depth=128 first_offset=3585 unflushed=0 pending=false
+W29 r0 start offset=3712
+S drain depth=128 first_offset=3713 unflushed=128 pending=true
+W30 r0 start offset=3840
+S drain depth=128 first_offset=3841 unflushed=256 pending=true
+W31 r0 start offset=3968
+S drain depth=128 first_offset=3969 unflushed=384 pending=true
+S full flush n=512
+W32 r0 start offset=4096
+S drain depth=128 first_offset=4097 unflushed=0 pending=false
+W33 r0 start offset=4224
+S drain depth=128 first_offset=4225 unflushed=128 pending=true
+W34 r0 start offset=4352
+S drain depth=128 first_offset=4353 unflushed=256 pending=true
+W35 r0 start offset=4480
+S drain depth=128 first_offset=4481 unflushed=384 pending=true
+S full flush n=512
+W36 r0 start offset=4608
+S drain depth=128 first_offset=4609 unflushed=0 pending=false
+W37 r0 start offset=4736
+S drain depth=128 first_offset=4737 unflushed=128 pending=true
+W38 r0 start offset=4864
+S drain depth=128 first_offset=4865 unflushed=256 pending=true
+W39 r0 start offset=4992
+S drain depth=128 first_offset=4993 unflushed=384 pending=true
+S full flush n=512
+W0 r1 start offset=5120
+W39 r1 start offset=5248
+W38 r1 start offset=5376
+W37 r1 start offset=5504
+S drain depth=512 first_offset=5121 unflushed=0 pending=false
+S full flush n=512
+W36 r1 start offset=5632
+S drain depth=128 first_offset=5633 unflushed=0 pending=false
+W35 r1 start offset=5760
+S drain depth=128 first_offset=5761 unflushed=128 pending=true
+W34 r1 start offset=5888
+S drain depth=128 first_offset=5889 unflushed=256 pending=true
+W0 r2 start offset=6016
+W33 r1 start offset=6144
+W32 r1 start offset=6272
+W31 r1 start offset=6400
+W30 r1 start offset=6528
+W29 r1 start offset=6656
+W28 r1 start offset=6784
+W27 r1 start offset=6912
+W26 r1 start offset=7040
+W25 r1 start offset=7168
+W24 r1 start offset=7296
+W23 r1 start offset=7424
+W22 r1 start offset=7552
+W21 r1 start offset=7680
+W20 r1 start offset=7808
+W19 r1 start offset=7936
+W18 r1 start offset=8064
+W17 r1 start offset=8192
+W16 r1 start offset=8320
+W15 r1 start offset=8448
+W14 r1 start offset=8576
+W13 r1 start offset=8704
+W12 r1 start offset=8832
+W11 r1 start offset=8960
+W10 r1 start offset=9088
+W9 r1 start offset=9216
+W8 r1 start offset=9344
+W7 r1 start offset=9472
+W6 r1 start offset=9600
+W5 r1 start offset=9728
+W4 r1 start offset=9856
+W3 r1 start offset=9984
+W2 r1 start offset=10112
+FULL offset=10113 pending_bytes=27654
+W1 r1 start offset=10240
+W34 r2 start offset=10368
+W35 r2 start offset=10496
+S drain depth=4096 first_offset=6017 unflushed=384 pending=true
+S full flush n=512
+S drain depth=3968 first_offset=6145 unflushed=0 pending=false
+S full flush n=512
+S drain depth=3456 first_offset=6657 unflushed=0 pending=false
+S full flush n=512
+S drain depth=2944 first_offset=7169 unflushed=0 pending=false
+S full flush n=512
+S drain depth=2432 first_offset=7681 unflushed=0 pending=false
+S full flush n=512
+S drain depth=1920 first_offset=8193 unflushed=0 pending=false
+S full flush n=512
+S drain depth=1408 first_offset=8705 unflushed=0 pending=false
+S full flush n=512
+S drain depth=896 first_offset=9217 unflushed=0 pending=false
+S full flush n=512
+S drain depth=384 first_offset=9729 unflushed=0 pending=false
+W36 r2 start offset=10624
+W37 r2 start offset=10752
+W38 r2 start offset=10880
+W39 r2 start offset=11008
+W0 r3 start offset=11136
+W39 r3 start offset=11264
+W38 r3 start offset=11392
+W37 r3 start offset=11520
+W36 r3 start offset=11648
+W35 r3 start offset=11776
+W34 r3 start offset=11904
+W1 r2 start offset=12032
+W2 r2 start offset=12160
+W3 r2 start offset=12288
+W4 r2 start offset=12416
+W5 r2 start offset=12544
+W6 r2 start offset=12672
+W7 r2 start offset=12800
+W8 r2 start offset=12928
+W9 r2 start offset=13056
+W10 r2 start offset=13184
+W11 r2 start offset=13312
+W12 r2 start offset=13440
+W0 r4 start offset=13568
+W13 r2 start offset=13696
+W14 r2 start offset=13824
+W15 r2 start offset=13952
+W16 r2 start offset=14080
+W17 r2 start offset=14208
+W18 r2 start offset=14336
+W19 r2 start offset=14464
+W20 r2 start offset=14592
+W21 r2 start offset=14720
+W22 r2 start offset=14848
+W23 r2 start offset=14976
+W24 r2 start offset=15104
+W25 r2 start offset=15232
+W26 r2 start offset=15360
+W27 r2 start offset=15488
+W28 r2 start offset=15616
+W29 r2 start offset=15744
+W30 r2 start offset=15872
+W31 r2 start offset=16000
+W32 r2 start offset=16128
+W33 r2 start offset=16256
+W12 r3 start offset=16384
+W11 r3 start offset=16512
+W10 r3 start offset=16640
+W9 r3 start offset=16768
+W8 r3 start offset=16896
+W7 r3 start offset=17024
+W6 r3 start offset=17152
+W5 r3 start offset=17280
+W4 r3 start offset=17408
+W3 r3 start offset=17536
+W2 r3 start offset=17664
+W1 r3 start offset=17792
+W34 r4 start offset=17920
+W35 r4 start offset=18048
+W36 r4 start offset=18176
+W37 r4 start offset=18304
+W38 r4 start offset=18432
+W39 r4 start offset=18560
+W0 r5 start offset=18688
+W39 r5 start offset=18816
+W38 r5 start offset=18944
+W37 r5 start offset=19072
+W36 r5 start offset=19200
+W35 r5 start offset=19328
+W34 r5 start offset=19456
+W1 r4 start offset=19584
+W2 r4 start offset=19712
+W3 r4 start offset=19840
+W4 r4 start offset=19968
+W5 r4 start offset=20096
+W6 r4 start offset=20224
+W7 r4 start offset=20352
+W8 r4 start offset=20480
+W9 r4 start offset=20608
+W10 r4 start offset=20736
+W11 r4 start offset=20864
+W12 r4 start offset=20992
+W33 r3 start offset=21120
+W0 r6 start offset=21248
+W32 r3 start offset=21376
+W31 r3 start offset=21504
+W30 r3 start offset=21632
+W29 r3 start offset=21760
+W28 r3 start offset=21888
+W27 r3 start offset=22016
+W26 r3 start offset=22144
+W25 r3 start offset=22272
+W24 r3 start offset=22400
+W23 r3 start offset=22528
+W22 r3 start offset=22656
+W21 r3 start offset=22784
+W20 r3 start offset=22912
+W19 r3 start offset=23040
+W18 r3 start offset=23168
+W17 r3 start offset=23296
+W16 r3 start offset=23424
+W15 r3 start offset=23552
+W14 r3 start offset=23680
+W13 r3 start offset=23808
+W33 r4 start offset=23936
+W12 r5 start offset=24064
+W11 r5 start offset=24192
+W10 r5 start offset=24320
+W9 r5 start offset=24448
+W8 r5 start offset=24576
+W7 r5 start offset=24704
+W6 r5 start offset=24832
+W5 r5 start offset=24960
+W4 r5 start offset=25088
+W3 r5 start offset=25216
+W2 r5 start offset=25344
+W1 r5 start offset=25472
+W34 r6 start offset=25600
+W35 r6 start offset=25728
+W36 r6 start offset=25856
+W37 r6 start offset=25984
+W38 r6 start offset=26112
+W39 r6 start offset=26240
+W0 r7 start offset=26368
+W39 r7 start offset=26496
+W38 r7 start offset=26624
+W37 r7 start offset=26752
+W36 r7 start offset=26880
+W35 r7 start offset=27008
+W34 r7 start offset=27136
+W1 r6 start offset=27264
+W2 r6 start offset=27392
+W3 r6 start offset=27520
+W4 r6 start offset=27648
+W5 r6 start offset=27776
+W6 r6 start offset=27904
+W7 r6 start offset=28032
+W8 r6 start offset=28160
+W9 r6 start offset=28288
+W10 r6 start offset=28416
+W11 r6 start offset=28544
+W12 r6 start offset=28672
+W33 r5 start offset=28800
+W13 r4 start offset=28928
+W14 r4 start offset=29056
+W15 r4 start offset=29184
+W16 r4 start offset=29312
+W17 r4 start offset=29440
+W18 r4 start offset=29568
+W19 r4 start offset=29696
+W20 r4 start offset=29824
+W21 r4 start offset=29952
+W22 r4 start offset=30080
+W23 r4 start offset=30208
+W24 r4 start offset=30336
+W25 r4 start offset=30464
+W26 r4 start offset=30592
+W27 r4 start offset=30720
+W28 r4 start offset=30848
+W29 r4 start offset=30976
+W30 r4 start offset=31104
+W31 r4 start offset=31232
+W32 r4 start offset=31360
+W33 r6 start offset=31488
+W12 r7 start offset=31616
+W11 r7 start offset=31744
+W10 r7 start offset=31872
+W9 r7 start offset=32000
+W8 r7 start offset=32128
+W7 r7 start offset=32256
+W6 r7 start offset=32384
+W5 r7 start offset=32512
+W4 r7 start offset=32640
+W3 r7 start offset=32768
+W2 r7 start offset=32896
+W1 r7 start offset=33024
+W13 r5 start offset=33152
+W33 r7 start offset=33280
+W32 r5 start offset=33408
+W31 r5 start offset=33536
+W30 r5 start offset=33664
+W29 r5 start offset=33792
+W28 r5 start offset=33920
+W27 r5 start offset=34048
+W13 r6 start offset=34176
+W26 r5 start offset=34304
+W25 r5 start offset=34432
+W24 r5 start offset=34560
+W23 r5 start offset=34688
+W22 r5 start offset=34816
+W21 r5 start offset=34944
+W20 r5 start offset=35072
+W19 r5 start offset=35200
+W18 r5 start offset=35328
+W17 r5 start offset=35456
+W16 r5 start offset=35584
+W15 r5 start offset=35712
+W14 r5 start offset=35840
+W27 r6 start offset=35968
+W28 r6 start offset=36096
+W29 r6 start offset=36224
+W30 r6 start offset=36352
+W31 r6 start offset=36480
+W32 r6 start offset=36608
+W13 r7 start offset=36736
+W32 r7 start offset=36864
+W31 r7 start offset=36992
+W30 r7 start offset=37120
+W29 r7 start offset=37248
+W28 r7 start offset=37376
+W27 r7 start offset=37504
+W14 r6 start offset=37632
+W15 r6 start offset=37760
+W16 r6 start offset=37888
+W17 r6 start offset=38016
+W18 r6 start offset=38144
+W19 r6 start offset=38272
+W20 r6 start offset=38400
+W21 r6 start offset=38528
+W22 r6 start offset=38656
+W23 r6 start offset=38784
+W24 r6 start offset=38912
+W25 r6 start offset=39040
+W26 r6 start offset=39168
+W26 r7 start offset=39296
+W25 r7 start offset=39424
+W24 r7 start offset=39552
+W23 r7 start offset=39680
+W22 r7 start offset=39808
+W21 r7 start offset=39936
+W20 r7 start offset=40064
+W19 r7 start offset=40192
+W18 r7 start offset=40320
+W17 r7 start offset=40448
+W16 r7 start offset=40576
+W15 r7 start offset=40704
+W14 r7 start offset=40832
