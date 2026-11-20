@@ -4236,6 +4236,10 @@ fn info_replication_reports_both_redis_and_recached_spellings() {
         send_frames: 40,
         send_queue_peak: 9,
         send_deferred: 4,
+        send_queue_bytes_peak: 1152,
+        queue_disconnects: 2,
+        syncs_partial: 3,
+        syncs_full: 1,
     };
     let primary = parse_info(&render_info(
         &[],
@@ -4273,6 +4277,11 @@ fn info_replication_reports_both_redis_and_recached_spellings() {
         ("recached_replication_send_frames", "40"),
         ("recached_replication_send_queue_peak", "9"),
         ("recached_replication_send_deferred", "4"),
+        // 6N-C6: queued bytes, queue disconnects and resynchronizations.
+        ("recached_replication_send_queue_bytes_peak", "1152"),
+        ("recached_replication_queue_disconnects", "2"),
+        ("recached_replication_syncs_partial", "3"),
+        ("recached_replication_syncs_full", "1"),
     ] {
         assert_eq!(
             primary[&("replication".into(), field.into())],

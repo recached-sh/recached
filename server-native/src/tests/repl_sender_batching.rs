@@ -16,6 +16,16 @@
 //! and large frames do not disconnect a healthy replica, while one that stops
 //! reading is dropped and resumes from the backlog; acknowledgements; and
 //! cancellation before a held flush.
+//!
+//! 6N-C6 sizes the queue by bytes: each queued frame charges its payload plus
+//! `REPL_QUEUE_FRAME_OVERHEAD` against `RECACHED_REPL_BUFFER_BYTES`, and the
+//! default frame cap follows that budget (65,536) instead of 4096, which one
+//! round of pipelining connections overran (6N-C5 review R1). The tests
+//! after `pipelined_rounds_at_default_capacity_with_acks` cover the brief's
+//! scenarios A–I: the regression, bursts at the limits, small explicit
+//! channels, large frames and accounting, stalled replicas alone and beside a
+//! healthy one, cancellation with frames still queued, full and partial
+//! recovery, and unauthenticated peers.
 
 use super::*;
 use std::time::Duration;
@@ -38,6 +48,16 @@ async fn serve(
     hub: &ReplRegistry,
     capacity: usize,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, Senders) {
+    serve_with(hub, capacity, None).await
+}
+
+/// [`serve`], requiring `password` first when it is set.
+async fn serve_with(
+    hub: &ReplRegistry,
+    capacity: usize,
+    password: Option<&str>,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, Senders) {
+    let password = password.map(|p| Arc::new(p.to_string()));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let hub = Arc::clone(hub);
@@ -48,6 +68,7 @@ async fn serve(
             let (socket, _) = listener.accept().await.unwrap();
             let _ = socket.set_nodelay(true);
             let hub = Arc::clone(&hub);
+            let password = password.clone();
             let sender = tokio::spawn(async move {
                 let _ = handle_replica(
                     socket,
@@ -62,7 +83,7 @@ async fn serve(
                         false,
                     ),
                     hub,
-                    None,
+                    password,
                     capacity,
                     IpAddr::from([127, 0, 0, 1]),
                     ReplAuthThrottle::new(),
@@ -619,21 +640,158 @@ async fn large_frames_do_not_overflow_a_batching_sender() {
     server.abort();
 }
 
-/// The exposure review R1 found, recorded rather than fixed (6N-C5): at the
-/// default capacity, 40 pipelining writers on the sender's worker that all
-/// resume together each round, and a replica that acknowledges every burst
-/// like `run_repl_client`. The sender, queued behind them at a round
-/// boundary, is overrun and the replica disconnected. It is not new: on
-/// the 6N-C5 host this disconnected 10 of 10 runs with the held flush and 8
-/// of 10 with the pre-6N-C5 sender (flush on every wake), where the
-/// acknowledgement's wake queues the sender behind the writers instead.
-/// A measurement, not a pass/fail on the outcome: it checks that whatever
-/// the replica received is contiguous from offset 1, and prints whether the
-/// replica was disconnected (`--ignored --nocapture` to see it). Ignored
-/// because it is slow and timing-dependent.
+/// The default frame cap with no `RECACHED_REPL_BUFFER`: derived from the
+/// default byte budget.
+fn default_capacity() -> usize {
+    repl_channel_capacity(None, DEFAULT_REPL_QUEUE_BYTES)
+}
+
+/// A scripted replica that reads in its own runtime, as `run_repl_client`
+/// does, acknowledging each burst it has applied when `acks` is set. It reads
+/// until the primary closes the stream or it holds `stop` frames (checked
+/// after each frame; `u64::MAX` until the test knows the total), and returns
+/// how many frames it read, whether their offsets were contiguous from
+/// `after + 1`, and the last offset.
+fn spawn_reader(
+    replica: TcpStream,
+    after: u64,
+    acks: bool,
+    stop: Arc<AtomicU64>,
+) -> tokio::task::JoinHandle<(u64, bool, u64)> {
+    tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let (rd, mut wr) = replica.into_split();
+            let mut rd = tokio::io::BufReader::with_capacity(64 * 1024, rd);
+            let mut got = 0u64;
+            let mut last = after;
+            let mut contiguous = true;
+            while got < stop.load(Ordering::Acquire) {
+                let mut h = [0u8; 12];
+                if rd.read_exact(&mut h).await.is_err() {
+                    break;
+                }
+                let len = u32::from_le_bytes(h[8..12].try_into().unwrap()) as usize;
+                let mut b = vec![0u8; len];
+                if rd.read_exact(&mut b).await.is_err() {
+                    break;
+                }
+                let offset = u64::from_le_bytes(h[..8].try_into().unwrap());
+                contiguous &= offset == last + 1;
+                last = offset;
+                got += 1;
+                if acks && rd.buffer().is_empty() {
+                    let _ = wr.write_all(&last.to_le_bytes()).await;
+                }
+            }
+            (got, contiguous, last)
+        })
+    })
+}
+
+/// Rounds of pipelining connections, every one resuming together: each of
+/// `writers` queues `pipeline` frames per poll, then yields. They are
+/// spawned from a task on the worker, in one poll, so the rounds have the
+/// same shape however busy the test's own thread is.
+async fn pipelined_rounds(hub: &ReplRegistry, writers: usize, pipeline: usize, rounds: usize) {
+    let hub = Arc::clone(hub);
+    tokio::spawn(async move {
+        let tasks: Vec<_> = (0..writers)
+            .map(|w| {
+                let hub = Arc::clone(&hub);
+                tokio::spawn(async move {
+                    for round in 0..rounds {
+                        for i in 0..pipeline {
+                            hub.fan_out(tag(w, round * pipeline + i)).await;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+}
+
+/// Scenario A, the regression for the exposure 6N-C5 review R1 recorded.
+///
+/// A worker's maintenance park (every 61 polls) can come in the middle of a
+/// round. It wakes the held flush's deferral, and an acknowledgement's
+/// readiness, and either wake queues the sender behind the round's writers
+/// not yet run; while it is queued, their `try_send`s cannot move it. At
+/// 4096 frames, the pre-6N-C6 default, the channel filled with about 32
+/// polls queued while it held 27.6 KB, 0.3% of the byte budget, and the
+/// replica was disconnected on every run (6N-C6 root cause). With the cap
+/// derived from the byte budget the same rounds fit: every frame arrives
+/// once and in order, the replica is never dropped or resynchronized, the
+/// sender is never kept from its queue for more than about a round, and
+/// the queue stays within both of its bounds. (How deep the queue gets
+/// depends on where the parks fall; `one_poll_of_more_than_4096_frames…`
+/// passes the old cap deterministically.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-#[ignore = "measures a pre-existing exposure (6N-C5 review R1); prints the outcome"]
 async fn pipelined_rounds_at_default_capacity_with_acks() {
+    let hub = hub(1 << 24);
+    let capacity = default_capacity();
+    let (addr, server, _senders) = serve(&hub, capacity).await;
+    let (replica, _, _) = attach(addr, 0).await;
+    wait_for("the replica to register", || {
+        hub.count.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    const WRITERS: usize = 40;
+    const PIPELINE: usize = 128;
+    const ROUNDS: usize = 8;
+    let total = (WRITERS * PIPELINE * ROUNDS) as u64;
+    let reader = spawn_reader(replica, 0, true, Arc::new(AtomicU64::new(total)));
+    pipelined_rounds(&hub, WRITERS, PIPELINE, ROUNDS).await;
+    let (got, contiguous, _) = reader.await.unwrap();
+    assert!(
+        contiguous,
+        "the replica received a gap or a reordered frame"
+    );
+    assert_eq!(
+        got, total,
+        "the replica was disconnected by a round of pipelines"
+    );
+    assert_eq!(hub.count.load(Ordering::Relaxed), 1);
+    assert_eq!(hub.queue_disconnects(), 0);
+    assert_eq!(
+        hub.syncs(),
+        (1, 0),
+        "only the initial partial synchronization"
+    );
+    let peak = hub.send_queue_peak();
+    eprintln!("6N-C6 regression: the sender found at most {peak} frames queued");
+    assert!(
+        peak <= 2 * (WRITERS * PIPELINE) as u64,
+        "the sender was kept from its queue for more than a round ({peak} frames)"
+    );
+    assert!(hub.send_queue_bytes_peak() <= DEFAULT_REPL_QUEUE_BYTES as u64);
+    wait_for("the queue to empty", || {
+        hub.stream().senders[0]
+            .pending_bytes
+            .load(Ordering::Acquire)
+            == 0
+    })
+    .await;
+    server.abort();
+}
+
+/// Scenario A's boundary: an explicit `RECACHED_REPL_BUFFER=4096` is still a
+/// strict frame cap, so the same rounds can overrun it, as they did on every
+/// run before 6N-C6 (whether one does depends on where the worker's parks
+/// fall). Either way nothing is lost or repeated: the replica holds a
+/// contiguous prefix, and if it was disconnected, resuming from its last
+/// offset it is served exactly the rest from the backlog.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn pipelined_rounds_against_an_explicit_4096_frame_cap_lose_nothing() {
     let hub = hub(1 << 24);
     let (addr, server, _senders) = serve(&hub, 4096).await;
     let (replica, _, _) = attach(addr, 0).await;
@@ -644,45 +802,390 @@ async fn pipelined_rounds_at_default_capacity_with_acks() {
     const WRITERS: usize = 40;
     const PIPELINE: usize = 128;
     const ROUNDS: usize = 8;
-    let total = WRITERS * PIPELINE * ROUNDS;
-    let reader = tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async move {
-            let (rd, mut wr) = replica.into_split();
-            let mut rd = tokio::io::BufReader::with_capacity(64 * 1024, rd);
-            let mut got = 0usize;
-            let mut contiguous = true;
-            while got < total {
-                let mut h = [0u8; 12];
-                if rd.read_exact(&mut h).await.is_err() {
-                    return (got, contiguous);
-                }
-                let len = u32::from_le_bytes(h[8..12].try_into().unwrap()) as usize;
-                let mut b = vec![0u8; len];
-                if rd.read_exact(&mut b).await.is_err() {
-                    return (got, contiguous);
-                }
-                let last = u64::from_le_bytes(h[..8].try_into().unwrap());
-                got += 1;
-                contiguous &= last == got as u64;
-                if rd.buffer().is_empty() {
-                    let _ = wr.write_all(&last.to_le_bytes()).await;
-                }
+    let total = (WRITERS * PIPELINE * ROUNDS) as u64;
+    let reader = spawn_reader(replica, 0, true, Arc::new(AtomicU64::new(total)));
+    pipelined_rounds(&hub, WRITERS, PIPELINE, ROUNDS).await;
+    let (got, contiguous, last) = reader.await.unwrap();
+    assert!(contiguous);
+    assert!(
+        hub.send_queue_peak() <= 4096,
+        "an explicit cap was exceeded"
+    );
+    eprintln!("6N-C6 explicit 4096-frame cap: the replica received {got} of {total} frames");
+    if got == total {
+        assert_eq!(hub.queue_disconnects(), 0);
+    } else {
+        assert_eq!(last, got);
+        assert_eq!(hub.queue_disconnects(), 1);
+        let (_resumed, boundary, missing) = attach(addr, last).await;
+        assert_eq!(boundary, total);
+        assert_eq!(missing.len() as u64, total - got);
+        assert!(
+            missing
+                .iter()
+                .enumerate()
+                .all(|(i, (o, _))| *o == last + i as u64 + 1)
+        );
+        assert_eq!(
+            hub.syncs(),
+            (2, 0),
+            "both synchronizations from the backlog"
+        );
+    }
+    server.abort();
+}
+
+/// Scenario B just above the old limit, deterministically: one connection's
+/// poll — a deep pipeline read in one go — queues 6000 frames, and the
+/// sender, on the same worker, cannot drain until that poll ends. The old
+/// 4096-frame cap disconnected the replica at frame 4097, whatever the
+/// scheduling; the default cap holds them all, and the sender finds exactly
+/// that many queued when it wakes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn one_poll_of_more_than_4096_frames_fits_the_default_queue() {
+    let hub = hub(1 << 24);
+    let (addr, server, _senders) = serve(&hub, default_capacity()).await;
+    let (mut replica, _, _) = attach(addr, 0).await;
+    wait_for("the replica to register", || {
+        hub.count.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    const FRAMES: usize = 6000;
+    {
+        let hub = Arc::clone(&hub);
+        tokio::spawn(async move {
+            for i in 0..FRAMES {
+                hub.fan_out(tag(0, i)).await;
             }
-            (got, contiguous)
         })
-    });
+        .await
+        .unwrap();
+    }
+    let got = read_frames(&mut replica, FRAMES).await;
+    assert!(
+        got.iter()
+            .enumerate()
+            .all(|(i, (o, b))| *o == i as u64 + 1 && *b == tag(0, i))
+    );
+    assert_eq!(
+        hub.count.load(Ordering::Relaxed),
+        1,
+        "the replica was disconnected"
+    );
+    assert_eq!(hub.queue_disconnects(), 0);
+    assert_eq!(hub.send_queue_peak(), FRAMES as u64);
+    let charged: usize = (0..FRAMES)
+        .map(|i| repl_queue_charge(tag(0, i).len()))
+        .sum();
+    assert_eq!(hub.send_queue_bytes_peak(), charged as u64);
+    server.abort();
+}
+
+/// The queue's two bounds, as pure functions: what a frame charges, and the
+/// frame cap with and without an explicit `RECACHED_REPL_BUFFER`.
+#[test]
+fn the_queue_charge_and_frame_cap_are_bounded() {
+    assert_eq!(REPL_QUEUE_FRAME_OVERHEAD, 128);
+    assert_eq!(repl_queue_charge(0), 128);
+    assert_eq!(repl_queue_charge(30), 158);
+    // A charge that cannot be represented saturates, so it exceeds every
+    // budget instead of wrapping into a small one.
+    assert_eq!(repl_queue_charge(usize::MAX), usize::MAX);
+    assert_eq!(repl_queue_charge(usize::MAX - 127), usize::MAX);
+    // An explicit cap is kept exactly, whatever the budget.
+    assert_eq!(
+        repl_channel_capacity(Some(16), DEFAULT_REPL_QUEUE_BYTES),
+        16
+    );
+    assert_eq!(
+        repl_channel_capacity(Some(4096), DEFAULT_REPL_QUEUE_BYTES),
+        4096
+    );
+    assert_eq!(repl_channel_capacity(Some(1 << 22), 1024), 1 << 22);
+    // Otherwise the budget sets it: 65,536 frames at the default 8 MiB.
+    assert_eq!(default_capacity(), 65_536);
+    assert_eq!(DEFAULT_REPL_CHANNEL_CAPACITY, 65_536);
+    assert_eq!(repl_channel_capacity(None, 128 * 100), 100);
+    assert_eq!(repl_channel_capacity(None, 128 * 100 + 127), 100);
+    // At least one frame, and no more than the ceiling.
+    assert_eq!(repl_channel_capacity(None, 1), 1);
+    assert_eq!(
+        repl_channel_capacity(None, usize::MAX),
+        REPL_QUEUE_MAX_DERIVED_FRAMES
+    );
+    assert_eq!(
+        repl_channel_capacity(None, 128 << 20),
+        REPL_QUEUE_MAX_DERIVED_FRAMES
+    );
+}
+
+/// The charged bytes of the one registered replica, shared with its handle.
+fn charged(hub: &ReplRegistry) -> Arc<AtomicUsize> {
+    Arc::clone(&hub.stream().senders[0].pending_bytes)
+}
+
+/// Scenario B at the default limits, with nothing draining the queue: the
+/// byte budget is reached first, at exactly as many frames as it can
+/// charge, and the next frame disconnects the replica. Each queued frame
+/// is charged its payload plus the overhead, and nothing more.
+#[tokio::test]
+async fn a_burst_fills_the_default_queue_to_exactly_its_byte_budget() {
+    let hub = hub(1 << 20);
+    let _rx = hub
+        .attach_test_replica(default_capacity(), DEFAULT_REPL_QUEUE_BYTES)
+        .await;
+    let pending = charged(&hub);
+    let frame = vec![b'v'; 100];
+    let fits = DEFAULT_REPL_QUEUE_BYTES / repl_queue_charge(frame.len());
+    for _ in 0..fits {
+        hub.fan_out(frame.clone()).await;
+    }
+    assert_eq!(
+        hub.count.load(Ordering::Relaxed),
+        1,
+        "dropped below the budget"
+    );
+    assert_eq!(pending.load(Ordering::Acquire), fits * 228);
+    hub.fan_out(frame.clone()).await;
+    assert_eq!(hub.count.load(Ordering::Relaxed), 0, "kept past the budget");
+    assert_eq!(hub.queue_disconnects(), 1);
+    // The refused frame reserved nothing.
+    assert_eq!(pending.load(Ordering::Acquire), fits * 228);
+}
+
+/// Scenario B for the frame count: zero-length frames, the smallest charge,
+/// cannot queue without bound. The default budget admits exactly the
+/// default cap of them, 65,536, and refuses the next.
+#[tokio::test]
+async fn tiny_frames_are_bounded_by_the_overhead_charge() {
+    let hub = hub(1 << 10);
+    let _rx = hub
+        .attach_test_replica(default_capacity(), DEFAULT_REPL_QUEUE_BYTES)
+        .await;
+    let pending = charged(&hub);
+    for _ in 0..default_capacity() {
+        hub.fan_out(Vec::new()).await;
+    }
+    assert_eq!(hub.count.load(Ordering::Relaxed), 1);
+    assert_eq!(pending.load(Ordering::Acquire), DEFAULT_REPL_QUEUE_BYTES);
+    hub.fan_out(Vec::new()).await;
+    assert_eq!(hub.count.load(Ordering::Relaxed), 0);
+    assert_eq!(hub.queue_disconnects(), 1);
+}
+
+/// Scenario B with an explicit frame cap below the budget: the cap is still
+/// strict, and a frame refused for it releases the bytes it had reserved,
+/// so the accounting matches what is queued.
+#[tokio::test]
+async fn an_explicit_frame_cap_is_strict_and_a_refused_frame_releases_its_charge() {
+    let hub = hub(1 << 20);
+    let mut rx = hub.attach_test_replica(4, DEFAULT_REPL_QUEUE_BYTES).await;
+    let pending = charged(&hub);
+    for i in 0..4 {
+        hub.fan_out(tag(0, i)).await;
+    }
+    assert_eq!(hub.count.load(Ordering::Relaxed), 1);
+    let four = 4 * repl_queue_charge(tag(0, 0).len());
+    assert_eq!(pending.load(Ordering::Acquire), four);
+    hub.fan_out(tag(0, 4)).await;
+    assert_eq!(
+        hub.count.load(Ordering::Relaxed),
+        0,
+        "kept past its frame cap"
+    );
+    assert_eq!(hub.queue_disconnects(), 1);
+    assert_eq!(pending.load(Ordering::Acquire), four);
+    // Draining what was queued releases every charge.
+    let mut drained = 0;
+    while let Ok(queued) = rx.try_recv() {
+        assert_eq!(queued.offset(), drained + 1);
+        drained += 1;
+    }
+    assert_eq!(drained, 4);
+    assert_eq!(pending.load(Ordering::Acquire), 0);
+}
+
+/// Scenario B through the real sender: bursts of twice the old 4096 limit,
+/// separated by chances to drain, from many concurrent writers on two
+/// workers. The healthy replica keeps every frame, in order, connected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeated_bursts_twice_the_old_limit_keep_a_healthy_replica() {
+    let hub = hub(1 << 24);
+    let (addr, server, _senders) = serve(&hub, default_capacity()).await;
+    let (replica, _, _) = attach(addr, 0).await;
+    wait_for("the replica to register", || {
+        hub.count.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    const BURSTS: usize = 4;
+    const WRITERS: usize = 64;
+    const PIPELINE: usize = 128;
+    let total = (BURSTS * WRITERS * PIPELINE) as u64;
+    let reader = spawn_reader(replica, 0, true, Arc::new(AtomicU64::new(total)));
+    for burst in 0..BURSTS {
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|w| {
+                let hub = Arc::clone(&hub);
+                tokio::spawn(async move {
+                    for i in 0..PIPELINE {
+                        hub.fan_out(tag(w, burst * PIPELINE + i)).await;
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (got, contiguous, _) = reader.await.unwrap();
+    assert!(contiguous);
+    assert_eq!(got, total);
+    assert_eq!(hub.count.load(Ordering::Relaxed), 1);
+    assert_eq!(hub.queue_disconnects(), 0);
+    assert!(hub.send_queue_bytes_peak() <= DEFAULT_REPL_QUEUE_BYTES as u64);
+    server.abort();
+}
+
+/// Scenario C: small explicit channels (`RECACHED_REPL_BUFFER` = 16, 64,
+/// 256) flush on every wake. A round that fits the channel never disconnects
+/// a healthy replica, wherever the sender lands in it. A burst larger than
+/// the channel, queued before the sender can run, disconnects it — the
+/// configured limit — and it resumes from the backlog with nothing lost or
+/// repeated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn small_explicit_channels_keep_rounds_that_fit_and_resume_after_one_that_does_not() {
+    for capacity in [16usize, 64, 256] {
+        let hub = hub(1 << 22);
+        let (addr, server, _senders) = serve(&hub, capacity).await;
+        let (mut replica, _, _) = attach(addr, 0).await;
+        wait_for("the replica to register", || {
+            hub.count.load(Ordering::Relaxed) == 1
+        })
+        .await;
+        // Rounds of capacity/2 writers, one frame each per round.
+        let writers = capacity / 2;
+        const ROUNDS: usize = 4;
+        let tasks: Vec<_> = (0..writers)
+            .map(|w| {
+                let hub = Arc::clone(&hub);
+                tokio::spawn(async move {
+                    for i in 0..ROUNDS {
+                        hub.fan_out(tag(w, i)).await;
+                        tokio::task::yield_now().await;
+                    }
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap();
+        }
+        let fitting = writers * ROUNDS;
+        let got = read_frames(&mut replica, fitting).await;
+        assert!(got.iter().enumerate().all(|(i, (o, _))| *o == i as u64 + 1));
+        assert_eq!(
+            hub.count.load(Ordering::Relaxed),
+            1,
+            "capacity {capacity}: a round that fits disconnected a healthy replica"
+        );
+        assert_eq!(hub.queue_disconnects(), 0);
+
+        // One task queues capacity + 1 frames without yielding: the sender,
+        // on the same worker, cannot drain in between.
+        let burst = {
+            let hub = Arc::clone(&hub);
+            tokio::spawn(async move {
+                for i in 0..=capacity {
+                    hub.fan_out(tag(9, i)).await;
+                }
+            })
+        };
+        burst.await.unwrap();
+        assert_eq!(hub.count.load(Ordering::Relaxed), 0, "capacity {capacity}");
+        assert_eq!(hub.queue_disconnects(), 1);
+        // The frames queued before the overrun are still delivered, then the
+        // stream ends; the replica resumes from the last it received.
+        let delivered = read_frames(&mut replica, capacity).await;
+        assert!(
+            delivered
+                .iter()
+                .enumerate()
+                .all(|(i, (o, b))| *o == (fitting + i + 1) as u64 && *b == tag(9, i))
+        );
+        let mut eof = [0u8; 1];
+        assert_eq!(replica.read(&mut eof).await.unwrap(), 0);
+        let last = (fitting + capacity) as u64;
+        let (_resumed, boundary, missing) = attach(addr, last).await;
+        assert_eq!(boundary, last + 1);
+        assert_eq!(missing, vec![(last + 1, tag(9, capacity))]);
+        server.abort();
+    }
+}
+
+/// Scenario D: a frame of exactly the budget less the overhead fits; one
+/// byte more is refused before it reserves anything; and a large frame
+/// leaves no room for even an empty one.
+#[tokio::test]
+async fn frames_near_the_byte_budget_are_charged_exactly() {
+    const BUDGET: usize = 1 << 20;
+    let exact = hub(4 << 20);
+    let _rx = exact.attach_test_replica(default_capacity(), BUDGET).await;
+    let pending = charged(&exact);
+    exact
+        .fan_out(vec![b'x'; BUDGET - REPL_QUEUE_FRAME_OVERHEAD])
+        .await;
+    assert_eq!(exact.count.load(Ordering::Relaxed), 1);
+    assert_eq!(pending.load(Ordering::Acquire), BUDGET);
+    exact.fan_out(Vec::new()).await;
+    assert_eq!(exact.count.load(Ordering::Relaxed), 0);
+    assert_eq!(pending.load(Ordering::Acquire), BUDGET);
+
+    let over = hub(4 << 20);
+    let _rx = over.attach_test_replica(default_capacity(), BUDGET).await;
+    let pending = charged(&over);
+    over.fan_out(vec![b'x'; BUDGET - REPL_QUEUE_FRAME_OVERHEAD + 1])
+        .await;
+    assert_eq!(
+        over.count.load(Ordering::Relaxed),
+        0,
+        "kept a frame past the budget"
+    );
+    assert_eq!(
+        pending.load(Ordering::Acquire),
+        0,
+        "a refused frame stayed charged"
+    );
+}
+
+/// Scenario D through the real sender: frames of 256 KiB against a 1 MiB
+/// budget from concurrent writers. Whatever the replica's fate, the sender
+/// never finds more than the budget charged, and a disconnected replica
+/// resumes with nothing lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn large_frames_never_queue_past_the_byte_budget() {
+    const BUDGET: usize = 1 << 20;
+    let hub = hub(1 << 26);
+    hub.configure_queue_bytes(BUDGET);
+    let (addr, server, _senders) = serve(&hub, repl_channel_capacity(None, BUDGET)).await;
+    let (replica, _, _) = attach(addr, 0).await;
+    wait_for("the replica to register", || {
+        hub.count.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    const WRITERS: usize = 16;
+    const EACH: usize = 8;
+    let total = (WRITERS * EACH) as u64;
+    let reader = spawn_reader(replica, 0, true, Arc::new(AtomicU64::new(total)));
+    let payload = vec![b'x'; 256 * 1024];
     let writers: Vec<_> = (0..WRITERS)
         .map(|w| {
             let hub = Arc::clone(&hub);
+            let payload = payload.clone();
             tokio::spawn(async move {
-                for round in 0..ROUNDS {
-                    for i in 0..PIPELINE {
-                        hub.fan_out(tag(w, round * PIPELINE + i)).await;
-                    }
+                for i in 0..EACH {
+                    let mut frame = tag(w, i);
+                    frame.extend_from_slice(&payload);
+                    hub.fan_out(frame).await;
                     tokio::task::yield_now().await;
                 }
             })
@@ -691,18 +1194,332 @@ async fn pipelined_rounds_at_default_capacity_with_acks() {
     for writer in writers {
         writer.await.unwrap();
     }
-    let (got, contiguous) = reader.await.unwrap();
-    assert!(
-        contiguous,
-        "the replica received a gap or a reordered frame"
-    );
-    eprintln!(
-        "6N-C5 R1 measurement: the replica received {got} of {total} frames ({})",
-        if got == total {
-            "kept up"
-        } else {
-            "disconnected: one round overran the channel"
+    let (got, contiguous, last) = reader.await.unwrap();
+    assert!(contiguous);
+    assert!(hub.send_queue_bytes_peak() <= BUDGET as u64);
+    if got < total {
+        assert!(hub.queue_disconnects() >= 1);
+        let (_resumed, boundary, missing) = attach(addr, last).await;
+        assert_eq!(boundary, total);
+        assert_eq!(missing.len() as u64, total - got);
+    }
+    server.abort();
+}
+
+/// Writes 1 KiB frames as writer `w` until `until` holds, yielding every 64
+/// frames and checking that no replica's queue is charged past `budget`.
+/// Fails if that takes 20 s: writers never wait on a replica. Returns how
+/// many frames it wrote.
+async fn write_until(
+    hub: &ReplRegistry,
+    w: usize,
+    budget: usize,
+    pace: Option<Duration>,
+    mut until: impl FnMut() -> bool,
+) -> usize {
+    let started = std::time::Instant::now();
+    let payload = vec![b'x'; 1024];
+    let mut written = 0usize;
+    while !until() {
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "writers stalled, or a stalled replica was never dropped"
+        );
+        let mut frame = tag(w, written);
+        frame.extend_from_slice(&payload);
+        hub.fan_out(frame).await;
+        written += 1;
+        if written.is_multiple_of(64) {
+            for replica in &hub.stream().senders {
+                assert!(replica.pending_bytes.load(Ordering::Acquire) <= budget);
+            }
+            match pace {
+                Some(pause) => tokio::time::sleep(pause).await,
+                None => tokio::task::yield_now().await,
+            }
         }
+    }
+    written
+}
+
+/// Scenario E at the default limits: a replica that stops reading. Its
+/// socket buffers fill, then its queue, which never holds more than the
+/// byte budget; it is disconnected without writers ever waiting on it, and
+/// resumes with exactly the missing range from the backlog. The
+/// disconnect and both synchronizations are counted in `INFO`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stalled_replica_at_the_default_limits_is_dropped_within_its_budget() {
+    let hub = hub(64 << 20);
+    let (addr, server, _senders) = serve(&hub, default_capacity()).await;
+    let (stalled, _, _) = attach(addr, 0).await;
+    wait_for("the replica to register", || {
+        hub.count.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    let written = write_until(&hub, 0, DEFAULT_REPL_QUEUE_BYTES, None, || {
+        hub.count.load(Ordering::Relaxed) == 0
+    })
+    .await;
+    assert_eq!(hub.queue_disconnects(), 1);
+    assert!(hub.send_queue_bytes_peak() <= DEFAULT_REPL_QUEUE_BYTES as u64);
+    // More frames than the old 4096-frame cap were outstanding when it was
+    // dropped: the budget, not a frame count, decided.
+    assert!(written > 4096, "dropped after {written} frames");
+    drop(stalled);
+
+    let (mut resumed, boundary, missing) = attach(addr, 0).await;
+    assert_eq!(boundary, written as u64);
+    assert_eq!(missing.len(), written);
+    assert!(
+        missing
+            .iter()
+            .enumerate()
+            .all(|(i, (o, b))| *o == i as u64 + 1 && b.starts_with(&tag(0, i)))
     );
+    wait_for("the replica to register again", || {
+        hub.count.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    for i in 0..50 {
+        hub.fan_out(tag(1, i)).await;
+    }
+    let live = read_frames(&mut resumed, 50).await;
+    assert!(
+        live.iter()
+            .enumerate()
+            .all(|(i, (o, b))| *o == (written + i + 1) as u64 && *b == tag(1, i))
+    );
+    assert_eq!(hub.syncs(), (2, 0));
+    let info = hub.info().await;
+    assert_eq!(info.queue_disconnects, 1);
+    assert_eq!((info.syncs_partial, info.syncs_full), (2, 0));
+    server.abort();
+}
+
+/// A replica resuming this primary's run from offset `from`, which the
+/// backlog no longer retains: the primary answers with a full
+/// synchronization. Returns the socket and the snapshot's offset; live
+/// frames follow it.
+async fn attach_full(addr: std::net::SocketAddr, from: u64) -> (TcpStream, u64) {
+    let mut socket = TcpStream::connect(addr).await.unwrap();
+    let mut magic = [0u8; 4];
+    socket.read_exact(&mut magic).await.unwrap();
+    assert_eq!(&magic, REPL_MAGIC);
+    let mut run_len = [0u8; 2];
+    socket.read_exact(&mut run_len).await.unwrap();
+    let mut run_id = vec![0; u16::from_le_bytes(run_len) as usize];
+    socket.read_exact(&mut run_id).await.unwrap();
+    socket
+        .write_all(&(run_id.len() as u16).to_le_bytes())
+        .await
+        .unwrap();
+    socket.write_all(&run_id).await.unwrap();
+    socket.write_all(&from.to_le_bytes()).await.unwrap();
+    let mut mode = [0u8; 1];
+    socket.read_exact(&mut mode).await.unwrap();
+    assert_eq!(
+        mode[0], b'F',
+        "expected a full synchronization from offset {from}"
+    );
+    let mut boundary = [0u8; 8];
+    socket.read_exact(&mut boundary).await.unwrap();
+    let mut len = [0u8; 4];
+    socket.read_exact(&mut len).await.unwrap();
+    let mut snapshot = vec![0u8; u32::from_le_bytes(len) as usize];
+    socket.read_exact(&mut snapshot).await.unwrap();
+    (socket, u64::from_le_bytes(boundary))
+}
+
+/// Scenario H, when the backlog has moved on: a stalled replica dropped for
+/// its budget, whose offset the backlog no longer retains, is refused a
+/// partial synchronization and takes a full one; the live stream then
+/// continues from the snapshot's offset with nothing skipped or repeated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_replica_past_the_backlog_takes_a_full_synchronization() {
+    let hub = hub(256 * 1024);
+    let (addr, server, _senders) = serve(&hub, default_capacity()).await;
+    let (stalled, _, _) = attach(addr, 0).await;
+    wait_for("the replica to register", || {
+        hub.count.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    let written = write_until(&hub, 0, DEFAULT_REPL_QUEUE_BYTES, None, || {
+        hub.count.load(Ordering::Relaxed) == 0
+    })
+    .await;
+    drop(stalled);
+    // Offset 0 left the 256 KiB backlog long ago.
+    let (mut full, boundary) = attach_full(addr, 0).await;
+    assert_eq!(boundary, written as u64);
+    wait_for("the replica to register again", || {
+        hub.count.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    for i in 0..50 {
+        hub.fan_out(tag(1, i)).await;
+    }
+    let live = read_frames(&mut full, 50).await;
+    assert!(
+        live.iter()
+            .enumerate()
+            .all(|(i, (o, b))| *o == boundary + i as u64 + 1 && *b == tag(1, i))
+    );
+    assert_eq!(hub.syncs(), (1, 1));
+    server.abort();
+}
+
+/// Scenario F: two replicas, one reading and one stalled. The stalled one is
+/// dropped on its own budget; the healthy one, with its own budget, keeps
+/// every frame in order and stays connected; neither queue is ever charged
+/// past its budget, so together they hold at most two budgets.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stalled_replica_is_dropped_while_a_healthy_one_keeps_every_frame() {
+    let hub = hub(64 << 20);
+    let (addr, server, _senders) = serve(&hub, default_capacity()).await;
+    let (healthy, _, _) = attach(addr, 0).await;
+    let (stalled, _, _) = attach(addr, 0).await;
+    wait_for("both replicas to register", || {
+        hub.count.load(Ordering::Relaxed) == 2
+    })
+    .await;
+    let stop = Arc::new(AtomicU64::new(u64::MAX));
+    let reader = spawn_reader(healthy, 0, true, Arc::clone(&stop));
+    // Paced to a rate the healthy replica sustains (about 64 MB/s).
+    let pace = Some(Duration::from_millis(1));
+    let mut written = write_until(&hub, 0, DEFAULT_REPL_QUEUE_BYTES, pace, || {
+        hub.count.load(Ordering::Relaxed) < 2
+    })
+    .await;
+    assert_eq!(
+        hub.count.load(Ordering::Relaxed),
+        1,
+        "the healthy replica was dropped"
+    );
+    assert_eq!(hub.queue_disconnects(), 1);
+    written += write_until(&hub, 1, DEFAULT_REPL_QUEUE_BYTES, pace, {
+        let mut n = 0;
+        move || {
+            n += 1;
+            n > 1000
+        }
+    })
+    .await;
+    stop.store(written as u64, Ordering::Release);
+    let (got, contiguous, last) = reader.await.unwrap();
+    assert!(contiguous);
+    assert_eq!((got, last), (written as u64, written as u64));
+    assert_eq!(hub.count.load(Ordering::Relaxed), 1);
+    assert!(hub.send_queue_bytes_peak() <= DEFAULT_REPL_QUEUE_BYTES as u64);
+    drop(stalled);
+    server.abort();
+}
+
+/// Scenario G with frames still in the channel: the sender is aborted
+/// before it ever drains them. Dropping its receiver drops them, releasing
+/// every byte they were charged; nothing reaches the replica; the next
+/// write unregisters it; and resuming, it is served each frame exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn aborting_the_sender_with_frames_still_queued_releases_their_charge() {
+    let hub = hub(1 << 20);
+    let (addr, server, senders) = serve(&hub, default_capacity()).await;
+    let (mut replica, _, _) = attach(addr, 0).await;
+    wait_for("the replica to register", || {
+        hub.count.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    let sender = senders.lock().unwrap().pop().expect("one sender task");
+    let pending = charged(&hub);
+    let queued = {
+        let hub = Arc::clone(&hub);
+        let pending = Arc::clone(&pending);
+        // One poll on the worker: the sender, woken into the LIFO slot, runs
+        // only after it, and by then it is aborted.
+        tokio::spawn(async move {
+            for i in 0..10 {
+                hub.fan_out(tag(0, i)).await;
+            }
+            let queued = pending.load(Ordering::Acquire);
+            sender.abort();
+            queued
+        })
+        .await
+        .unwrap()
+    };
+    assert_eq!(queued, 10 * repl_queue_charge(tag(0, 0).len()));
+    wait_for("the aborted sender's queue to be released", || {
+        pending.load(Ordering::Acquire) == 0
+    })
+    .await;
+    let mut after = 0usize;
+    while hub.count.load(Ordering::Relaxed) != 0 {
+        assert!(after < 1000, "the dead replica was never unregistered");
+        hub.fan_out(tag(1, after)).await;
+        after += 1;
+    }
+    let mut byte = [0u8; 1];
+    let read = tokio::time::timeout(Duration::from_secs(10), replica.read(&mut byte))
+        .await
+        .expect("the closed link was not noticed");
+    assert_eq!(
+        read.unwrap(),
+        0,
+        "a frame reached the replica after the abort"
+    );
+    let (_resumed, boundary, missing) = attach(addr, 0).await;
+    assert_eq!(boundary, (10 + after) as u64);
+    assert_eq!(missing.len(), 10 + after);
+    assert!(missing.iter().enumerate().all(|(i, (o, b))| {
+        *o == i as u64 + 1 && *b == if i < 10 { tag(0, i) } else { tag(1, i - 10) }
+    }));
+    server.abort();
+}
+
+/// Scenario I: a peer with the wrong replication password, and one that
+/// authenticates but sends an invalid resume request, are refused before a
+/// replica queue exists: writes meanwhile reach no queue and charge nothing,
+/// and only an authenticated, valid handshake registers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn unauthenticated_and_invalid_handshakes_never_reach_a_replica_queue() {
+    let hub = hub(1 << 20);
+    let (addr, server, senders) = serve_with(&hub, default_capacity(), Some("s3cret")).await;
+
+    let mut wrong = TcpStream::connect(addr).await.unwrap();
+    wrong.write_all(b"guess\n").await.unwrap();
+    let mut reply = Vec::new();
+    wrong.read_to_end(&mut reply).await.unwrap();
+    assert!(
+        reply.starts_with(b"-ERR"),
+        "{:?}",
+        String::from_utf8_lossy(&reply)
+    );
+
+    let mut invalid = TcpStream::connect(addr).await.unwrap();
+    invalid.write_all(b"s3cret\n").await.unwrap();
+    let mut ok = [0u8; 4];
+    invalid.read_exact(&mut ok).await.unwrap();
+    assert_eq!(&ok, b"+OK\n");
+    let mut magic = [0u8; 4];
+    invalid.read_exact(&mut magic).await.unwrap();
+    let mut run_len = [0u8; 2];
+    invalid.read_exact(&mut run_len).await.unwrap();
+    let mut run_id = vec![0; u16::from_le_bytes(run_len) as usize];
+    invalid.read_exact(&mut run_id).await.unwrap();
+    // A run id longer than the 128 bytes a resume request may carry.
+    invalid.write_all(&1000u16.to_le_bytes()).await.unwrap();
+    let mut rest = Vec::new();
+    let _ = invalid.read_to_end(&mut rest).await;
+    assert!(rest.is_empty(), "the invalid request was answered");
+
+    for i in 0..100 {
+        hub.fan_out(tag(0, i)).await;
+    }
+    assert_eq!(hub.count.load(Ordering::Relaxed), 0);
+    assert!(hub.stream().senders.is_empty());
+    let finished: Vec<_> = senders.lock().unwrap().drain(..).collect();
+    assert_eq!(finished.len(), 2);
+    for task in finished {
+        task.await.unwrap();
+    }
+    assert_eq!(hub.syncs(), (0, 0));
     server.abort();
 }

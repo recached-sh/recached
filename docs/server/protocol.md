@@ -17,9 +17,10 @@ the run id and last offset it applied. The primary replies with either a full sn
 offset or every missing frame retained in `RECACHED_REPL_BACKLOG_BYTES`. Live frames carry a
 monotonic 64-bit offset, and acknowledgments report the last applied offset.
 
-The per-replica stream is bounded by both `RECACHED_REPL_BUFFER` frames and
-`RECACHED_REPL_BUFFER_BYTES`. Overflow disconnects only the lagging replica; reconnect then attempts
-partial resynchronization. Protocol versions other than `RCP1` are rejected.
+The per-replica stream is bounded by `RECACHED_REPL_BUFFER_BYTES`, which charges each queued frame
+its encoded bytes plus 128 bytes of per-frame overhead, and by a frame cap: `RECACHED_REPL_BUFFER`
+when set, otherwise derived from the byte budget. Overflow disconnects only the lagging replica;
+reconnect then attempts partial resynchronization. Protocol versions other than `RCP1` are rejected.
 
 #### DEDUP-aware replication (0.6)
 

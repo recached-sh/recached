@@ -98,6 +98,13 @@ pub(crate) struct ReplInfo {
     /// The deepest replica queue a sender found when it woke (6N-C5).
     pub(crate) send_queue_peak: u64,
     pub(crate) send_deferred: u64,
+    /// The most bytes a sender found charged to its queue (6N-C6).
+    pub(crate) send_queue_bytes_peak: u64,
+    /// Replicas disconnected for a full queue, and the synchronizations
+    /// served, partial and full (6N-C6).
+    pub(crate) queue_disconnects: u64,
+    pub(crate) syncs_partial: u64,
+    pub(crate) syncs_full: u64,
 }
 
 /// Last keyspace walk, refreshed every 5s by the metrics sampler.
@@ -797,7 +804,11 @@ pub(crate) fn render_info(
                      recached_replication_send_flushes:{}\r\n\
                      recached_replication_send_frames:{}\r\n\
                      recached_replication_send_queue_peak:{}\r\n\
-                     recached_replication_send_deferred:{}\r\n",
+                     recached_replication_send_deferred:{}\r\n\
+                     recached_replication_send_queue_bytes_peak:{}\r\n\
+                     recached_replication_queue_disconnects:{}\r\n\
+                     recached_replication_syncs_partial:{}\r\n\
+                     recached_replication_syncs_full:{}\r\n",
                     if is_replica { "slave" } else { "master" },
                     repl.connected,
                     repl.connected,
@@ -808,6 +819,10 @@ pub(crate) fn render_info(
                     repl.send_frames,
                     repl.send_queue_peak,
                     repl.send_deferred,
+                    repl.send_queue_bytes_peak,
+                    repl.queue_disconnects,
+                    repl.syncs_partial,
+                    repl.syncs_full,
                 )
             }
             "keyspace" => {

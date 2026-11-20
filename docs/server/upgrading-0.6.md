@@ -16,6 +16,7 @@ action:
 | mint sync tokens | keep minting the two-segment form (no `sub=`) until **every** server is on 0.6 |
 | keep sockets open longer than their token lives | renew with `SYNC TOKEN` (`syncToken(newToken)` in the SDKs) before expiry: 0.6 closes the socket at expiry |
 | pipeline over RESP and send malformed frames | expect the connection to close on a protocol error, as Redis does |
+| run replicas and rely on the 4096-frame replica queue | set `RECACHED_REPL_BUFFER=4096` to keep it: unset, the cap now follows `RECACHED_REPL_BUFFER_BYTES` (65,536 frames within 8 MiB, each frame charged its size plus 128 bytes), so a lagging replica is disconnected by bytes rather than after 4096 frames |
 
 ## What does not change
 
