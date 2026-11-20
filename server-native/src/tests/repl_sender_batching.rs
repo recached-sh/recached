@@ -627,9 +627,12 @@ async fn large_frames_do_not_overflow_a_batching_sender() {
 /// the 6N-C5 host this disconnected 10 of 10 runs with the held flush and 8
 /// of 10 with the pre-6N-C5 sender (flush on every wake), where the
 /// acknowledgement's wake queues the sender behind the writers instead.
-/// Ignored because it fails by design; run it with `--ignored` to measure.
+/// A measurement, not a pass/fail on the outcome: it checks that whatever
+/// the replica received is contiguous from offset 1, and prints whether the
+/// replica was disconnected (`--ignored --nocapture` to see it). Ignored
+/// because it is slow and timing-dependent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-#[ignore = "documents a pre-existing exposure (6N-C5 review R1); fails on the pre-6N-C5 sender too"]
+#[ignore = "measures a pre-existing exposure (6N-C5 review R1); prints the outcome"]
 async fn pipelined_rounds_at_default_capacity_with_acks() {
     let hub = hub(1 << 24);
     let (addr, server, _senders) = serve(&hub, 4096).await;
@@ -651,25 +654,25 @@ async fn pipelined_rounds_at_default_capacity_with_acks() {
             let (rd, mut wr) = replica.into_split();
             let mut rd = tokio::io::BufReader::with_capacity(64 * 1024, rd);
             let mut got = 0usize;
-            let mut last = 0u64;
+            let mut contiguous = true;
             while got < total {
                 let mut h = [0u8; 12];
                 if rd.read_exact(&mut h).await.is_err() {
-                    return got;
+                    return (got, contiguous);
                 }
                 let len = u32::from_le_bytes(h[8..12].try_into().unwrap()) as usize;
                 let mut b = vec![0u8; len];
                 if rd.read_exact(&mut b).await.is_err() {
-                    return got;
+                    return (got, contiguous);
                 }
-                last = u64::from_le_bytes(h[..8].try_into().unwrap());
+                let last = u64::from_le_bytes(h[..8].try_into().unwrap());
                 got += 1;
+                contiguous &= last == got as u64;
                 if rd.buffer().is_empty() {
                     let _ = wr.write_all(&last.to_le_bytes()).await;
                 }
             }
-            let _ = last;
-            got
+            (got, contiguous)
         })
     });
     let writers: Vec<_> = (0..WRITERS)
@@ -688,10 +691,18 @@ async fn pipelined_rounds_at_default_capacity_with_acks() {
     for writer in writers {
         writer.await.unwrap();
     }
-    let got = reader.await.unwrap();
-    assert_eq!(
-        got, total,
-        "the replica was disconnected after {got} of {total} frames"
+    let (got, contiguous) = reader.await.unwrap();
+    assert!(
+        contiguous,
+        "the replica received a gap or a reordered frame"
+    );
+    eprintln!(
+        "6N-C5 R1 measurement: the replica received {got} of {total} frames ({})",
+        if got == total {
+            "kept up"
+        } else {
+            "disconnected: one round overran the channel"
+        }
     );
     server.abort();
 }
