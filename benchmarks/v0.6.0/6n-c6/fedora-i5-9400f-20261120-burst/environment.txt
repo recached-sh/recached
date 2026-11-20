@@ -1,0 +1,8 @@
+date_utc: 2026-11-20T14:56:34Z mode=burst reps=3 requests=10000000 clients=100 pipe=64 aof=off stop_at_s=3 stop_s=2
+rc_bin[base]: /home/dennispaler/recached-6nc6-bench/bin/rc-base sha256=f6f47ef5f171a8bfaf58c1ceead5bcfbcd13edcd7136798da42564a9c4690dcc source=280743439950811c57764771b171234a78f2f5e6
+rc_bin[c6]: /home/dennispaler/recached-6nc6-bench/bin/rc-c6 sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 source=655868fbaf0627d9dacef2bba784b27c150de1bd
+kit_sha: 02383d8944ece8cd88f6d7e2f9f20d2c4d6cd7f1 run-c6-extra.sh sha256=44feb86aebba52de451197726334579343d8ab71ffc5bc83bdc7c80fd48ed486
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+loadavg_at_start: 1.61 2.92 3.04 3/1696 860827
+loadavg_at_end: 2.41 2.80 2.98 4/1701 872703

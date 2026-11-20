@@ -86,14 +86,24 @@ def probe(pport, rport, count):
     """6J: survives replica restarts. A probe whose replica connection fails
     reconnects and prints "<n> down" (the replica was being restarted), so
     the run keeps measuring lag after every restart instead of dying at the
-    first one, as the 6I probe did."""
+    first one, as the 6I probe did.
+
+    6N-C6: a SET the primary does not answer within the socket timeout
+    (3 s; an AOF fsync stall on a busy disk) printed a traceback and ended
+    the probe, and the traceback in its output then failed `summarize` and
+    the kit with it. It now prints "<n> pstall", reconnects and goes on."""
     p = Conn(pport)
     r = None
     for n in range(int(count)):
         start = time.monotonic_ns()
         val = str(start).encode()
         key = f"lagprobe:{n}"
-        p.cmd("SET", key, val)
+        try:
+            p.cmd("SET", key, val)
+        except (OSError, ConnectionError, ValueError):
+            print(f"{n} pstall", flush=True)
+            p = Conn(pport)
+            continue
         sent = time.monotonic_ns()
         deadline = sent + 10_000_000_000
         outcome = None
@@ -126,10 +136,13 @@ def summarize(path):
             continue
         if parts[1] == "timeout":
             timeouts += 1
-        elif parts[1] == "down":
+        elif parts[1] in ("down", "pstall"):
             continue
         else:
-            lags.append(float(parts[1]))
+            try:
+                lags.append(float(parts[1]))
+            except ValueError:
+                continue
     if not lags:
         print("timeout timeout timeout")
         return

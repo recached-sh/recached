@@ -1,0 +1,42 @@
+cell=base/two rep=1 bin_sha256=f6f47ef5f171a8bfaf58c1ceead5bcfbcd13edcd7136798da42564a9c4690dcc wall_s=25.020 cpu_s=19.700 rss_kb_before=52376 rss_kb_peak=72280 rss_kb_after=59092 replica1_rss_kb=25532 replica2_rss_kb=24840 converge1="60 ok" converge2="57 ok" sample1=ok sample2=ok
+  primary_log: queue_full_bytes=0 queue_full_items=0 replica_connects=2
+  r1_log: sync_ended=0 full_loaded=1 partial=0
+  r2_log: sync_ended=0 full_loaded=1 partial=0
+  repl_before: connected_slaves:2 connected_replicas:2 recached_replication_queue_depth:0 recached_replication_lag_frames:0 recached_replication_offset:100032 recached_replication_send_flushes:0 recached_replication_send_frames:0 recached_replication_send_queue_peak:0 recached_replication_send_deferred:0 
+  repl_after:  connected_slaves:2 connected_replicas:2 recached_replication_queue_depth:0 recached_replication_lag_frames:0 recached_replication_offset:6100032 recached_replication_send_flushes:377358 recached_replication_send_frames:12000000 recached_replication_send_queue_peak:82 recached_replication_send_deferred:377358 
+  bench: "SET","239856.09","3.306","0.144","3.007","3.751","4.223","1565.695"
+cell=c6/two rep=1 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 wall_s=26.523 cpu_s=19.760 rss_kb_before=53096 rss_kb_peak=73144 rss_kb_after=60232 replica1_rss_kb=25572 replica2_rss_kb=25660 converge1="60 ok" converge2="53 ok" sample1=ok sample2=ok
+  primary_log: queue_full_bytes=0 queue_full_items=0 replica_connects=2
+  r1_log: sync_ended=0 full_loaded=1 partial=0
+  r2_log: sync_ended=0 full_loaded=1 partial=0
+  repl_before: connected_slaves:2 connected_replicas:2 recached_replication_queue_depth:0 recached_replication_lag_frames:0 recached_replication_offset:100032 recached_replication_send_flushes:0 recached_replication_send_frames:0 recached_replication_send_queue_peak:0 recached_replication_send_deferred:0 recached_replication_send_queue_bytes_peak:0 recached_replication_queue_disconnects:0 recached_replication_syncs_partial:0 recached_replication_syncs_full:2 
+  repl_after:  connected_slaves:2 connected_replicas:2 recached_replication_queue_depth:0 recached_replication_lag_frames:0 recached_replication_offset:6100032 recached_replication_send_flushes:377160 recached_replication_send_frames:12000000 recached_replication_send_queue_peak:81 recached_replication_send_deferred:377160 recached_replication_send_queue_bytes_peak:16443 recached_replication_queue_disconnects:0 recached_replication_syncs_partial:0 recached_replication_syncs_full:2 
+  bench: "SET","226261.41","3.502","0.176","3.023","3.759","4.183","2271.231"
+cell=base/two rep=2 bin_sha256=f6f47ef5f171a8bfaf58c1ceead5bcfbcd13edcd7136798da42564a9c4690dcc wall_s=25.269 cpu_s=19.740 rss_kb_before=56092 rss_kb_peak=76040 rss_kb_after=59292 replica1_rss_kb=25228 replica2_rss_kb=25400 converge1="57 ok" converge2="54 ok" sample1=ok sample2=ok
+  primary_log: queue_full_bytes=0 queue_full_items=0 replica_connects=2
+  r1_log: sync_ended=0 full_loaded=1 partial=0
+  r2_log: sync_ended=0 full_loaded=1 partial=0
+  repl_before: connected_slaves:2 connected_replicas:2 recached_replication_queue_depth:0 recached_replication_lag_frames:0 recached_replication_offset:100032 recached_replication_send_flushes:0 recached_replication_send_frames:0 recached_replication_send_queue_peak:0 recached_replication_send_deferred:0 
+  repl_after:  connected_slaves:2 connected_replicas:2 recached_replication_queue_depth:0 recached_replication_lag_frames:0 recached_replication_offset:6100032 recached_replication_send_flushes:377796 recached_replication_send_frames:12000000 recached_replication_send_queue_peak:82 recached_replication_send_deferred:377796 
+  bench: "SET","237492.08","3.345","0.144","3.023","3.759","4.183","1658.879"
+cell=c6/two rep=2 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 wall_s=26.772 cpu_s=19.640 rss_kb_before=52388 rss_kb_peak=72196 rss_kb_after=59864 replica1_rss_kb=26080 replica2_rss_kb=25968 converge1="60 ok" converge2="50 ok" sample1=ok sample2=ok
+  primary_log: queue_full_bytes=0 queue_full_items=0 replica_connects=2
+  r1_log: sync_ended=0 full_loaded=1 partial=0
+  r2_log: sync_ended=0 full_loaded=1 partial=0
+  repl_before: connected_slaves:2 connected_replicas:2 recached_replication_queue_depth:0 recached_replication_lag_frames:0 recached_replication_offset:100032 recached_replication_send_flushes:0 recached_replication_send_frames:0 recached_replication_send_queue_peak:0 recached_replication_send_deferred:0 recached_replication_send_queue_bytes_peak:0 recached_replication_queue_disconnects:0 recached_replication_syncs_partial:0 recached_replication_syncs_full:2 
+  repl_after:  connected_slaves:2 connected_replicas:2 recached_replication_queue_depth:0 recached_replication_lag_frames:0 recached_replication_offset:6100032 recached_replication_send_flushes:376672 recached_replication_send_frames:12000000 recached_replication_send_queue_peak:82 recached_replication_send_deferred:376672 recached_replication_send_queue_bytes_peak:16646 recached_replication_queue_disconnects:0 recached_replication_syncs_partial:0 recached_replication_syncs_full:2 
+  bench: "SET","224164.98","3.537","0.136","2.999","3.735","4.183","2977.791"
+cell=base/two rep=3 bin_sha256=f6f47ef5f171a8bfaf58c1ceead5bcfbcd13edcd7136798da42564a9c4690dcc wall_s=23.016 cpu_s=19.480 rss_kb_before=52696 rss_kb_peak=72616 rss_kb_after=60164 replica1_rss_kb=25384 replica2_rss_kb=25852 converge1="66 ok" converge2="87 ok" sample1=ok sample2=ok
+  primary_log: queue_full_bytes=0 queue_full_items=0 replica_connects=2
+  r1_log: sync_ended=0 full_loaded=1 partial=0
+  r2_log: sync_ended=0 full_loaded=1 partial=0
+  repl_before: connected_slaves:2 connected_replicas:2 recached_replication_queue_depth:0 recached_replication_lag_frames:0 recached_replication_offset:100032 recached_replication_send_flushes:0 recached_replication_send_frames:0 recached_replication_send_queue_peak:0 recached_replication_send_deferred:0 
+  repl_after:  connected_slaves:2 connected_replicas:2 recached_replication_queue_depth:0 recached_replication_lag_frames:0 recached_replication_offset:6100032 recached_replication_send_flushes:377719 recached_replication_send_frames:12000000 recached_replication_send_queue_peak:81 recached_replication_send_deferred:377719 
+  bench: "SET","260756.19","3.036","0.128","2.975","3.703","4.119","100.543"
+cell=c6/two rep=3 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 wall_s=24.519 cpu_s=19.560 rss_kb_before=53120 rss_kb_peak=73468 rss_kb_after=60056 replica1_rss_kb=25436 replica2_rss_kb=25672 converge1="56 ok" converge2="56 ok" sample1=ok sample2=ok
+  primary_log: queue_full_bytes=0 queue_full_items=0 replica_connects=2
+  r1_log: sync_ended=0 full_loaded=1 partial=0
+  r2_log: sync_ended=0 full_loaded=1 partial=0
+  repl_before: connected_slaves:2 connected_replicas:2 recached_replication_queue_depth:0 recached_replication_lag_frames:0 recached_replication_offset:100032 recached_replication_send_flushes:0 recached_replication_send_frames:0 recached_replication_send_queue_peak:0 recached_replication_send_deferred:0 recached_replication_send_queue_bytes_peak:0 recached_replication_queue_disconnects:0 recached_replication_syncs_partial:0 recached_replication_syncs_full:2 
+  repl_after:  connected_slaves:2 connected_replicas:2 recached_replication_queue_depth:0 recached_replication_lag_frames:0 recached_replication_offset:6100032 recached_replication_send_flushes:377131 recached_replication_send_frames:12000000 recached_replication_send_queue_peak:82 recached_replication_send_deferred:377131 recached_replication_send_queue_bytes_peak:16646 recached_replication_queue_disconnects:0 recached_replication_syncs_partial:0 recached_replication_syncs_full:2 
+  bench: "SET","244758.09","3.250","0.144","2.983","3.719","4.151","1905.663"

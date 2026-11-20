@@ -1,0 +1,28 @@
+date_utc: 2026-11-20T14:44:27Z
+rc_bin[base]: /home/dennispaler/recached-6nc6-bench/bin/rc-base sha256=f6f47ef5f171a8bfaf58c1ceead5bcfbcd13edcd7136798da42564a9c4690dcc source=280743439950811c57764771b171234a78f2f5e6 version=recached-server 0.6.0
+rc_bin[c6]: /home/dennispaler/recached-6nc6-bench/bin/rc-c6 sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 source=655868fbaf0627d9dacef2bba784b27c150de1bd version=recached-server 0.6.0
+kit_sha: 02383d8944ece8cd88f6d7e2f9f20d2c4d6cd7f1 run-c5.sh sha256=7fb8bee33be11305b4d2957d93d96c9a2e43b9f6a77352f0b01dba85dba06e43
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 2.06 2.51 2.84 4/1700 826247
+perf: absent perf_event_paranoid=2 uprof=off
+cpus: server=0-2 bench=3-5 reps=3 requests_p1=1000000 requests_p16=10000000 bench_threads=2
+primary_env: none
+cells: c6/rc-inline-P1 base/rc-inline-P1 c6/rc-coalesced-P1 base/rc-coalesced-P1 c6/rc-coalesced-P16 base/rc-coalesced-P16 c6/rc-coalesced-P64 base/rc-coalesced-P64
+record_cells: none freq=2999
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: rustc 1.98.0 (88d9e12ae 2026-08-18)
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+ 434736 root      20   0       0      0      0 D  23.8   0.0   1:24.93 kworker+
+  10742 dennisp+  20   0 4302564 980112  96220 S   9.5   6.0  21:24.51 Isolate+
+   2300 dennisp+  20   0 3546932 123724  52224 S   4.8   0.8  12:13.83 gnome-s+
+   5510 dennisp+  20   0 1448.1g 416676  67988 S   4.8   2.6  13:25.06 code
+   8714 dennisp+  20   0   13.0g 646124 180720 S   4.8   4.0  19:25.30 firefox
+  10675 dennisp+  20   0  674880  82252  48440 S   4.8   0.5  14:55.96 RDD Pro+
+ 428108 dennisp+  20   0 5729232 316644  81516 S   4.8   1.9   1:17.43 claude
+loadavg_at_end: 3.23 3.43 3.20 2/1710 859882
