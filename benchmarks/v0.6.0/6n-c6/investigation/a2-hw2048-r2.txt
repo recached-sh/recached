@@ -1,0 +1,749 @@
+
+running 1 test
+TRACE got=40960 of 40960 peak=2068 flushes=(86, 40960)
+W0 r0 start offset=0
+S drain depth=128 first_offset=1 unflushed=0 pending=false
+W1 r0 start offset=128
+S drain depth=128 first_offset=129 unflushed=128 pending=true
+W2 r0 start offset=256
+S drain depth=128 first_offset=257 unflushed=256 pending=true
+W3 r0 start offset=384
+S drain depth=128 first_offset=385 unflushed=384 pending=true
+S full flush n=512
+W4 r0 start offset=512
+S drain depth=128 first_offset=513 unflushed=0 pending=false
+W5 r0 start offset=640
+S drain depth=128 first_offset=641 unflushed=128 pending=true
+W6 r0 start offset=768
+S drain depth=128 first_offset=769 unflushed=256 pending=true
+W7 r0 start offset=896
+S drain depth=128 first_offset=897 unflushed=384 pending=true
+S full flush n=512
+W8 r0 start offset=1024
+S drain depth=128 first_offset=1025 unflushed=0 pending=false
+W9 r0 start offset=1152
+S drain depth=128 first_offset=1153 unflushed=128 pending=true
+W10 r0 start offset=1280
+S drain depth=128 first_offset=1281 unflushed=256 pending=true
+W11 r0 start offset=1408
+S drain depth=128 first_offset=1409 unflushed=384 pending=true
+S full flush n=512
+W12 r0 start offset=1536
+S drain depth=128 first_offset=1537 unflushed=0 pending=false
+W13 r0 start offset=1664
+S drain depth=128 first_offset=1665 unflushed=128 pending=true
+W14 r0 start offset=1792
+S drain depth=128 first_offset=1793 unflushed=256 pending=true
+W15 r0 start offset=1920
+S drain depth=128 first_offset=1921 unflushed=384 pending=true
+S full flush n=512
+W16 r0 start offset=2048
+S drain depth=128 first_offset=2049 unflushed=0 pending=false
+W17 r0 start offset=2176
+S drain depth=128 first_offset=2177 unflushed=128 pending=true
+W18 r0 start offset=2304
+S drain depth=128 first_offset=2305 unflushed=256 pending=true
+W19 r0 start offset=2432
+S drain depth=128 first_offset=2433 unflushed=384 pending=true
+S full flush n=512
+W20 r0 start offset=2560
+S drain depth=128 first_offset=2561 unflushed=0 pending=false
+W21 r0 start offset=2688
+S drain depth=128 first_offset=2689 unflushed=128 pending=true
+W22 r0 start offset=2816
+S drain depth=128 first_offset=2817 unflushed=256 pending=true
+W23 r0 start offset=2944
+S drain depth=128 first_offset=2945 unflushed=384 pending=true
+S full flush n=512
+W24 r0 start offset=3072
+S drain depth=128 first_offset=3073 unflushed=0 pending=false
+W25 r0 start offset=3200
+S drain depth=128 first_offset=3201 unflushed=128 pending=true
+W26 r0 start offset=3328
+S drain depth=128 first_offset=3329 unflushed=256 pending=true
+W27 r0 start offset=3456
+S drain depth=128 first_offset=3457 unflushed=384 pending=true
+S full flush n=512
+W28 r0 start offset=3584
+S drain depth=128 first_offset=3585 unflushed=0 pending=false
+W29 r0 start offset=3712
+S drain depth=128 first_offset=3713 unflushed=128 pending=true
+W30 r0 start offset=3840
+S drain depth=128 first_offset=3841 unflushed=256 pending=true
+W31 r0 start offset=3968
+S drain depth=128 first_offset=3969 unflushed=384 pending=true
+S full flush n=512
+W32 r0 start offset=4096
+S drain depth=128 first_offset=4097 unflushed=0 pending=false
+W33 r0 start offset=4224
+S drain depth=128 first_offset=4225 unflushed=128 pending=true
+W34 r0 start offset=4352
+S drain depth=128 first_offset=4353 unflushed=256 pending=true
+W35 r0 start offset=4480
+S drain depth=128 first_offset=4481 unflushed=384 pending=true
+S full flush n=512
+W36 r0 start offset=4608
+S drain depth=128 first_offset=4609 unflushed=0 pending=false
+W37 r0 start offset=4736
+S drain depth=128 first_offset=4737 unflushed=128 pending=true
+W38 r0 start offset=4864
+S drain depth=128 first_offset=4865 unflushed=256 pending=true
+W39 r0 start offset=4992
+S drain depth=128 first_offset=4993 unflushed=384 pending=true
+S full flush n=512
+W0 r1 start offset=5120
+W39 r1 start offset=5248
+W38 r1 start offset=5376
+W37 r1 start offset=5504
+S drain depth=512 first_offset=5121 unflushed=0 pending=false
+S full flush n=512
+W36 r1 start offset=5632
+S drain depth=128 first_offset=5633 unflushed=0 pending=false
+W35 r1 start offset=5760
+S drain depth=128 first_offset=5761 unflushed=128 pending=true
+W34 r1 start offset=5888
+S drain depth=128 first_offset=5889 unflushed=256 pending=true
+W0 r2 start offset=6016
+W33 r1 start offset=6144
+W32 r1 start offset=6272
+W31 r1 start offset=6400
+W30 r1 start offset=6528
+W29 r1 start offset=6656
+W28 r1 start offset=6784
+W27 r1 start offset=6912
+W26 r1 start offset=7040
+W25 r1 start offset=7168
+W24 r1 start offset=7296
+W23 r1 start offset=7424
+W22 r1 start offset=7552
+W21 r1 start offset=7680
+W20 r1 start offset=7808
+W19 r1 start offset=7936
+W19 A2 yield at depth>=2048
+W18 r1 start offset=8064
+W18 A2 yield at depth>=2048
+W17 r1 start offset=8065
+W17 A2 yield at depth>=2048
+W16 r1 start offset=8066
+W16 A2 yield at depth>=2048
+W15 r1 start offset=8067
+W15 A2 yield at depth>=2048
+W14 r1 start offset=8068
+W14 A2 yield at depth>=2048
+W13 r1 start offset=8069
+W13 A2 yield at depth>=2048
+W12 r1 start offset=8070
+W12 A2 yield at depth>=2048
+W11 r1 start offset=8071
+W11 A2 yield at depth>=2048
+W10 r1 start offset=8072
+W10 A2 yield at depth>=2048
+W9 r1 start offset=8073
+W9 A2 yield at depth>=2048
+W8 r1 start offset=8074
+W8 A2 yield at depth>=2048
+W7 r1 start offset=8075
+W7 A2 yield at depth>=2048
+W6 r1 start offset=8076
+W6 A2 yield at depth>=2048
+W5 r1 start offset=8077
+W5 A2 yield at depth>=2048
+W4 r1 start offset=8078
+W4 A2 yield at depth>=2048
+W3 r1 start offset=8079
+W3 A2 yield at depth>=2048
+W2 r1 start offset=8080
+W2 A2 yield at depth>=2048
+W1 r1 start offset=8081
+W1 A2 yield at depth>=2048
+W34 r2 start offset=8082
+W34 A2 yield at depth>=2048
+W35 r2 start offset=8083
+W35 A2 yield at depth>=2048
+S roundend flush n=384
+S drain depth=2068 first_offset=6017 unflushed=0 pending=false
+S full flush n=512
+S drain depth=1556 first_offset=6529 unflushed=0 pending=false
+S full flush n=512
+S drain depth=1044 first_offset=7041 unflushed=0 pending=false
+S full flush n=512
+S drain depth=532 first_offset=7553 unflushed=0 pending=false
+S full flush n=512
+S drain depth=20 first_offset=8065 unflushed=0 pending=false
+W36 r2 start offset=8084
+S drain depth=128 first_offset=8085 unflushed=20 pending=true
+W37 r2 start offset=8212
+S drain depth=128 first_offset=8213 unflushed=148 pending=true
+W38 r2 start offset=8340
+S drain depth=128 first_offset=8341 unflushed=276 pending=true
+W39 r2 start offset=8468
+S drain depth=128 first_offset=8469 unflushed=404 pending=true
+S full flush n=512
+S drain depth=20 first_offset=8577 unflushed=0 pending=false
+W0 r3 start offset=8596
+S drain depth=128 first_offset=8597 unflushed=20 pending=true
+S roundend flush n=148
+S ack applied=5632
+W39 r3 start offset=8724
+S drain depth=128 first_offset=8725 unflushed=0 pending=false
+W38 r3 start offset=8852
+S drain depth=128 first_offset=8853 unflushed=128 pending=true
+W37 r3 start offset=8980
+S drain depth=128 first_offset=8981 unflushed=256 pending=true
+W36 r3 start offset=9108
+S drain depth=128 first_offset=9109 unflushed=384 pending=true
+S full flush n=512
+S drain depth=127 first_offset=9237 unflushed=0 pending=false
+S drain depth=127 first_offset=9364 unflushed=127 pending=true
+S drain depth=127 first_offset=9491 unflushed=254 pending=true
+S drain depth=127 first_offset=9618 unflushed=381 pending=true
+S drain depth=127 first_offset=9745 unflushed=508 pending=true
+S full flush n=512
+S drain depth=123 first_offset=9749 unflushed=0 pending=false
+S drain depth=127 first_offset=9872 unflushed=123 pending=true
+S drain depth=127 first_offset=9999 unflushed=250 pending=true
+S drain depth=127 first_offset=10126 unflushed=377 pending=true
+S drain depth=127 first_offset=10253 unflushed=504 pending=true
+S full flush n=512
+S drain depth=119 first_offset=10261 unflushed=0 pending=false
+S drain depth=127 first_offset=10380 unflushed=119 pending=true
+S drain depth=127 first_offset=10507 unflushed=246 pending=true
+S drain depth=127 first_offset=10634 unflushed=373 pending=true
+S drain depth=127 first_offset=10761 unflushed=500 pending=true
+S full flush n=512
+S drain depth=115 first_offset=10773 unflushed=0 pending=false
+W0 r4 start offset=10887
+W20 r2 start offset=11904
+W21 r2 start offset=12032
+W22 r2 start offset=12160
+W23 r2 start offset=12288
+W24 r2 start offset=12416
+W25 r2 start offset=12544
+W26 r2 start offset=12672
+W27 r2 start offset=12800
+W28 r2 start offset=12928
+W28 A2 yield at depth>=2048
+W29 r2 start offset=12935
+W29 A2 yield at depth>=2048
+W30 r2 start offset=12936
+W30 A2 yield at depth>=2048
+W31 r2 start offset=12937
+W31 A2 yield at depth>=2048
+W32 r2 start offset=12938
+W32 A2 yield at depth>=2048
+W33 r2 start offset=12939
+W33 A2 yield at depth>=2048
+S roundend flush n=115
+S ack applied=8576
+S ack applied=10772
+S drain depth=2053 first_offset=10888 unflushed=0 pending=false
+S full flush n=512
+S drain depth=1541 first_offset=11400 unflushed=0 pending=false
+S full flush n=512
+S drain depth=1029 first_offset=11912 unflushed=0 pending=false
+S full flush n=512
+S drain depth=517 first_offset=12424 unflushed=0 pending=false
+S full flush n=512
+S drain depth=5 first_offset=12936 unflushed=0 pending=false
+W11 r2 start offset=12940
+S drain depth=128 first_offset=12941 unflushed=5 pending=true
+W10 r2 start offset=13068
+S drain depth=128 first_offset=13069 unflushed=133 pending=true
+W9 r2 start offset=13196
+S drain depth=128 first_offset=13197 unflushed=261 pending=true
+W8 r2 start offset=13324
+S drain depth=128 first_offset=13325 unflushed=389 pending=true
+S full flush n=512
+S drain depth=5 first_offset=13448 unflushed=0 pending=false
+W7 r2 start offset=13452
+S drain depth=128 first_offset=13453 unflushed=5 pending=true
+W6 r2 start offset=13580
+S drain depth=128 first_offset=13581 unflushed=133 pending=true
+W5 r2 start offset=13708
+S drain depth=128 first_offset=13709 unflushed=261 pending=true
+W4 r2 start offset=13836
+S drain depth=128 first_offset=13837 unflushed=389 pending=true
+S full flush n=512
+S drain depth=5 first_offset=13960 unflushed=0 pending=false
+W3 r2 start offset=13964
+S drain depth=128 first_offset=13965 unflushed=5 pending=true
+W2 r2 start offset=14092
+S drain depth=128 first_offset=14093 unflushed=133 pending=true
+W1 r2 start offset=14220
+S drain depth=128 first_offset=14221 unflushed=261 pending=true
+W34 r3 start offset=14348
+S drain depth=128 first_offset=14349 unflushed=389 pending=true
+S full flush n=512
+S drain depth=5 first_offset=14472 unflushed=0 pending=false
+W35 r3 start offset=14476
+S drain depth=128 first_offset=14477 unflushed=5 pending=true
+W36 r4 start offset=14604
+S drain depth=128 first_offset=14605 unflushed=133 pending=true
+W37 r4 start offset=14732
+S drain depth=128 first_offset=14733 unflushed=261 pending=true
+W38 r4 start offset=14860
+S drain depth=128 first_offset=14861 unflushed=389 pending=true
+S full flush n=512
+S drain depth=5 first_offset=14984 unflushed=0 pending=false
+W39 r4 start offset=14988
+S drain depth=128 first_offset=14989 unflushed=5 pending=true
+W0 r5 start offset=15116
+W39 r5 start offset=15244
+S drain depth=256 first_offset=15117 unflushed=133 pending=true
+S roundend flush n=389
+W38 r5 start offset=15372
+S drain depth=128 first_offset=15373 unflushed=0 pending=false
+W37 r5 start offset=15500
+S drain depth=128 first_offset=15501 unflushed=128 pending=true
+W36 r5 start offset=15628
+S drain depth=128 first_offset=15629 unflushed=256 pending=true
+W35 r4 start offset=15756
+S drain depth=128 first_offset=15757 unflushed=384 pending=true
+S full flush n=512
+W34 r4 start offset=15884
+S drain depth=128 first_offset=15885 unflushed=0 pending=false
+W1 r3 start offset=16012
+S drain depth=128 first_offset=16013 unflushed=128 pending=true
+W2 r3 start offset=16140
+S drain depth=128 first_offset=16141 unflushed=256 pending=true
+W3 r3 start offset=16268
+S drain depth=128 first_offset=16269 unflushed=384 pending=true
+S full flush n=512
+W4 r3 start offset=16396
+S drain depth=128 first_offset=16397 unflushed=0 pending=false
+W5 r3 start offset=16524
+S drain depth=128 first_offset=16525 unflushed=128 pending=true
+W6 r3 start offset=16652
+S drain depth=128 first_offset=16653 unflushed=256 pending=true
+W7 r3 start offset=16780
+S drain depth=128 first_offset=16781 unflushed=384 pending=true
+S full flush n=512
+W8 r3 start offset=16908
+S drain depth=128 first_offset=16909 unflushed=0 pending=false
+W9 r3 start offset=17036
+S drain depth=128 first_offset=17037 unflushed=128 pending=true
+W10 r3 start offset=17164
+S drain depth=128 first_offset=17165 unflushed=256 pending=true
+W11 r3 start offset=17292
+S drain depth=128 first_offset=17293 unflushed=384 pending=true
+S full flush n=512
+W0 r6 start offset=17420
+W27 r3 start offset=18304
+W26 r3 start offset=18432
+W25 r3 start offset=18560
+W24 r3 start offset=18688
+W23 r3 start offset=18816
+W22 r3 start offset=18944
+W21 r3 start offset=19072
+W20 r3 start offset=19200
+W19 r2 start offset=19328
+W18 r2 start offset=19456
+W18 A2 yield at depth>=2048
+W17 r2 start offset=19468
+W17 A2 yield at depth>=2048
+W16 r2 start offset=19469
+W16 A2 yield at depth>=2048
+W15 r2 start offset=19470
+W15 A2 yield at depth>=2048
+W14 r2 start offset=19471
+W14 A2 yield at depth>=2048
+W13 r2 start offset=19472
+W13 A2 yield at depth>=2048
+W12 r2 start offset=19473
+W12 A2 yield at depth>=2048
+S ack applied=15884
+S ack applied=17420
+S drain depth=2054 first_offset=17421 unflushed=0 pending=false
+S full flush n=512
+S drain depth=1542 first_offset=17933 unflushed=0 pending=false
+S full flush n=512
+S drain depth=1030 first_offset=18445 unflushed=0 pending=false
+S full flush n=512
+S drain depth=518 first_offset=18957 unflushed=0 pending=false
+S full flush n=512
+S drain depth=6 first_offset=19469 unflushed=0 pending=false
+W11 r4 start offset=19474
+S drain depth=128 first_offset=19475 unflushed=6 pending=true
+W10 r4 start offset=19602
+S drain depth=128 first_offset=19603 unflushed=134 pending=true
+W9 r4 start offset=19730
+S drain depth=128 first_offset=19731 unflushed=262 pending=true
+W8 r4 start offset=19858
+S drain depth=128 first_offset=19859 unflushed=390 pending=true
+S full flush n=512
+S drain depth=6 first_offset=19981 unflushed=0 pending=false
+W7 r4 start offset=19986
+S drain depth=128 first_offset=19987 unflushed=6 pending=true
+W6 r4 start offset=20114
+S drain depth=128 first_offset=20115 unflushed=134 pending=true
+W5 r4 start offset=20242
+S drain depth=128 first_offset=20243 unflushed=262 pending=true
+W4 r4 start offset=20370
+S drain depth=128 first_offset=20371 unflushed=390 pending=true
+S full flush n=512
+S drain depth=6 first_offset=20493 unflushed=0 pending=false
+W3 r4 start offset=20498
+S drain depth=128 first_offset=20499 unflushed=6 pending=true
+W2 r4 start offset=20626
+S drain depth=128 first_offset=20627 unflushed=134 pending=true
+W1 r4 start offset=20754
+S drain depth=128 first_offset=20755 unflushed=262 pending=true
+W34 r5 start offset=20882
+S drain depth=128 first_offset=20883 unflushed=390 pending=true
+S full flush n=512
+S drain depth=6 first_offset=21005 unflushed=0 pending=false
+W35 r5 start offset=21010
+S drain depth=128 first_offset=21011 unflushed=6 pending=true
+W36 r6 start offset=21138
+S drain depth=128 first_offset=21139 unflushed=134 pending=true
+W37 r6 start offset=21266
+S drain depth=128 first_offset=21267 unflushed=262 pending=true
+W38 r6 start offset=21394
+S drain depth=128 first_offset=21395 unflushed=390 pending=true
+S full flush n=512
+S drain depth=6 first_offset=21517 unflushed=0 pending=false
+W39 r6 start offset=21522
+S drain depth=128 first_offset=21523 unflushed=6 pending=true
+W0 r7 start offset=21650
+W39 r7 start offset=21778
+S roundend flush n=134
+S drain depth=256 first_offset=21651 unflushed=0 pending=false
+W38 r7 start offset=21906
+S drain depth=128 first_offset=21907 unflushed=256 pending=true
+W37 r7 start offset=22034
+S drain depth=128 first_offset=22035 unflushed=384 pending=true
+S full flush n=512
+W36 r7 start offset=22162
+S drain depth=128 first_offset=22163 unflushed=0 pending=false
+W35 r6 start offset=22290
+S drain depth=128 first_offset=22291 unflushed=128 pending=true
+W34 r6 start offset=22418
+S drain depth=128 first_offset=22419 unflushed=256 pending=true
+W1 r5 start offset=22546
+S drain depth=128 first_offset=22547 unflushed=384 pending=true
+S full flush n=512
+W2 r5 start offset=22674
+S drain depth=128 first_offset=22675 unflushed=0 pending=false
+W3 r5 start offset=22802
+S drain depth=128 first_offset=22803 unflushed=128 pending=true
+W4 r5 start offset=22930
+S drain depth=128 first_offset=22931 unflushed=256 pending=true
+W5 r5 start offset=23058
+S drain depth=128 first_offset=23059 unflushed=384 pending=true
+S full flush n=512
+W6 r5 start offset=23186
+S drain depth=128 first_offset=23187 unflushed=0 pending=false
+W7 r5 start offset=23314
+S drain depth=128 first_offset=23315 unflushed=128 pending=true
+W8 r5 start offset=23442
+S drain depth=128 first_offset=23443 unflushed=256 pending=true
+W9 r5 start offset=23570
+S drain depth=128 first_offset=23571 unflushed=384 pending=true
+S full flush n=512
+W10 r5 start offset=23698
+S drain depth=128 first_offset=23699 unflushed=0 pending=false
+W11 r5 start offset=23826
+S drain depth=128 first_offset=23827 unflushed=128 pending=true
+W19 r3 start offset=24832
+W20 r4 start offset=24960
+W21 r4 start offset=25088
+W22 r4 start offset=25216
+W23 r4 start offset=25344
+W24 r4 start offset=25472
+W25 r4 start offset=25600
+W26 r4 start offset=25728
+W27 r4 start offset=25856
+W28 r3 start offset=25984
+W28 A2 yield at depth>=2048
+W29 r3 start offset=26002
+W29 A2 yield at depth>=2048
+W30 r3 start offset=26003
+W30 A2 yield at depth>=2048
+W31 r3 start offset=26004
+W31 A2 yield at depth>=2048
+W32 r3 start offset=26005
+W32 A2 yield at depth>=2048
+W33 r3 start offset=26006
+W33 A2 yield at depth>=2048
+S roundend flush n=256
+S ack applied=22162
+S drain depth=2053 first_offset=23955 unflushed=0 pending=false
+S full flush n=512
+S ack applied=23698
+S drain depth=1541 first_offset=24467 unflushed=0 pending=false
+S full flush n=512
+S drain depth=1029 first_offset=24979 unflushed=0 pending=false
+S full flush n=512
+S drain depth=517 first_offset=25491 unflushed=0 pending=false
+S full flush n=512
+S drain depth=5 first_offset=26003 unflushed=0 pending=false
+W11 r6 start offset=26007
+S drain depth=128 first_offset=26008 unflushed=5 pending=true
+W10 r6 start offset=26135
+S drain depth=128 first_offset=26136 unflushed=133 pending=true
+W9 r6 start offset=26263
+S drain depth=128 first_offset=26264 unflushed=261 pending=true
+W8 r6 start offset=26391
+S drain depth=128 first_offset=26392 unflushed=389 pending=true
+S full flush n=512
+S drain depth=5 first_offset=26515 unflushed=0 pending=false
+W7 r6 start offset=26519
+S drain depth=128 first_offset=26520 unflushed=5 pending=true
+W6 r6 start offset=26647
+S drain depth=128 first_offset=26648 unflushed=133 pending=true
+W5 r6 start offset=26775
+S drain depth=128 first_offset=26776 unflushed=261 pending=true
+W4 r6 start offset=26903
+S drain depth=128 first_offset=26904 unflushed=389 pending=true
+S full flush n=512
+S drain depth=5 first_offset=27027 unflushed=0 pending=false
+W3 r6 start offset=27031
+S drain depth=128 first_offset=27032 unflushed=5 pending=true
+W2 r6 start offset=27159
+S drain depth=128 first_offset=27160 unflushed=133 pending=true
+W1 r6 start offset=27287
+S drain depth=128 first_offset=27288 unflushed=261 pending=true
+W34 r7 start offset=27415
+S drain depth=128 first_offset=27416 unflushed=389 pending=true
+S full flush n=512
+S drain depth=5 first_offset=27539 unflushed=0 pending=false
+W35 r7 start offset=27543
+S drain depth=128 first_offset=27544 unflushed=5 pending=true
+W12 r3 start offset=27671
+S drain depth=128 first_offset=27672 unflushed=133 pending=true
+S roundend flush n=261
+W1 r7 start offset=27799
+S drain depth=128 first_offset=27800 unflushed=0 pending=false
+W2 r7 start offset=27927
+S drain depth=128 first_offset=27928 unflushed=128 pending=true
+W3 r7 start offset=28055
+S drain depth=128 first_offset=28056 unflushed=256 pending=true
+W4 r7 start offset=28183
+S drain depth=128 first_offset=28184 unflushed=384 pending=true
+S full flush n=512
+W5 r7 start offset=28311
+S drain depth=128 first_offset=28312 unflushed=0 pending=false
+W6 r7 start offset=28439
+S drain depth=128 first_offset=28440 unflushed=128 pending=true
+W7 r7 start offset=28567
+S drain depth=128 first_offset=28568 unflushed=256 pending=true
+W8 r7 start offset=28695
+S drain depth=128 first_offset=28696 unflushed=384 pending=true
+S full flush n=512
+W9 r7 start offset=28823
+S drain depth=128 first_offset=28824 unflushed=0 pending=false
+W10 r7 start offset=28951
+S drain depth=128 first_offset=28952 unflushed=128 pending=true
+W11 r7 start offset=29079
+S drain depth=128 first_offset=29080 unflushed=256 pending=true
+S drain depth=127 first_offset=29208 unflushed=384 pending=true
+S drain depth=127 first_offset=29335 unflushed=511 pending=true
+S full flush n=512
+S drain depth=126 first_offset=29336 unflushed=0 pending=false
+S drain depth=127 first_offset=29462 unflushed=126 pending=true
+S drain depth=127 first_offset=29589 unflushed=253 pending=true
+W12 r4 start offset=29715
+W27 r5 start offset=30080
+W26 r5 start offset=30208
+W25 r5 start offset=30336
+W24 r5 start offset=30464
+W23 r5 start offset=30592
+W22 r5 start offset=30720
+W21 r5 start offset=30848
+W20 r5 start offset=30976
+W19 r4 start offset=31104
+W18 r3 start offset=31232
+W17 r3 start offset=31360
+W16 r3 start offset=31488
+W15 r3 start offset=31616
+W14 r3 start offset=31744
+W14 A2 yield at depth>=2048
+W13 r3 start offset=31763
+W13 A2 yield at depth>=2048
+S drain depth=2049 first_offset=29716 unflushed=380 pending=true
+S full flush n=512
+S ack applied=28311
+S ack applied=29335
+S drain depth=1917 first_offset=29848 unflushed=0 pending=false
+S full flush n=512
+S drain depth=1405 first_offset=30360 unflushed=0 pending=false
+S full flush n=512
+S drain depth=893 first_offset=30872 unflushed=0 pending=false
+S full flush n=512
+S drain depth=381 first_offset=31384 unflushed=0 pending=false
+W30 r4 start offset=31764
+S drain depth=128 first_offset=31765 unflushed=381 pending=true
+W31 r4 start offset=31892
+S drain depth=128 first_offset=31893 unflushed=509 pending=true
+S full flush n=512
+S drain depth=125 first_offset=31896 unflushed=0 pending=false
+W32 r4 start offset=32020
+S drain depth=128 first_offset=32021 unflushed=125 pending=true
+W33 r4 start offset=32148
+S drain depth=128 first_offset=32149 unflushed=253 pending=true
+W12 r5 start offset=32276
+W33 r5 start offset=32404
+W32 r5 start offset=32532
+S roundend flush n=381
+S drain depth=384 first_offset=32277 unflushed=0 pending=false
+W31 r5 start offset=32660
+S drain depth=128 first_offset=32661 unflushed=384 pending=true
+S full flush n=512
+W30 r5 start offset=32788
+S drain depth=128 first_offset=32789 unflushed=0 pending=false
+S drain depth=127 first_offset=32917 unflushed=128 pending=true
+S drain depth=109 first_offset=33044 unflushed=255 pending=true
+W15 r4 start offset=33152
+S drain depth=128 first_offset=33153 unflushed=364 pending=true
+W16 r4 start offset=33280
+S drain depth=128 first_offset=33281 unflushed=492 pending=true
+S full flush n=512
+S drain depth=108 first_offset=33301 unflushed=0 pending=false
+W17 r4 start offset=33408
+S drain depth=128 first_offset=33409 unflushed=108 pending=true
+W18 r4 start offset=33536
+S drain depth=128 first_offset=33537 unflushed=236 pending=true
+W19 r5 start offset=33664
+S drain depth=128 first_offset=33665 unflushed=364 pending=true
+W20 r6 start offset=33792
+S drain depth=128 first_offset=33793 unflushed=492 pending=true
+S full flush n=512
+S drain depth=108 first_offset=33813 unflushed=0 pending=false
+W21 r6 start offset=33920
+S drain depth=128 first_offset=33921 unflushed=108 pending=true
+W22 r6 start offset=34048
+S drain depth=128 first_offset=34049 unflushed=236 pending=true
+W23 r6 start offset=34176
+S drain depth=128 first_offset=34177 unflushed=364 pending=true
+W24 r6 start offset=34304
+S drain depth=128 first_offset=34305 unflushed=492 pending=true
+S full flush n=512
+S drain depth=108 first_offset=34325 unflushed=0 pending=false
+W25 r6 start offset=34432
+S drain depth=128 first_offset=34433 unflushed=108 pending=true
+W26 r6 start offset=34560
+S drain depth=128 first_offset=34561 unflushed=236 pending=true
+W27 r6 start offset=34688
+S drain depth=128 first_offset=34689 unflushed=364 pending=true
+W28 r4 start offset=34816
+S drain depth=128 first_offset=34817 unflushed=492 pending=true
+S full flush n=512
+S drain depth=108 first_offset=34837 unflushed=0 pending=false
+W29 r4 start offset=34944
+S drain depth=128 first_offset=34945 unflushed=108 pending=true
+W12 r6 start offset=35072
+S drain depth=128 first_offset=35073 unflushed=236 pending=true
+S ack applied=31895
+S roundend flush n=364
+W12 r7 start offset=35200
+S drain depth=128 first_offset=35201 unflushed=0 pending=false
+W29 r5 start offset=35328
+S drain depth=128 first_offset=35329 unflushed=128 pending=true
+W28 r5 start offset=35456
+S drain depth=128 first_offset=35457 unflushed=256 pending=true
+W27 r7 start offset=35584
+S drain depth=128 first_offset=35585 unflushed=384 pending=true
+S full flush n=512
+W26 r7 start offset=35712
+S drain depth=128 first_offset=35713 unflushed=0 pending=false
+W25 r7 start offset=35840
+S drain depth=128 first_offset=35841 unflushed=128 pending=true
+W24 r7 start offset=35968
+S drain depth=128 first_offset=35969 unflushed=256 pending=true
+W23 r7 start offset=36096
+S drain depth=128 first_offset=36097 unflushed=384 pending=true
+S full flush n=512
+W22 r7 start offset=36224
+S drain depth=128 first_offset=36225 unflushed=0 pending=false
+W21 r7 start offset=36352
+S drain depth=128 first_offset=36353 unflushed=128 pending=true
+W20 r7 start offset=36480
+S drain depth=128 first_offset=36481 unflushed=256 pending=true
+W19 r6 start offset=36608
+S drain depth=128 first_offset=36609 unflushed=384 pending=true
+S full flush n=512
+W18 r5 start offset=36736
+S drain depth=128 first_offset=36737 unflushed=0 pending=false
+W17 r5 start offset=36864
+S drain depth=128 first_offset=36865 unflushed=128 pending=true
+W16 r5 start offset=36992
+S drain depth=128 first_offset=36993 unflushed=256 pending=true
+W15 r5 start offset=37120
+S drain depth=128 first_offset=37121 unflushed=384 pending=true
+S full flush n=512
+W14 r4 start offset=37248
+S drain depth=128 first_offset=37249 unflushed=0 pending=false
+W13 r4 start offset=37376
+S drain depth=128 first_offset=37377 unflushed=128 pending=true
+W30 r6 start offset=37504
+S drain depth=128 first_offset=37505 unflushed=256 pending=true
+W31 r6 start offset=37632
+S drain depth=128 first_offset=37633 unflushed=384 pending=true
+S full flush n=512
+W32 r6 start offset=37760
+S drain depth=128 first_offset=37761 unflushed=0 pending=false
+W33 r6 start offset=37888
+S drain depth=128 first_offset=37889 unflushed=128 pending=true
+S ack applied=34836
+S roundend flush n=256
+S ack applied=35712
+W33 r7 start offset=38016
+S drain depth=128 first_offset=38017 unflushed=0 pending=false
+W32 r7 start offset=38144
+S drain depth=128 first_offset=38145 unflushed=128 pending=true
+W31 r7 start offset=38272
+S drain depth=128 first_offset=38273 unflushed=256 pending=true
+W30 r7 start offset=38400
+S drain depth=128 first_offset=38401 unflushed=384 pending=true
+S full flush n=512
+W13 r5 start offset=38528
+S drain depth=128 first_offset=38529 unflushed=0 pending=false
+W14 r5 start offset=38656
+S drain depth=128 first_offset=38657 unflushed=128 pending=true
+W15 r6 start offset=38784
+S drain depth=128 first_offset=38785 unflushed=256 pending=true
+W16 r6 start offset=38912
+S drain depth=128 first_offset=38913 unflushed=384 pending=true
+S full flush n=512
+W17 r6 start offset=39040
+S drain depth=128 first_offset=39041 unflushed=0 pending=false
+W18 r6 start offset=39168
+S drain depth=128 first_offset=39169 unflushed=128 pending=true
+W19 r7 start offset=39296
+S drain depth=128 first_offset=39297 unflushed=256 pending=true
+W28 r6 start offset=39424
+S drain depth=128 first_offset=39425 unflushed=384 pending=true
+S full flush n=512
+W29 r6 start offset=39552
+S drain depth=128 first_offset=39553 unflushed=0 pending=false
+S ack applied=38016
+S roundend flush n=128
+W29 r7 start offset=39680
+S drain depth=128 first_offset=39681 unflushed=0 pending=false
+W28 r7 start offset=39808
+S drain depth=128 first_offset=39809 unflushed=128 pending=true
+W18 r7 start offset=39936
+S drain depth=128 first_offset=39937 unflushed=256 pending=true
+W17 r7 start offset=40064
+S drain depth=128 first_offset=40065 unflushed=384 pending=true
+S full flush n=512
+W16 r7 start offset=40192
+S drain depth=128 first_offset=40193 unflushed=0 pending=false
+W15 r7 start offset=40320
+S drain depth=128 first_offset=40321 unflushed=128 pending=true
+W14 r6 start offset=40448
+S drain depth=128 first_offset=40449 unflushed=256 pending=true
+W13 r6 start offset=40576
+S drain depth=128 first_offset=40577 unflushed=384 pending=true
+S full flush n=512
+S ack applied=39680
+W13 r7 start offset=40704
+S drain depth=128 first_offset=40705 unflushed=0 pending=false
+W14 r7 start offset=40832
+S drain depth=128 first_offset=40833 unflushed=128 pending=true
+S roundend flush n=256
+S ack applied=40704
+test tests::repl_sender_batching::c6_trace_r1 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 572 filtered out; finished in 0.11s
+

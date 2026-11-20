@@ -1,0 +1,141 @@
+diff --git a/server-native/src/replication.rs b/server-native/src/replication.rs
+index 0be16eb..4002f0d 100644
+--- a/server-native/src/replication.rs
++++ b/server-native/src/replication.rs
+@@ -39,6 +39,23 @@ impl Drop for QueuedReplFrame {
+ 
+ pub(crate) type ReplSender = mpsc::Sender<QueuedReplFrame>;
+ 
++#[cfg(test)]
++pub(crate) mod c6trace {
++    use std::sync::atomic::{AtomicBool, Ordering};
++    pub(crate) static ON: AtomicBool = AtomicBool::new(false);
++    pub(crate) static LOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
++    pub(crate) fn ev(f: impl FnOnce() -> String) {
++        if ON.load(Ordering::Relaxed) {
++            LOG.lock().unwrap().push(f());
++        }
++    }
++}
++#[cfg(not(test))]
++mod c6trace {
++    #[inline(always)]
++    pub(crate) fn ev(_f: impl FnOnce() -> String) {}
++}
++
+ /// A connected replica: its write channel plus the counters that make lag
+ /// observable.
+ ///
+@@ -429,6 +446,7 @@ impl ReplHub {
+                 true
+             }
+             Err(mpsc::error::TrySendError::Full(_)) => {
++                c6trace::ev(|| format!("FULL offset={offset} pending_bytes={}", r.pending_bytes.load(Ordering::Relaxed)));
+                 warn!(
+                     "Replica fell too far behind (channel full) — disconnecting so it can resync"
+                 );
+@@ -1335,6 +1353,7 @@ where
+                     break;
+                 };
+                 replicas.record_wake(rx.len() + 1);
++                c6trace::ev(|| format!("S drain depth={} first_offset={} unflushed={unflushed} pending={flush_pending}", rx.len() + 1, queued.frame.offset));
+                 write_repl_frame(&mut wr, &queued.frame).await?;
+                 unflushed += 1;
+                 // Everything already queued goes into the buffer too. Frames
+@@ -1355,6 +1374,7 @@ where
+                     // A full flush goes out now, so a busy primary still
+                     // flushes regularly. So does every flush on a small
+                     // channel (see `REPL_SEND_DEFER_MIN_CAPACITY`).
++                    c6trace::ev(|| format!("S full flush n={unflushed}"));
+                     wr.flush().await?;
+                     replicas.record_send(unflushed, false);
+                     unflushed = 0;
+@@ -1365,6 +1385,7 @@ where
+                 }
+             }
+             () = &mut round_end, if flush_pending => {
++                c6trace::ev(|| format!("S roundend flush n={unflushed}"));
+                 flush_pending = false;
+                 wr.flush().await?;
+                 replicas.record_send(unflushed, true);
+@@ -1378,6 +1399,7 @@ where
+                     break;
+                 }
+                 let applied = u64::from_le_bytes(ack_buf);
++                c6trace::ev(|| format!("S ack applied={applied}"));
+                 // Monotonic: a reordered or replayed ack must never walk the
+                 // high-water mark backwards and report negative lag.
+                 acked.fetch_max(applied, Ordering::Relaxed);
+diff --git a/server-native/src/tests/repl_sender_batching.rs b/server-native/src/tests/repl_sender_batching.rs
+index 97df9aa..3fc2304 100644
+--- a/server-native/src/tests/repl_sender_batching.rs
++++ b/server-native/src/tests/repl_sender_batching.rs
+@@ -706,3 +706,68 @@ async fn pipelined_rounds_at_default_capacity_with_acks() {
+     );
+     server.abort();
+ }
++
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
++#[ignore = "scratch trace (6N-C6 investigation)"]
++async fn c6_trace_r1() {
++    use crate::replication::c6trace;
++    let hub = hub(1 << 24);
++    let (addr, server, _senders) = serve(&hub, 4096).await;
++    let (replica, _, _) = attach(addr, 0).await;
++    wait_for("the replica to register", || hub.count.load(Ordering::Relaxed) == 1).await;
++    const WRITERS: usize = 40;
++    const PIPELINE: usize = 128;
++    const ROUNDS: usize = 8;
++    let acks = std::env::var("C6_NOACK").is_err();
++    let a2_hw: Option<usize> = std::env::var("C6_A2").ok().and_then(|v| v.parse().ok());
++    let total = WRITERS * PIPELINE * ROUNDS;
++    let reader = tokio::task::spawn_blocking(move || {
++        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
++        rt.block_on(async move {
++            let (rd, mut wr) = replica.into_split();
++            let mut rd = tokio::io::BufReader::with_capacity(64 * 1024, rd);
++            let mut got = 0usize;
++            while got < total {
++                let mut h = [0u8; 12];
++                if rd.read_exact(&mut h).await.is_err() { return got; }
++                let len = u32::from_le_bytes(h[8..12].try_into().unwrap()) as usize;
++                let mut b = vec![0u8; len];
++                if rd.read_exact(&mut b).await.is_err() { return got; }
++                let last = u64::from_le_bytes(h[..8].try_into().unwrap());
++                got += 1;
++                if acks && rd.buffer().is_empty() {
++                    let _ = wr.write_all(&last.to_le_bytes()).await;
++                }
++            }
++            got
++        })
++    });
++    c6trace::ON.store(true, Ordering::Relaxed);
++    let writers: Vec<_> = (0..WRITERS)
++        .map(|w| {
++            let hub = Arc::clone(&hub);
++            tokio::spawn(async move {
++                for round in 0..ROUNDS {
++                    c6trace::ev(|| format!("W{w} r{round} start offset={}", hub.current_offset()));
++                    for i in 0..PIPELINE {
++                        hub.fan_out(tag(w, round * PIPELINE + i)).await;
++                        if let Some(hw) = a2_hw {
++                            if hub.max_queue_depth().await >= hw {
++                                c6trace::ev(|| format!("W{w} A2 yield at depth>={hw}"));
++                                tokio::task::yield_now().await;
++                            }
++                        }
++                    }
++                    tokio::task::yield_now().await;
++                }
++            })
++        })
++        .collect();
++    for writer in writers { writer.await.unwrap(); }
++    c6trace::ON.store(false, Ordering::Relaxed);
++    let got = reader.await.unwrap();
++    eprintln!("TRACE got={got} of {total} peak={} flushes={:?}", hub.send_queue_peak(), hub.send_stats());
++    for l in c6trace::LOG.lock().unwrap().iter() { eprintln!("{l}"); }
++    server.abort();
++}
