@@ -884,3 +884,163 @@ async fn a_batch_sealed_by_a_flush_is_a_miss() {
     assert_eq!(occurrences(&on_disk, &g), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 6N-C5 (6N-C4 review F1): a writer that finds another performer writing
+/// does not yield. That performer — here held mid-batch, as another worker's
+/// inline leader or the `always` drain would be — sweeps the batch when it is
+/// done, so a yield could only delay the writer, and its outcome would teach
+/// the back-off nothing. The writer still leads (a no-op while busy) and
+/// waits for its batch exactly as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_writer_does_not_yield_while_a_performer_is_busy() {
+    let dir = scratch("busy_skip");
+    let path = dir.join("f.aof");
+    let (w, stats) = AofWriter::open(path.clone(), AofSync::EverySec)
+        .await
+        .unwrap()
+        .with_private_stats();
+    let w = Arc::new(w);
+    let held = frame("held");
+    w.hold_batch_containing(b"held");
+    let first = {
+        let w = Arc::clone(&w);
+        let held = held.clone();
+        tokio::spawn(async move { w.append_coalesced(&held).await })
+    };
+    w.wait_until_held().await;
+    let (gained, missed, skips, lead_busy, parked) = (
+        relaxed(&stats.fanout_coalesce_gained),
+        relaxed(&stats.fanout_coalesce_missed),
+        relaxed(&stats.fanout_busy_skips),
+        relaxed(&stats.lead_busy),
+        relaxed(&stats.gate_parked),
+    );
+    let next = frame("next");
+    let b = w.append_coalesced(&next);
+    tokio::pin!(b);
+    // Queued, no yield: pending only on its batch, which the held
+    // performer has yet to reach.
+    assert!(futures_util::poll!(b.as_mut()).is_pending());
+    // Only the path without a yield reaches `lead()` (which finds the
+    // performer busy) and parks on its batch in the first poll; a yielding
+    // writer would still be in its yield.
+    assert_eq!(
+        relaxed(&stats.lead_busy),
+        lead_busy + 1,
+        "the writer yielded"
+    );
+    assert_eq!(
+        relaxed(&stats.gate_parked),
+        parked + 1,
+        "the writer yielded"
+    );
+    assert_eq!(relaxed(&stats.fanout_busy_skips), skips + 1);
+    assert_eq!(
+        relaxed(&stats.fanout_coalesce_gained),
+        gained,
+        "a busy skip observed a gain"
+    );
+    assert_eq!(
+        relaxed(&stats.fanout_coalesce_missed),
+        missed,
+        "a busy skip observed a miss"
+    );
+    w.release_hold();
+    first.await.unwrap().unwrap();
+    b.await.unwrap();
+    // Nor did it observe after its batch completed.
+    assert_eq!(relaxed(&stats.fanout_coalesce_gained), gained);
+    assert_eq!(relaxed(&stats.fanout_coalesce_missed), missed);
+    let on_disk = std::fs::read(&path).unwrap();
+    assert_eq!(occurrences(&on_disk, &held), 1);
+    assert_eq!(occurrences(&on_disk, &next), 1);
+    let at = |f: &[u8]| on_disk.windows(f.len()).position(|x| x == f).unwrap();
+    assert!(
+        at(&held) < at(&next),
+        "the swept frame was written before the held one"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Writers that queue behind a busy performer, some cancelled while they
+/// wait: every frame is swept and written once, in queue order, and the
+/// queue is left empty. No writer that skipped its yield is needed to lead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn frames_queued_behind_a_busy_performer_are_all_swept() {
+    let dir = scratch("busy_sweep");
+    let path = dir.join("f.aof");
+    let (w, stats) = AofWriter::open(path.clone(), AofSync::EverySec)
+        .await
+        .unwrap()
+        .with_private_stats();
+    let w = Arc::new(w);
+    let held = frame("held");
+    w.hold_batch_containing(b"held");
+    let first = {
+        let w = Arc::clone(&w);
+        let held = held.clone();
+        tokio::spawn(async move { w.append_coalesced(&held).await })
+    };
+    w.wait_until_held().await;
+    let (skips, parked, gained, missed) = (
+        relaxed(&stats.fanout_busy_skips),
+        relaxed(&stats.gate_parked),
+        relaxed(&stats.fanout_coalesce_gained),
+        relaxed(&stats.fanout_coalesce_missed),
+    );
+    let frames: Vec<Vec<u8>> = (0..8).map(|i| frame(&format!("queued{i}"))).collect();
+    let mut kept = Vec::new();
+    for (i, f) in frames.iter().enumerate() {
+        let mut append = Box::pin(w.append_coalesced(f));
+        assert!(futures_util::poll!(append.as_mut()).is_pending());
+        if i % 2 == 0 {
+            kept.push(append);
+        }
+        // Odd writers are cancelled here, their frames already queued.
+    }
+    // All eight parked on their batch in their first poll, without a yield.
+    assert_eq!(relaxed(&stats.gate_parked), parked + 8, "a writer yielded");
+    assert_eq!(relaxed(&stats.fanout_busy_skips), skips + 8);
+    w.release_hold();
+    first.await.unwrap().unwrap();
+    for append in kept {
+        tokio::time::timeout(std::time::Duration::from_secs(10), append)
+            .await
+            .expect("a writer queued behind the performer was stranded")
+            .unwrap();
+    }
+    // Everything queued has been performed: a fresh append completes too.
+    let after = frame("after");
+    w.append(&after).await.unwrap();
+    assert!(w.tail().is_none(), "frames left queued");
+    assert_eq!(
+        relaxed(&stats.fanout_coalesce_gained),
+        gained,
+        "a busy skip observed"
+    );
+    assert_eq!(
+        relaxed(&stats.fanout_coalesce_missed),
+        missed,
+        "a busy skip observed"
+    );
+    let on_disk = std::fs::read(&path).unwrap();
+    let mut last = 0;
+    for f in std::iter::once(&held)
+        .chain(frames.iter())
+        .chain(std::iter::once(&after))
+    {
+        assert_eq!(
+            occurrences(&on_disk, f),
+            1,
+            "{}",
+            String::from_utf8_lossy(f)
+        );
+        let at = on_disk
+            .windows(f.len())
+            .position(|x| x == f.as_slice())
+            .unwrap();
+        assert!(at > last || last == 0, "out of queue order");
+        last = at;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
