@@ -31,7 +31,32 @@ async fn attach(
     hub: &ReplRegistry,
 ) -> (DuplexStream, tokio::task::JoinHandle<std::io::Result<()>>) {
     let (primary, mut replica) = tokio::io::duplex(1 << 16);
-    let sender = tokio::spawn(handle_replica(
+    let sender = spawn_sender(hub, primary);
+    handshake(hub, &mut replica).await;
+    (replica, sender)
+}
+
+/// The same over a loopback TCP connection (review T3).
+async fn attach_tcp(
+    hub: &ReplRegistry,
+) -> (TcpStream, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut replica = TcpStream::connect(listener.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (primary, _) = listener.accept().await.unwrap();
+    primary.set_nodelay(true).unwrap();
+    replica.set_nodelay(true).unwrap();
+    let sender = spawn_sender(hub, primary);
+    handshake(hub, &mut replica).await;
+    (replica, sender)
+}
+
+fn spawn_sender<S>(hub: &ReplRegistry, primary: S) -> tokio::task::JoinHandle<std::io::Result<()>>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    tokio::spawn(handle_replica(
         primary,
         Arc::new(KeyValueStore::new()),
         ServerState::for_tests(
@@ -48,7 +73,11 @@ async fn attach(
         4096,
         IpAddr::from([127, 0, 0, 1]),
         ReplAuthThrottle::new(),
-    ));
+    ))
+}
+
+/// The replica's side of the handshake, resuming at offset 0.
+async fn handshake<R: AsyncRead + AsyncWrite + Unpin>(hub: &ReplRegistry, replica: &mut R) {
     let mut magic = [0u8; 4];
     replica.read_exact(&mut magic).await.unwrap();
     assert_eq!(&magic, REPL_MAGIC);
@@ -72,7 +101,6 @@ async fn attach(
         hub.count.load(Ordering::Relaxed) == 1
     })
     .await;
-    (replica, sender)
 }
 
 async fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
@@ -87,7 +115,7 @@ async fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
 }
 
 /// Fans out `n` frames and reads them on the replica's side.
-async fn stream(hub: &ReplRegistry, replica: &mut DuplexStream, n: usize) -> u64 {
+async fn stream<R: AsyncRead + Unpin>(hub: &ReplRegistry, replica: &mut R, n: usize) -> u64 {
     let mut last = 0;
     for i in 0..n {
         hub.fan_out(format!("f{i}").into_bytes()).await;
@@ -148,6 +176,29 @@ async fn a_partial_acknowledgement_survives_a_frame_winning_the_select() {
     // A frame now wins the `select!` over the read holding those 3 bytes.
     let sent = stream(&hub, &mut replica, 1).await;
     assert_eq!(sent, 101);
+    replica.write_all(&first[3..]).await.unwrap();
+    replica.write_all(&100u64.to_le_bytes()).await.unwrap();
+    wait_for("an acknowledgement", || acked(&hub) != 0).await;
+    wait_for("the second acknowledgement", || acked(&hub) >= 100).await;
+    assert_eq!(
+        acked(&hub),
+        100,
+        "the acknowledgements were read across a boundary"
+    );
+    assert_eq!(hub.max_lag_frames().await, 1);
+}
+
+/// 2b. The reproduction over a loopback TCP connection rather than an
+/// in-memory pipe (review T3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_partial_acknowledgement_survives_over_tcp() {
+    let hub = hub();
+    let (mut replica, _sender) = attach_tcp(&hub).await;
+    stream(&hub, &mut replica, 100).await;
+    let first = 50u64.to_le_bytes();
+    replica.write_all(&first[..3]).await.unwrap();
+    settle().await;
+    assert_eq!(stream(&hub, &mut replica, 1).await, 101);
     replica.write_all(&first[3..]).await.unwrap();
     replica.write_all(&100u64.to_le_bytes()).await.unwrap();
     wait_for("an acknowledgement", || acked(&hub) != 0).await;
@@ -251,13 +302,27 @@ async fn acknowledgements_only_ever_advance() {
     let hub = hub();
     let (mut replica, _sender) = attach(&hub).await;
     stream(&hub, &mut replica, 30).await;
-    let mut seen = Vec::new();
-    for ack in [10u64, 5, 20, 20, 15, 30] {
+    // (acknowledgement, the acknowledged offset after it)
+    for (ack, after) in [
+        (10u64, 10u64),
+        (5, 10),
+        (20, 20),
+        (20, 20),
+        (15, 20),
+        (30, 30),
+    ] {
         replica.write_all(&ack.to_le_bytes()).await.unwrap();
-        settle().await;
-        seen.push(acked(&hub));
+        if ack == after {
+            // It must rise: wait for it, however slowly the sender runs
+            // (review T1).
+            wait_for("the acknowledgement", || acked(&hub) == after).await;
+        } else {
+            // It must not move: give the sender time to read it. A slow
+            // sender can only make this pass wrongly, never fail wrongly.
+            settle().await;
+        }
+        assert_eq!(acked(&hub), after, "after acknowledging {ack}");
     }
-    assert_eq!(seen, [10, 10, 20, 20, 20, 30]);
 }
 
 /// 7. The lag the primary reports follows sent minus acknowledged while
