@@ -1,0 +1,27 @@
+date_utc: 2026-11-20T05:10:05Z
+rc_bin[prof]: /home/dennispaler/recached-6nc5-bench/bin/rc-base-prof sha256=349d2eeddec07e0b4ed099433ee8854f9a00e9c79d62da32cd5cb3b93a3b4560 source=c61b92033a49d7a01ecb71ae7a09a2b9bf9212bb version=recached-server 0.6.0
+kit_sha: c61b92033a49d7a01ecb71ae7a09a2b9bf9212bb run-c5.sh sha256=1985a84928ff43f9cf60bce20caecff6791c2bbe3dc168f1e5a97f8f0178b1f0
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 0.73 1.29 1.73 3/1811 537493
+perf: absent perf_event_paranoid=2 uprof=/home/dennispaler/recached-6nc5-bench/uprof sha256=93aa43d37198729ef1c4b7c1d9e30084454ccb37b94ec72f0ce30391b6467afa
+cpus: server=0-2 bench=3-5 reps=1 requests_p1=1000000 requests_p16=10000000 bench_threads=2
+primary_env: none
+cells: prof/rc-repl-noaof-P16 prof/rc-coalesced-norep-P16 prof/rc-coalesced-P16
+record_cells: prof/rc-repl-noaof-P16 prof/rc-coalesced-norep-P16 prof/rc-coalesced-P16 freq=999
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: unknown
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+ 459094 dennisp+  20   0   12.7g 767500 219008 S   9.7   4.7  10:29.25 firefox
+ 512151 root      20   0       0      0      0 I   9.7   0.0   0:28.79 kworker+
+   2540 dennisp+  20   0 3654784 136492  52956 S   4.8   0.8  67:38.83 gnome-s+
+ 463119 dennisp+  20   0 3880488 909452 128456 S   4.8   5.6   6:29.58 Isolate+
+ 498406 dennisp+  20   0 3526116 428600 122312 S   4.8   2.6   0:08.85 Isolate+
+2224662 dennisp+  20   0 2178764  67828  15688 S   4.8   0.4   2:44.36 com.doc+
+3188424 999       20   0  138284   2012    848 S   4.8   0.0   2:19.18 redis-s+
+loadavg_at_end: 2.44 1.75 1.85 9/1848 540114

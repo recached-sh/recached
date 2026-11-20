@@ -1,0 +1,85 @@
+cell=prof/rc-noaof-P1 label=prof kind=rc-noaof P=1 workers=1 rep=1 requests=1000000 bin_sha256=349d2eeddec07e0b4ed099433ee8854f9a00e9c79d62da32cd5cb3b93a3b4560 cpu_s=4.150 cpu_user_s=1.080 cpu_sys_s=3.070 wall_s=6.506 gen_user_s=1.171 gen_sys_s=6.601 rss_kb=27764 replica_rss_kb=n/a lag_p50_p99_max_ms="n/a" converge="n/a" sample=n/a
+  replica_cpu_before: 
+  replica_cpu_after:  
+  ctxsw_before: 42 9
+  ctxsw_after:  282 45
+  syscalls_before: 42 22
+  syscalls_after:  42 29
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.070:0.010 rc-base-prof:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:1.150:3.090 rc-base-prof:1:0.000:0.000 
+  aof_before: 
+  aof_after:  
+  repl_before: connected_slaves:0 connected_replicas:0 recached_replication_queue_depth:0 recached_replication_lag_frames:0 
+  repl_after:  connected_slaves:0 connected_replicas:0 recached_replication_queue_depth:0 recached_replication_lag_frames:0 
+  ss_before: 
+  ss_after:  
+  uprof: uprof_threads=4 cycles=5675276693 opened=4 min_running=1.000 instructions=5415406832 opened=4 min_running=1.000 branch_misses=14543877 opened=4 min_running=1.000 cache_misses=23221280 opened=4 min_running=1.000 l1d_read_misses=193869629 opened=4 min_running=1.000 task_clock_ns=6318151898 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench: "SET","153822.48","0.311","0.008","0.327","0.343","0.359","2.663"
+cell=prof/rc-repl-noaof-P1 label=prof kind=rc-repl-noaof P=1 workers=1 rep=1 requests=1000000 bin_sha256=349d2eeddec07e0b4ed099433ee8854f9a00e9c79d62da32cd5cb3b93a3b4560 cpu_s=7.310 cpu_user_s=2.580 cpu_sys_s=4.730 wall_s=10.506 gen_user_s=1.268 gen_sys_s=7.351 rss_kb=65124 replica_rss_kb=25448 lag_p50_p99_max_ms="0.354 0.695 1.178" converge="57 ok" sample=ok
+  replica_cpu_before: 0.020 0.000
+  replica_cpu_after:  1.220 1.500
+  ctxsw_before: 22 11
+  ctxsw_after:  81 67
+  syscalls_before: 42 24
+  syscalls_after:  42 34
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.170:0.020 rc-base-prof:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:1:2.750:4.750 rc-base-prof:1:0.000:0.000 
+  aof_before: 
+  aof_after:  
+  repl_before: connected_slaves:1 connected_replicas:1 recached_replication_queue_depth:0 recached_replication_lag_frames:0 
+  repl_after:  connected_slaves:1 connected_replicas:1 recached_replication_queue_depth:0 recached_replication_lag_frames:0 
+  ss_before: 0 0 127.0.0.1:6810 127.0.0.1:60284 	 cubic wscale:10,10 rto:201 rtt:0.135/0.069 ato:40 mss:65483 pmtu:65535 rcvmss:536 advmss:65483 cwnd:21 ssthresh:21 bytes_sent:3671885 bytes_acked:3671885 bytes_received:32 segs_out:77 segs_in:21 data_segs_out:73 data_segs_in:4 send 81489955556bps lastsnd:263 lastrcv:231 lastack:231 pacing_rate 97787946664bps delivery_rate 24798295856bps delivered:74 busy:2ms rwnd_limited:2ms(100.0%) rcv_space:65483 rcv_ssthresh:65483 minrtt:0.004 snd_wnd:541696 rcv_wnd:65536 
+  ss_after:  0 0 127.0.0.1:6810 127.0.0.1:60284 	 cubic wscale:10,10 rto:201 rtt:0.038/0.034 ato:40 mss:65483 pmtu:65535 rcvmss:536 advmss:65483 cwnd:106 ssthresh:21 bytes_sent:90684975 bytes_acked:90684975 bytes_received:1653984 segs_out:311061 segs_in:225867 data_segs_out:310250 data_segs_in:206748 send 1461304842105bps lastsnd:28 lastrcv:28 lastack:28 pacing_rate 1747816414424bps delivery_rate 184893176464bps delivered:310251 app_limited busy:4203ms rwnd_limited:2ms(0.0%) reord_seen:26 rcv_rtt:386.639 rcv_space:68240 rcv_ssthresh:65483 minrtt:0.004 snd_wnd:776192 rcv_wnd:65536 
+  uprof: uprof_threads=4 cycles=13147621929 opened=4 min_running=1.000 instructions=13890202608 opened=4 min_running=1.000 branch_misses=22765772 opened=4 min_running=1.000 cache_misses=39447278 opened=4 min_running=1.000 l1d_read_misses=390434779 opened=4 min_running=1.000 task_clock_ns=10383402317 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench: "SET","95229.02","0.515","0.008","0.535","0.591","0.727","3.207"
+cell=prof/rc-standalone-P1 label=prof kind=rc-standalone P=1 workers=1 rep=1 requests=1000000 bin_sha256=349d2eeddec07e0b4ed099433ee8854f9a00e9c79d62da32cd5cb3b93a3b4560 cpu_s=6.350 cpu_user_s=2.340 cpu_sys_s=4.010 wall_s=8.756 gen_user_s=1.096 gen_sys_s=6.363 rss_kb=27868 replica_rss_kb=n/a lag_p50_p99_max_ms="n/a" converge="n/a" sample=n/a
+  replica_cpu_before: 
+  replica_cpu_after:  
+  ctxsw_before: 44 12
+  ctxsw_after:  396 229
+  syscalls_before: 43 271
+  syscalls_after:  43 100475
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.160:0.010 rc-base-prof:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:2.500:4.010 rc-base-prof:1:0.000:0.000 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:248 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:248 recached_aof_write_usec:4540 recached_aof_fsyncs:1 recached_aof_fsync_usec:114338 recached_aof_queue_wait_usec:168272 recached_aof_batch_waiters:1811 recached_aof_inline_batches:248 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1554 recached_aof_coalesce_missed:9 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,46,17,68,115,2,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:100444 recached_aof_frames:1100032 recached_aof_bytes:82502400 recached_aof_write_calls:100444 recached_aof_write_usec:646795 recached_aof_fsyncs:10 recached_aof_fsync_usec:932665 recached_aof_queue_wait_usec:2692566 recached_aof_batch_waiters:1102016 recached_aof_inline_batches:100444 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1001259 recached_aof_coalesce_missed:80 recached_aof_coalesce_backoffs:7 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:675,2084,31667,47915,17832,23,46,17,68,115,2,0 
+  repl_before: connected_slaves:0 connected_replicas:0 recached_replication_queue_depth:0 recached_replication_lag_frames:0 
+  repl_after:  connected_slaves:0 connected_replicas:0 recached_replication_queue_depth:0 recached_replication_lag_frames:0 
+  ss_before: 
+  ss_after:  
+  uprof: uprof_threads=4 cycles=11617253576 opened=4 min_running=1.000 instructions=14253499434 opened=4 min_running=1.000 branch_misses=20699982 opened=4 min_running=1.000 cache_misses=41226283 opened=4 min_running=1.000 l1d_read_misses=314111713 opened=4 min_running=1.000 task_clock_ns=8478357156 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench: "SET","114259.60","0.421","0.040","0.399","0.551","0.631","24.591"
+cell=prof/rc-coalesced-norep-P1 label=prof kind=rc-coalesced-norep P=1 workers=1 rep=1 requests=1000000 bin_sha256=349d2eeddec07e0b4ed099433ee8854f9a00e9c79d62da32cd5cb3b93a3b4560 cpu_s=6.450 cpu_user_s=2.450 cpu_sys_s=4.000 wall_s=9.511 gen_user_s=1.196 gen_sys_s=6.557 rss_kb=60084 replica_rss_kb=n/a lag_p50_p99_max_ms="n/a" converge="n/a" sample=n/a
+  replica_cpu_before: 
+  replica_cpu_after:  
+  ctxsw_before: 50 30
+  ctxsw_after:  430 189
+  syscalls_before: 43 19781
+  syscalls_after:  43 89537
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.220:0.080 rc-base-prof:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:2.670:4.070 rc-base-prof:1:0.000:0.000 
+  aof_before: recached_aof_fanout:coalesced recached_aof_batches:19752 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:19752 recached_aof_write_usec:60983 recached_aof_fsyncs:1 recached_aof_fsync_usec:157024 recached_aof_queue_wait_usec:202185 recached_aof_batch_waiters:119784 recached_aof_inline_batches:19752 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:0 recached_aof_coalesce_missed:0 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:80280 recached_aof_fanout_coalesce_missed:5160 recached_aof_fanout_coalesce_backoffs:457 recached_aof_fanout_found_written:80280 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:14530,584,134,110,4394,0,0,0,0,0,0,0 
+  aof_after:  recached_aof_fanout:coalesced recached_aof_batches:89498 recached_aof_frames:1100032 recached_aof_bytes:82502400 recached_aof_write_calls:89498 recached_aof_write_usec:1219948 recached_aof_fsyncs:11 recached_aof_fsync_usec:2031692 recached_aof_queue_wait_usec:7517954 recached_aof_batch_waiters:1189540 recached_aof_inline_batches:89498 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:0 recached_aof_coalesce_missed:0 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:1010534 recached_aof_fanout_coalesce_missed:72538 recached_aof_fanout_coalesce_backoffs:530 recached_aof_fanout_found_written:1010544 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:16963,820,2259,35463,33932,61,0,0,0,0,0,0 
+  repl_before: connected_slaves:0 connected_replicas:0 recached_replication_queue_depth:0 recached_replication_lag_frames:0 
+  repl_after:  connected_slaves:0 connected_replicas:0 recached_replication_queue_depth:0 recached_replication_lag_frames:0 
+  ss_before: 
+  ss_after:  
+  uprof: uprof_threads=4 cycles=11942132622 opened=4 min_running=1.000 instructions=14366827062 opened=4 min_running=1.000 branch_misses=21942748 opened=4 min_running=1.000 cache_misses=55278636 opened=4 min_running=1.000 l1d_read_misses=380854614 opened=4 min_running=1.000 task_clock_ns=8742647531 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench: "SET","105207.78","0.464","0.024","0.415","0.583","0.767","321.023"
+cell=prof/rc-coalesced-P1 label=prof kind=rc-coalesced P=1 workers=1 rep=1 requests=1000000 bin_sha256=349d2eeddec07e0b4ed099433ee8854f9a00e9c79d62da32cd5cb3b93a3b4560 cpu_s=7.670 cpu_user_s=2.740 cpu_sys_s=4.930 wall_s=11.007 gen_user_s=1.209 gen_sys_s=7.042 rss_kb=63404 replica_rss_kb=25456 lag_p50_p99_max_ms="0.135 1.138 1.908" converge="53 ok" sample=ok
+  replica_cpu_before: 0.030 0.000
+  replica_cpu_after:  1.240 1.410
+  ctxsw_before: 51 17
+  ctxsw_after:  413 141
+  syscalls_before: 43 19495
+  syscalls_after:  43 89839
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:3:0.230:0.090 rc-base-prof:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:3:2.970:5.000 rc-base-prof:1:0.000:0.000 
+  aof_before: recached_aof_fanout:coalesced recached_aof_batches:19469 recached_aof_frames:100033 recached_aof_bytes:7502452 recached_aof_write_calls:19469 recached_aof_write_usec:61225 recached_aof_fsyncs:1 recached_aof_fsync_usec:423541 recached_aof_queue_wait_usec:202103 recached_aof_batch_waiters:119502 recached_aof_inline_batches:19469 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:0 recached_aof_coalesce_missed:0 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:80564 recached_aof_fanout_coalesce_missed:5163 recached_aof_fanout_coalesce_backoffs:448 recached_aof_fanout_found_written:80564 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:14234,588,140,79,4428,0,0,0,0,0,0,0 
+  aof_after:  recached_aof_fanout:coalesced recached_aof_batches:89799 recached_aof_frames:1100253 recached_aof_bytes:82514224 recached_aof_write_calls:89799 recached_aof_write_usec:820556 recached_aof_fsyncs:12 recached_aof_fsync_usec:2013957 recached_aof_queue_wait_usec:9221861 recached_aof_batch_waiters:1190062 recached_aof_inline_batches:89799 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:0 recached_aof_coalesce_missed:0 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:1010454 recached_aof_fanout_coalesce_missed:74405 recached_aof_fanout_coalesce_backoffs:482 recached_aof_fanout_found_written:1010464 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:15330,720,14712,22931,35971,135,0,0,0,0,0,0 
+  repl_before: connected_slaves:1 connected_replicas:1 recached_replication_queue_depth:0 recached_replication_lag_frames:0 
+  repl_after:  connected_slaves:1 connected_replicas:1 recached_replication_queue_depth:0 recached_replication_lag_frames:0 
+  ss_before: 0 0 127.0.0.1:6810 127.0.0.1:52724 	 cubic wscale:10,10 rto:201 rtt:0.131/0.099 ato:40 mss:65483 pmtu:65535 rcvmss:536 advmss:65483 cwnd:13 bytes_sent:3660987 bytes_acked:3660987 bytes_received:40 segs_out:79 segs_in:24 data_segs_out:74 data_segs_in:5 send 51986503817bps lastsnd:8 lastrcv:8 lastack:8 pacing_rate 103283139336bps delivery_rate 23544449432bps delivered:75 busy:1ms rwnd_limited:1ms(100.0%) rcv_space:65483 rcv_ssthresh:65483 minrtt:0.004 snd_wnd:698368 rcv_wnd:65536 
+  ss_after:  0 0 127.0.0.1:6810 127.0.0.1:52724 	 cubic wscale:10,10 rto:201 rtt:0.053/0.037 ato:54 mss:65483 pmtu:65535 rcvmss:536 advmss:65483 cwnd:71 ssthresh:57 bytes_sent:90675399 bytes_acked:90675399 bytes_received:1850408 segs_out:283033 segs_in:238060 data_segs_out:279234 data_segs_in:231302 send 701780075472bps lastsnd:32 lastrcv:32 lastack:32 pacing_rate 832320984608bps delivery_rate 120891692304bps delivered:279235 busy:3933ms rwnd_limited:1ms(0.0%) reord_seen:3 rcv_rtt:341.432 rcv_space:68912 rcv_ssthresh:65483 minrtt:0.004 snd_wnd:1265664 rcv_wnd:65536 
+  uprof: uprof_threads=5 cycles=13683189460 opened=5 min_running=1.000 instructions=15537580199 opened=5 min_running=1.000 branch_misses=27269734 opened=5 min_running=1.000 cache_misses=56312650 opened=5 min_running=1.000 l1d_read_misses=429016667 opened=5 min_running=1.000 task_clock_ns=10556127192 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench: "SET","90892.56","0.535","0.024","0.511","0.719","0.871","256.895"

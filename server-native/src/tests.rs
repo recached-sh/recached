@@ -4231,6 +4231,10 @@ fn info_replication_reports_both_redis_and_recached_spellings() {
         connected: 2,
         queue_depth: 7,
         lag_frames: 3,
+        offset: 41,
+        send_flushes: 5,
+        send_frames: 40,
+        send_queue_peak: 9,
     };
     let primary = parse_info(&render_info(
         &[],
@@ -4261,6 +4265,19 @@ fn info_replication_reports_both_redis_and_recached_spellings() {
         )],
         "3"
     );
+    // 6N-C5: the sender's batching, frames per flush, is observable.
+    for (field, value) in [
+        ("recached_replication_offset", "41"),
+        ("recached_replication_send_flushes", "5"),
+        ("recached_replication_send_frames", "40"),
+        ("recached_replication_send_queue_peak", "9"),
+    ] {
+        assert_eq!(
+            primary[&("replication".into(), field.into())],
+            value,
+            "{field}"
+        );
+    }
 
     let replica = parse_info(&render_info(
         &[],
