@@ -118,12 +118,26 @@ pub(crate) struct ReplHub {
     /// how far writers ran ahead of it (against the channel capacity,
     /// `RECACHED_REPL_BUFFER`, which disconnects the replica when full).
     send_queue_peak: AtomicU64,
+    /// Flushes a sender held to the end of a scheduling round, so the round's
+    /// other writers' frames joined them (6N-C5); the rest were full flushes
+    /// (`REPL_SEND_BATCH_FRAMES`).
+    send_deferred: AtomicU64,
 }
 
 const WRITE_ORDER_STRIPES: usize = 256;
 
 /// Most replication frames a primary writes before one flush.
-const REPL_SEND_BATCH_FRAMES: usize = 512;
+pub(crate) const REPL_SEND_BATCH_FRAMES: usize = 512;
+/// A replica channel smaller than this flushes on every wake, as before
+/// 6N-C5 (review F1). When a held flush's round ends, the sender is queued
+/// behind the tasks that round woke, and a `try_send` cannot move it
+/// forward: a small channel (`RECACHED_REPL_BUFFER`) could fill meanwhile
+/// and disconnect a healthy replica. Four flushes' worth leaves the default
+/// (4096) room for a round of ordinary writers. Pipelining connections can
+/// overrun even the default this way — as they could before 6N-C5, when a
+/// replica acknowledgement queued the sender behind them (6N-C5 R1 record).
+pub(crate) const REPL_SEND_DEFER_MIN_CAPACITY: usize = 4 * REPL_SEND_BATCH_FRAMES;
+
 /// Send buffer per replica connection; a burst larger than this is written
 /// in several syscalls but still flushed once.
 const REPL_SEND_BUFFER_BYTES: usize = 64 * 1024;
@@ -490,6 +504,7 @@ impl ReplHub {
             send_flushes: AtomicU64::new(0),
             send_frames: AtomicU64::new(0),
             send_queue_peak: AtomicU64::new(0),
+            send_deferred: AtomicU64::new(0),
         })
     }
 
@@ -497,6 +512,7 @@ impl ReplHub {
     pub(crate) async fn info(&self) -> ReplInfo {
         let (send_flushes, send_frames) = self.send_stats();
         let send_queue_peak = self.send_queue_peak();
+        let send_deferred = self.send_deferred();
         ReplInfo {
             connected: self.count.load(Ordering::Relaxed),
             queue_depth: self.max_queue_depth().await,
@@ -505,6 +521,7 @@ impl ReplHub {
             send_flushes,
             send_frames,
             send_queue_peak,
+            send_deferred,
         }
     }
 
@@ -533,10 +550,18 @@ impl ReplHub {
         )
     }
 
+    /// Flushes held to the end of a scheduling round, since startup.
+    pub(crate) fn send_deferred(&self) -> u64 {
+        self.send_deferred.load(Ordering::Relaxed)
+    }
+
     /// Count one sender flush of `frames` frames.
-    fn record_send(&self, frames: u64) {
+    fn record_send(&self, frames: usize, deferred: bool) {
         self.send_flushes.fetch_add(1, Ordering::Relaxed);
-        self.send_frames.fetch_add(frames, Ordering::Relaxed);
+        self.send_frames.fetch_add(frames as u64, Ordering::Relaxed);
+        if deferred {
+            self.send_deferred.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     pub(crate) fn configure_dedup(&self, on: bool) {
@@ -1181,6 +1206,7 @@ where
         0
     }));
     let pending_bytes = Arc::new(AtomicUsize::new(0));
+    let max_queue_bytes = replicas.queue_bytes.load(Ordering::Acquire);
     {
         let mut stream = replicas.stream();
         let reg = &mut stream.senders;
@@ -1189,7 +1215,7 @@ where
             sent: Arc::clone(&sent),
             acked: Arc::clone(&acked),
             pending_bytes: Arc::clone(&pending_bytes),
-            max_queue_bytes: replicas.queue_bytes.load(Ordering::Acquire),
+            max_queue_bytes,
         });
         replicas.count.store(reg.len(), Ordering::Relaxed);
     }
@@ -1260,28 +1286,89 @@ where
     // seconds behind (6I production benchmark: probe lag p99 2.8 s).
     let mut wr = tokio::io::BufWriter::with_capacity(REPL_SEND_BUFFER_BYTES, wr);
     let mut ack_buf = [0u8; 8];
+    // Frames written into `wr` since its last flush, and the end of the
+    // scheduling round that will flush them (6N-C5).
+    //
+    // The first `try_send` after a drain wakes this task into the worker's
+    // LIFO slot, so it runs right after that one writer. It used to flush on
+    // every such wake: 3.6 frames per flush at P=1, and 3.8 with the
+    // coalesced AOF at P=16, where every command's AOF yield handed the
+    // worker back to it. Each flush is a socket send plus, on the replica, an
+    // acknowledgement this side reads, and that kernel work was most of a
+    // replica's cost per write (6N-C5 profile). It still drains the channel
+    // on every wake, so within a round the queue stays at about one writer's
+    // poll, as before; it only holds the *flush* until the round ends — tokio resumes a
+    // `yield_now` once the worker has run its other ready tasks, or at the
+    // next maintenance tick (every 61 polls) — or until a full flush
+    // (`REPL_SEND_BATCH_FRAMES`) is buffered. The frames of the whole round
+    // then leave in one send.
+    //
+    // Only *when* bytes reach the socket changes: every frame is in the
+    // backlog and drained in offset order, after its AOF stage, and nothing
+    // a client waits for depends on the send. The cost is replica lag of at
+    // most one round of the worker that armed the wait: sub-millisecond in
+    // the 6N-C5 benchmarks, but as long as a long synchronous poll on that
+    // worker (`KEYS` on a large keyspace) if one runs meanwhile; frames keep
+    // draining on other workers, only the send waits (review S3).
+    //
+    // One difference from before (review S1): when the round ends, tokio
+    // wakes the held flush after the tasks that round deferred, so the sender
+    // runs behind them, and a `try_send` cannot move a task that is already
+    // queued. Writers that end their poll deferred (the coalesced AOF's
+    // yield, a pipeline out of coop budget) can then queue up to a round's
+    // frames before it drains. Before 6N-C5 the same happened whenever a
+    // replica acknowledgement woke the sender behind them. A round larger
+    // than the channel (`RECACHED_REPL_BUFFER`) disconnects the replica
+    // either way; see `pipelined_rounds_at_default_capacity_with_acks`.
+    let mut unflushed = 0usize;
+    let mut flush_pending = false;
+    let mut round_end = RoundEnd::default();
     loop {
         tokio::select! {
             frame = rx.recv() => {
-                let Some(queued) = frame else { break };
+                let Some(queued) = frame else {
+                    // Every replica handle is gone: send what is buffered.
+                    if unflushed > 0 {
+                        wr.flush().await?;
+                        replicas.record_send(unflushed, flush_pending);
+                    }
+                    break;
+                };
                 replicas.record_wake(rx.len() + 1);
                 write_repl_frame(&mut wr, &queued.frame).await?;
-                // Everything already queued goes out in the same flush, up to
-                // a bound so a busy primary still flushes regularly. Frames
+                unflushed += 1;
+                // Everything already queued goes into the buffer too. Frames
                 // leave the queue only once written, as before, so the byte
                 // accounting of `QueuedReplFrame` is unchanged.
-                let mut batched = 1;
-                while batched < REPL_SEND_BATCH_FRAMES {
+                while unflushed < REPL_SEND_BATCH_FRAMES {
                     match rx.try_recv() {
                         Ok(queued) => {
                             write_repl_frame(&mut wr, &queued.frame).await?;
-                            batched += 1;
+                            unflushed += 1;
                         }
                         Err(_) => break,
                     }
                 }
+                if unflushed >= REPL_SEND_BATCH_FRAMES
+                    || rx.max_capacity() < REPL_SEND_DEFER_MIN_CAPACITY
+                {
+                    // A full flush goes out now, so a busy primary still
+                    // flushes regularly. So does every flush on a small
+                    // channel (see `REPL_SEND_DEFER_MIN_CAPACITY`).
+                    wr.flush().await?;
+                    replicas.record_send(unflushed, false);
+                    unflushed = 0;
+                    flush_pending = false;
+                } else if !flush_pending {
+                    flush_pending = true;
+                    round_end = RoundEnd::default();
+                }
+            }
+            () = &mut round_end, if flush_pending => {
+                flush_pending = false;
                 wr.flush().await?;
-                replicas.record_send(batched as u64);
+                replicas.record_send(unflushed, true);
+                unflushed = 0;
             }
             res = rd.read_exact(&mut ack_buf) => {
                 // A replica that closes its read side, or one running a build
@@ -1298,6 +1385,86 @@ where
         }
     }
     Ok(())
+}
+
+/// Completes once the worker has run its other ready tasks — tokio's
+/// `yield_now` deferral — however often it is polled before that.
+///
+/// `yield_now`'s own future completes on its second poll whether or not the
+/// deferred wake has fired, so it cannot be kept across a replica sender's
+/// wakes: the next writer's wake would end the "round". This polls it once,
+/// through a waker that records when the deferred wake really fires.
+#[derive(Default)]
+struct RoundEnd {
+    armed: Option<Arc<RoundWake>>,
+}
+
+struct RoundWake {
+    fired: AtomicBool,
+    /// The waker of the latest poll (review S2: a future must wake the
+    /// waker it was last polled with).
+    task: std::sync::Mutex<std::task::Waker>,
+}
+
+impl std::task::Wake for RoundWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.fired.store(true, Ordering::Release);
+        self.task
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .wake_by_ref();
+    }
+}
+
+impl std::future::Future for RoundEnd {
+    type Output = ();
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        if let Some(wake) = &self.armed {
+            if wake.fired.load(Ordering::Acquire) {
+                return std::task::Poll::Ready(());
+            }
+            let mut task = wake
+                .task
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !task.will_wake(cx.waker()) {
+                task.clone_from(cx.waker());
+            }
+            drop(task);
+            // Fired between the check and the update: the old waker was
+            // woken, so look again rather than wait for a wake that came.
+            return if wake.fired.load(Ordering::Acquire) {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            };
+        }
+        let wake = Arc::new(RoundWake {
+            fired: AtomicBool::new(false),
+            task: std::sync::Mutex::new(cx.waker().clone()),
+        });
+        let waker = std::task::Waker::from(Arc::clone(&wake));
+        let mut deferral = std::pin::pin!(tokio::task::yield_now());
+        // Tokio keeps the waker in the worker's defer list after the yield
+        // future is dropped; off a worker it wakes at once.
+        if deferral
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(&waker))
+            .is_ready()
+        {
+            return std::task::Poll::Ready(());
+        }
+        self.armed = Some(wake);
+        std::task::Poll::Pending
+    }
 }
 
 async fn read_resume_request<S>(socket: &mut S) -> std::io::Result<(String, u64)>

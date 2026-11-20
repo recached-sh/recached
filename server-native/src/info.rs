@@ -97,6 +97,7 @@ pub(crate) struct ReplInfo {
     pub(crate) send_frames: u64,
     /// The deepest replica queue a sender found when it woke (6N-C5).
     pub(crate) send_queue_peak: u64,
+    pub(crate) send_deferred: u64,
 }
 
 /// Last keyspace walk, refreshed every 5s by the metrics sampler.
@@ -795,7 +796,8 @@ pub(crate) fn render_info(
                      recached_replication_offset:{}\r\n\
                      recached_replication_send_flushes:{}\r\n\
                      recached_replication_send_frames:{}\r\n\
-                     recached_replication_send_queue_peak:{}\r\n",
+                     recached_replication_send_queue_peak:{}\r\n\
+                     recached_replication_send_deferred:{}\r\n",
                     if is_replica { "slave" } else { "master" },
                     repl.connected,
                     repl.connected,
@@ -805,6 +807,7 @@ pub(crate) fn render_info(
                     repl.send_flushes,
                     repl.send_frames,
                     repl.send_queue_peak,
+                    repl.send_deferred,
                 )
             }
             "keyspace" => {
