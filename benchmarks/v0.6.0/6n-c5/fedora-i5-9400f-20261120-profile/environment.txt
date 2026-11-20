@@ -1,0 +1,27 @@
+date_utc: 2026-11-20T09:40:42Z
+rc_bin[base]: /home/dennispaler/recached-6nc5-bench/bin/rc-base sha256=2ac8601c7f4c5ba14eea7733e94b2a7d7e7d42b7c134ceb36e9f7557efa20710 source=c61b92033a49d7a01ecb71ae7a09a2b9bf9212bb version=recached-server 0.6.0
+kit_sha: ef352148da60d172abc054044274229688566e6b run-c5.sh sha256=7fb8bee33be11305b4d2957d93d96c9a2e43b9f6a77352f0b01dba85dba06e43
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 0.70 1.58 2.13 1/1682 165858
+perf: absent perf_event_paranoid=2 uprof=/home/dennispaler/recached-6nc5-bench/uprof sha256=93aa43d37198729ef1c4b7c1d9e30084454ccb37b94ec72f0ce30391b6467afa
+cpus: server=0-2 bench=3-5 reps=3 requests_p1=1000000 requests_p16=10000000 bench_threads=2
+primary_env: none
+cells:  base/rc-noaof-P1 base/rc-repl-noaof-P1 base/rc-standalone-P1 base/rc-coalesced-norep-P1 base/rc-coalesced-P1 base/rc-noaof-P16 base/rc-repl-noaof-P16 base/rc-standalone-P16 base/rc-coalesced-norep-P16 base/rc-coalesced-P16
+record_cells: none freq=2999
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: rustc 1.98.0 (88d9e12ae 2026-08-18)
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+ 162721 root      20   0       0      0      0 I  24.1   0.0   0:18.70 kworker+
+  10675 dennisp+  20   0  667736  90476  56160 S  19.2   0.6   4:23.84 RDD Pro+
+   7572 dennisp+  20   0 5729168 324296 127876 S   4.8   2.0   0:33.98 claude
+   8714 dennisp+  20   0   12.8g 704688 255996 S   4.8   4.3   6:43.94 firefox
+  11039 dennisp+  20   0  569584  38096  32196 S   4.8   0.2   0:59.18 Utility+
+      1 root      20   0   37452  15028  10452 S   0.0   0.1   0:02.55 systemd
+      2 root      20   0       0      0      0 S   0.0   0.0   0:00.01 kthreadd
+loadavg_at_end: 2.54 2.63 2.45 1/1683 184562

@@ -1,0 +1,2 @@
+uprof: sampling 5 of 5 threads at 999 Hz (LBR call stack)
+uprof_samples=46640 lost=0 threads=5
