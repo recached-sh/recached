@@ -1700,8 +1700,21 @@ impl AofWriter {
 
     /// [`enqueue`](Self::enqueue) without leading.
     fn queue_only(&self, fresh: bool, edit: impl FnOnce(&mut AofBatch)) -> Arc<AofDone> {
+        self.queue_only_busy(fresh, edit).0
+    }
+
+    /// [`queue_only`](Self::queue_only), also returning whether a performer
+    /// held the writer role (`busy`) when the frame was queued. Advisory: it
+    /// may change the moment the lock drops, and nothing relies on it for
+    /// correctness — every producer still leads.
+    fn queue_only_busy(
+        &self,
+        fresh: bool,
+        edit: impl FnOnce(&mut AofBatch),
+    ) -> (Arc<AofDone>, bool) {
         {
             let mut queue = self.shared.lock();
+            let busy = queue.busy;
             let batch = match queue.batches.back_mut() {
                 Some(open) if !open.sealed && !fresh => open,
                 open => {
@@ -1718,7 +1731,7 @@ impl AofWriter {
                 }
             };
             edit(batch);
-            Arc::clone(&batch.done)
+            (Arc::clone(&batch.done), busy)
         }
     }
 
@@ -1769,16 +1782,29 @@ impl AofWriter {
     /// context. Writers of other stripes are what join. Cancellation is
     /// safe: dropped during the yield, the guard leads the batch, so no
     /// frame is left queued with nobody to write it. Off a tokio runtime,
-    /// or with coalescing off or backed off, it is `append`.
+    /// or with coalescing off or backed off, it is `append`. While another
+    /// performer holds the writer role (`busy`) it does not yield either: that
+    /// performer sweeps the batch (6N-C5, counted in `fanout_busy_skips`).
     pub(crate) async fn append_coalesced(&self, resp: &[u8]) -> std::io::Result<()> {
         // This frame's position in its batch: 1 if it opened the batch.
         let mut position = 0;
-        let done = self.queue_only(false, |batch| {
+        let (done, busy) = self.queue_only_busy(false, |batch| {
             batch.push_frame(resp);
             position = batch.frames;
         });
         let shared = &self.shared;
-        if tokio::runtime::Handle::try_current().is_ok() && shared.coalesce_inline.should_yield() {
+        if busy {
+            // A performer is already writing — another worker's inline
+            // leader, or the `always` drain on the blocking pool (6N-C4
+            // review F1, 6N-C5). It sweeps this batch when it is done, and
+            // other writers join it meanwhile, so a yield would only delay
+            // this one; nor is there anything for the back-off to learn.
+            // Still lead below: `lead()` returns at once while `busy` is
+            // set, and leading is what keeps every frame owned.
+            bump(&shared.stats.fanout_busy_skips, 1);
+        } else if tokio::runtime::Handle::try_current().is_ok()
+            && shared.coalesce_inline.should_yield()
+        {
             let lead_on_drop = LeadOnDrop(Some(shared));
             tokio::task::yield_now().await;
             lead_on_drop.disarm();

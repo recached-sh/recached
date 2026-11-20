@@ -68,6 +68,10 @@ pub(crate) struct AofStats {
     /// Coalesced fan-out appends that found their batch already completed
     /// (written, or failed) by another writer, and so did not lead.
     pub(crate) fanout_found_written: AtomicU64,
+    /// Coalesced fan-out appends that did not yield because a performer was
+    /// already writing (6N-C5, review F1): that performer sweeps the open
+    /// batch when it is done, so a yield would only delay this writer.
+    pub(crate) fanout_busy_skips: AtomicU64,
     /// Failed writes that left part of their batch in the file (cut back
     /// to the last whole frame, or held until that succeeds).
     pub(crate) torn_writes: AtomicU64,
@@ -112,6 +116,7 @@ impl AofStats {
             fanout_coalesce_missed: ZERO,
             fanout_coalesce_backoffs: ZERO,
             fanout_found_written: ZERO,
+            fanout_busy_skips: ZERO,
             torn_writes: ZERO,
             batch_hist: [ZERO; AOF_BATCH_BUCKETS],
         }
@@ -165,6 +170,7 @@ impl AofStats {
              recached_aof_fanout_coalesce_missed:{}\r\n\
              recached_aof_fanout_coalesce_backoffs:{}\r\n\
              recached_aof_fanout_found_written:{}\r\n\
+             recached_aof_fanout_busy_skips:{}\r\n\
              recached_aof_torn_writes:{}\r\n\
              recached_aof_batch_frames_log2_hist:{}\r\n",
             get(&self.batches),
@@ -188,6 +194,7 @@ impl AofStats {
             get(&self.fanout_coalesce_missed),
             get(&self.fanout_coalesce_backoffs),
             get(&self.fanout_found_written),
+            get(&self.fanout_busy_skips),
             get(&self.torn_writes),
             hist,
         )
@@ -221,6 +228,7 @@ mod tests {
             "fanout_coalesce_missed",
             "fanout_coalesce_backoffs",
             "fanout_found_written",
+            "fanout_busy_skips",
         ] {
             assert!(
                 stats
