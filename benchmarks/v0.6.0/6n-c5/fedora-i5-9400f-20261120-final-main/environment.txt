@@ -1,0 +1,28 @@
+date_utc: 2026-11-20T10:56:23Z
+rc_bin[final]: /home/dennispaler/recached-6nc5-bench/bin/rc-final sha256=f6f47ef5f171a8bfaf58c1ceead5bcfbcd13edcd7136798da42564a9c4690dcc source=4328153e8494ad8a28488b5eb0ea635a05843e56 version=recached-server 0.6.0
+rc_bin[base]: /home/dennispaler/recached-6nc5-bench/bin/rc-base sha256=2ac8601c7f4c5ba14eea7733e94b2a7d7e7d42b7c134ceb36e9f7557efa20710 source=c61b92033a49d7a01ecb71ae7a09a2b9bf9212bb version=recached-server 0.6.0
+kit_sha: 4328153e8494ad8a28488b5eb0ea635a05843e56 run-c5.sh sha256=7fb8bee33be11305b4d2957d93d96c9a2e43b9f6a77352f0b01dba85dba06e43
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 0.71 1.37 1.35 5/1701 312899
+perf: absent perf_event_paranoid=2 uprof=/home/dennispaler/recached-6nc5-bench/uprof sha256=93aa43d37198729ef1c4b7c1d9e30084454ccb37b94ec72f0ce30391b6467afa
+cpus: server=0-2 bench=3-5 reps=3 requests_p1=1000000 requests_p16=10000000 bench_threads=2
+primary_env: none
+cells:  base/rc-inline-P1 final/rc-inline-P1 base/rc-coalesced-P1 final/rc-coalesced-P1 base/rc-standalone-P1 final/rc-standalone-P1 base/rc-repl-noaof-P1 final/rc-repl-noaof-P1 redis-P1 valkey-P1 base/rc-inline-P16 final/rc-inline-P16 base/rc-coalesced-P16 final/rc-coalesced-P16 base/rc-standalone-P16 final/rc-standalone-P16 base/rc-repl-noaof-P16 final/rc-repl-noaof-P16 redis-P16 valkey-P16
+record_cells: none freq=2999
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: rustc 1.98.0 (88d9e12ae 2026-08-18)
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+   5510 dennisp+  20   0 1448.1g 358652  98076 R  14.4   2.2   7:09.93 code
+ 312936 dennisp+  20   0 1367340  42184  30056 S  14.4   0.3   0:00.03 gh
+    538 systemd+  20   0   17208   9748   6756 S   4.8   0.1   0:02.01 systemd+
+   2300 dennisp+  20   0 3549504 183836  77356 S   4.8   1.1   6:29.64 gnome-s+
+   3881 dennisp+  20   0  556516  11780   9864 S   4.8   0.1   0:00.25 flatpak+
+   4169 dennisp+  20   0   52.6g  84976  65344 S   4.8   0.5   3:27.46 code
+ 213216 root      20   0       0      0      0 I   4.8   0.0   0:40.34 kworker+
+loadavg_at_end: 2.79 2.30 2.14 2/1693 374043
