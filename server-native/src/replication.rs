@@ -54,6 +54,11 @@ pub(crate) struct ReplicaHandle {
     pub(crate) acked: Arc<AtomicU64>,
     pub(crate) pending_bytes: Arc<AtomicUsize>,
     pub(crate) max_queue_bytes: usize,
+    /// Dropped with this handle, which closes the replica's connection (see
+    /// [`Registered`]): a replica unregistered for a full queue must not
+    /// keep its sender task, socket, connection permit and up to a queue
+    /// budget of frames while its peer stops reading (6N-C6 review M1).
+    pub(crate) _link: tokio::sync::oneshot::Sender<()>,
 }
 
 #[derive(Default)]
@@ -477,6 +482,7 @@ impl ReplHub {
             acked: Arc::new(AtomicU64::new(0)),
             pending_bytes: Arc::new(AtomicUsize::new(0)),
             max_queue_bytes,
+            _link: tokio::sync::oneshot::channel().0,
         });
         self.count.store(reg.len(), Ordering::Relaxed);
         rx
@@ -889,9 +895,10 @@ pub(crate) const DEFAULT_REPL_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 /// bound on how many frames a budget admits.
 ///
 /// A queued frame is a `QueuedReplFrame` (32 bytes) in a tokio channel block
-/// slot, plus the frame's `Arc<Vec<u8>>` allocation (40 bytes, a 48-byte
-/// jemalloc class) and the payload allocation's rounding (under 16 bytes for
-/// frames under 128 bytes): about 100 bytes. The `Arc` and payload are shared
+/// slot (about 40 bytes with its share of the 32-slot block's 1280-byte
+/// allocation), plus the frame's `Arc<Vec<u8>>` allocation (40 bytes, a
+/// 48-byte jemalloc class) and the payload allocation's rounding (under 16
+/// bytes for frames under 128 bytes): about 105 bytes. The `Arc` and payload are shared
 /// with the backlog while it retains the frame, so this over-counts what the
 /// queue adds then; it is the bound for when the backlog has trimmed it.
 /// Payload rounding above that size (jemalloc's size classes, at most a
@@ -930,6 +937,21 @@ pub(crate) fn repl_channel_capacity(explicit: Option<usize>, queue_bytes: usize)
     explicit.unwrap_or_else(|| {
         (queue_bytes / REPL_QUEUE_FRAME_OVERHEAD).clamp(1, REPL_QUEUE_MAX_DERIVED_FRAMES)
     })
+}
+
+/// Largest explicit frame cap honoured: tokio's channels refuse more permits
+/// than this (`Semaphore::MAX_PERMITS`), and a larger capacity would panic the
+/// replica's task at its handshake.
+pub(crate) const REPL_QUEUE_MAX_EXPLICIT_FRAMES: usize = usize::MAX >> 3;
+
+/// `RECACHED_REPL_BUFFER` as configured: a positive frame count, clamped to
+/// [`REPL_QUEUE_MAX_EXPLICIT_FRAMES`]. `None` when it is unset, zero or not a
+/// number, and the cap is then derived from the byte budget; the caller
+/// warns about the last two.
+pub(crate) fn parse_repl_frame_cap(raw: Option<&str>) -> Option<usize> {
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|&frames| frames > 0)
+        .map(|frames| frames.min(REPL_QUEUE_MAX_EXPLICIT_FRAMES))
 }
 
 /// The channel capacity with neither setting configured: 65,536 frames.
@@ -1305,6 +1327,7 @@ where
     }));
     let pending_bytes = Arc::new(AtomicUsize::new(0));
     let max_queue_bytes = replicas.queue_bytes.load(Ordering::Acquire);
+    let (link, unregistered) = tokio::sync::oneshot::channel();
     {
         let mut stream = replicas.stream();
         let reg = &mut stream.senders;
@@ -1314,10 +1337,15 @@ where
             acked: Arc::clone(&acked),
             pending_bytes: Arc::clone(&pending_bytes),
             max_queue_bytes,
+            _link: link,
         });
         replicas.count.store(reg.len(), Ordering::Relaxed);
     }
     drop(write_barrier);
+    let mut socket = Registered {
+        inner: socket,
+        handle: Some(unregistered),
+    };
 
     let mode = match (&snapshot, &dedup_table) {
         (Some(_), Some(_)) => SYNC_MODE_FULL_DEDUP,
@@ -1433,7 +1461,9 @@ where
         tokio::select! {
             frame = rx.recv() => {
                 let Some(queued) = frame else {
-                    // Every replica handle is gone: send what is buffered.
+                    // The handle is gone, so `Registered` refuses this flush
+                    // and the stream ends; the replica resumes from what it
+                    // applied.
                     if unflushed > 0 {
                         wr.flush().await?;
                         replicas.record_send(unflushed, flush_pending);
@@ -1491,6 +1521,80 @@ where
         }
     }
     Ok(())
+}
+
+/// A replica's connection while it is registered with the hub.
+///
+/// Once its `ReplicaHandle` is dropped — `fan_out` unregistered it because
+/// its queue was full, or the hub itself is gone — every write fails. A
+/// sender blocked writing to a peer that stopped reading used to stay there,
+/// holding its task, its socket, its connection permit and every frame still
+/// queued for it (up to the queue budget, out of every gauge, since the
+/// handle was gone), until the peer read again or TCP gave up (6N-C6 review
+/// M1). It now returns at once, and dropping it releases all of that. The
+/// replica resumes from the last frame it applied: it applies only frames it
+/// read whole, so a frame cut off mid-write is never applied.
+struct Registered<S> {
+    inner: S,
+    /// Resolves when the handle is dropped; `None` once it has.
+    handle: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+impl<S> Registered<S> {
+    /// `Err` once the replica is unregistered. Otherwise registers `cx` to
+    /// be woken when it is, so a write pending on a full socket fails then.
+    fn registered(&mut self, cx: &mut std::task::Context<'_>) -> std::io::Result<()> {
+        if let Some(handle) = &mut self.handle {
+            if std::pin::Pin::new(handle).poll(cx).is_pending() {
+                return Ok(());
+            }
+            self.handle = None;
+        }
+        Err(std::io::Error::new(
+            ErrorKind::ConnectionAborted,
+            "replica unregistered (its queue was full, or the primary is stopping)",
+        ))
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Registered<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Registered<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if let Err(e) = self.registered(cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if let Err(e) = self.registered(cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 /// Completes once the worker has run its other ready tasks — tokio's
@@ -2306,6 +2410,7 @@ mod write_order_tests {
             acked: Arc::new(AtomicU64::new(0)),
             pending_bytes: Arc::new(AtomicUsize::new(0)),
             max_queue_bytes: 3,
+            _link: tokio::sync::oneshot::channel().0,
         });
         hub.count.store(1, Ordering::Relaxed);
 

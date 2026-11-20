@@ -692,6 +692,15 @@ fn spawn_reader(
     })
 }
 
+/// Waits for a [`spawn_reader`] to finish, failing rather than hanging if
+/// it never does (6N-C6 review L1).
+async fn finish(reader: tokio::task::JoinHandle<(u64, bool, u64)>) -> (u64, bool, u64) {
+    tokio::time::timeout(Duration::from_secs(60), reader)
+        .await
+        .expect("the replica's reader never finished")
+        .unwrap()
+}
+
 /// Rounds of pipelining connections, every one resuming together: each of
 /// `writers` queues `pipeline` frames per poll, then yields. They are
 /// spawned from a task on the worker, in one poll, so the rounds have the
@@ -751,7 +760,7 @@ async fn pipelined_rounds_at_default_capacity_with_acks() {
     let total = (WRITERS * PIPELINE * ROUNDS) as u64;
     let reader = spawn_reader(replica, 0, true, Arc::new(AtomicU64::new(total)));
     pipelined_rounds(&hub, WRITERS, PIPELINE, ROUNDS).await;
-    let (got, contiguous, _) = reader.await.unwrap();
+    let (got, contiguous, _) = finish(reader).await;
     assert!(
         contiguous,
         "the replica received a gap or a reordered frame"
@@ -805,7 +814,7 @@ async fn pipelined_rounds_against_an_explicit_4096_frame_cap_lose_nothing() {
     let total = (WRITERS * PIPELINE * ROUNDS) as u64;
     let reader = spawn_reader(replica, 0, true, Arc::new(AtomicU64::new(total)));
     pipelined_rounds(&hub, WRITERS, PIPELINE, ROUNDS).await;
-    let (got, contiguous, last) = reader.await.unwrap();
+    let (got, contiguous, last) = finish(reader).await;
     assert!(contiguous);
     assert!(
         hub.send_queue_peak() <= 4096,
@@ -916,6 +925,26 @@ fn the_queue_charge_and_frame_cap_are_bounded() {
     assert_eq!(
         repl_channel_capacity(None, 128 << 20),
         REPL_QUEUE_MAX_DERIVED_FRAMES
+    );
+    // `RECACHED_REPL_BUFFER` as read from the environment (review L3).
+    assert_eq!(parse_repl_frame_cap(None), None);
+    assert_eq!(parse_repl_frame_cap(Some("4096")), Some(4096));
+    assert_eq!(parse_repl_frame_cap(Some(" 16 ")), Some(16));
+    assert_eq!(parse_repl_frame_cap(Some("0")), None);
+    assert_eq!(parse_repl_frame_cap(Some("-1")), None);
+    assert_eq!(parse_repl_frame_cap(Some("4k")), None);
+    assert_eq!(parse_repl_frame_cap(Some("")), None);
+    assert_eq!(
+        parse_repl_frame_cap(Some(&usize::MAX.to_string())),
+        Some(REPL_QUEUE_MAX_EXPLICIT_FRAMES)
+    );
+    assert_eq!(
+        repl_channel_capacity(parse_repl_frame_cap(Some("4096")), DEFAULT_REPL_QUEUE_BYTES),
+        4096
+    );
+    assert_eq!(
+        repl_channel_capacity(parse_repl_frame_cap(Some("x")), DEFAULT_REPL_QUEUE_BYTES),
+        65_536
     );
 }
 
@@ -1038,7 +1067,7 @@ async fn repeated_bursts_twice_the_old_limit_keep_a_healthy_replica() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let (got, contiguous, _) = reader.await.unwrap();
+    let (got, contiguous, _) = finish(reader).await;
     assert!(contiguous);
     assert_eq!(got, total);
     assert_eq!(hub.count.load(Ordering::Relaxed), 1);
@@ -1103,21 +1132,30 @@ async fn small_explicit_channels_keep_rounds_that_fit_and_resume_after_one_that_
         burst.await.unwrap();
         assert_eq!(hub.count.load(Ordering::Relaxed), 0, "capacity {capacity}");
         assert_eq!(hub.queue_disconnects(), 1);
-        // The frames queued before the overrun are still delivered, then the
-        // stream ends; the replica resumes from the last it received.
-        let delivered = read_frames(&mut replica, capacity).await;
-        assert!(
-            delivered
-                .iter()
-                .enumerate()
-                .all(|(i, (o, b))| *o == (fitting + i + 1) as u64 && *b == tag(9, i))
-        );
-        let mut eof = [0u8; 1];
-        assert_eq!(replica.read(&mut eof).await.unwrap(), 0);
-        let last = (fitting + capacity) as u64;
+        // Unregistered, its connection is closed without sending what was
+        // queued (review M1): it ends after at most a contiguous prefix.
+        // Resuming from the last frame it received, it is served exactly the
+        // rest of the burst from the backlog.
+        let mut last = fitting as u64;
+        let mut rest = Vec::new();
+        replica.read_to_end(&mut rest).await.unwrap();
+        let mut at = 0;
+        while rest.len() - at >= 12 {
+            let offset = u64::from_le_bytes(rest[at..at + 8].try_into().unwrap());
+            let len = u32::from_le_bytes(rest[at + 8..at + 12].try_into().unwrap()) as usize;
+            if rest.len() - at - 12 < len {
+                break; // cut off mid-frame: a replica never applies it
+            }
+            assert_eq!(offset, last + 1);
+            last = offset;
+            at += 12 + len;
+        }
         let (_resumed, boundary, missing) = attach(addr, last).await;
-        assert_eq!(boundary, last + 1);
-        assert_eq!(missing, vec![(last + 1, tag(9, capacity))]);
+        assert_eq!(boundary, (fitting + capacity + 1) as u64);
+        assert!(missing.iter().enumerate().all(|(i, (o, b))| {
+            *o == last + i as u64 + 1 && *b == tag(9, (*o as usize) - fitting - 1)
+        }));
+        assert_eq!(missing.len() as u64, boundary - last);
         server.abort();
     }
 }
@@ -1194,7 +1232,7 @@ async fn large_frames_never_queue_past_the_byte_budget() {
     for writer in writers {
         writer.await.unwrap();
     }
-    let (got, contiguous, last) = reader.await.unwrap();
+    let (got, contiguous, last) = finish(reader).await;
     assert!(contiguous);
     assert!(hub.send_queue_bytes_peak() <= BUDGET as u64);
     if got < total {
@@ -1405,7 +1443,7 @@ async fn a_stalled_replica_is_dropped_while_a_healthy_one_keeps_every_frame() {
     })
     .await;
     stop.store(written as u64, Ordering::Release);
-    let (got, contiguous, last) = reader.await.unwrap();
+    let (got, contiguous, last) = finish(reader).await;
     assert!(contiguous);
     assert_eq!((got, last), (written as u64, written as u64));
     assert_eq!(hub.count.load(Ordering::Relaxed), 1);
@@ -1483,6 +1521,21 @@ async fn unauthenticated_and_invalid_handshakes_never_reach_a_replica_queue() {
     let hub = hub(1 << 20);
     let (addr, server, senders) = serve_with(&hub, default_capacity(), Some("s3cret")).await;
 
+    // A peer that connects and has not authenticated yet, held open while
+    // writes go on: it is still in the auth handshake, with no queue.
+    let mut midway = TcpStream::connect(addr).await.unwrap();
+    midway.write_all(b"s3c").await.unwrap();
+    wait_for("the peer's handshake task", || {
+        senders.lock().unwrap().len() == 1
+    })
+    .await;
+    for i in 0..100 {
+        hub.fan_out(tag(2, i)).await;
+    }
+    assert_eq!(hub.count.load(Ordering::Relaxed), 0);
+    assert!(hub.stream().senders.is_empty());
+    drop(midway);
+
     let mut wrong = TcpStream::connect(addr).await.unwrap();
     wrong.write_all(b"guess\n").await.unwrap();
     let mut reply = Vec::new();
@@ -1516,10 +1569,48 @@ async fn unauthenticated_and_invalid_handshakes_never_reach_a_replica_queue() {
     assert_eq!(hub.count.load(Ordering::Relaxed), 0);
     assert!(hub.stream().senders.is_empty());
     let finished: Vec<_> = senders.lock().unwrap().drain(..).collect();
-    assert_eq!(finished.len(), 2);
+    assert_eq!(finished.len(), 3);
     for task in finished {
         task.await.unwrap();
     }
     assert_eq!(hub.syncs(), (0, 0));
+    server.abort();
+}
+
+/// Review M1: a replica that stops reading but keeps its connection open is
+/// unregistered for its full queue, and its connection is then closed at
+/// once. Its sender, blocked writing to a socket nobody reads, used to stay
+/// there with every frame still queued — up to the byte budget, outside every
+/// gauge — until the peer read again or TCP gave up. Now the sender ends and
+/// every charge is released while the peer still holds its end open, and
+/// the peer finds its stream closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unregistered_replica_that_keeps_its_socket_open_is_closed() {
+    let hub = hub(64 << 20);
+    let (addr, server, senders) = serve(&hub, default_capacity()).await;
+    let (mut stalled, _, _) = attach(addr, 0).await;
+    wait_for("the replica to register", || {
+        hub.count.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    let sender = senders.lock().unwrap().pop().expect("one sender task");
+    let pending = charged(&hub);
+    write_until(&hub, 0, DEFAULT_REPL_QUEUE_BYTES, None, || {
+        hub.count.load(Ordering::Relaxed) == 0
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(10), sender)
+        .await
+        .expect("the unregistered replica's sender is still blocked on its socket")
+        .unwrap();
+    assert_eq!(pending.load(Ordering::Acquire), 0, "frames stayed charged");
+    // Still open on the peer's side: it reads what reached its buffers,
+    // then finds the stream closed.
+    let mut drained = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(10), stalled.read_to_end(&mut drained))
+        .await
+        .expect("the connection was not closed");
+    // Closed (EOF) or reset: either way it is gone.
+    drop(read);
     server.abort();
 }
