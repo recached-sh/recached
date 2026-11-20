@@ -12,11 +12,17 @@
 #              serving, and the replica must be dropped and resynchronize.
 #   MODE=two   Two replicas, both reading, through a P=16 run: neither may be
 #              disconnected, and both must converge.
+#   MODE=burst One replica through a run whose every scheduling round can
+#              hold more frames than the pre-6N-C6 4096-frame cap: CLIENTS ×
+#              PIPE (default 100 × 64 = 6400), AOF off (AOF=off by default
+#              here) so fsync stalls do not shape the rounds. The replica must
+#              stay connected and converge.
 #
 # Usage (native Linux, idle host):
 #   RC_BINS="base=/path c6=/path" RC_SHAS="base=<sha> c6=<sha>" MODE=slow \
 #     bash benchmarks/v0.6.0/6n-c6/run-c6-extra.sh
-# Knobs: REPS [3]  REQUESTS [6000000]  STOP_AT_S [3]  STOP_S [2]  BIN [~/recached-6l-bench/bin]
+# Knobs: CLIENTS [50; burst 100]  PIPE [16; burst 64]  AOF [on; burst off]
+#        REPS [3]  REQUESTS [6000000]  STOP_AT_S [3]  STOP_S [2]  BIN [~/recached-6l-bench/bin]
 #        OUT [~/recached-6nc6-bench/<mode>-<utc>]  MAX_LOAD [1.0]  ALLOW_SANDBOX [0]
 set -euo pipefail
 
@@ -35,7 +41,9 @@ MAX_LOAD=${MAX_LOAD:-1.0}
 ALLOW_SANDBOX=${ALLOW_SANDBOX:-0}
 
 die() { echo "run-c6-extra: $*" >&2; exit 2; }
-[[ $MODE == slow || $MODE == two ]] || die "MODE must be slow or two"
+[[ $MODE == slow || $MODE == two || $MODE == burst ]] || die "MODE must be slow, two or burst"
+if [[ $MODE == burst ]]; then CLIENTS=${CLIENTS:-100} PIPE=${PIPE:-64} AOF=${AOF:-off}; fi
+CLIENTS=${CLIENTS:-50} PIPE=${PIPE:-16} AOF=${AOF:-on}
 declare -A RCBIN RCSUM RCSHA
 LABELS=()
 for pair in $RC_BINS; do
@@ -52,7 +60,7 @@ awk -v l="$load" -v m="$MAX_LOAD" 'BEGIN { exit !(l <= m) }' || die "load averag
 mkdir -p "$OUT"
 CLI=$BIN/redis-cli BENCHB=$BIN/redis-benchmark
 {
-  echo "date_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ) mode=$MODE reps=$REPS requests=$REQUESTS stop_at_s=$STOP_AT_S stop_s=$STOP_S"
+  echo "date_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ) mode=$MODE reps=$REPS requests=$REQUESTS clients=$CLIENTS pipe=$PIPE aof=$AOF stop_at_s=$STOP_AT_S stop_s=$STOP_S"
   for label in "${LABELS[@]}"; do
     echo "rc_bin[$label]: ${RCBIN[$label]} sha256=${RCSUM[$label]} source=${RCSHA[$label]:-unknown}"
   done
@@ -93,10 +101,11 @@ for rep in $(seq 1 "$REPS"); do
   for label in "${LABELS[@]}"; do
     rcbin=${RCBIN[$label]}
     d="$OUT/$label-$MODE-r$rep"; rm -rf "$d"; mkdir -p "$d/p"
+    aofenv=()
+    [[ $AOF == on ]] && aofenv=(RECACHED_AOF_PATH="$d/p/appendonly.aof" RECACHED_AOF_SYNC=everysec RECACHED_AOF_FANOUT=coalesced)
     env RECACHED_BIND=127.0.0.1 RECACHED_PORT=$P RECACHED_WS_PORT=$((P + 1)) RECACHED_METRICS_PORT=0 \
       RECACHED_SAVE_INTERVAL=0 RECACHED_SAVE_PATH="$d/p/dump.rdb" RECACHED_WORKER_THREADS=1 \
-      RECACHED_AOF_PATH="$d/p/appendonly.aof" RECACHED_AOF_SYNC=everysec RECACHED_AOF_FANOUT=coalesced \
-      RECACHED_REPL_ENABLE=1 RECACHED_REPL_PORT=$PREPL taskset -c 0 "$rcbin" >"$d/primary.log" 2>&1 &
+      "${aofenv[@]}" RECACHED_REPL_ENABLE=1 RECACHED_REPL_PORT=$PREPL taskset -c 0 "$rcbin" >"$d/primary.log" 2>&1 &
     ppid=$!
     for _ in $(seq 80); do "$CLI" -p $P ping 2>/dev/null | grep -q PONG && break; sleep 0.25; done
     "$BENCHB" -p $P -n 100000 -c 20 -P 64 -r 100000 -d 32 -t set -q >/dev/null 2>&1
@@ -116,7 +125,7 @@ for rep in $(seq 1 "$REPS"); do
       stopper=$!
     fi
     t0=$(date +%s%N)
-    taskset -c 3-5 "$BENCHB" -p $P -n "$REQUESTS" -c 50 -P 16 -d 32 -r 100000 --threads 2 --csv -t set \
+    taskset -c 3-5 "$BENCHB" -p $P -n "$REQUESTS" -c "$CLIENTS" -P "$PIPE" -d 32 -r 100000 --threads 2 --csv -t set \
       >"$d/bench.csv" 2>"$d/bench.err"
     t1=$(date +%s%N)
     [[ $MODE == slow ]] && wait $stopper
