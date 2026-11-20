@@ -4235,6 +4235,7 @@ fn info_replication_reports_both_redis_and_recached_spellings() {
         send_flushes: 5,
         send_frames: 40,
         send_queue_peak: 9,
+        send_deferred: 4,
     };
     let primary = parse_info(&render_info(
         &[],
@@ -4271,6 +4272,7 @@ fn info_replication_reports_both_redis_and_recached_spellings() {
         ("recached_replication_send_flushes", "5"),
         ("recached_replication_send_frames", "40"),
         ("recached_replication_send_queue_peak", "9"),
+        ("recached_replication_send_deferred", "4"),
     ] {
         assert_eq!(
             primary[&("replication".into(), field.into())],
@@ -6804,6 +6806,7 @@ mod multitenant;
 mod qsub_aof_cut;
 mod repl_6l_cpu;
 mod repl_cpu_bench;
+mod repl_sender_batching;
 mod replica_6l;
 mod replication_dedup;
 mod request_path;
