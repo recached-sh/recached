@@ -54,6 +54,11 @@ pub(crate) struct ReplicaHandle {
     pub(crate) acked: Arc<AtomicU64>,
     pub(crate) pending_bytes: Arc<AtomicUsize>,
     pub(crate) max_queue_bytes: usize,
+    /// Dropped with this handle, which closes the replica's connection (see
+    /// [`Registered`]): a replica unregistered for a full queue must not
+    /// keep its sender task, socket, connection permit and up to a queue
+    /// budget of frames while its peer stops reading (6N-C6 review M1).
+    pub(crate) _link: tokio::sync::oneshot::Sender<()>,
 }
 
 #[derive(Default)]
@@ -122,6 +127,17 @@ pub(crate) struct ReplHub {
     /// other writers' frames joined them (6N-C5); the rest were full flushes
     /// (`REPL_SEND_BATCH_FRAMES`).
     send_deferred: AtomicU64,
+    /// The most bytes a replica sender found charged to its queue when it
+    /// woke (6N-C6): the byte-budget counterpart of `send_queue_peak`,
+    /// against `RECACHED_REPL_BUFFER_BYTES`.
+    send_queue_bytes_peak: AtomicU64,
+    /// Replicas disconnected because their queue was full, by bytes or by
+    /// frames (6N-C6). Each reconnects and resynchronizes.
+    queue_disconnects: AtomicU64,
+    /// Synchronizations served to replicas: from the backlog (partial) and
+    /// from a snapshot (full).
+    syncs_partial: AtomicU64,
+    syncs_full: AtomicU64,
 }
 
 const WRITE_ORDER_STRIPES: usize = 256;
@@ -132,10 +148,11 @@ pub(crate) const REPL_SEND_BATCH_FRAMES: usize = 512;
 /// 6N-C5 (review F1). When a held flush's round ends, the sender is queued
 /// behind the tasks that round woke, and a `try_send` cannot move it
 /// forward: a small channel (`RECACHED_REPL_BUFFER`) could fill meanwhile
-/// and disconnect a healthy replica. Four flushes' worth leaves the default
-/// (4096) room for a round of ordinary writers. Pipelining connections can
-/// overrun even the default this way — as they could before 6N-C5, when a
-/// replica acknowledgement queued the sender behind them (6N-C5 R1 record).
+/// and disconnect a healthy replica. A channel of four flushes or more has
+/// room for a round of ordinary writers. A round of pipelining connections
+/// can hold more frames than 4096, the pre-6N-C6 default; the default cap
+/// now follows the byte budget (65,536 frames) for that reason
+/// (`repl_channel_capacity`, 6N-C6).
 pub(crate) const REPL_SEND_DEFER_MIN_CAPACITY: usize = 4 * REPL_SEND_BATCH_FRAMES;
 
 /// Send buffer per replica connection; a burst larger than this is written
@@ -403,7 +420,7 @@ impl ReplHub {
         let backlog_bytes = backlog.bytes;
 
         reg.retain(|r| {
-            let charged_bytes = bytes.len();
+            let charged_bytes = repl_queue_charge(bytes.len());
             let reserved = r
                 .pending_bytes
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
@@ -414,6 +431,7 @@ impl ReplHub {
                 .is_ok();
             if !reserved {
                 warn!("Replica byte queue full — disconnecting so it can resync");
+                self.queue_disconnects.fetch_add(1, Ordering::Relaxed);
                 counter!("recached_replication_disconnects_total", "reason" => "queue_bytes")
                     .increment(1);
                 return false;
@@ -432,6 +450,7 @@ impl ReplHub {
                 warn!(
                     "Replica fell too far behind (channel full) — disconnecting so it can resync"
                 );
+                self.queue_disconnects.fetch_add(1, Ordering::Relaxed);
                 counter!("recached_replication_disconnects_total", "reason" => "queue_items")
                     .increment(1);
                 false
@@ -463,6 +482,7 @@ impl ReplHub {
             acked: Arc::new(AtomicU64::new(0)),
             pending_bytes: Arc::new(AtomicUsize::new(0)),
             max_queue_bytes,
+            _link: tokio::sync::oneshot::channel().0,
         });
         self.count.store(reg.len(), Ordering::Relaxed);
         rx
@@ -505,6 +525,10 @@ impl ReplHub {
             send_frames: AtomicU64::new(0),
             send_queue_peak: AtomicU64::new(0),
             send_deferred: AtomicU64::new(0),
+            send_queue_bytes_peak: AtomicU64::new(0),
+            queue_disconnects: AtomicU64::new(0),
+            syncs_partial: AtomicU64::new(0),
+            syncs_full: AtomicU64::new(0),
         })
     }
 
@@ -513,6 +537,7 @@ impl ReplHub {
         let (send_flushes, send_frames) = self.send_stats();
         let send_queue_peak = self.send_queue_peak();
         let send_deferred = self.send_deferred();
+        let (syncs_partial, syncs_full) = self.syncs();
         ReplInfo {
             connected: self.count.load(Ordering::Relaxed),
             queue_depth: self.max_queue_depth().await,
@@ -522,6 +547,10 @@ impl ReplHub {
             send_frames,
             send_queue_peak,
             send_deferred,
+            send_queue_bytes_peak: self.send_queue_bytes_peak(),
+            queue_disconnects: self.queue_disconnects(),
+            syncs_partial,
+            syncs_full,
         }
     }
 
@@ -536,9 +565,29 @@ impl ReplHub {
     }
 
     /// Note the queue depth a sender found when it woke.
-    fn record_wake(&self, queued: usize) {
+    fn record_wake(&self, queued: usize, queued_bytes: usize) {
         self.send_queue_peak
             .fetch_max(queued as u64, Ordering::Relaxed);
+        self.send_queue_bytes_peak
+            .fetch_max(queued_bytes as u64, Ordering::Relaxed);
+    }
+
+    /// The most bytes a sender found charged to its queue when it woke.
+    pub(crate) fn send_queue_bytes_peak(&self) -> u64 {
+        self.send_queue_bytes_peak.load(Ordering::Relaxed)
+    }
+
+    /// Replicas disconnected for a full queue (bytes or frames).
+    pub(crate) fn queue_disconnects(&self) -> u64 {
+        self.queue_disconnects.load(Ordering::Relaxed)
+    }
+
+    /// `(partial, full)` synchronizations served to replicas.
+    pub(crate) fn syncs(&self) -> (u64, u64) {
+        (
+            self.syncs_partial.load(Ordering::Relaxed),
+            self.syncs_full.load(Ordering::Relaxed),
+        )
     }
 
     /// `(flushes, frames)` written by replica senders since startup (live
@@ -833,12 +882,83 @@ impl ReplHub {
 
 pub(crate) type ReplRegistry = Arc<ReplHub>;
 
-/// Default per-replica channel capacity (number of pending write frames).
-/// When a replica falls this many writes behind the primary it is disconnected
-/// so it can reconnect and request the retained backlog, falling back to a full
-/// snapshot if necessary. The primary write path is never blocked.
-pub(crate) const DEFAULT_REPL_CHANNEL_CAPACITY: usize = 4096;
+/// Default per-replica queue budget (`RECACHED_REPL_BUFFER_BYTES`): what
+/// frames waiting for a replica's sender may hold, payload plus
+/// [`REPL_QUEUE_FRAME_OVERHEAD`] each. A replica whose queue would pass it is
+/// disconnected so it can reconnect and request the retained backlog, falling
+/// back to a full snapshot if necessary. The primary write path is never
+/// blocked.
 pub(crate) const DEFAULT_REPL_QUEUE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Bytes charged against the queue budget for each queued frame on top of its
+/// payload (6N-C6): the memory a queued frame holds besides its bytes, and the
+/// bound on how many frames a budget admits.
+///
+/// A queued frame is a `QueuedReplFrame` (32 bytes) in a tokio channel block
+/// slot (about 40 bytes with its share of the 32-slot block's 1280-byte
+/// allocation), plus the frame's `Arc<Vec<u8>>` allocation (40 bytes, a
+/// 48-byte jemalloc class) and the payload allocation's rounding (under 16
+/// bytes for frames under 128 bytes): about 105 bytes. The `Arc` and payload are shared
+/// with the backlog while it retains the frame, so this over-counts what the
+/// queue adds then; it is the bound for when the backlog has trimmed it.
+/// Payload rounding above that size (jemalloc's size classes, at most a
+/// quarter) was not charged before 6N-C6 and is not now.
+///
+/// Before 6N-C6 the payload alone was charged, and a separate frame count
+/// (`RECACHED_REPL_BUFFER`, 4096) bounded the rest. Small frames filled that
+/// count with 0.3% of the byte budget used, and one scheduling round of
+/// pipelining connections could overrun it and disconnect a healthy replica
+/// (6N-C5 review R1). Charging the overhead lets the byte budget bound memory
+/// on its own, so the default frame cap can follow it.
+pub(crate) const REPL_QUEUE_FRAME_OVERHEAD: usize = 128;
+
+/// Ceiling on a frame cap derived from the byte budget: 128 MiB of budget at
+/// [`REPL_QUEUE_FRAME_OVERHEAD`]. A larger budget keeps this cap unless
+/// `RECACHED_REPL_BUFFER` sets one. It also keeps the derived cap far below
+/// the most permits a tokio channel accepts.
+pub(crate) const REPL_QUEUE_MAX_DERIVED_FRAMES: usize = 1 << 20;
+
+/// What a frame of `len` payload bytes charges against a replica's queue
+/// budget. Saturates: a charge that cannot be represented exceeds every
+/// budget, so the frame is refused rather than wrapped into a small charge.
+pub(crate) fn repl_queue_charge(len: usize) -> usize {
+    len.saturating_add(REPL_QUEUE_FRAME_OVERHEAD)
+}
+
+/// The per-replica channel capacity, in frames.
+///
+/// An explicit `RECACHED_REPL_BUFFER` is kept exactly as configured: a strict
+/// frame cap, as before 6N-C6. Without one, the cap is derived from the byte
+/// budget: as many frames as it can charge at [`REPL_QUEUE_FRAME_OVERHEAD`]
+/// each, at least one, and at most [`REPL_QUEUE_MAX_DERIVED_FRAMES`]. Every
+/// frame charges more than the overhead, so with a derived cap the byte
+/// budget is reached first and the count is a backstop.
+pub(crate) fn repl_channel_capacity(explicit: Option<usize>, queue_bytes: usize) -> usize {
+    explicit.unwrap_or_else(|| {
+        (queue_bytes / REPL_QUEUE_FRAME_OVERHEAD).clamp(1, REPL_QUEUE_MAX_DERIVED_FRAMES)
+    })
+}
+
+/// Largest explicit frame cap honoured: tokio's channels refuse more permits
+/// than this (`Semaphore::MAX_PERMITS`), and a larger capacity would panic the
+/// replica's task at its handshake.
+pub(crate) const REPL_QUEUE_MAX_EXPLICIT_FRAMES: usize = usize::MAX >> 3;
+
+/// `RECACHED_REPL_BUFFER` as configured: a positive frame count, clamped to
+/// [`REPL_QUEUE_MAX_EXPLICIT_FRAMES`]. `None` when it is unset, zero or not a
+/// number, and the cap is then derived from the byte budget; the caller
+/// warns about the last two.
+pub(crate) fn parse_repl_frame_cap(raw: Option<&str>) -> Option<usize> {
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|&frames| frames > 0)
+        .map(|frames| frames.min(REPL_QUEUE_MAX_EXPLICIT_FRAMES))
+}
+
+/// The channel capacity with neither setting configured: 65,536 frames.
+/// The server derives it with [`repl_channel_capacity`]; tests name it.
+#[cfg(test)]
+pub(crate) const DEFAULT_REPL_CHANNEL_CAPACITY: usize =
+    DEFAULT_REPL_QUEUE_BYTES / REPL_QUEUE_FRAME_OVERHEAD;
 /// Replication-order guards held by one write or barrier; released on drop,
 /// stripes first, then the gate reopens.
 pub(crate) struct OrderGuards<'a> {
@@ -1071,6 +1191,80 @@ pub(crate) async fn run_repl_server(
     }
 }
 
+/// A replica's connection while it is registered with the hub.
+///
+/// Once its `ReplicaHandle` is dropped — `fan_out` unregistered it because
+/// its queue was full, or the hub itself is gone — every write fails. A
+/// sender blocked writing to a peer that stopped reading used to stay there,
+/// holding its task, its socket, its connection permit and every frame still
+/// queued for it (up to the queue budget, out of every gauge, since the
+/// handle was gone), until the peer read again or TCP gave up (6N-C6 review
+/// M1). It now returns at once, and dropping it releases all of that. The
+/// replica resumes from the last frame it applied: it applies only frames it
+/// read whole, so a frame cut off mid-write is never applied.
+struct Registered<S> {
+    inner: S,
+    /// Resolves when the handle is dropped; `None` once it has.
+    handle: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+impl<S> Registered<S> {
+    /// `Err` once the replica is unregistered. Otherwise registers `cx` to
+    /// be woken when it is, so a write pending on a full socket fails then.
+    fn registered(&mut self, cx: &mut std::task::Context<'_>) -> std::io::Result<()> {
+        if let Some(handle) = &mut self.handle {
+            if std::pin::Pin::new(handle).poll(cx).is_pending() {
+                return Ok(());
+            }
+            self.handle = None;
+        }
+        Err(std::io::Error::new(
+            ErrorKind::ConnectionAborted,
+            "replica unregistered (its queue was full, or the primary is stopping)",
+        ))
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Registered<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Registered<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if let Err(e) = self.registered(cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if let Err(e) = self.registered(cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_replica<S>(
     mut socket: S,
@@ -1207,6 +1401,7 @@ where
     }));
     let pending_bytes = Arc::new(AtomicUsize::new(0));
     let max_queue_bytes = replicas.queue_bytes.load(Ordering::Acquire);
+    let (link, unregistered) = tokio::sync::oneshot::channel();
     {
         let mut stream = replicas.stream();
         let reg = &mut stream.senders;
@@ -1216,10 +1411,15 @@ where
             acked: Arc::clone(&acked),
             pending_bytes: Arc::clone(&pending_bytes),
             max_queue_bytes,
+            _link: link,
         });
         replicas.count.store(reg.len(), Ordering::Relaxed);
     }
     drop(write_barrier);
+    let mut socket = Registered {
+        inner: socket,
+        handle: Some(unregistered),
+    };
 
     let mode = match (&snapshot, &dedup_table) {
         (Some(_), Some(_)) => SYNC_MODE_FULL_DEDUP,
@@ -1230,6 +1430,7 @@ where
     socket.write_all(&current_offset.to_le_bytes()).await?;
     if let Some(snapshot) = snapshot {
         counter!("recached_replication_syncs_total", "type" => "full").increment(1);
+        replicas.syncs_full.fetch_add(1, Ordering::Relaxed);
         let len = u32::try_from(snapshot.len()).map_err(|_| {
             std::io::Error::new(
                 ErrorKind::InvalidData,
@@ -1250,6 +1451,7 @@ where
         }
     } else if let Some(missing) = missing {
         counter!("recached_replication_syncs_total", "type" => "partial").increment(1);
+        replicas.syncs_partial.fetch_add(1, Ordering::Relaxed);
         let count = u32::try_from(missing.len()).map_err(|_| {
             std::io::Error::new(
                 ErrorKind::InvalidData,
@@ -1317,9 +1519,15 @@ where
     // queued. Writers that end their poll deferred (the coalesced AOF's
     // yield, a pipeline out of coop budget) can then queue up to a round's
     // frames before it drains. Before 6N-C5 the same happened whenever a
-    // replica acknowledgement woke the sender behind them. A round larger
-    // than the channel (`RECACHED_REPL_BUFFER`) disconnects the replica
-    // either way; see `pipelined_rounds_at_default_capacity_with_acks`.
+    // replica acknowledgement woke the sender behind them. The wake that does
+    // it is any the sender gets while its worker parks between polls — the
+    // held flush's deferral, or an acknowledgement's readiness — at the
+    // maintenance park every 61 polls too, mid-round, which queues it behind
+    // the round's writers not yet run (6N-C6 root cause). The queue must
+    // hold their frames, so the default cap follows the byte budget rather
+    // than a fixed frame count; a round past the byte budget, or an explicit
+    // `RECACHED_REPL_BUFFER` smaller than the round, disconnects the replica
+    // to resynchronize (`pipelined_rounds_at_default_capacity_with_acks`).
     let mut unflushed = 0usize;
     let mut flush_pending = false;
     let mut round_end = RoundEnd::default();
@@ -1327,14 +1535,16 @@ where
         tokio::select! {
             frame = rx.recv() => {
                 let Some(queued) = frame else {
-                    // Every replica handle is gone: send what is buffered.
+                    // The handle is gone, so `Registered` refuses this flush
+                    // and the stream ends; the replica resumes from what it
+                    // applied.
                     if unflushed > 0 {
                         wr.flush().await?;
                         replicas.record_send(unflushed, flush_pending);
                     }
                     break;
                 };
-                replicas.record_wake(rx.len() + 1);
+                replicas.record_wake(rx.len() + 1, pending_bytes.load(Ordering::Relaxed));
                 write_repl_frame(&mut wr, &queued.frame).await?;
                 unflushed += 1;
                 // Everything already queued goes into the buffer too. Frames
@@ -2200,6 +2410,7 @@ mod write_order_tests {
             acked: Arc::new(AtomicU64::new(0)),
             pending_bytes: Arc::new(AtomicUsize::new(0)),
             max_queue_bytes: 3,
+            _link: tokio::sync::oneshot::channel().0,
         });
         hub.count.store(1, Ordering::Relaxed);
 

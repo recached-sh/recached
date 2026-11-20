@@ -611,16 +611,30 @@ async fn run(
         "RECACHED_REPL_PASSWORD",
         std::env::var("RECACHED_REPL_PASSWORD").ok(),
     );
-    let repl_channel_capacity: usize = std::env::var("RECACHED_REPL_BUFFER")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .filter(|&n: &usize| n > 0)
-        .unwrap_or(DEFAULT_REPL_CHANNEL_CAPACITY);
+    // An explicit frame cap is kept as configured. Without one, the cap
+    // follows the byte budget, which charges a per-frame overhead and so
+    // bounds memory on its own (6N-C6; see `repl_channel_capacity`).
+    let repl_buffer_raw = std::env::var("RECACHED_REPL_BUFFER").ok();
+    let repl_explicit_frames = parse_repl_frame_cap(repl_buffer_raw.as_deref());
+    if let (Some(raw), None) = (&repl_buffer_raw, repl_explicit_frames) {
+        warn!(
+            "RECACHED_REPL_BUFFER={raw:?} is not a positive frame count; \
+             deriving the replica frame cap from RECACHED_REPL_BUFFER_BYTES"
+        );
+    }
     let repl_queue_bytes = std::env::var("RECACHED_REPL_BUFFER_BYTES")
         .ok()
         .and_then(|value| parse_memory_bytes(&value))
         .filter(|&bytes| bytes > 0)
         .unwrap_or(DEFAULT_REPL_QUEUE_BYTES);
+    if repl_queue_bytes <= REPL_QUEUE_FRAME_OVERHEAD {
+        warn!(
+            "RECACHED_REPL_BUFFER_BYTES={repl_queue_bytes} cannot hold one replication frame \
+             (each is charged its size plus {REPL_QUEUE_FRAME_OVERHEAD} bytes): every replica \
+             will be disconnected at its first write"
+        );
+    }
+    let repl_channel_capacity = repl_channel_capacity(repl_explicit_frames, repl_queue_bytes);
     let repl_backlog_bytes = std::env::var("RECACHED_REPL_BACKLOG_BYTES")
         .ok()
         .and_then(|value| parse_memory_bytes(&value))
@@ -743,8 +757,15 @@ async fn run(
         replicas.configure_backlog(repl_backlog_bytes);
         replicas.configure_queue_bytes(repl_queue_bytes);
         info!(
-            "Replication buffers: backlog={} bytes, per-replica queue={} bytes / {} frames",
-            repl_backlog_bytes, repl_queue_bytes, repl_channel_capacity
+            "Replication buffers: backlog={} bytes, per-replica queue={} bytes / {} frames ({})",
+            repl_backlog_bytes,
+            repl_queue_bytes,
+            repl_channel_capacity,
+            if repl_explicit_frames.is_some() {
+                "RECACHED_REPL_BUFFER"
+            } else {
+                "derived from the byte budget"
+            }
         );
     }
 

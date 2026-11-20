@@ -72,7 +72,7 @@ Sampled every 5 seconds, because these are levels rather than events.
 | `recached_watched_keys` | gauge | Keys under `WATCH`. |
 | `recached_dedup_clients_tracked` | gauge | Clients with duplicate-suppression high-water marks in memory. |
 | `recached_replication_queue_depth` | gauge | Deepest replica send queue, in frames — work the primary has not yet put on the wire. |
-| `recached_replication_queue_bytes` | gauge | Encoded bytes in the deepest replica send queue. |
+| `recached_replication_queue_bytes` | gauge | Bytes charged to the deepest replica send queue against `RECACHED_REPL_BUFFER_BYTES`: each queued frame's encoded size plus 128 (0.6; before, the encoded size alone). |
 | `recached_replication_lag_frames` | gauge | Frames the furthest-behind replica has been sent but has not acknowledged applying. Zero means every replica is caught up. |
 | `recached_replication_backlog_bytes` | gauge | Bytes retained for partial replica resynchronization. |
 | `recached_replication_syncs_total` | counter | Full and partial synchronizations, labeled by `type`. |
@@ -197,7 +197,7 @@ is worth knowing where the walls are:
 | Replication frame | 512 MB | No |
 | WATCH/QSUB delivery queue | 256 messages and 8 MiB per connection | No |
 | Pub/sub delivery queue | 256 messages and 8 MiB per connection | No |
-| Replica delivery queue | 4,096 frames and 8 MiB per replica | `RECACHED_REPL_BUFFER` / `RECACHED_REPL_BUFFER_BYTES` |
+| Replica delivery queue | 8 MiB per replica, each frame charged its size plus 128 bytes (65,536 frames at most by default) | `RECACHED_REPL_BUFFER_BYTES` / `RECACHED_REPL_BUFFER` |
 | Partial-resync backlog | 16 MiB per primary | `RECACHED_REPL_BACKLOG_BYTES` |
 | Glob pattern length (`KEYS`, `SCAN MATCH`, `PSUBSCRIBE`, sync scopes) | 1,024 bytes | No |
 | Elements reserved up front for an aggregate | 1,024 | No |
