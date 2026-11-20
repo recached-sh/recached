@@ -6814,6 +6814,7 @@ mod live_query_6k;
 mod multitenant;
 mod qsub_aof_cut;
 mod repl_6l_cpu;
+mod repl_ack_read;
 mod repl_cpu_bench;
 mod repl_sender_batching;
 mod replica_6l;

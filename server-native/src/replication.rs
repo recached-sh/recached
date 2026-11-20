@@ -1487,7 +1487,7 @@ where
     // a pipelined primary out-ran its replica's link and the replica fell
     // seconds behind (6I production benchmark: probe lag p99 2.8 s).
     let mut wr = tokio::io::BufWriter::with_capacity(REPL_SEND_BUFFER_BYTES, wr);
-    let mut ack_buf = [0u8; 8];
+    let mut acks = AckReader::default();
     // Frames written into `wr` since its last flush, and the end of the
     // scheduling round that will flush them (6N-C5).
     //
@@ -1580,21 +1580,82 @@ where
                 replicas.record_send(unflushed, true);
                 unflushed = 0;
             }
-            res = rd.read_exact(&mut ack_buf) => {
-                // A replica that closes its read side, or one running a build
-                // that predates acks, simply stops updating the gauge — it is
-                // not an error, so the stream continues either way.
-                if res.is_err() {
-                    break;
+            // `read`, not `read_exact`: when another branch wins, a
+            // `read_exact` already part-way through an acknowledgement was
+            // dropped with the bytes it had consumed, and every later
+            // acknowledgement was read across a boundary (6N-C5 review F4).
+            // `read` is cancel-safe — a dropped one consumed nothing — and
+            // `AckReader` keeps a partial acknowledgement between iterations.
+            res = rd.read(acks.spare()) => {
+                match res {
+                    // The replica closed its side, or the link failed: the
+                    // stream ends, as it did before, and the replica is
+                    // unregistered at the next write and reconnects. A
+                    // replica that predates acks never writes, so for it
+                    // this branch never completes.
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Some(applied) = acks.take(n) {
+                            // Monotonic: a reordered or replayed ack must
+                            // never walk the high-water mark backwards and
+                            // report negative lag.
+                            acked.fetch_max(applied, Ordering::Relaxed);
+                        }
+                    }
                 }
-                let applied = u64::from_le_bytes(ack_buf);
-                // Monotonic: a reordered or replayed ack must never walk the
-                // high-water mark backwards and report negative lag.
-                acked.fetch_max(applied, Ordering::Relaxed);
             }
         }
     }
     Ok(())
+}
+
+/// A replica's acknowledgements as they arrive: each is the cumulative
+/// offset it has applied, 8 bytes little-endian (`run_repl_client`). Bytes
+/// read so far are kept here, not in a read future, so a partial
+/// acknowledgement survives the `select!` iteration another branch wins.
+struct AckReader {
+    buf: [u8; ACK_READ_BYTES],
+    /// Bytes of `buf` holding received data: after `take`, under 8.
+    filled: usize,
+}
+
+/// Bytes one read takes from the acknowledgement side: several
+/// acknowledgements, when the sender was busy while they arrived.
+const ACK_READ_BYTES: usize = 64;
+const ACK_BYTES: usize = 8;
+
+impl Default for AckReader {
+    fn default() -> Self {
+        AckReader {
+            buf: [0; ACK_READ_BYTES],
+            filled: 0,
+        }
+    }
+}
+
+impl AckReader {
+    /// Where the next read goes. Never empty: `take` keeps under one
+    /// acknowledgement.
+    fn spare(&mut self) -> &mut [u8] {
+        &mut self.buf[self.filled..]
+    }
+
+    /// Accounts `n` bytes just read into `spare()`. Returns the highest
+    /// complete acknowledgement now received, and keeps a trailing partial
+    /// one for the next read.
+    fn take(&mut self, n: usize) -> Option<u64> {
+        self.filled += n;
+        let complete = self.filled - self.filled % ACK_BYTES;
+        let highest = self.buf[..complete]
+            .as_chunks::<ACK_BYTES>()
+            .0
+            .iter()
+            .map(|ack| u64::from_le_bytes(*ack))
+            .max();
+        self.buf.copy_within(complete..self.filled, 0);
+        self.filled -= complete;
+        highest
+    }
 }
 
 /// Completes once the worker has run its other ready tasks — tokio's
@@ -2396,6 +2457,54 @@ mod write_order_tests {
             .expect("offset one should resume from retained offset two");
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].offset, 2);
+    }
+
+    /// `AckReader` alone: whole, split, several-at-once and trailing partial
+    /// acknowledgements, and the buffer never fills.
+    #[test]
+    fn ack_reader_keeps_partial_acknowledgements() {
+        fn feed(acks: &mut AckReader, bytes: &[u8]) -> Option<u64> {
+            let spare = acks.spare();
+            assert!(spare.len() >= bytes.len(), "the buffer filled");
+            spare[..bytes.len()].copy_from_slice(bytes);
+            acks.take(bytes.len())
+        }
+        let mut acks = AckReader::default();
+        let seven = 7u64.to_le_bytes();
+        assert_eq!(feed(&mut acks, &seven), Some(7));
+        assert_eq!(acks.filled, 0);
+        // Split three ways.
+        let big = (u64::MAX - 1).to_le_bytes();
+        assert_eq!(feed(&mut acks, &big[..1]), None);
+        assert_eq!(feed(&mut acks, &big[1..6]), None);
+        assert_eq!(feed(&mut acks, &big[6..]), Some(u64::MAX - 1));
+        // Several at once, out of order, with half of another trailing.
+        let mut burst = Vec::new();
+        for ack in [30u64, 10, 20] {
+            burst.extend_from_slice(&ack.to_le_bytes());
+        }
+        let next = 40u64.to_le_bytes();
+        burst.extend_from_slice(&next[..4]);
+        assert_eq!(feed(&mut acks, &burst), Some(30));
+        assert_eq!(acks.filled, 4);
+        assert_eq!(feed(&mut acks, &next[4..]), Some(40));
+        // A full buffer's worth in one read, ending on a boundary.
+        let mut full = Vec::new();
+        for ack in 1u64..=(ACK_READ_BYTES / ACK_BYTES) as u64 {
+            full.extend_from_slice(&ack.to_le_bytes());
+        }
+        assert_eq!(feed(&mut acks, &full), Some(8));
+        assert_eq!(acks.filled, 0);
+        // At most seven bytes are ever kept, so a read always has room.
+        for n in 1..ACK_BYTES {
+            let mut acks = AckReader::default();
+            assert_eq!(
+                feed(&mut acks, &vec![0xff; ACK_READ_BYTES - ACK_BYTES + n]),
+                Some(u64::MAX)
+            );
+            assert_eq!(acks.filled, n);
+            assert!(acks.spare().len() >= ACK_READ_BYTES - ACK_BYTES);
+        }
     }
 
     #[tokio::test]
