@@ -1704,9 +1704,13 @@ impl AofWriter {
     }
 
     /// [`queue_only`](Self::queue_only), also returning whether a performer
-    /// held the writer role (`busy`) when the frame was queued. Advisory: it
-    /// may change the moment the lock drops, and nothing relies on it for
-    /// correctness — every producer still leads.
+    /// held the writer role (`busy`) when the frame was queued, read under the
+    /// same lock. Against the blocking drain it is exact — the drain clears
+    /// `busy` only under the lock in which it finds the queue empty, so it will
+    /// take this batch. Against an inline leader it is advisory: that leader
+    /// re-locks after each batch and sweeps this one unless the caller's own
+    /// `lead()` claims it first. Nothing relies on it for correctness — every
+    /// producer still leads.
     fn queue_only_busy(
         &self,
         fresh: bool,
@@ -1796,9 +1800,12 @@ impl AofWriter {
         if busy {
             // A performer is already writing — another worker's inline
             // leader, or the `always` drain on the blocking pool (6N-C4
-            // review F1, 6N-C5). It sweeps this batch when it is done, and
+            // review F1, 6N-C5C). Counted off a runtime too. It sweeps this batch when it is done, and
             // other writers join it meanwhile, so a yield would only delay
-            // this one; nor is there anything for the back-off to learn.
+            // this one; nor is there anything for the back-off to learn: a
+            // busy skip neither observes nor consumes a back-off slot, so
+            // "misses in a row" counts yields taken while no one was
+            // writing.
             // Still lead below: `lead()` returns at once while `busy` is
             // set, and leading is what keeps every frame owned.
             bump(&shared.stats.fanout_busy_skips, 1);
