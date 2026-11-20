@@ -1191,6 +1191,80 @@ pub(crate) async fn run_repl_server(
     }
 }
 
+/// A replica's connection while it is registered with the hub.
+///
+/// Once its `ReplicaHandle` is dropped — `fan_out` unregistered it because
+/// its queue was full, or the hub itself is gone — every write fails. A
+/// sender blocked writing to a peer that stopped reading used to stay there,
+/// holding its task, its socket, its connection permit and every frame still
+/// queued for it (up to the queue budget, out of every gauge, since the
+/// handle was gone), until the peer read again or TCP gave up (6N-C6 review
+/// M1). It now returns at once, and dropping it releases all of that. The
+/// replica resumes from the last frame it applied: it applies only frames it
+/// read whole, so a frame cut off mid-write is never applied.
+struct Registered<S> {
+    inner: S,
+    /// Resolves when the handle is dropped; `None` once it has.
+    handle: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+impl<S> Registered<S> {
+    /// `Err` once the replica is unregistered. Otherwise registers `cx` to
+    /// be woken when it is, so a write pending on a full socket fails then.
+    fn registered(&mut self, cx: &mut std::task::Context<'_>) -> std::io::Result<()> {
+        if let Some(handle) = &mut self.handle {
+            if std::pin::Pin::new(handle).poll(cx).is_pending() {
+                return Ok(());
+            }
+            self.handle = None;
+        }
+        Err(std::io::Error::new(
+            ErrorKind::ConnectionAborted,
+            "replica unregistered (its queue was full, or the primary is stopping)",
+        ))
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Registered<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Registered<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if let Err(e) = self.registered(cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if let Err(e) = self.registered(cx) {
+            return std::task::Poll::Ready(Err(e));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_replica<S>(
     mut socket: S,
@@ -1521,80 +1595,6 @@ where
         }
     }
     Ok(())
-}
-
-/// A replica's connection while it is registered with the hub.
-///
-/// Once its `ReplicaHandle` is dropped — `fan_out` unregistered it because
-/// its queue was full, or the hub itself is gone — every write fails. A
-/// sender blocked writing to a peer that stopped reading used to stay there,
-/// holding its task, its socket, its connection permit and every frame still
-/// queued for it (up to the queue budget, out of every gauge, since the
-/// handle was gone), until the peer read again or TCP gave up (6N-C6 review
-/// M1). It now returns at once, and dropping it releases all of that. The
-/// replica resumes from the last frame it applied: it applies only frames it
-/// read whole, so a frame cut off mid-write is never applied.
-struct Registered<S> {
-    inner: S,
-    /// Resolves when the handle is dropped; `None` once it has.
-    handle: Option<tokio::sync::oneshot::Receiver<()>>,
-}
-
-impl<S> Registered<S> {
-    /// `Err` once the replica is unregistered. Otherwise registers `cx` to
-    /// be woken when it is, so a write pending on a full socket fails then.
-    fn registered(&mut self, cx: &mut std::task::Context<'_>) -> std::io::Result<()> {
-        if let Some(handle) = &mut self.handle {
-            if std::pin::Pin::new(handle).poll(cx).is_pending() {
-                return Ok(());
-            }
-            self.handle = None;
-        }
-        Err(std::io::Error::new(
-            ErrorKind::ConnectionAborted,
-            "replica unregistered (its queue was full, or the primary is stopping)",
-        ))
-    }
-}
-
-impl<S: AsyncRead + Unpin> AsyncRead for Registered<S> {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
-}
-
-impl<S: AsyncWrite + Unpin> AsyncWrite for Registered<S> {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        if let Err(e) = self.registered(cx) {
-            return std::task::Poll::Ready(Err(e));
-        }
-        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        if let Err(e) = self.registered(cx) {
-            return std::task::Poll::Ready(Err(e));
-        }
-        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
 }
 
 /// Completes once the worker has run its other ready tasks — tokio's
