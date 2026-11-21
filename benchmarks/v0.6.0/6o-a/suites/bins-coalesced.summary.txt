@@ -1,0 +1,2 @@
+     Running unittests src/main.rs (target/debug/deps/recached_server-18936a47382cbc5b)
+test result: ok. 596 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 48.88s
