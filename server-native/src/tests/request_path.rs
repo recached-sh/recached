@@ -531,7 +531,10 @@ fn pipelined_commands_stay_within_their_allocation_budget() {
 
 /// The same budget for a standalone server with the AOF on (6O-A): every
 /// write takes the logged path, builds its frame and queues it behind the
-/// connection's gate. Measured after 6O-A: SET 4.05, INCR 2.95, HSET 6.05
+/// connection's gate. Counted on the connection's thread, as above: the
+/// command, its frame, the batch it joins and the gate. Work handed to the
+/// blocking pool (an `fdatasync`, never on this path under `everysec`) is
+/// not counted. Measured after 6O-A: SET 4.05, INCR 2.95, HSET 6.05
 /// allocations per command, from 11.05, 11.95 and 20.05 before it, when the
 /// frame encoder `format!`ted every header and HSET copied its parts.
 #[test]

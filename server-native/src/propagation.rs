@@ -1401,7 +1401,7 @@ async fn apply_write_effects_identified(
 /// One allocation of exactly the frame's size (6O-A), every byte written
 /// straight into it by the reply encoder's own stack-formatting helpers. It
 /// used to `format!` a temporary `String` per part and grow the `Vec` as it
-/// went: about nine allocator calls for a `SET`'s 75-byte frame, on every
+/// went: eight allocator calls for a `SET`'s 75-byte frame, on every
 /// logged, replicated or pushed write. The bytes are the same; the tests
 /// compare them with that original encoder.
 pub(crate) fn resp_push(parts: &[&[u8]]) -> Vec<u8> {
