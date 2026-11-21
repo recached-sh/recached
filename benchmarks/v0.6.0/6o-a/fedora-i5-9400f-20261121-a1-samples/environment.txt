@@ -1,0 +1,31 @@
+date_utc: 2026-11-21T05:04:54Z
+rc_bin[prof]: /home/dennispaler/recached-6oa-bench/bin/rc-base-prof sha256=8c769decd0664f4ef9935dd5dc364f95e50d6751428cf87fd6b8f287f879f484 source=a697f54f53ef061e2456972367433134fabde576 version=recached-server 0.6.0
+rc_bin[base]: /home/dennispaler/recached-6oa-bench/bin/rc-base sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 source=a697f54f53ef061e2456972367433134fabde576 version=recached-server 0.6.0
+kit_sha: 4ddf2ce241c0e668f6be7556c7fc5c9bdb61393e run-6oa.sh sha256=4b5427d19cd2a8abc64cffb5457be2ffe163e20925d614720235def4ab0f9ec7
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 2.29 2.26 2.64 3/1732 77271
+pressure_at_start: load=2.29 io_psi10=58.69/53.15 mem_psi10=0.00/0.00 swap_used_mib=1348 dirty_wb_kib=8944
+memory: total=15918 used=9570 available=6348 swap_total=8191 swap_used=1348
+aof_fs: /dev/sda3 btrfs rotational=1
+perf: absent perf_event_paranoid=2 uprof=/home/dennispaler/recached-6oa-bench/bin/uprof sha256=93aa43d37198729ef1c4b7c1d9e30084454ccb37b94ec72f0ce30391b6467afa
+cpus: server=0 bench=3-5 reps=1 requests_p1=1000000 requests_p16=5000000 always_requests=50000 clients=50 bench_threads=2 keyspace=100000
+cells: prof/rc-everysec-set-P1 prof/rc-noaof-set-P1 prof/rc-everysec-incr-P1 prof/rc-everysec-hset-P1 prof/rc-everysec-set-P16
+record_cells: prof/rc-everysec-set-P1 prof/rc-noaof-set-P1 prof/rc-everysec-incr-P1 prof/rc-everysec-hset-P1 prof/rc-everysec-set-P16 freq=2999
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: rustc 1.98.0 (88d9e12ae 2026-08-18)
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+   3915 dennisp+  20   0   12.5g 574168 241472 S  14.4   3.5   5:31.90 firefox
+   4232 dennisp+  20   0  678508  98348  61600 S  14.4   0.6   4:55.63 RDD Pro+
+   4298 dennisp+  20   0   11.7g 839560 119724 R  14.4   5.2   6:29.02 Isolate+
+    178 root       0 -20       0      0      0 I   4.8   0.0   0:00.51 kworker+
+    447 root       0 -20       0      0      0 I   4.8   0.0   0:00.53 kworker+
+   2722 dennisp+  20   0 3545860 263236 138800 S   4.8   1.6   2:32.67 gnome-s+
+  74279 root      20   0       0      0      0 I   4.8   0.0   0:09.68 kworker+
+loadavg_at_end: 3.64 2.77 2.79 2/1732 78210
+pressure_at_end: load=3.64 io_psi10=17.20/9.59 mem_psi10=0.00/0.00 swap_used_mib=1348 dirty_wb_kib=5792

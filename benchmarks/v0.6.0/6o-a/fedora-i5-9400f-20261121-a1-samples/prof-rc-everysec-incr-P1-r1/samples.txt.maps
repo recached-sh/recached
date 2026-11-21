@@ -1,0 +1,59 @@
+56087b17d000-56087b381000 r--p 00000000 00:24 23613615                   /home/dennispaler/recached-6oa-bench/bin/rc-base-prof
+56087b381000-56087bae3000 r-xp 00203000 00:24 23613615                   /home/dennispaler/recached-6oa-bench/bin/rc-base-prof
+56087bae3000-56087bb30000 r--p 00964000 00:24 23613615                   /home/dennispaler/recached-6oa-bench/bin/rc-base-prof
+56087bb30000-56087bb35000 rw-p 009b0000 00:24 23613615                   /home/dennispaler/recached-6oa-bench/bin/rc-base-prof
+56087bb35000-56087bd43000 rw-p 00000000 00:00 0 
+5608acf4f000-5608acf70000 rw-p 00000000 00:00 0                          [heap]
+7fc8d0000000-7fc8d0021000 rw-p 00000000 00:00 0 
+7fc8d0021000-7fc8d4000000 ---p 00000000 00:00 0 
+7fc8d4000000-7fc8d4021000 rw-p 00000000 00:00 0 
+7fc8d4021000-7fc8d8000000 ---p 00000000 00:00 0 
+7fc8d8000000-7fc8d8021000 rw-p 00000000 00:00 0 
+7fc8d8021000-7fc8dc000000 ---p 00000000 00:00 0 
+7fc8dc000000-7fc8dc021000 rw-p 00000000 00:00 0 
+7fc8dc021000-7fc8e0000000 ---p 00000000 00:00 0 
+7fc8e0000000-7fc8e0021000 rw-p 00000000 00:00 0 
+7fc8e0021000-7fc8e4000000 ---p 00000000 00:00 0 
+7fc8e5f00000-7fc8e6800000 rw-p 00000000 00:00 0 
+7fc8e68fa000-7fc8e71fa000 rw-p 00000000 00:00 0 
+7fc8e71fa000-7fc8e8400000 rw-p 00000000 00:00 0 
+7fc8e8400000-7fc8e8c00000 rw-p 00000000 00:00 0 
+7fc8e8ce3000-7fc8e8ce4000 ---p 00000000 00:00 0 
+7fc8e8ce4000-7fc8e8ce6000 rw-p 00000000 00:00 0 
+7fc8e8ce6000-7fc8e8ce7000 ---p 00000000 00:00 0 
+7fc8e8ce7000-7fc8e8ce9000 rw-p 00000000 00:00 0 
+7fc8e8ce9000-7fc8e8cea000 ---p 00000000 00:00 0 
+7fc8e8cea000-7fc8e8cec000 rw-p 00000000 00:00 0 
+7fc8e8cec000-7fc8e8ced000 ---p 00000000 00:00 0 
+7fc8e8ced000-7fc8e8cef000 rw-p 00000000 00:00 0 
+7fc8e8cef000-7fc8e8cf0000 ---p 00000000 00:00 0 
+7fc8e8cf0000-7fc8e8cf2000 rw-p 00000000 00:00 0 
+7fc8e8cf2000-7fc8e8cf3000 rw-p 00000000 00:00 0 
+7fc8e8cf3000-7fc8e8cf4000 rw-p 00000000 00:00 0 
+7fc8e8cf4000-7fc8e8cf5000 ---p 00000000 00:00 0 
+7fc8e8cf5000-7fc8e8cf7000 rw-p 00000000 00:00 0 
+7fc8e8cf7000-7fc8e8cfc000 rw-p 00000000 00:00 0 
+7fc8e8cfc000-7fc8e8d76000 r--p 00000000 00:24 249551                     /usr/lib64/libc.so.6
+7fc8e8d76000-7fc8e8eec000 r-xp 0007a000 00:24 249551                     /usr/lib64/libc.so.6
+7fc8e8eec000-7fc8e8ef0000 r--p 001ef000 00:24 249551                     /usr/lib64/libc.so.6
+7fc8e8ef0000-7fc8e8ef2000 rw-p 001f3000 00:24 249551                     /usr/lib64/libc.so.6
+7fc8e8ef2000-7fc8e8efa000 rw-p 00000000 00:00 0 
+7fc8e8efa000-7fc8e8f81000 r--p 00000000 00:24 249553                     /usr/lib64/libm.so.6
+7fc8e8f81000-7fc8e9014000 r-xp 00087000 00:24 249553                     /usr/lib64/libm.so.6
+7fc8e9014000-7fc8e9015000 r--p 00119000 00:24 249553                     /usr/lib64/libm.so.6
+7fc8e9015000-7fc8e9016000 rw-p 0011a000 00:24 249553                     /usr/lib64/libm.so.6
+7fc8e9016000-7fc8e901e000 r--p 00000000 00:24 239318                     /usr/lib64/libgcc_s-16-20261029.so.1
+7fc8e901e000-7fc8e9042000 r-xp 00008000 00:24 239318                     /usr/lib64/libgcc_s-16-20261029.so.1
+7fc8e9042000-7fc8e9043000 r--p 0002b000 00:24 239318                     /usr/lib64/libgcc_s-16-20261029.so.1
+7fc8e9043000-7fc8e9046000 rw-p 00000000 00:00 0 
+7fc8e9046000-7fc8e905a000 r--p 00000000 00:24 550889                     /etc/ld.so.cache
+7fc8e905a000-7fc8e905e000 r--p 00000000 00:00 0                          [vvar]
+7fc8e905e000-7fc8e9060000 r--p 00000000 00:00 0                          [vvar_vclock]
+7fc8e9060000-7fc8e9062000 r-xp 00000000 00:00 0                          [vdso]
+7fc8e9062000-7fc8e906f000 r--p 00000000 00:24 249548                     /usr/lib64/ld-linux-x86-64.so.2
+7fc8e906f000-7fc8e909c000 r-xp 0000d000 00:24 249548                     /usr/lib64/ld-linux-x86-64.so.2
+7fc8e909c000-7fc8e909e000 r--p 00039000 00:24 249548                     /usr/lib64/ld-linux-x86-64.so.2
+7fc8e909e000-7fc8e909f000 rw-p 0003b000 00:24 249548                     /usr/lib64/ld-linux-x86-64.so.2
+7fc8e909f000-7fc8e90a0000 rw-p 00000000 00:00 0 
+7ffd6fac6000-7ffd6fae7000 rw-p 00000000 00:00 0                          [stack]
+ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                  [vsyscall]

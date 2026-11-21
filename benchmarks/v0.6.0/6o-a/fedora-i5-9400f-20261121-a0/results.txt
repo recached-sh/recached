@@ -1,0 +1,576 @@
+cell=base/rc-everysec-set-P1 label=base kind=rc-everysec test=set P=1 rep=1 requests=2000000 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 cpu_user_s=4.490 cpu_sys_s=8.130 wall_s=17.758 gen_user_s=2.212 gen_sys_s=13.113 rss_kb=26768 data_dir_bytes=157502400
+  pressure_before: load=0.41 io_psi10=5.29/5.11 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=3848
+  pressure_after: load=1.51 io_psi10=8.78/3.99 mem_psi10=0.04/0.04 swap_used_mib=1424 dirty_wb_kib=3720
+  ctxsw_before: 68 16
+  ctxsw_after:  814 256
+  syscalls_before: 43 294
+  syscalls_after:  43 200264
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:3:0.160:0.020 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:3:4.640:8.130 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:264 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:264 recached_aof_write_usec:4973 recached_aof_fsyncs:3 recached_aof_fsync_usec:452427 recached_aof_queue_wait_usec:174959 recached_aof_batch_waiters:1827 recached_aof_inline_batches:264 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1560 recached_aof_coalesce_missed:3 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,11,112,58,81,2,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:200215 recached_aof_frames:2100032 recached_aof_bytes:157502400 recached_aof_write_calls:200215 recached_aof_write_usec:1817087 recached_aof_fsyncs:22 recached_aof_fsync_usec:3735903 recached_aof_queue_wait_usec:4822743 recached_aof_batch_waiters:2201795 recached_aof_inline_batches:200215 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2001524 recached_aof_coalesce_missed:7 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:270,2731,63992,89241,43713,4,11,112,58,81,2,0 
+  uprof: uprof_threads=5 cycles=22424062305 opened=5 min_running=1.000 instructions=27805327354 opened=5 min_running=1.000 branch_misses=41407974 opened=5 min_running=1.000 cache_misses=43105739 opened=5 min_running=1.000 l1d_read_misses=616054245 opened=5 min_running=1.000 task_clock_ns=16787969197 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "SET","112657.02","0.432","0.048","0.399","0.543","0.567","215.679"
+cell=redis-set-P1 label=none kind=redis test=set P=1 rep=1 requests=2000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e cpu_user_s=2.110 cpu_sys_s=6.800 wall_s=14.511 gen_user_s=1.816 gen_sys_s=11.853 rss_kb=25328 data_dir_bytes=31668733
+  pressure_before: load=1.51 io_psi10=8.78/3.99 mem_psi10=0.04/0.04 swap_used_mib=1424 dirty_wb_kib=4584
+  pressure_after: load=2.31 io_psi10=17.00/8.22 mem_psi10=0.76/0.71 swap_used_mib=1399 dirty_wb_kib=13708
+  ctxsw_before: 96 183
+  ctxsw_after:  1567 2901
+  syscalls_before: 1653 1730
+  syscalls_after:  2001982 2047093
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.100:0.020 
+  threads_after:  bio_aof:1:0.000:0.020 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:2.210:6.790 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:0 total_net_input_bytes:7502530 total_net_output_bytes:500224 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100039 instantaneous_ops_per_sec:148362 total_net_input_bytes:157502632 total_net_output_bytes:10501875 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=11647817658 opened=5 min_running=1.000 instructions=16379654751 opened=5 min_running=1.000 branch_misses=17673186 opened=5 min_running=1.000 cache_misses=51343170 opened=5 min_running=1.000 l1d_read_misses=224239570 opened=5 min_running=1.000 task_clock_ns=12561157079 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "SET","137873.98","0.338","0.048","0.279","0.391","0.607","721.919"
+cell=valkey-set-P1 label=none kind=valkey test=set P=1 rep=1 requests=2000000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 cpu_user_s=2.530 cpu_sys_s=6.950 wall_s=14.263 gen_user_s=1.974 gen_sys_s=11.852 rss_kb=19424 data_dir_bytes=31788884
+  pressure_before: load=2.31 io_psi10=17.00/8.22 mem_psi10=0.76/0.71 swap_used_mib=1399 dirty_wb_kib=13428
+  pressure_after: load=3.37 io_psi10=12.27/6.18 mem_psi10=0.08/0.07 swap_used_mib=1399 dirty_wb_kib=17768
+  ctxsw_before: 151 56
+  ctxsw_after:  1328 4452
+  syscalls_before: 1681 1658
+  syscalls_after:  2002011 2053015
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.120:0.010 
+  threads_after:  bio_aof:1:0.000:0.020 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:2.650:6.930 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:0 total_net_input_bytes:7502530 total_net_output_bytes:500224 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100041 instantaneous_ops_per_sec:131534 total_net_input_bytes:157502632 total_net_output_bytes:10502350 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=13842629227 opened=7 min_running=1.000 instructions=22321525649 opened=7 min_running=1.000 branch_misses=18943024 opened=7 min_running=1.000 cache_misses=36461135 opened=7 min_running=1.000 l1d_read_misses=213199178 opened=7 min_running=1.000 task_clock_ns=13138249091 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "SET","140272.12","0.333","0.048","0.295","0.415","0.575","285.951"
+cell=base/rc-everysec-incr-P1 label=base kind=rc-everysec test=incr P=1 rep=1 requests=2000000 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 cpu_user_s=4.580 cpu_sys_s=8.330 wall_s=17.507 gen_user_s=2.220 gen_sys_s=13.050 rss_kb=27944 data_dir_bytes=127202156
+  pressure_before: load=3.37 io_psi10=12.27/6.18 mem_psi10=0.08/0.07 swap_used_mib=1399 dirty_wb_kib=7304
+  pressure_after: load=3.44 io_psi10=5.47/1.89 mem_psi10=0.00/0.00 swap_used_mib=1399 dirty_wb_kib=4256
+  ctxsw_before: 69 64
+  ctxsw_after:  670 4177
+  syscalls_before: 43 274
+  syscalls_after:  43 200116
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:6:0.160:0.020 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:6:4.740:8.340 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:245 recached_aof_frames:100032 recached_aof_bytes:6001920 recached_aof_write_calls:245 recached_aof_write_usec:4495 recached_aof_fsyncs:4 recached_aof_fsync_usec:465685 recached_aof_queue_wait_usec:179612 recached_aof_batch_waiters:1808 recached_aof_inline_batches:245 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1557 recached_aof_coalesce_missed:6 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,23,50,73,98,1,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:200070 recached_aof_frames:2100032 recached_aof_bytes:127202156 recached_aof_write_calls:200070 recached_aof_write_usec:1210407 recached_aof_fsyncs:22 recached_aof_fsync_usec:2614514 recached_aof_queue_wait_usec:4960664 recached_aof_batch_waiters:2201651 recached_aof_inline_batches:200070 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2001351 recached_aof_coalesce_missed:52 recached_aof_coalesce_backoffs:5 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:971,5297,67232,89683,36461,181,23,50,73,98,1,0 
+  uprof: uprof_threads=8 cycles=23242056141 opened=8 min_running=1.000 instructions=29028803176 opened=8 min_running=1.000 branch_misses=39026265 opened=8 min_running=1.000 cache_misses=69195716 opened=8 min_running=1.000 l1d_read_misses=607730167 opened=8 min_running=1.000 task_clock_ns=17134464884 opened=8 min_running=1.000 context_switches=0 opened=8 min_running=1.000 
+  bench_err: 0
+  bench: "INCR","114272.65","0.425","0.032","0.415","0.567","0.615","23.247"
+cell=redis-incr-P1 label=none kind=redis test=incr P=1 rep=1 requests=2000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e cpu_user_s=2.070 cpu_sys_s=6.120 wall_s=12.510 gen_user_s=1.819 gen_sys_s=11.566 rss_kb=19020 data_dir_bytes=20966115
+  pressure_before: load=3.44 io_psi10=5.47/1.89 mem_psi10=0.00/0.00 swap_used_mib=1399 dirty_wb_kib=4188
+  pressure_after: load=3.27 io_psi10=8.76/3.41 mem_psi10=0.00/0.00 swap_used_mib=1399 dirty_wb_kib=7888
+  ctxsw_before: 75 41
+  ctxsw_after:  1024 3589
+  syscalls_before: 1630 1682
+  syscalls_after:  2001876 2049363
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.080:0.010 
+  threads_after:  bio_aof:1:0.000:0.010 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:2.150:6.120 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:62473 total_net_input_bytes:4101442 total_net_output_bytes:400192 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100039 instantaneous_ops_per_sec:156490 total_net_input_bytes:86101544 total_net_output_bytes:9602060 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=9651748478 opened=5 min_running=1.000 instructions=14355110809 opened=5 min_running=1.000 branch_misses=17122841 opened=5 min_running=1.000 cache_misses=33397262 opened=5 min_running=1.000 l1d_read_misses=184928335 opened=5 min_running=1.000 task_clock_ns=11841589599 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "INCR","159936.03","0.295","0.048","0.271","0.359","0.519","292.095"
+cell=valkey-incr-P1 label=none kind=valkey test=incr P=1 rep=1 requests=2000000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 cpu_user_s=2.210 cpu_sys_s=6.370 wall_s=13.012 gen_user_s=1.848 gen_sys_s=11.704 rss_kb=19780 data_dir_bytes=21192190
+  pressure_before: load=3.27 io_psi10=7.90/2.79 mem_psi10=0.00/0.00 swap_used_mib=1399 dirty_wb_kib=7192
+  pressure_after: load=2.94 io_psi10=11.67/5.92 mem_psi10=0.00/0.00 swap_used_mib=1399 dirty_wb_kib=8380
+  ctxsw_before: 103 50
+  ctxsw_after:  964 3728
+  syscalls_before: 1666 1652
+  syscalls_after:  2001917 2049329
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.090:0.020 
+  threads_after:  bio_aof:1:0.000:0.010 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:2.290:6.380 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:0 total_net_input_bytes:4101442 total_net_output_bytes:400192 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100041 instantaneous_ops_per_sec:156482 total_net_input_bytes:86101544 total_net_output_bytes:9602521 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=11038634623 opened=7 min_running=1.000 instructions=17325802419 opened=7 min_running=1.000 branch_misses=15817672 opened=7 min_running=1.000 cache_misses=33815960 opened=7 min_running=1.000 l1d_read_misses=175114701 opened=7 min_running=1.000 task_clock_ns=12202413249 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "INCR","153775.19","0.305","0.048","0.279","0.375","0.527","373.759"
+cell=base/rc-everysec-hset-P1 label=base kind=rc-everysec test=hset P=1 rep=1 requests=2000000 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 cpu_user_s=4.940 cpu_sys_s=8.490 wall_s=18.258 gen_user_s=2.272 gen_sys_s=13.247 rss_kb=24612 data_dir_bytes=193202944
+  pressure_before: load=2.94 io_psi10=11.67/5.92 mem_psi10=0.00/0.00 swap_used_mib=1399 dirty_wb_kib=7528
+  pressure_after: load=2.70 io_psi10=6.39/2.41 mem_psi10=0.00/0.00 swap_used_mib=1399 dirty_wb_kib=9024
+  ctxsw_before: 73 68
+  ctxsw_after:  682 5077
+  syscalls_before: 43 284
+  syscalls_after:  43 200315
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.140:0.020 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:5.070:8.510 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:252 recached_aof_frames:100032 recached_aof_bytes:9202944 recached_aof_write_calls:252 recached_aof_write_usec:4693 recached_aof_fsyncs:5 recached_aof_fsync_usec:711093 recached_aof_queue_wait_usec:161615 recached_aof_batch_waiters:1815 recached_aof_inline_batches:252 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1558 recached_aof_coalesce_missed:5 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,20,55,72,105,0,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:200266 recached_aof_frames:2100032 recached_aof_bytes:193202944 recached_aof_write_calls:200266 recached_aof_write_usec:1481622 recached_aof_fsyncs:23 recached_aof_fsync_usec:3315297 recached_aof_queue_wait_usec:5216879 recached_aof_batch_waiters:2201847 recached_aof_inline_batches:200266 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2001332 recached_aof_coalesce_missed:71 recached_aof_coalesce_backoffs:5 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:938,4015,65652,92597,36684,128,20,55,72,105,0,0 
+  uprof: uprof_threads=4 cycles=24532425171 opened=4 min_running=1.000 instructions=32304757951 opened=4 min_running=1.000 branch_misses=39317352 opened=4 min_running=1.000 cache_misses=60985430 opened=4 min_running=1.000 l1d_read_misses=631988881 opened=4 min_running=1.000 task_clock_ns=17646949622 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "HSET","109577.03","0.442","0.024","0.423","0.575","0.631","126.143"
+cell=redis-hset-P1 label=none kind=redis test=hset P=1 rep=1 requests=2000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e cpu_user_s=2.330 cpu_sys_s=6.750 wall_s=14.260 gen_user_s=1.998 gen_sys_s=11.805 rss_kb=21888 data_dir_bytes=74240830
+  pressure_before: load=2.70 io_psi10=6.39/2.41 mem_psi10=0.00/0.00 swap_used_mib=1399 dirty_wb_kib=6304
+  pressure_after: load=2.86 io_psi10=9.79/4.02 mem_psi10=0.00/0.00 swap_used_mib=1399 dirty_wb_kib=5312
+  ctxsw_before: 85 42
+  ctxsw_after:  1641 3802
+  syscalls_before: 1637 1736
+  syscalls_after:  2001967 2053061
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.110:0.010 
+  threads_after:  bio_aof:1:0.000:0.030 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:2.440:6.720 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:0 total_net_input_bytes:9203074 total_net_output_bytes:400192 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100039 instantaneous_ops_per_sec:135474 total_net_input_bytes:193203176 total_net_output_bytes:8401843 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=12326398185 opened=5 min_running=1.000 instructions=19398006353 opened=5 min_running=1.000 branch_misses=17402945 opened=5 min_running=1.000 cache_misses=47183753 opened=5 min_running=1.000 l1d_read_misses=269828682 opened=5 min_running=1.000 task_clock_ns=12711979103 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "HSET","140301.64","0.332","0.048","0.287","0.399","0.567","272.383"
+cell=valkey-hset-P1 label=none kind=valkey test=hset P=1 rep=1 requests=2000000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 cpu_user_s=2.540 cpu_sys_s=7.060 wall_s=14.261 gen_user_s=1.941 gen_sys_s=11.640 rss_kb=28516 data_dir_bytes=67925570
+  pressure_before: load=2.79 io_psi10=10.55/4.74 mem_psi10=0.00/0.00 swap_used_mib=1399 dirty_wb_kib=5292
+  pressure_after: load=2.84 io_psi10=11.41/4.64 mem_psi10=0.00/0.00 swap_used_mib=1399 dirty_wb_kib=9200
+  ctxsw_before: 96 12
+  ctxsw_after:  1530 1584
+  syscalls_before: 1647 1737
+  syscalls_after:  2001981 2050689
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.130:0.010 
+  threads_after:  bio_aof:1:0.000:0.030 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:2.670:7.030 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:0 total_net_input_bytes:9203074 total_net_output_bytes:400192 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100041 instantaneous_ops_per_sec:146578 total_net_input_bytes:193203176 total_net_output_bytes:8402318 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=14267265621 opened=7 min_running=1.000 instructions=25031292055 opened=7 min_running=1.000 branch_misses=16458829 opened=7 min_running=1.000 cache_misses=34574974 opened=7 min_running=1.000 l1d_read_misses=220811993 opened=7 min_running=1.000 task_clock_ns=13249402878 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "HSET","140301.64","0.334","0.048","0.295","0.415","0.575","374.783"
+cell=base/rc-everysec-set-P16 label=base kind=rc-everysec test=set P=16 rep=1 requests=10000000 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 cpu_user_s=13.320 cpu_sys_s=3.860 wall_s=21.022 gen_user_s=1.674 gen_sys_s=4.825 rss_kb=26556 data_dir_bytes=757502400
+  pressure_before: load=2.84 io_psi10=11.41/4.64 mem_psi10=0.00/0.00 swap_used_mib=1399 dirty_wb_kib=7632
+  pressure_after: load=2.64 io_psi10=10.36/4.52 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=20436
+  ctxsw_before: 60 19
+  ctxsw_after:  2205 827
+  syscalls_before: 43 279
+  syscalls_after:  43 62307
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.160:0.010 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:3:13.480:3.850 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:10100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:252 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:252 recached_aof_write_usec:4652 recached_aof_fsyncs:3 recached_aof_fsync_usec:313335 recached_aof_queue_wait_usec:170069 recached_aof_batch_waiters:1815 recached_aof_inline_batches:252 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1558 recached_aof_coalesce_missed:5 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,24,62,57,109,0,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:62262 recached_aof_frames:10100032 recached_aof_bytes:757502400 recached_aof_write_calls:62262 recached_aof_write_usec:3129727 recached_aof_fsyncs:24 recached_aof_fsync_usec:5336104 recached_aof_queue_wait_usec:14173696 recached_aof_batch_waiters:688846 recached_aof_inline_batches:62262 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:626516 recached_aof_coalesce_missed:15 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,463,811,9493,43217,8143,135,0,0 
+  uprof: uprof_threads=4 cycles=55885681445 opened=4 min_running=1.000 instructions=100082391863 opened=4 min_running=1.000 branch_misses=27175562 opened=4 min_running=1.000 cache_misses=223877650 opened=4 min_running=1.000 l1d_read_misses=541716976 opened=4 min_running=1.000 task_clock_ns=18510843109 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "SET","475805.28","1.632","0.128","1.463","1.839","2.095","654.847"
+cell=redis-set-P16 label=none kind=redis test=set P=16 rep=1 requests=10000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e cpu_user_s=10.390 cpu_sys_s=3.640 wall_s=20.035 gen_user_s=1.815 gen_sys_s=4.521 rss_kb=26876 data_dir_bytes=74123178
+  pressure_before: load=2.64 io_psi10=10.36/4.52 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=7872
+  pressure_after: load=3.03 io_psi10=25.45/10.54 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=16988
+  ctxsw_before: 94 10
+  ctxsw_after:  3682 3547
+  syscalls_before: 1645 1736
+  syscalls_after:  627575 655733
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.100:0.010 
+  threads_after:  bio_aof:1:0.000:0.090 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:10.480:3.550 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:0 total_net_input_bytes:7502530 total_net_output_bytes:500224 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:10100039 instantaneous_ops_per_sec:566132 total_net_input_bytes:757502632 total_net_output_bytes:50501875 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=44467918754 opened=5 min_running=1.000 instructions=73406742390 opened=5 min_running=1.000 branch_misses=33489211 opened=5 min_running=1.000 cache_misses=206431647 opened=5 min_running=1.000 l1d_read_misses=259005948 opened=5 min_running=1.000 task_clock_ns=15217266841 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "SET","499276.06","1.546","0.136","1.151","1.559","3.839","547.839"
+cell=valkey-set-P16 label=none kind=valkey test=set P=16 rep=1 requests=10000000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 cpu_user_s=10.100 cpu_sys_s=3.640 wall_s=20.289 gen_user_s=1.762 gen_sys_s=4.656 rss_kb=31516 data_dir_bytes=52023813
+  pressure_before: load=3.03 io_psi10=25.55/11.35 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=6952
+  pressure_after: load=3.10 io_psi10=23.88/10.82 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=20724
+  ctxsw_before: 126 20
+  ctxsw_after:  3415 2972
+  syscalls_before: 1662 1654
+  syscalls_after:  627607 655964
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.110:0.020 
+  threads_after:  bio_aof:1:0.000:0.090 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:10.200:3.570 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:0 total_net_input_bytes:7502530 total_net_output_bytes:500224 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:10100041 instantaneous_ops_per_sec:524084 total_net_input_bytes:757502632 total_net_output_bytes:50502350 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=43292430724 opened=7 min_running=1.000 instructions=104790379506 opened=7 min_running=1.000 branch_misses=39250147 opened=7 min_running=1.000 cache_misses=93089687 opened=7 min_running=1.000 l1d_read_misses=281915366 opened=7 min_running=1.000 task_clock_ns=14946538724 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "SET","493023.69","1.553","0.136","1.143","1.455","3.671","749.567"
+cell=base/rc-everysec-set-P1 label=base kind=rc-everysec test=set P=1 rep=2 requests=2000000 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 cpu_user_s=4.570 cpu_sys_s=8.240 wall_s=17.257 gen_user_s=2.245 gen_sys_s=12.884 rss_kb=26260 data_dir_bytes=157502400
+  pressure_before: load=3.10 io_psi10=23.88/10.82 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=7968
+  pressure_after: load=2.97 io_psi10=8.90/3.06 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=11580
+  ctxsw_before: 69 26
+  ctxsw_after:  734 1178
+  syscalls_before: 43 284
+  syscalls_after:  43 200065
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.160:0.010 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:4.720:8.240 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:249 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:249 recached_aof_write_usec:4633 recached_aof_fsyncs:6 recached_aof_fsync_usec:394668 recached_aof_queue_wait_usec:169482 recached_aof_batch_waiters:1812 recached_aof_inline_batches:249 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1557 recached_aof_coalesce_missed:6 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,36,45,68,97,3,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:200014 recached_aof_frames:2100032 recached_aof_bytes:157502400 recached_aof_write_calls:200014 recached_aof_write_usec:1275550 recached_aof_fsyncs:23 recached_aof_fsync_usec:3757245 recached_aof_queue_wait_usec:4854220 recached_aof_batch_waiters:2201594 recached_aof_inline_batches:200014 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2001366 recached_aof_coalesce_missed:101 recached_aof_coalesce_backoffs:3 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:1074,5242,66696,89140,37503,110,36,45,68,97,3,0 
+  uprof: uprof_threads=4 cycles=22743708672 opened=4 min_running=1.000 instructions=27803592026 opened=4 min_running=1.000 branch_misses=38598900 opened=4 min_running=1.000 cache_misses=80020108 opened=4 min_running=1.000 l1d_read_misses=611774215 opened=4 min_running=1.000 task_clock_ns=17008126348 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "SET","115935.31","0.422","0.032","0.407","0.559","0.615","25.423"
+cell=redis-set-P1 label=none kind=redis test=set P=1 rep=2 requests=2000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e cpu_user_s=2.390 cpu_sys_s=6.370 wall_s=13.761 gen_user_s=1.888 gen_sys_s=11.682 rss_kb=23140 data_dir_bytes=32361583
+  pressure_before: load=2.97 io_psi10=8.90/3.06 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=6120
+  pressure_after: load=2.69 io_psi10=13.38/5.40 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=15656
+  ctxsw_before: 95 10
+  ctxsw_after:  1230 1262
+  syscalls_before: 1642 1737
+  syscalls_after:  2001967 2046144
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.090:0.010 
+  threads_after:  bio_aof:1:0.000:0.020 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:2.470:6.350 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:0 total_net_input_bytes:7502530 total_net_output_bytes:500224 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100039 instantaneous_ops_per_sec:159584 total_net_input_bytes:157502632 total_net_output_bytes:10501875 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=11570270775 opened=5 min_running=1.000 instructions=16339295160 opened=5 min_running=1.000 branch_misses=16183822 opened=5 min_running=1.000 cache_misses=49130511 opened=5 min_running=1.000 l1d_read_misses=224891929 opened=5 min_running=1.000 task_clock_ns=12347326077 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "SET","145391.11","0.326","0.048","0.279","0.383","0.527","707.583"
+cell=valkey-set-P1 label=none kind=valkey test=set P=1 rep=2 requests=2000000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 cpu_user_s=2.580 cpu_sys_s=6.950 wall_s=14.515 gen_user_s=1.926 gen_sys_s=11.786 rss_kb=19680 data_dir_bytes=33305309
+  pressure_before: load=2.55 io_psi10=13.38/5.40 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=6908
+  pressure_after: load=3.64 io_psi10=14.25/6.02 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=5484
+  ctxsw_before: 134 22
+  ctxsw_after:  1298 1372
+  syscalls_before: 1657 1582
+  syscalls_after:  2001993 2049344
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.110:0.020 
+  threads_after:  bio_aof:1:0.000:0.030 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:2.680:6.940 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:0 total_net_input_bytes:7502530 total_net_output_bytes:500224 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100041 instantaneous_ops_per_sec:135227 total_net_input_bytes:157502632 total_net_output_bytes:10502350 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=14056162523 opened=7 min_running=1.000 instructions=22327779746 opened=7 min_running=1.000 branch_misses=16820767 opened=7 min_running=1.000 cache_misses=36163030 opened=7 min_running=1.000 l1d_read_misses=208665098 opened=7 min_running=1.000 task_clock_ns=13178330200 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "SET","137835.97","0.339","0.048","0.295","0.415","0.575","324.095"
+cell=base/rc-everysec-incr-P1 label=base kind=rc-everysec test=incr P=1 rep=2 requests=2000000 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 cpu_user_s=4.540 cpu_sys_s=8.230 wall_s=17.508 gen_user_s=2.165 gen_sys_s=13.067 rss_kb=27804 data_dir_bytes=127202133
+  pressure_before: load=3.64 io_psi10=14.57/6.92 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=5864
+  pressure_after: load=3.54 io_psi10=7.64/3.09 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=9440
+  ctxsw_before: 68 24
+  ctxsw_after:  654 606
+  syscalls_before: 43 284
+  syscalls_after:  43 200137
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.170:0.010 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:4.710:8.230 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:248 recached_aof_frames:100032 recached_aof_bytes:6001920 recached_aof_write_calls:248 recached_aof_write_usec:4327 recached_aof_fsyncs:6 recached_aof_fsync_usec:588766 recached_aof_queue_wait_usec:179432 recached_aof_batch_waiters:1811 recached_aof_inline_batches:248 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1560 recached_aof_coalesce_missed:3 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,19,62,44,120,3,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:200084 recached_aof_frames:2100032 recached_aof_bytes:127202133 recached_aof_write_calls:200084 recached_aof_write_usec:1310887 recached_aof_fsyncs:24 recached_aof_fsync_usec:3434383 recached_aof_queue_wait_usec:4999151 recached_aof_batch_waiters:2201664 recached_aof_inline_batches:200084 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2001380 recached_aof_coalesce_missed:55 recached_aof_coalesce_backoffs:4 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:915,4199,65375,92550,36618,179,19,62,44,120,3,0 
+  uprof: uprof_threads=4 cycles=23472687188 opened=4 min_running=1.000 instructions=29032011860 opened=4 min_running=1.000 branch_misses=42604827 opened=4 min_running=1.000 cache_misses=70131307 opened=4 min_running=1.000 l1d_read_misses=607332788 opened=4 min_running=1.000 task_clock_ns=17009371979 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "INCR","114272.65","0.424","0.032","0.407","0.551","0.599","73.535"
+cell=redis-incr-P1 label=none kind=redis test=incr P=1 rep=2 requests=2000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e cpu_user_s=1.910 cpu_sys_s=6.320 wall_s=12.507 gen_user_s=2.014 gen_sys_s=11.752 rss_kb=16536 data_dir_bytes=20994159
+  pressure_before: load=3.26 io_psi10=7.64/3.09 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=6224
+  pressure_after: load=3.22 io_psi10=9.12/3.92 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=9180
+  ctxsw_before: 90 8
+  ctxsw_after:  814 675
+  syscalls_before: 1649 1736
+  syscalls_after:  2001896 2053973
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.080:0.010 
+  threads_after:  bio_aof:1:0.000:0.010 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:1.980:6.320 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:0 total_net_input_bytes:4101442 total_net_output_bytes:400192 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100039 instantaneous_ops_per_sec:150120 total_net_input_bytes:86101544 total_net_output_bytes:9602020 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=9664334076 opened=5 min_running=1.000 instructions=14377127457 opened=5 min_running=1.000 branch_misses=15162925 opened=5 min_running=1.000 cache_misses=33726341 opened=5 min_running=1.000 l1d_read_misses=186104003 opened=5 min_running=1.000 task_clock_ns=11829894655 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "INCR","159974.41","0.288","0.048","0.271","0.359","0.503","274.175"
+cell=valkey-incr-P1 label=none kind=valkey test=incr P=1 rep=2 requests=2000000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 cpu_user_s=2.030 cpu_sys_s=6.690 wall_s=13.761 gen_user_s=1.833 gen_sys_s=11.621 rss_kb=17612 data_dir_bytes=20933070
+  pressure_before: load=3.22 io_psi10=9.12/3.92 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=6204
+  pressure_after: load=3.31 io_psi10=10.84/6.12 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=8280
+  ctxsw_before: 103 9
+  ctxsw_after:  739 712
+  syscalls_before: 1651 1737
+  syscalls_after:  2001902 2050904
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.100:0.010 
+  threads_after:  bio_aof:1:0.000:0.010 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:2.130:6.690 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:0 total_net_input_bytes:4101442 total_net_output_bytes:400192 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100041 instantaneous_ops_per_sec:154962 total_net_input_bytes:86101544 total_net_output_bytes:9602527 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=11187715238 opened=7 min_running=1.000 instructions=17319394629 opened=7 min_running=1.000 branch_misses=16270221 opened=7 min_running=1.000 cache_misses=32695385 opened=7 min_running=1.000 l1d_read_misses=169613557 opened=7 min_running=1.000 task_clock_ns=12350463280 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "INCR","145391.11","0.325","0.040","0.279","0.383","0.535","672.767"
+cell=base/rc-everysec-hset-P1 label=base kind=rc-everysec test=hset P=1 rep=2 requests=2000000 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 cpu_user_s=4.910 cpu_sys_s=8.370 wall_s=18.008 gen_user_s=2.186 gen_sys_s=13.008 rss_kb=24756 data_dir_bytes=193202944
+  pressure_before: load=3.31 io_psi10=9.60/5.01 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=6180
+  pressure_after: load=3.49 io_psi10=9.64/4.57 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=8800
+  ctxsw_before: 115 26
+  ctxsw_after:  739 617
+  syscalls_before: 43 280
+  syscalls_after:  43 199965
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.140:0.020 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:5.050:8.380 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:245 recached_aof_frames:100032 recached_aof_bytes:9202944 recached_aof_write_calls:245 recached_aof_write_usec:4603 recached_aof_fsyncs:6 recached_aof_fsync_usec:1794198 recached_aof_queue_wait_usec:161717 recached_aof_batch_waiters:1808 recached_aof_inline_batches:245 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1560 recached_aof_coalesce_missed:3 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,12,34,120,78,1,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:199914 recached_aof_frames:2100032 recached_aof_bytes:193202944 recached_aof_write_calls:199914 recached_aof_write_usec:1563302 recached_aof_fsyncs:24 recached_aof_fsync_usec:5168908 recached_aof_queue_wait_usec:5140850 recached_aof_batch_waiters:2201495 recached_aof_inline_batches:199914 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2001479 recached_aof_coalesce_missed:52 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:790,4328,65787,92245,36389,130,12,34,120,78,1,0 
+  uprof: uprof_threads=4 cycles=24596734444 opened=4 min_running=1.000 instructions=32302395031 opened=4 min_running=1.000 branch_misses=39898907 opened=4 min_running=1.000 cache_misses=61965198 opened=4 min_running=1.000 l1d_read_misses=631138638 opened=4 min_running=1.000 task_clock_ns=17467272150 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "HSET","111092.59","0.438","0.032","0.415","0.567","0.615","243.839"
+cell=redis-hset-P1 label=none kind=redis test=hset P=1 rep=2 requests=2000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e cpu_user_s=2.310 cpu_sys_s=6.680 wall_s=13.759 gen_user_s=1.830 gen_sys_s=11.680 rss_kb=30512 data_dir_bytes=66032081
+  pressure_before: load=3.29 io_psi10=9.16/3.92 mem_psi10=0.00/0.00 swap_used_mib=1422 dirty_wb_kib=5496
+  pressure_after: load=3.36 io_psi10=13.85/4.40 mem_psi10=0.00/0.00 swap_used_mib=1421 dirty_wb_kib=17920
+  ctxsw_before: 70 12
+  ctxsw_after:  1448 1449
+  syscalls_before: 1639 1736
+  syscalls_after:  2001968 2044201
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.110:0.010 
+  threads_after:  bio_aof:1:0.000:0.030 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:2.420:6.660 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:0 total_net_input_bytes:9203074 total_net_output_bytes:400192 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100039 instantaneous_ops_per_sec:147878 total_net_input_bytes:193203176 total_net_output_bytes:8401843 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=12331987550 opened=5 min_running=1.000 instructions=19402005151 opened=5 min_running=1.000 branch_misses=17308587 opened=5 min_running=1.000 cache_misses=49019956 opened=5 min_running=1.000 l1d_read_misses=260223368 opened=5 min_running=1.000 task_clock_ns=12616572564 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "HSET","145422.81","0.322","0.048","0.279","0.391","0.551","368.127"
+cell=valkey-hset-P1 label=none kind=valkey test=hset P=1 rep=2 requests=2000000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 cpu_user_s=2.710 cpu_sys_s=7.060 wall_s=14.766 gen_user_s=1.852 gen_sys_s=11.611 rss_kb=22796 data_dir_bytes=74213454
+  pressure_before: load=3.36 io_psi10=13.85/4.40 mem_psi10=0.00/0.00 swap_used_mib=1421 dirty_wb_kib=9156
+  pressure_after: load=3.14 io_psi10=11.67/4.58 mem_psi10=0.00/0.00 swap_used_mib=1421 dirty_wb_kib=5836
+  ctxsw_before: 91 10
+  ctxsw_after:  1403 1460
+  syscalls_before: 1649 1737
+  syscalls_after:  2001984 2048995
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.130:0.010 
+  threads_after:  bio_aof:1:0.000:0.030 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:2.840:7.040 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:0 total_net_input_bytes:9203074 total_net_output_bytes:400192 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100041 instantaneous_ops_per_sec:132668 total_net_input_bytes:193203176 total_net_output_bytes:8402318 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=14683733209 opened=7 min_running=1.000 instructions=25028989938 opened=7 min_running=1.000 branch_misses=19713908 opened=7 min_running=1.000 cache_misses=34514638 opened=7 min_running=1.000 l1d_read_misses=210872069 opened=7 min_running=1.000 task_clock_ns=13380390494 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "HSET","135492.17","0.349","0.048","0.303","0.423","0.583","322.303"
+cell=base/rc-everysec-set-P16 label=base kind=rc-everysec test=set P=16 rep=2 requests=10000000 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 cpu_user_s=13.280 cpu_sys_s=3.940 wall_s=21.524 gen_user_s=1.752 gen_sys_s=4.834 rss_kb=26544 data_dir_bytes=757502400
+  pressure_before: load=3.14 io_psi10=11.67/4.58 mem_psi10=0.00/0.00 swap_used_mib=1421 dirty_wb_kib=5616
+  pressure_after: load=3.91 io_psi10=11.72/5.18 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=5808
+  ctxsw_before: 70 20
+  ctxsw_after:  3427 756
+  syscalls_before: 43 276
+  syscalls_after:  43 62492
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.160:0.020 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:3:13.440:3.950 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:10100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:247 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:247 recached_aof_write_usec:5001 recached_aof_fsyncs:3 recached_aof_fsync_usec:662693 recached_aof_queue_wait_usec:175872 recached_aof_batch_waiters:1810 recached_aof_inline_batches:247 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1558 recached_aof_coalesce_missed:5 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,25,61,60,98,3,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:62443 recached_aof_frames:10100032 recached_aof_bytes:757502400 recached_aof_write_calls:62443 recached_aof_write_usec:3530395 recached_aof_fsyncs:25 recached_aof_fsync_usec:6616901 recached_aof_queue_wait_usec:14225067 recached_aof_batch_waiters:689026 recached_aof_inline_batches:62443 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:626520 recached_aof_coalesce_missed:11 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,207,719,8962,45422,7000,130,3,0 
+  uprof: uprof_threads=4 cycles=56018550235 opened=4 min_running=1.000 instructions=100082965027 opened=4 min_running=1.000 branch_misses=41521227 opened=4 min_running=1.000 cache_misses=231025307 opened=4 min_running=1.000 l1d_read_misses=579308463 opened=4 min_running=1.000 task_clock_ns=18576083160 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "SET","464727.22","1.668","0.080","1.463","1.847","2.103","1022.975"
+cell=redis-set-P16 label=none kind=redis test=set P=16 rep=2 requests=10000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e cpu_user_s=9.780 cpu_sys_s=3.310 wall_s=20.284 gen_user_s=1.801 gen_sys_s=4.573 rss_kb=31556 data_dir_bytes=35371412
+  pressure_before: load=3.91 io_psi10=11.72/5.18 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=7328
+  pressure_after: load=3.61 io_psi10=29.28/12.42 mem_psi10=0.01/0.01 swap_used_mib=1424 dirty_wb_kib=9432
+  ctxsw_before: 100 33
+  ctxsw_after:  3445 3336
+  syscalls_before: 1638 1719
+  syscalls_after:  627490 650673
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.090:0.010 
+  threads_after:  bio_aof:1:0.000:0.080 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:9.860:3.230 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:0 total_net_input_bytes:7502530 total_net_output_bytes:500224 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:10100039 instantaneous_ops_per_sec:564639 total_net_input_bytes:757502632 total_net_output_bytes:50501875 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=40452815640 opened=5 min_running=1.000 instructions=73401373353 opened=5 min_running=1.000 branch_misses=13593872 opened=5 min_running=1.000 cache_misses=219227598 opened=5 min_running=1.000 l1d_read_misses=255617473 opened=5 min_running=1.000 task_clock_ns=14273286473 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "SET","493120.97","1.563","0.160","1.063","1.439","3.951","855.551"
+cell=valkey-set-P16 label=none kind=valkey test=set P=16 rep=2 requests=10000000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 cpu_user_s=10.310 cpu_sys_s=3.650 wall_s=21.537 gen_user_s=1.794 gen_sys_s=4.595 rss_kb=29076 data_dir_bytes=88733180
+  pressure_before: load=3.61 io_psi10=29.28/12.42 mem_psi10=0.01/0.01 swap_used_mib=1424 dirty_wb_kib=10572
+  pressure_after: load=3.54 io_psi10=28.03/13.58 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=18092
+  ctxsw_before: 175 17
+  ctxsw_after:  3485 3025
+  syscalls_before: 1668 1622
+  syscalls_after:  627542 653281
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.100:0.020 
+  threads_after:  bio_aof:1:0.000:0.090 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:10.400:3.580 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:0 total_net_input_bytes:7502530 total_net_output_bytes:500224 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:10100041 instantaneous_ops_per_sec:536999 total_net_input_bytes:757502632 total_net_output_bytes:50502351 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=43734115802 opened=7 min_running=1.000 instructions=103913118465 opened=7 min_running=1.000 branch_misses=34747335 opened=7 min_running=1.000 cache_misses=102927990 opened=7 min_running=1.000 l1d_read_misses=290472412 opened=7 min_running=1.000 task_clock_ns=15166945331 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "SET","464425.06","1.656","0.152","1.143","1.487","3.799","1032.703"
+cell=base/rc-everysec-set-P1 label=base kind=rc-everysec test=set P=1 rep=3 requests=2000000 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 cpu_user_s=4.600 cpu_sys_s=8.200 wall_s=17.258 gen_user_s=2.387 gen_sys_s=12.955 rss_kb=26356 data_dir_bytes=157502400
+  pressure_before: load=3.54 io_psi10=30.38/15.47 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=6456
+  pressure_after: load=3.71 io_psi10=10.44/4.20 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=11852
+  ctxsw_before: 82 20
+  ctxsw_after:  677 611
+  syscalls_before: 43 288
+  syscalls_after:  43 199711
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.160:0.020 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:4.760:8.220 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:249 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:249 recached_aof_write_usec:4766 recached_aof_fsyncs:8 recached_aof_fsync_usec:2337485 recached_aof_queue_wait_usec:169938 recached_aof_batch_waiters:1812 recached_aof_inline_batches:249 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1559 recached_aof_coalesce_missed:4 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,25,58,82,82,2,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:199657 recached_aof_frames:2100032 recached_aof_bytes:157502400 recached_aof_write_calls:199657 recached_aof_write_usec:1246266 recached_aof_fsyncs:25 recached_aof_fsync_usec:5776588 recached_aof_queue_wait_usec:4925065 recached_aof_batch_waiters:2201237 recached_aof_inline_batches:199657 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2001268 recached_aof_coalesce_missed:135 recached_aof_coalesce_backoffs:5 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:1269,4447,65835,91213,36484,160,25,58,82,82,2,0 
+  uprof: uprof_threads=4 cycles=23025244018 opened=4 min_running=1.000 instructions=27806195278 opened=4 min_running=1.000 branch_misses=40794761 opened=4 min_running=1.000 cache_misses=82599922 opened=4 min_running=1.000 l1d_read_misses=627746304 opened=4 min_running=1.000 task_clock_ns=16946255595 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "SET","115935.31","0.418","0.032","0.399","0.551","0.607","26.703"
+cell=redis-set-P1 label=none kind=redis test=set P=1 rep=3 requests=2000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e cpu_user_s=2.360 cpu_sys_s=6.390 wall_s=14.511 gen_user_s=1.946 gen_sys_s=11.643 rss_kb=25404 data_dir_bytes=31793908
+  pressure_before: load=3.71 io_psi10=10.44/4.20 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=6916
+  pressure_after: load=3.51 io_psi10=15.99/7.71 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=17920
+  ctxsw_before: 86 10
+  ctxsw_after:  1215 1156
+  syscalls_before: 1640 1736
+  syscalls_after:  2001965 2047248
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.090:0.010 
+  threads_after:  bio_aof:1:0.000:0.020 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:2.450:6.370 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:0 total_net_input_bytes:7502530 total_net_output_bytes:500224 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100039 instantaneous_ops_per_sec:159025 total_net_input_bytes:157502632 total_net_output_bytes:10501875 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=11585123707 opened=5 min_running=1.000 instructions=16342916609 opened=5 min_running=1.000 branch_misses=16419634 opened=5 min_running=1.000 cache_misses=49692518 opened=5 min_running=1.000 l1d_read_misses=213492086 opened=5 min_running=1.000 task_clock_ns=12339076228 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "SET","137873.98","0.343","0.056","0.279","0.383","0.535","1286.143"
+cell=valkey-set-P1 label=none kind=valkey test=set P=1 rep=3 requests=2000000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 cpu_user_s=2.690 cpu_sys_s=6.770 wall_s=14.262 gen_user_s=1.982 gen_sys_s=11.808 rss_kb=19860 data_dir_bytes=32148209
+  pressure_before: load=3.51 io_psi10=15.99/7.71 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=10048
+  pressure_after: load=3.86 io_psi10=14.49/6.33 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=13732
+  ctxsw_before: 120 8
+  ctxsw_after:  1307 1699
+  syscalls_before: 1666 1737
+  syscalls_after:  2002003 2049570
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.110:0.010 
+  threads_after:  bio_aof:1:0.000:0.020 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:2.790:6.760 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:0 total_net_input_bytes:7502530 total_net_output_bytes:500224 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100041 instantaneous_ops_per_sec:144045 total_net_input_bytes:157502632 total_net_output_bytes:10502350 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=14089186327 opened=7 min_running=1.000 instructions=22329618982 opened=7 min_running=1.000 branch_misses=18611346 opened=7 min_running=1.000 cache_misses=36963192 opened=7 min_running=1.000 l1d_read_misses=224743464 opened=7 min_running=1.000 task_clock_ns=13072666625 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "SET","140291.81","0.334","0.048","0.295","0.407","0.567","374.015"
+cell=base/rc-everysec-incr-P1 label=base kind=rc-everysec test=incr P=1 rep=3 requests=2000000 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 cpu_user_s=4.630 cpu_sys_s=8.380 wall_s=18.011 gen_user_s=2.292 gen_sys_s=13.141 rss_kb=28164 data_dir_bytes=127202118
+  pressure_before: load=3.86 io_psi10=14.22/7.00 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=5652
+  pressure_after: load=4.53 io_psi10=10.04/4.22 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=5464
+  ctxsw_before: 70 29
+  ctxsw_after:  732 1015
+  syscalls_before: 43 284
+  syscalls_after:  43 199988
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:5:0.160:0.020 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:5:4.790:8.390 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:253 recached_aof_frames:100032 recached_aof_bytes:6001920 recached_aof_write_calls:253 recached_aof_write_usec:4432 recached_aof_fsyncs:4 recached_aof_fsync_usec:578962 recached_aof_queue_wait_usec:178969 recached_aof_batch_waiters:1816 recached_aof_inline_batches:253 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1557 recached_aof_coalesce_missed:6 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,33,50,77,92,1,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:199940 recached_aof_frames:2100032 recached_aof_bytes:127202118 recached_aof_write_calls:199940 recached_aof_write_usec:1643027 recached_aof_fsyncs:24 recached_aof_fsync_usec:5574551 recached_aof_queue_wait_usec:5011249 recached_aof_batch_waiters:2201522 recached_aof_inline_batches:199940 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2001454 recached_aof_coalesce_missed:45 recached_aof_coalesce_backoffs:2 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:836,4423,67742,90286,36227,173,33,50,77,92,1,0 
+  uprof: uprof_threads=7 cycles=23758415115 opened=7 min_running=1.000 instructions=29026039857 opened=7 min_running=1.000 branch_misses=44981435 opened=7 min_running=1.000 cache_misses=70399170 opened=7 min_running=1.000 l1d_read_misses=604204572 opened=7 min_running=1.000 task_clock_ns=17231439492 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "INCR","111074.09","0.438","0.032","0.415","0.567","0.615","211.583"
+cell=redis-incr-P1 label=none kind=redis test=incr P=1 rep=3 requests=2000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e cpu_user_s=1.920 cpu_sys_s=6.410 wall_s=12.507 gen_user_s=2.040 gen_sys_s=11.610 rss_kb=15584 data_dir_bytes=21091124
+  pressure_before: load=4.53 io_psi10=10.04/4.22 mem_psi10=0.00/0.00 swap_used_mib=1424 dirty_wb_kib=6144
+  pressure_after: load=4.25 io_psi10=11.30/5.90 mem_psi10=0.00/0.00 swap_used_mib=1423 dirty_wb_kib=8980
+  ctxsw_before: 145 16
+  ctxsw_after:  1075 1241
+  syscalls_before: 1689 1581
+  syscalls_after:  2001934 2052261
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.080:0.010 
+  threads_after:  bio_aof:1:0.000:0.010 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:2.000:6.400 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:0 total_net_input_bytes:4101442 total_net_output_bytes:400192 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100039 instantaneous_ops_per_sec:167409 total_net_input_bytes:86101544 total_net_output_bytes:9602046 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=9917337690 opened=5 min_running=1.000 instructions=14365464024 opened=5 min_running=1.000 branch_misses=15553490 opened=5 min_running=1.000 cache_misses=34000102 opened=5 min_running=1.000 l1d_read_misses=201197028 opened=5 min_running=1.000 task_clock_ns=11966200655 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "INCR","159974.41","0.294","0.048","0.271","0.359","0.511","224.383"
+cell=valkey-incr-P1 label=none kind=valkey test=incr P=1 rep=3 requests=2000000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 cpu_user_s=2.390 cpu_sys_s=6.510 wall_s=13.760 gen_user_s=1.954 gen_sys_s=11.865 rss_kb=22676 data_dir_bytes=21064229
+  pressure_before: load=4.25 io_psi10=11.30/5.90 mem_psi10=0.00/0.00 swap_used_mib=1423 dirty_wb_kib=7796
+  pressure_after: load=3.88 io_psi10=13.99/6.91 mem_psi10=0.00/0.00 swap_used_mib=1423 dirty_wb_kib=11936
+  ctxsw_before: 127 17
+  ctxsw_after:  1240 1708
+  syscalls_before: 1654 1582
+  syscalls_after:  2001909 2054176
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.090:0.020 
+  threads_after:  bio_aof:1:0.000:0.010 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:2.480:6.510 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:0 total_net_input_bytes:4101442 total_net_output_bytes:400192 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100041 instantaneous_ops_per_sec:147651 total_net_input_bytes:86101544 total_net_output_bytes:9602491 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=11506937674 opened=7 min_running=1.000 instructions=17366385179 opened=7 min_running=1.000 branch_misses=16633247 opened=7 min_running=1.000 cache_misses=38026101 opened=7 min_running=1.000 l1d_read_misses=175556987 opened=7 min_running=1.000 task_clock_ns=12539831905 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "INCR","145401.67","0.318","0.048","0.279","0.383","0.767","442.111"
+cell=base/rc-everysec-hset-P1 label=base kind=rc-everysec test=hset P=1 rep=3 requests=2000000 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 cpu_user_s=4.790 cpu_sys_s=8.350 wall_s=19.011 gen_user_s=2.138 gen_sys_s=13.194 rss_kb=24328 data_dir_bytes=193202944
+  pressure_before: load=3.88 io_psi10=13.99/6.91 mem_psi10=0.00/0.00 swap_used_mib=1423 dirty_wb_kib=9664
+  pressure_after: load=3.65 io_psi10=11.69/6.13 mem_psi10=0.08/0.04 swap_used_mib=1423 dirty_wb_kib=7144
+  ctxsw_before: 107 19
+  ctxsw_after:  1070 396
+  syscalls_before: 43 286
+  syscalls_after:  43 200944
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.150:0.010 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:3:4.940:8.350 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:249 recached_aof_frames:100032 recached_aof_bytes:9202944 recached_aof_write_calls:249 recached_aof_write_usec:4539 recached_aof_fsyncs:6 recached_aof_fsync_usec:1527692 recached_aof_queue_wait_usec:161588 recached_aof_batch_waiters:1812 recached_aof_inline_batches:249 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1558 recached_aof_coalesce_missed:5 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,31,37,86,94,1,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:200887 recached_aof_frames:2100032 recached_aof_bytes:193202944 recached_aof_write_calls:200887 recached_aof_write_usec:2591009 recached_aof_fsyncs:28 recached_aof_fsync_usec:7943166 recached_aof_queue_wait_usec:5154022 recached_aof_batch_waiters:2202467 recached_aof_inline_batches:200887 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2001004 recached_aof_coalesce_missed:143 recached_aof_coalesce_backoffs:13 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:1337,3959,63821,94031,37363,127,31,37,86,94,1,0 
+  uprof: uprof_threads=4 cycles=24118321515 opened=4 min_running=1.000 instructions=32308037526 opened=4 min_running=1.000 branch_misses=37767456 opened=4 min_running=1.000 cache_misses=61620835 opened=4 min_running=1.000 l1d_read_misses=642633718 opened=4 min_running=1.000 task_clock_ns=17324512123 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "HSET","105235.47","0.461","0.032","0.415","0.559","0.607","747.007"
+cell=redis-hset-P1 label=none kind=redis test=hset P=1 rep=3 requests=2000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e cpu_user_s=2.450 cpu_sys_s=6.570 wall_s=14.259 gen_user_s=1.900 gen_sys_s=11.687 rss_kb=27532 data_dir_bytes=66091973
+  pressure_before: load=3.52 io_psi10=12.65/7.74 mem_psi10=0.07/0.03 swap_used_mib=1423 dirty_wb_kib=8724
+  pressure_after: load=3.46 io_psi10=20.70/11.67 mem_psi10=0.00/0.00 swap_used_mib=1423 dirty_wb_kib=15588
+  ctxsw_before: 171 34
+  ctxsw_after:  1546 1852
+  syscalls_before: 1683 1654
+  syscalls_after:  2002011 2042359
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.110:0.020 
+  threads_after:  bio_aof:1:0.000:0.030 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:2.560:6.560 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:0 total_net_input_bytes:9203074 total_net_output_bytes:400192 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100039 instantaneous_ops_per_sec:157996 total_net_input_bytes:193203176 total_net_output_bytes:8401843 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=12297630564 opened=5 min_running=1.000 instructions=19251200529 opened=5 min_running=1.000 branch_misses=17334855 opened=5 min_running=1.000 cache_misses=49656326 opened=5 min_running=1.000 l1d_read_misses=255954268 opened=5 min_running=1.000 task_clock_ns=12634088110 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "HSET","140311.50","0.335","0.048","0.279","0.391","0.551","741.375"
+cell=valkey-hset-P1 label=none kind=valkey test=hset P=1 rep=3 requests=2000000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 cpu_user_s=2.710 cpu_sys_s=7.010 wall_s=16.016 gen_user_s=2.022 gen_sys_s=11.751 rss_kb=21476 data_dir_bytes=73836216
+  pressure_before: load=3.46 io_psi10=20.70/11.67 mem_psi10=0.00/0.00 swap_used_mib=1423 dirty_wb_kib=11512
+  pressure_after: load=4.35 io_psi10=16.21/7.75 mem_psi10=0.00/0.00 swap_used_mib=1423 dirty_wb_kib=15616
+  ctxsw_before: 97 10
+  ctxsw_after:  1631 1609
+  syscalls_before: 1653 1736
+  syscalls_after:  2001997 2054901
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.130:0.020 
+  threads_after:  bio_aof:1:0.000:0.030 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:2.840:7.000 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:0 total_net_input_bytes:9203074 total_net_output_bytes:400192 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:2100041 instantaneous_ops_per_sec:130322 total_net_input_bytes:193203176 total_net_output_bytes:8402318 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=14547385697 opened=7 min_running=1.000 instructions=25053003367 opened=7 min_running=1.000 branch_misses=16343721 opened=7 min_running=1.000 cache_misses=42847469 opened=7 min_running=1.000 l1d_read_misses=227568461 opened=7 min_running=1.000 task_clock_ns=13399142009 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "HSET","124914.12","0.373","0.056","0.295","0.423","0.951","827.903"
+cell=base/rc-everysec-set-P16 label=base kind=rc-everysec test=set P=16 rep=3 requests=10000000 bin_sha256=5d9f43c41606258c354bfd58e720c883db5a7b0caba38efdb34f0381bafea9a4 cpu_user_s=13.270 cpu_sys_s=3.950 wall_s=21.777 gen_user_s=1.735 gen_sys_s=4.678 rss_kb=26876 data_dir_bytes=757502400
+  pressure_before: load=4.35 io_psi10=17.80/10.15 mem_psi10=0.00/0.00 swap_used_mib=1423 dirty_wb_kib=12784
+  pressure_after: load=3.48 io_psi10=14.10/6.96 mem_psi10=0.00/0.00 swap_used_mib=1426 dirty_wb_kib=10984
+  ctxsw_before: 95 22
+  ctxsw_after:  2220 1193
+  syscalls_before: 43 284
+  syscalls_after:  43 62460
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.160:0.010 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:13.420:3.960 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:10100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:249 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:249 recached_aof_write_usec:4815 recached_aof_fsyncs:6 recached_aof_fsync_usec:1397342 recached_aof_queue_wait_usec:170589 recached_aof_batch_waiters:1812 recached_aof_inline_batches:249 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1558 recached_aof_coalesce_missed:5 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,29,53,47,120,0,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:62404 recached_aof_frames:10100032 recached_aof_bytes:757502400 recached_aof_write_calls:62404 recached_aof_write_usec:3937140 recached_aof_fsyncs:28 recached_aof_fsync_usec:7913594 recached_aof_queue_wait_usec:14229979 recached_aof_batch_waiters:688988 recached_aof_inline_batches:62404 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:626553 recached_aof_coalesce_missed:10 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,136,748,8899,44758,7725,138,0,0 
+  uprof: uprof_threads=4 cycles=55957737995 opened=4 min_running=1.000 instructions=100095069795 opened=4 min_running=1.000 branch_misses=33386146 opened=4 min_running=1.000 cache_misses=233506221 opened=4 min_running=1.000 l1d_read_misses=570781631 opened=4 min_running=1.000 task_clock_ns=18588894980 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "SET","459305.53","1.700","0.152","1.463","1.847","2.071","1214.463"
+cell=redis-set-P16 label=none kind=redis test=set P=16 rep=3 requests=10000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e cpu_user_s=9.640 cpu_sys_s=3.520 wall_s=20.532 gen_user_s=1.715 gen_sys_s=4.509 rss_kb=31436 data_dir_bytes=60626612
+  pressure_before: load=3.48 io_psi10=14.08/6.79 mem_psi10=0.00/0.00 swap_used_mib=1426 dirty_wb_kib=8080
+  pressure_after: load=2.95 io_psi10=31.13/13.11 mem_psi10=0.00/0.00 swap_used_mib=1426 dirty_wb_kib=28280
+  ctxsw_before: 82 11
+  ctxsw_after:  3231 3415
+  syscalls_before: 1637 1736
+  syscalls_after:  627486 650473
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.090:0.010 
+  threads_after:  bio_aof:1:0.000:0.090 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:9.720:3.450 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:0 total_net_input_bytes:7502530 total_net_output_bytes:500224 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:10100039 instantaneous_ops_per_sec:594732 total_net_input_bytes:757502632 total_net_output_bytes:50501875 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=40721115410 opened=5 min_running=1.000 instructions=73422947279 opened=5 min_running=1.000 branch_misses=13512176 opened=5 min_running=1.000 cache_misses=218919947 opened=5 min_running=1.000 l1d_read_misses=317133583 opened=5 min_running=1.000 task_clock_ns=14346069922 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "SET","487163.25","1.583","0.136","1.071","1.431","4.023","756.735"
+cell=valkey-set-P16 label=none kind=valkey test=set P=16 rep=3 requests=10000000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 cpu_user_s=10.180 cpu_sys_s=3.760 wall_s=21.292 gen_user_s=1.784 gen_sys_s=4.426 rss_kb=27632 data_dir_bytes=22829013
+  pressure_before: load=2.95 io_psi10=31.10/13.45 mem_psi10=0.00/0.00 swap_used_mib=1426 dirty_wb_kib=8532
+  pressure_after: load=2.92 io_psi10=27.06/13.20 mem_psi10=0.00/0.00 swap_used_mib=1425 dirty_wb_kib=28480
+  ctxsw_before: 99 14
+  ctxsw_after:  3405 3213
+  syscalls_before: 1673 1736
+  syscalls_after:  627550 654978
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.110:0.020 
+  threads_after:  bio_aof:1:0.000:0.090 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:10.280:3.690 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:0 total_net_input_bytes:7502530 total_net_output_bytes:500224 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:10100041 instantaneous_ops_per_sec:627753 total_net_input_bytes:757502632 total_net_output_bytes:50502350 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=43930071176 opened=7 min_running=1.000 instructions=103914143960 opened=7 min_running=1.000 branch_misses=37272429 opened=7 min_running=1.000 cache_misses=95341844 opened=7 min_running=1.000 l1d_read_misses=276963319 opened=7 min_running=1.000 task_clock_ns=15148677766 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "SET","469770.28","1.649","0.136","1.151","1.463","3.759","998.399"

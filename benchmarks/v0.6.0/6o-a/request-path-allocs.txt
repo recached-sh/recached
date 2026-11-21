@@ -1,0 +1,26 @@
+== base (a697f54 + test harness only)
+workload           min ns  median ns     allocs       bytes  upkeep ns   (label base, sync receiver false, metrics false, aof None, 5 reps x 200000)
+SET                 532.2      546.2       1.00         2.7        0.0
+INCR               1057.3     1064.4       0.92       184.9        0.0
+HSET                676.2      683.5       0.00         0.7        0.0
+MSET x4            2089.7     2114.8      11.00       426.7        0.0
+SET EX             1509.1     1552.2      10.92       458.7        0.0
+workload           min ns  median ns     allocs       bytes  upkeep ns   (label base, sync receiver false, metrics false, aof Some(EverySec), 5 reps x 200000)
+SET                1669.3     2250.9      11.05       398.3        0.0
+INCR               2692.4     2872.3      11.95       617.9        0.0
+HSET               2200.8     2240.4      20.05       731.2        0.0
+MSET x4            5520.1     5679.3      41.15      2871.7        0.0
+SET EX             3234.4     3364.5      23.98      1159.6        0.0
+== opt (frame encoding)
+workload           min ns  median ns     allocs       bytes  upkeep ns   (label opt, sync receiver false, metrics false, aof None, 5 reps x 200000)
+SET                 577.1      590.6       1.00         2.8        0.0
+INCR               1106.6     1122.5       0.92       184.9        0.0
+HSET                706.5      715.2       0.00         0.7        0.0
+MSET x4            2202.1     2203.4      11.00       426.7        0.0
+SET EX             1554.1     1579.2      10.92       458.8        0.0
+workload           min ns  median ns     allocs       bytes  upkeep ns   (label opt, sync receworkload           min ns  median ns     allocs       bytes  upkeep ns   (label opt, sync receiver false, metrics false, aof Some(EverySec), 5 reps x 200000)
+SET                1074.8     1079.6       4.05       263.3        0.0
+INCR               1648.4     1655.4       2.95       438.9        0.0
+HSET               1277.8     1284.3       6.05       406.2        0.0
+MSET x4            3209.1     3222.1      15.15      1789.7        0.0
+SET EX             2162.1     2178.5      13.98       850.6        0.0
