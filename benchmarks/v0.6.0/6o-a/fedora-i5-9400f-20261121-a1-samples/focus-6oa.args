@@ -1,0 +1,22 @@
+--focus=frame build (broadcast_for_at, all)=propagation::broadcast_for
+--focus=frame build: allocator=propagation::broadcast_for&&^(_rjem|do_rallocx|je_|mallocx|sdallocx|<alloc::raw_vec|alloc::alloc)
+--focus=frame build: fmt=propagation::broadcast_for&&(core::fmt|fmt::format|Display)
+--focus=owned command (to_command)=to_command
+--focus=stripe locks=lock_write|lock_stripes
+--focus=on_write_logged (all)=ServerState>::on_write_logged
+--focus=append_client_write (queue + ticket)=append_client_write
+--focus=gate poll_settled (all)=AofGatedWriter.*poll_settled|poll_settled
+--focus=AOF lead/perform (all)=AofShared>::lead|AofShared>::perform
+--focus=AOF write(2) wrapper=write_counted|libc.so.6:write
+--focus=yield_now=yield_now
+--focus=clock reads=Timespec>::now|clock_gettime|\[vdso\]
+--focus=now_unix_ms=now_unix_ms
+--focus=metrics record=record_metrics|record_outcome|record_command
+--focus=store execute (all)=execute_and_record|KeyValueStore>::execute
+--focus=reply serialize=serialize_into
+--focus=decode=RequestDecoder
+--focus=allocator (all)=^(_rjem|do_rallocx|je_|mallocx|sdallocx)
+--focus=socket send/recv wrappers=libc.so.6:(send|recv)
+--focus=BufWriter flush=BufWriter.*poll_flush|flush_buf
+--focus=Value drop=drop_in_place<core_engine::resp::Value
+--focus=Command drop=drop_in_place<core_engine::cmd::Command
