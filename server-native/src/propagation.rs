@@ -2,6 +2,7 @@
 //! and browser sync clients — and the watch notifications that go with it.
 
 use crate::*;
+use core_engine::resp::{format_i64, write_bulk, write_push_header};
 
 pub(crate) fn is_write_command(cmd: &Command) -> bool {
     if let Command::Dedup(_, _, inner) = cmd {
@@ -1396,14 +1397,36 @@ async fn apply_write_effects_identified(
 /// be arbitrary binary. Building them as a `String` would have required a lossy
 /// conversion — silently corrupting the replicated, AOF-logged and
 /// browser-synced copy of a value the store itself holds faithfully.
+///
+/// One allocation of exactly the frame's size (6O-A), every byte written
+/// straight into it by the reply encoder's own stack-formatting helpers. It
+/// used to `format!` a temporary `String` per part and grow the `Vec` as it
+/// went: about nine allocator calls for a `SET`'s 75-byte frame, on every
+/// logged, replicated or pushed write. The bytes are the same; the tests
+/// compare them with that original encoder.
 pub(crate) fn resp_push(parts: &[&[u8]]) -> Vec<u8> {
-    let mut out = format!(">{}\r\n", parts.len()).into_bytes();
+    // Only a total past `usize::MAX`, which no frame in memory comes near,
+    // falls back to growing as it goes.
+    let mut out = Vec::with_capacity(resp_push_len(parts).unwrap_or(0));
+    write_push_header(&mut out, parts.len());
     for part in parts {
-        out.extend_from_slice(format!("${}\r\n", part.len()).as_bytes());
-        out.extend_from_slice(part);
-        out.extend_from_slice(b"\r\n");
+        write_bulk(&mut out, Some(part));
     }
     out
+}
+
+/// The exact length [`resp_push`] encodes `parts` to, or `None` if it does not
+/// fit in a `usize`.
+fn resp_push_len(parts: &[&[u8]]) -> Option<usize> {
+    let digits = |n: usize| n.checked_ilog10().map_or(1, |d| d as usize + 1);
+    // `>` count CRLF, then per part `$` length CRLF bytes CRLF.
+    parts
+        .iter()
+        .try_fold(3 + digits(parts.len()), |total, part| {
+            total
+                .checked_add(5 + digits(part.len()))?
+                .checked_add(part.len())
+        })
 }
 
 /// Whether a `SET` that did not error actually wrote, read from its reply.
@@ -1576,13 +1599,13 @@ pub(crate) fn broadcast_for_at(
             Some(resp_push(&parts))
         }
         Command::MSet(pairs) => {
-            let mut parts: Vec<&[u8]> = vec![b"MSET"];
-            let flat: Vec<Vec<u8>> = pairs
-                .iter()
-                .flat_map(|(k, v)| [k.as_bytes().to_vec(), v.clone()])
-                .collect();
-            let flat_refs: Vec<&[u8]> = flat.iter().map(|s| s.as_slice()).collect();
-            parts.extend_from_slice(&flat_refs);
+            // Borrowed: the frame is the only copy of the keys and values.
+            let mut parts: Vec<&[u8]> = Vec::with_capacity(1 + 2 * pairs.len());
+            parts.push(b"MSET");
+            for (k, v) in pairs {
+                parts.push(k.as_bytes());
+                parts.push(v);
+            }
             Some(resp_push(&parts))
         }
         Command::SetNx(k, v) => match response {
@@ -1632,8 +1655,9 @@ pub(crate) fn broadcast_for_at(
         Command::Incr(k) | Command::Decr(k) | Command::IncrBy(k, _) | Command::DecrBy(k, _) => {
             match response {
                 Value::Integer(n) => {
-                    let s = n.to_string();
-                    Some(resp_push(&[b"SET", k.as_bytes(), s.as_bytes(), b"KEEPTTL"]))
+                    let mut digits = [0u8; 20];
+                    let n = format_i64(*n, &mut digits);
+                    Some(resp_push(&[b"SET", k.as_bytes(), n, b"KEEPTTL"]))
                 }
                 _ => None,
             }
@@ -1735,13 +1759,15 @@ pub(crate) fn broadcast_for_at(
 
         // ── Hash ─────────────────────────────────────────────────────────────
         Command::HSet(k, pairs) => {
-            let mut parts: Vec<Vec<u8>> = vec![b"HSET".to_vec(), k.as_bytes().to_vec()];
+            // Borrowed: the frame is the only copy of the fields and values.
+            let mut parts: Vec<&[u8]> = Vec::with_capacity(2 + 2 * pairs.len());
+            parts.push(b"HSET");
+            parts.push(k.as_bytes());
             for (f, v) in pairs {
-                parts.push(f.as_bytes().to_vec());
-                parts.push(v.clone());
+                parts.push(f.as_bytes());
+                parts.push(v);
             }
-            let refs: Vec<&[u8]> = parts.iter().map(|s| s.as_slice()).collect();
-            Some(resp_push(&refs))
+            Some(resp_push(&parts))
         }
         Command::HDel(k, fields) => match response {
             Value::Integer(n) if *n > 0 => {
