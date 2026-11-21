@@ -6809,6 +6809,7 @@ mod sync_reliability;
 mod coalesced_fanout;
 mod commands_v06;
 mod dedup_ack_order;
+mod frame_encoding_6oa;
 mod integration_6nc;
 mod live_query_6k;
 mod multitenant;

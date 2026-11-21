@@ -1,0 +1,2 @@
+# Byte-exact frame fixtures: never convert line endings.
+*.bin -text

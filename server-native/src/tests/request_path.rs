@@ -92,6 +92,15 @@ static ALLOC: CountingAlloc = CountingAlloc(tikv_jemallocator::Jemalloc);
 #[global_allocator]
 static ALLOC: CountingAlloc = CountingAlloc(std::alloc::System);
 
+/// `f`'s result and the allocations it made on this thread (6O-A).
+pub(super) fn allocations_in<R>(f: impl FnOnce() -> R) -> (R, u64) {
+    let before = ALLOCS.with(Cell::get);
+    let was = TRACKING.with(|t| t.replace(true));
+    let result = f();
+    TRACKING.with(|t| t.set(was));
+    (result, ALLOCS.with(Cell::get) - before)
+}
+
 // ── harness ───────────────────────────────────────────────────────────────────
 
 const KEYS: usize = 100_000;
@@ -460,10 +469,42 @@ fn check_replies(workload: Workload, bytes: &[u8], n: usize) {
 }
 
 fn measure(workload: Workload, n: usize, with_sync_receiver: bool) -> Run {
-    let shared = Shared::new(with_sync_receiver);
+    measure_with_aof(workload, n, with_sync_receiver, None)
+}
+
+/// [`measure`] with the AOF on under `policy`, as a standalone server runs
+/// it: no replication, the connection's replies gated on the AOF
+/// ([`AofGatedWriter`]), every write taking the ordered, logged path. The
+/// file lives in the temp directory for the run and is removed after it.
+pub(super) fn measure_with_aof(
+    workload: Workload,
+    n: usize,
+    with_sync_receiver: bool,
+    policy: Option<AofSync>,
+) -> Run {
+    let path = std::env::temp_dir().join(format!(
+        "recached_request_path_{}_{}.aof",
+        std::process::id(),
+        workload.name().replace(' ', "_")
+    ));
+    let aof = policy.map(|policy| {
+        let _ = std::fs::remove_file(&path);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        Arc::new(
+            rt.block_on(AofWriter::open(path.clone(), policy))
+                .expect("open the AOF"),
+        )
+    });
+    let shared = Shared::with_aof(with_sync_receiver, aof);
     prefill(&shared.store);
     let run = run_connection(&shared, workload.frames(n));
     check_replies(workload, &run.replies, n);
+    if policy.is_some() {
+        let _ = std::fs::remove_file(&path);
+    }
     run
 }
 
@@ -483,6 +524,32 @@ fn pipelined_commands_stay_within_their_allocation_budget() {
         assert!(
             per <= budget,
             "{}: {per:.2} allocations per command, budget {budget}",
+            workload.name()
+        );
+    }
+}
+
+/// The same budget for a standalone server with the AOF on (6O-A): every
+/// write takes the logged path, builds its frame and queues it behind the
+/// connection's gate. Counted on the connection's thread, as above: the
+/// command, its frame, the batch it joins and the gate. Work handed to the
+/// blocking pool (an `fdatasync`, never on this path under `everysec`) is
+/// not counted. Measured after 6O-A: SET 4.05, INCR 2.95, HSET 6.05
+/// allocations per command, from 11.05, 11.95 and 20.05 before it, when the
+/// frame encoder `format!`ted every header and HSET copied its parts.
+#[test]
+fn aof_logged_writes_stay_within_their_allocation_budget() {
+    const N: usize = 20_000;
+    for (workload, budget) in [
+        (Workload::Set, 5.0),
+        (Workload::Incr, 4.0),
+        (Workload::HSet, 7.0),
+    ] {
+        let run = measure_with_aof(workload, N, false, Some(AofSync::EverySec));
+        let per = run.allocs as f64 / N as f64;
+        assert!(
+            per <= budget,
+            "{} with the AOF on: {per:.2} allocations per command, budget {budget}",
             workload.name()
         );
     }
@@ -732,6 +799,14 @@ fn request_path_bench() {
     // Installed before any command runs: the per-command handles are cached
     // on first use, so a recorder installed later would never see them.
     let metrics = std::env::var("BENCH_METRICS").is_ok_and(|v| v == "1");
+    // `BENCH_AOF=everysec|no|always`: the standalone AOF path (6O-A), the
+    // file in the temp directory. Unset: no AOF, as before.
+    let aof = std::env::var("BENCH_AOF").ok().map(|v| match v.as_str() {
+        "everysec" => AofSync::EverySec,
+        "no" => AofSync::No,
+        "always" => AofSync::Always,
+        other => panic!("BENCH_AOF={other}: expected everysec, no or always"),
+    });
     let handle = metrics.then(|| {
         metrics_exporter_prometheus::PrometheusBuilder::new()
             .install_recorder()
@@ -739,7 +814,7 @@ fn request_path_bench() {
     });
     let mut csv = String::new();
     println!(
-        "{:<14} {:>10} {:>10} {:>10} {:>11} {:>10}   (label {label}, sync receiver {sync}, metrics {metrics}, {reps} reps x {N})",
+        "{:<14} {:>10} {:>10} {:>10} {:>11} {:>10}   (label {label}, sync receiver {sync}, metrics {metrics}, aof {aof:?}, {reps} reps x {N})",
         "workload", "min ns", "median ns", "allocs", "bytes", "upkeep ns"
     );
     for workload in Workload::ALL {
@@ -755,7 +830,7 @@ fn request_path_bench() {
         let mut bytes = 0.0;
         let mut upkeep: Vec<f64> = Vec::with_capacity(reps);
         for _ in 0..reps {
-            let run = measure(workload, N, sync);
+            let run = measure_with_aof(workload, N, sync, aof);
             ns.push(run.elapsed.as_nanos() as f64 / N as f64);
             allocs = run.allocs as f64 / N as f64;
             bytes = run.bytes as f64 / N as f64;
@@ -776,11 +851,13 @@ fn request_path_bench() {
             "{:<14} {min:>10.1} {median:>10.1} {allocs:>10.2} {bytes:>11.1} {upkeep:>10.1}",
             workload.name()
         );
-        let label = if metrics {
-            format!("{label}+metrics")
-        } else {
-            label.clone()
-        };
+        let mut label = label.clone();
+        if metrics {
+            label.push_str("+metrics");
+        }
+        if let Some(aof) = aof {
+            label.push_str(&format!("+aof-{aof:?}"));
+        }
         csv.push_str(&format!(
             "{label},{},{sync},{min:.1},{median:.1},{allocs:.2},{bytes:.1},{upkeep:.1},{}\n",
             workload.name(),

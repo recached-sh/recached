@@ -144,7 +144,7 @@ pub enum Value {
 ///
 /// On the stack: `write!` goes through the formatting machinery, which cost
 /// more than the rest of encoding an integer reply or a length header.
-pub(crate) fn format_i64(n: i64, buf: &mut [u8; 20]) -> &[u8] {
+pub fn format_i64(n: i64, buf: &mut [u8; 20]) -> &[u8] {
     let mut at = buf.len();
     // Work on the magnitude as u64 so i64::MIN does not overflow.
     let mut rest = n.unsigned_abs();
@@ -196,6 +196,11 @@ pub fn write_bulk(out: &mut Vec<u8>, data: Option<&[u8]>) {
 /// Appends a RESP array header for `len` elements.
 pub fn write_array_header(out: &mut Vec<u8>, len: usize) {
     write_header(out, b'*', len_i64(len));
+}
+
+/// Appends a RESP3 push header (`>len\r\n`) for `len` elements.
+pub fn write_push_header(out: &mut Vec<u8>, len: usize) {
+    write_header(out, b'>', len_i64(len));
 }
 
 impl Value {
