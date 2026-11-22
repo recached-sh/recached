@@ -93,7 +93,7 @@ async fn spawn_server_cfg(
                     .peer_addr()
                     .map(|a| a.to_string())
                     .unwrap_or_default();
-                handle_tcp(socket, s, t, p, ps, wr, st, peer).await;
+                handle_tcp_stream(socket, s, t, p, ps, wr, st, peer).await;
                 drop(permit);
             });
         }
@@ -1543,7 +1543,7 @@ async fn integration_replica_receives_write() {
                         .peer_addr()
                         .map(|a| a.to_string())
                         .unwrap_or_default();
-                    handle_tcp(socket, s, t, p, ps, wrr, st, peer).await;
+                    handle_tcp_stream(socket, s, t, p, ps, wrr, st, peer).await;
                     drop(permit);
                 });
             }
@@ -1902,7 +1902,7 @@ async fn integration_connection_limit() {
                     .peer_addr()
                     .map(|a| a.to_string())
                     .unwrap_or_default();
-                handle_tcp(socket, s, t, p, ps, wr, st, peer).await;
+                handle_tcp_stream(socket, s, t, p, ps, wr, st, peer).await;
                 drop(permit);
             });
         }
@@ -6824,6 +6824,7 @@ mod reply_coalesce_6ob;
 mod request_path;
 mod security_v06_regressions;
 mod sync_routing;
+mod tcp_owned_split;
 mod write_gate;
 mod ws_auth;
 mod ws_fastpath;

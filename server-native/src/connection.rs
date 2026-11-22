@@ -2,6 +2,7 @@
 //! they run on, and the HELLO/AUTH handshakes that precede them.
 
 use crate::*;
+use std::pin::Pin;
 
 /// Binds `n` TCP sockets on `addr`, all with `SO_REUSEPORT`, so the OS can
 /// distribute incoming connections across multiple accept loops — one per
@@ -385,9 +386,10 @@ pub(crate) async fn handle_tcp<S>(
     .await;
 }
 
-/// A plain TCP connection (6O-C3 prototype): split with
-/// `TcpStream::into_split`, whose owned halves poll the socket directly,
-/// without the lock `tokio::io::split` takes on every read and write poll.
+/// A plain TCP connection (6O-C3): split with `TcpStream::into_split`,
+/// whose owned halves poll the socket directly, without the lock
+/// `tokio::io::split`'s halves share on every read and write poll
+/// (measured: 100–360 user cycles per command at P=1).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_tcp_stream(
     socket: TcpStream,
@@ -400,6 +402,7 @@ pub(crate) async fn handle_tcp_stream(
     peer: String,
 ) {
     let (reader, writer) = socket.into_split();
+    let writer = TcpWriteHalf(Some(writer));
     handle_tcp_halves(
         reader,
         writer,
@@ -412,6 +415,84 @@ pub(crate) async fn handle_tcp_stream(
         peer,
     )
     .await;
+}
+
+/// A plain TCP connection's write half that, like `tokio::io::split`'s,
+/// leaves the socket open when dropped.
+///
+/// A dropped `OwnedWriteHalf` shuts the write side down (FIN) at once, and
+/// `handle_tcp_halves` drops its writer *before* its cleanup (unsubscribing,
+/// unregistering watches, releasing ephemeral keys). The client would then
+/// see the end of the connection while its subscriptions, watches and
+/// ephemeral keys were still in place, and a client that reconnects on EOF
+/// could observe them. `forget` keeps the socket open until the read half
+/// drops as well, at the end of `handle_tcp_halves`, after the cleanup — the
+/// moment the connection always closed.
+struct TcpWriteHalf(Option<tokio::net::tcp::OwnedWriteHalf>);
+
+impl Drop for TcpWriteHalf {
+    fn drop(&mut self) {
+        if let Some(half) = self.0.take() {
+            half.forget();
+        }
+    }
+}
+
+impl TcpWriteHalf {
+    fn half(&mut self) -> std::io::Result<Pin<&mut tokio::net::tcp::OwnedWriteHalf>> {
+        self.0
+            .as_mut()
+            .map(Pin::new)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))
+    }
+}
+
+impl AsyncWrite for TcpWriteHalf {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.half() {
+            Ok(half) => half.poll_write(cx, buf),
+            Err(e) => std::task::Poll::Ready(Err(e)),
+        }
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.half() {
+            Ok(half) => half.poll_write_vectored(cx, bufs),
+            Err(e) => std::task::Poll::Ready(Err(e)),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.0.as_ref().is_some_and(AsyncWrite::is_write_vectored)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.half() {
+            Ok(half) => half.poll_flush(cx),
+            Err(e) => std::task::Poll::Ready(Err(e)),
+        }
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.half() {
+            Ok(half) => half.poll_shutdown(cx),
+            Err(e) => std::task::Poll::Ready(Err(e)),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
