@@ -1,13 +1,13 @@
 # Roadmap
 
-Recached competes on **where the data can live** — the same engine on the server, in browser WebAssembly, and in native mobile apps and Rust services, with sync in between. The [benchmark guide](/guide/benchmarks) explains how to measure its throughput and memory cost on the commit you deploy. The project does not publish a current cross-project performance claim.
+Recached competes on **where the data can live** — the same engine on the server, in browser WebAssembly, and in native mobile apps and Rust services, with sync in between. The [benchmark guide](/guide/benchmarks) explains how to measure its throughput and memory cost on the commit you deploy. The project does not publish a cross-project throughput or latency claim.
 
 
 ---
 
 ## Native clients: implemented previews and planned adapters
 
-- **Kotlin + Swift: in preview.** One `uniffi`-annotated Rust crate (`recached-mobile`) generates bindings for both. The platform WebSocket (OkHttp / URLSession) feeds frames into `sync-client`, with no embedded async runtime. Data and outbox persist to SQLite, and reactivity is Kotlin `Flow` and Swift `AsyncStream` / Observation over keychange pushes. Both SDKs include demo apps, automated tests, and CI workflows. Version 0.1.0 is published to Maven Central and SwiftPM; the APIs may change before 1.0. See [Android](/android/getting-started) and [iOS](/ios/getting-started).
+- **Kotlin + Swift: in preview.** One `uniffi`-annotated Rust crate (`recached-mobile`) generates bindings for both. The platform WebSocket (OkHttp / URLSession) feeds frames into `sync-client`, with no embedded async runtime. Data and outbox persist to SQLite, and reactivity is Kotlin `Flow` and Swift `AsyncStream` / Observation over keychange pushes. Both SDKs include demo apps, automated tests, and CI workflows. Version 0.1.2 is published to Maven Central and SwiftPM; the APIs may change before 1.0. See [Android](/android/getting-started) and [iOS](/ios/getting-started).
 - **Flutter: planned, not implemented.** The proposed adapter uses `flutter_rust_bridge`: synchronous local reads into Rust memory, `watchKey()` → `Stream` for rebuilds.
 - **React Native: planned, not implemented.** The proposed adapter reuses the UniFFI binding layer through `uniffi-bindgen-react-native`, with an API modeled on the browser React hooks.
 

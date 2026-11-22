@@ -26,11 +26,19 @@ jobs:
         working-directory: docs
       - run: pnpm build
         working-directory: docs
+      - name: Check README image paths
+        run: |
+          test -f brand/banner.svg
+          test -f docs/public/architecture-light.svg
+          test -f docs/public/architecture-dark.svg
       - name: Check generated asset references
         run: |
           test -f docs/.vitepress/dist/favicon.svg
           test -f docs/.vitepress/dist/brand/logo.svg
-          test -f docs/.vitepress/dist/brand/hero.svg
+          test -f docs/.vitepress/dist/architecture-light.svg
+          test -f docs/.vitepress/dist/architecture-dark.svg
+          test -f docs/.vitepress/dist/robots.txt
+          test -f docs/.vitepress/dist/sitemap.xml
           test -f docs/.vitepress/dist/brand/social-card.png
           for icon in local-reads real-time-sync rust-engine offline server scoped-access; do
             test -f "docs/.vitepress/dist/brand/icons/$icon.svg"

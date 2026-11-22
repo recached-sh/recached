@@ -184,8 +184,7 @@ are cheap enough to export as metrics on a tick.
 ## Known limitations
 
 These are behaviours of the sync protocol, not of this crate, and they affect
-`recached-edge` in the browser identically. Each has a regression test in
-`recached-embed/tests/live.rs`, marked `#[ignore]` with the diagnosis.
+`recached-edge` in the browser identically.
 
 ::: tip A removal you miss while offline is reconciled on reconnect
 This used to be a limitation and is not any more. `qstate` re-hydration is a
@@ -198,7 +197,7 @@ The server refuses a pattern whose complete snapshot exceeds `RECACHED_MAX_QSUB_
 :::
 
 ::: tip TTL deletion is eventual, not instant
-A local copy does not expire on its own clock. The server masks an expired key on read, then a background sweep announces its removal as an ordinary delete. The sweep checks at most 256 TTL-bearing keys per one-second tick, so convergence time grows with the volatile keyspace. Compare a stored deadline yourself when exact expiry matters.
+A local copy does not expire on its own clock. The server masks an expired key on read, then a background sweep announces its removal as an ordinary delete. In 0.5.x the sweep checks at most 256 TTL-bearing keys per one-second tick, so convergence time grows with the volatile keyspace. From 0.6 (unreleased) it removes expired keys in chunks of 256, continuing while a sample shows at least a quarter of it expired, within a 25 ms budget per tick; under heavy expiry churn a backlog can still build. Compare a stored deadline yourself when exact expiry matters.
 :::
 
 ---

@@ -1,8 +1,8 @@
 # Use Recached in iOS and macOS
 
-::: info 0.1.1 preview
+::: info 0.1.2 preview
 The Swift package lives in [recached-sh/recached-swift](https://github.com/recached-sh/recached-swift)
-and links the prebuilt native core of recached v0.4.0. Its API may still change
+and links the prebuilt native core of recached v0.5.1. Its API may still change
 before 1.0.
 :::
 
@@ -26,11 +26,11 @@ and `sync-client` as the browser and Android SDKs, through
 In Xcode, choose **File → Add Package Dependencies…** and enter `https://github.com/recached-sh/recached-swift`. In a `Package.swift`:
 
 ```swift
-.package(url: "https://github.com/recached-sh/recached-swift", from: "0.1.1")
+.package(url: "https://github.com/recached-sh/recached-swift", from: "0.1.2")
 // target dependency: .product(name: "Recached", package: "recached-swift")
 ```
 
-The native core comes as a prebuilt XCFramework attached to the recached v0.4.0 release, so no Rust toolchain is needed. To build it from source instead, see the Development section of the package's [README](https://github.com/recached-sh/recached-swift#development).
+The native core comes as a prebuilt XCFramework attached to the recached v0.5.1 release, so no Rust toolchain is needed. To build it from source instead, see the Development section of the package's [README](https://github.com/recached-sh/recached-swift#development).
 
 iOS 15+ and macOS 12+ are supported. `ObservedKey` requires iOS 17+ or macOS 14+; `ObservableKey` works on the minimum supported versions.
 

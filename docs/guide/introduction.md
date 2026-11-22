@@ -56,7 +56,7 @@ Client reads use local memory without a server round trip. A server connection a
 | Swift `Recached` | `URLSessionWebSocketTask` | Memory and SQLite data/outbox | `AsyncStream` and SwiftUI models |
 | Rust `recached-embed` | Tokio WebSocket | Memory and in-memory outbox | Pub/sub receiver |
 
-The Kotlin and Swift SDKs are 0.1.0 previews, on Maven Central and SwiftPM. React Native, Flutter, and WASI deployment remain planned. See [client support and limits](/guide/client-support) for installation status and adapter differences.
+The Kotlin and Swift SDKs are 0.1.2 previews, on Maven Central and SwiftPM. React Native, Flutter, and WASI deployment remain planned. See [client support and limits](/guide/client-support) for installation status and adapter differences.
 
 ## Shared state across clients
 
@@ -69,8 +69,8 @@ The server executes commands across worker threads over a sharded `DashMap` stor
 ## Architecture
 
 <figure>
-  <img class="light-only" src="/architecture-light.svg" alt="Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory.">
-  <img class="dark-only" src="/architecture-dark.svg" alt="Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory.">
+  <img class="light-only" src="/architecture-light.svg" alt="Your database stays the source of truth; your backend publishes committed state to the Recached server over RESP on port 6379. Browser, Android and iOS, and Rust service clients sync over WebSocket on port 6380 and read from a local cache.">
+  <img class="dark-only" src="/architecture-dark.svg" alt="Your database stays the source of truth; your backend publishes committed state to the Recached server over RESP on port 6379. Browser, Android and iOS, and Rust service clients sync over WebSocket on port 6380 and read from a local cache.">
 </figure>
 
 The workspace separates `core-engine`, `sync-client`, the server, and three client adapters: `wasm-edge`, `recached-embed`, and `recached-mobile`. Platform wrappers live in the Kotlin and Swift repositories. [How it works](/guide/how-it-works) explains their transport, storage, and reconnect contracts.
@@ -135,7 +135,7 @@ Honest status, per layer:
 - **The cache server is a release candidate for cache workloads.** It includes atomic snapshots, an append-only file, ordered replication, TLS, constant-time authentication, hardened parsers, Prometheus metrics, and load/chaos tests. It still needs broad production validation and an independent security audit. Treat it as a cache, not a system of record.
 - **The shared sync layer (browser, mobile, and Rust clients) is beta.** The invariants are [specified](/server/protocol), tested, and verified end-to-end — but the code is young and hasn't accumulated real-world miles or third-party security review yet. Concretely: don't expose the WebSocket port to the public internet for multi-tenant data until you've read [Sync Scopes](/server/sync-scopes) and understood the model, and expect occasional sharp edges.
 
-- **The Kotlin and Swift SDKs are 0.1.0 previews**, published to Maven Central and SwiftPM. Their transports, SQLite persistence, and observers are implemented; their APIs may change before 1.0. Review [client limits](/guide/client-support).
+- **The Kotlin and Swift SDKs are 0.1.2 previews**, published to Maven Central and SwiftPM. Their transports, SQLite persistence, and observers are implemented; their APIs may change before 1.0. Review [client limits](/guide/client-support).
 
 The road to 1.0 is hardening, not features: fuzzing the parser surfaces, automated browser testing, a security pass on the token path, and a protocol freeze once real-world usage has confirmed the design. Bug reports from production-like use are the most valuable contribution the project can receive right now.
 
@@ -152,7 +152,7 @@ Redis, and Valkey, which forked from Redis 7.2, are mature centralized cache ser
 | Replication | Primary/replica + manually fenced promotion | Yes (+ Sentinel/Cluster) |
 | Lua scripting | No (WASM scripting on roadmap) | Yes |
 | Cluster mode | No | Yes |
-| Command coverage | 124 catalog entries | 250+ |
+| Command coverage | 134 catalog entries | 250+ |
 | License | Apache 2.0 | AGPLv3 / RSALv2 + SSPLv1 (BSD-3 up to 7.2; Valkey stayed BSD-3) |
 
 Client-side caching in Redis sends invalidations to a client library, which then refetches. Recached clients instead receive watched values, can persist them, and replay queued writes after reconnecting, in browsers and mobile apps as well as backend processes.
