@@ -1,0 +1,26 @@
+
+running 2 tests
+tests::mset_atomicity::a_tcp_mget_never_sees_part_of_an_mset --- FAILED
+tests::mset_atomicity::tcp_gets_after_seeing_an_mset_key_see_the_rest --- FAILED
+
+failures:
+
+---- tests::mset_atomicity::a_tcp_mget_never_sees_part_of_an_mset stdout ----
+
+thread 'tests::mset_atomicity::a_tcp_mget_never_sees_part_of_an_mset' (554267) panicked at server-native/src/tests/mset_atomicity.rs:117:5:
+MGET saw part of an MSET: Array(Some([BulkString(Some([110, 101, 119])), BulkString(Some([111, 108, 100]))])) (answered while it was stopped: true)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tests::mset_atomicity::tcp_gets_after_seeing_an_mset_key_see_the_rest stdout ----
+
+thread 'tests::mset_atomicity::tcp_gets_after_seeing_an_mset_key_see_the_rest' (554268) panicked at server-native/src/tests/mset_atomicity.rs:157:5:
+GET tcpatom:seq:a answered new and then GET tcpatom:seq:b, sent after that reply, answered old: no single point in time had that state
+
+
+failures:
+    tests::mset_atomicity::a_tcp_mget_never_sees_part_of_an_mset
+    tests::mset_atomicity::tcp_gets_after_seeing_an_mset_key_see_the_rest
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 647 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p recached --bin recached-server`

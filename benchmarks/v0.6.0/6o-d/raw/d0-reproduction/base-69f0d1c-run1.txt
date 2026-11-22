@@ -1,0 +1,78 @@
+
+running 5 tests
+.. 2/5
+store::atomicity_tests::a_borrowed_mget_never_sees_part_of_an_mset --- FAILED
+store::atomicity_tests::an_mget_never_sees_part_of_an_mset --- FAILED
+store::atomicity_tests::sequential_single_key_reads_are_linearizable_with_an_mset --- FAILED
+
+failures:
+
+---- store::atomicity_tests::a_borrowed_mget_never_sees_part_of_an_mset stdout ----
+
+thread 'store::atomicity_tests::a_borrowed_mget_never_sees_part_of_an_mset' (544861) panicked at core-engine/src/store/atomicity_tests.rs:338:5:
+borrowed MGET saw part of an MSET: "*2\r\n$3\r\nnew\r\n$3\r\nold\r\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- store::atomicity_tests::an_mget_never_sees_part_of_an_mset stdout ----
+
+thread 'store::atomicity_tests::an_mget_never_sees_part_of_an_mset' (544862) panicked at core-engine/src/store/atomicity_tests.rs:303:5:
+MGET saw part of an MSET: Array(Some([BulkString(Some([110, 101, 119])), BulkString(Some([111, 108, 100])), BulkString(Some([111, 108, 100]))])) (answered while the MSET was stopped: true, waited: false)
+
+---- store::atomicity_tests::sequential_single_key_reads_are_linearizable_with_an_mset stdout ----
+
+thread 'store::atomicity_tests::sequential_single_key_reads_are_linearizable_with_an_mset' (544863) panicked at core-engine/src/store/atomicity_tests.rs:529:5:
+11 of 11 histories are not linearizable:
+GET a, then GET b:
+  [ 0.. 5] MSET a b c  writes [("a", Some("new")), ("b", Some("new")), ("c", Some("new"))]  observed []
+  [ 1.. 2] GET a  writes []  observed [("a", Some("new"))]
+  [ 3.. 4] GET b  writes []  observed [("b", Some("hash"))]
+GET a, then MGET b:
+  [ 0.. 5] MSET a b c  writes [("a", Some("new")), ("b", Some("new")), ("c", Some("new"))]  observed []
+  [ 1.. 2] GET a  writes []  observed [("a", Some("new"))]
+  [ 3.. 4] MGET b  writes []  observed [("b", Some("hash"))]
+GET a, then TYPE b:
+  [ 0.. 5] MSET a b c  writes [("a", Some("new")), ("b", Some("new")), ("c", Some("new"))]  observed []
+  [ 1.. 2] GET a  writes []  observed [("a", Some("new"))]
+  [ 3.. 4] TYPE b  writes []  observed [("b", Some("hash"))]
+GET a, then STRLEN b:
+  [ 0.. 5] MSET a b c  writes [("a", Some("new")), ("b", Some("new")), ("c", Some("new"))]  observed []
+  [ 1.. 2] GET a  writes []  observed [("a", Some("new"))]
+  [ 3.. 4] STRLEN b  writes []  observed [("b", Some("hash"))]
+GET a, then GETRANGE b:
+  [ 0.. 5] MSET a b c  writes [("a", Some("new")), ("b", Some("new")), ("c", Some("new"))]  observed []
+  [ 1.. 2] GET a  writes []  observed [("a", Some("new"))]
+  [ 3.. 4] GETRANGE b  writes []  observed [("b", Some("hash"))]
+GET a, then HLEN b:
+  [ 0.. 5] MSET a b c  writes [("a", Some("new")), ("b", Some("new")), ("c", Some("new"))]  observed []
+  [ 1.. 2] GET a  writes []  observed [("a", Some("new"))]
+  [ 3.. 4] HLEN b  writes []  observed [("b", Some("hash"))]
+GET a, then GET c:
+  [ 0.. 5] MSET a b c  writes [("a", Some("new")), ("b", Some("new")), ("c", Some("new"))]  observed []
+  [ 1.. 2] GET a  writes []  observed [("a", Some("new"))]
+  [ 3.. 4] GET c  writes []  observed [("c", None)]
+GET a, then EXISTS c:
+  [ 0.. 5] MSET a b c  writes [("a", Some("new")), ("b", Some("new")), ("c", Some("new"))]  observed []
+  [ 1.. 2] GET a  writes []  observed [("a", Some("new"))]
+  [ 3.. 4] EXISTS c  writes []  observed [("c", None)]
+GET a, then TYPE c:
+  [ 0.. 5] MSET a b c  writes [("a", Some("new")), ("b", Some("new")), ("c", Some("new"))]  observed []
+  [ 1.. 2] GET a  writes []  observed [("a", Some("new"))]
+  [ 3.. 4] TYPE c  writes []  observed [("c", None)]
+GET a, then TTL c:
+  [ 0.. 5] MSET a b c  writes [("a", Some("new")), ("b", Some("new")), ("c", Some("new"))]  observed []
+  [ 1.. 2] GET a  writes []  observed [("a", Some("new"))]
+  [ 3.. 4] TTL c  writes []  observed [("c", None)]
+GET a, then PTTL c:
+  [ 0.. 5] MSET a b c  writes [("a", Some("new")), ("b", Some("new")), ("c", Some("new"))]  observed []
+  [ 1.. 2] GET a  writes []  observed [("a", Some("new"))]
+  [ 3.. 4] PTTL c  writes []  observed [("c", None)]
+
+
+failures:
+    store::atomicity_tests::a_borrowed_mget_never_sees_part_of_an_mset
+    store::atomicity_tests::an_mget_never_sees_part_of_an_mset
+    store::atomicity_tests::sequential_single_key_reads_are_linearizable_with_an_mset
+
+test result: FAILED. 2 passed; 3 failed; 0 ignored; 0 measured; 566 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p core-engine --lib`

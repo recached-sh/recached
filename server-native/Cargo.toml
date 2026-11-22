@@ -44,6 +44,12 @@ rand.workspace                     = true
 smallvec.workspace                 = true
 indexmap.workspace                 = true
 
+[dev-dependencies]
+# The store's test-only write pause (`core_engine::store::write_pause`), for
+# deterministic interleavings in the server's tests. Dev-only: the release
+# binary is built without it.
+core-engine = { workspace = true, features = ["test-hooks"] }
+
 # jemalloc does not build under MSVC (its C build needs a Unix-like toolchain),
 # so it is only pulled in off-MSVC; Windows MSVC uses the system allocator.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
