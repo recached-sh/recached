@@ -1,0 +1,36 @@
+date_utc: 2026-11-22T20:34:33Z
+rc_bin[final]: /home/dennispaler/recached-6oc-bench/bin/rc-final sha256=a0ff616fcd11e6f8fd7c1392139eacd14666586b8d1b74de178e0c58cc524597 source=3cc620ab53a32ccca27b940198a7260874cb2d77 version=recached-server 0.6.0
+rc_bin[base]: /home/dennispaler/recached-6oc-bench/bin/rc-base sha256=9e845ff427712efa1d2d786a7144a0a2513914ff21230439cd82e8e93df621c3 source=d5563d78034f3ccccc91975051de2cb6099b76ba version=recached-server 0.6.0
+kit_sha: unknown run-6oc.sh sha256=be7b1f7fd00572f2a241041ac9ff7adf86ac2e8bc01b20428e7937c249f7b9fb
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 0.84 1.64 1.98 4/1072 790630
+pressure_at_start: load=0.84 io_psi10=0.22/0.21 mem_psi10=0.00/0.00 swap_used_mib=4668 dirty_wb_kib=676
+memory: total=15918 used=6494 available=9424 swap_total=8191 swap_used=4668
+aof_fs: /dev/sda3 btrfs rotational=1
+perf: absent perf_event_paranoid=2 uprof=/home/dennispaler/recached-6oc-bench/bin/uprof sha256=93aa43d37198729ef1c4b7c1d9e30084454ccb37b94ec72f0ce30391b6467afa
+cpus: server=0 bench=3-5 reps=3 req_c1_p1=900000 req_c1_p16=2000000 req_c50_p1=2000000 req_c50_p16=70000000 always_requests=50000 bench_threads=3 keyspace=100000
+req_scale: 
+order: alternate=1 settle_io=8 settle_max_s=90 server_pin=0-2
+label_env: LABEL_ENV_base=RECACHED_WORKER_THREADS=3
+label_env: LABEL_ENV_final=RECACHED_WORKER_THREADS=3
+cells: base/rc-noaof-set-c50-P16 final/rc-noaof-set-c50-P16 base/rc-noaof-set-c1-P1 final/rc-noaof-set-c1-P1
+record_cells: none freq=2999
+sysc: off cells=none
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: rustc 1.98.0 (88d9e12ae 2026-08-18)
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+   2648 dennisp+  39  19  861480  58664  11628 S  87.8   0.4  14:02.18 localse+
+      1 root      20   0   37428  11964   7612 S   0.0   0.1   0:03.21 systemd
+      2 root      20   0       0      0      0 S   0.0   0.0   0:00.02 kthreadd
+      3 root      20   0       0      0      0 S   0.0   0.0   0:00.00 pool_wo+
+      4 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+      5 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+      6 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+loadavg_at_end: 2.70 2.61 2.31 5/1067 793220
+pressure_at_end: load=2.70 io_psi10=3.92/3.73 mem_psi10=0.00/0.00 swap_used_mib=4668 dirty_wb_kib=2420

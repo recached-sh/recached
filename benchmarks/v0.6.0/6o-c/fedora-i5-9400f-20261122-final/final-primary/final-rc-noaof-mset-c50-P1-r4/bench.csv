@@ -1,0 +1,2 @@
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"MSET (10 keys)","103434.01","0.468","0.048","0.463","0.607","0.647","1.575"

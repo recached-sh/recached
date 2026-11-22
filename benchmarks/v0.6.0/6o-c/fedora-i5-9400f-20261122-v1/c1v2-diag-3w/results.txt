@@ -1,0 +1,138 @@
+cell=bdiag/rc-noaof-set-c1-P1 label=bdiag kind=rc-noaof test=set clients=1 P=1 rep=1 requests=400000 bin_sha256=1b6ea866955d283ea008e7c838f704d801e2db47316bdec0bed9ed75c30834bb oncpu_s=5.0339 rqwait_s=0.0024 cpu_user_s=1.170 cpu_sys_s=3.860 wall_s=10.287 gen_user_s=0.624 gen_sys_s=3.355 rss_kb=25204 data_dir_bytes=0
+  pressure_before: load=0.77 io_psi10=0.26/0.26 mem_psi10=0.00/0.00 swap_used_mib=4669 dirty_wb_kib=1132 settle_wait_s=0
+  pressure_after: load=0.81 io_psi10=0.40/0.40 mem_psi10=0.00/0.00 swap_used_mib=4669 dirty_wb_kib=1508
+  ctxsw_before: 278 15
+  ctxsw_after:  417517 26
+  cpu0_before: 1010419 9040 621222 2959267 299449 17527 264737
+  cpu0_after: 1010449 9040 621311 2960165 299474 17528 264764
+  tcp_before: InSegs=3009100828 OutSegs=3015359920 RetransSegs=10334 DelayedACKs=292252 DelayedACKLocked=8 DelayedACKLost=1372 TCPHPHits=2917004649 TCPPureAcks=5030926 TCPHPAcks=2932690029 TCPBacklogCoalesce=54788 TCPAutoCorking=6390 TCPOrigDataSent=2980723418 TCPDelivered=2980857002 
+  tcp_after: InSegs=3009900877 OutSegs=3016159969 RetransSegs=10334 DelayedACKs=292252 DelayedACKLocked=8 DelayedACKLost=1372 TCPHPHits=2917804646 TCPPureAcks=5030949 TCPHPAcks=2933490030 TCPBacklogCoalesce=54788 TCPAutoCorking=6390 TCPOrigDataSent=2981523432 TCPDelivered=2981657020 
+  softirq0_before: NET_TX:225 NET_RX:1246023660 
+  softirq0_after: NET_TX:225 NET_RX:1246105881 
+  gen_rusage: user_s=0.603 sys_s=3.354 nvcsw=399914 nivcsw=4 maxrss_kb=12596
+  syscalls_before: 42 34
+  syscalls_after:  42 73
+  threads_before: rc-basediag:1:0.000:0.000 jemalloc_bg_thd:4:0.000:0.000 tokio-rt-worker:4:0.070:0.000 
+  threads_after:  rc-basediag:1:0.000:0.000 jemalloc_bg_thd:4:0.000:0.000 tokio-rt-worker:3:1.240:3.870 
+  stats_before: total_commands_processed:100034 reply_coalesce_diag:flushes=1566,skipped=580,yields=986,migrated=347,gains=892,backoffs=19 
+  stats_after:  total_commands_processed:500034 reply_coalesce_diag:flushes=401569,skipped=377051,yields=24518,migrated=347,gains=892,backoffs=11785 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=9 cycles=5147945489 opened=9 min_running=1.000 instructions=2880442396 opened=9 min_running=1.000 branch_misses=10324563 opened=9 min_running=1.000 cache_misses=8399386 opened=9 min_running=1.000 l1d_read_misses=119028593 opened=9 min_running=1.000 task_clock_ns=6064931911 opened=9 min_running=1.000 context_switches=0 opened=9 min_running=1.000 
+  bench_err: 0
+  bench: "SET","38978.76","0.021","0.016","0.023","0.031","0.039","0.335"
+cell=cdiag/rc-noaof-set-c1-P1 label=cdiag kind=rc-noaof test=set clients=1 P=1 rep=1 requests=400000 bin_sha256=47f8cce5b90392c0197b2408609a3e6a00f05583078a9b18e6a84258b15da3e4 oncpu_s=4.7755 rqwait_s=0.0018 cpu_user_s=1.020 cpu_sys_s=3.760 wall_s=10.038 gen_user_s=0.606 gen_sys_s=3.309 rss_kb=25976 data_dir_bytes=0
+  pressure_before: load=0.81 io_psi10=0.40/0.40 mem_psi10=0.00/0.00 swap_used_mib=4669 dirty_wb_kib=1932 settle_wait_s=0
+  pressure_after: load=0.85 io_psi10=0.72/0.72 mem_psi10=0.00/0.00 swap_used_mib=4669 dirty_wb_kib=344
+  ctxsw_before: 244 6
+  ctxsw_after:  400669 28
+  cpu0_before: 1010453 9046 621314 2960283 299475 17528 264764
+  cpu0_after: 1010478 9046 621400 2961171 299475 17529 264791
+  tcp_before: InSegs=3009904218 OutSegs=3016163310 RetransSegs=10334 DelayedACKs=292252 DelayedACKLocked=8 DelayedACKLost=1372 TCPHPHits=2917806140 TCPPureAcks=5031025 TCPHPAcks=2933491549 TCPBacklogCoalesce=54788 TCPAutoCorking=6390 TCPOrigDataSent=2981526618 TCPDelivered=2981660231 
+  tcp_after: InSegs=3010704268 OutSegs=3016963361 RetransSegs=10334 DelayedACKs=292252 DelayedACKLocked=8 DelayedACKLost=1372 TCPHPHits=2918606137 TCPPureAcks=5031047 TCPHPAcks=2934291551 TCPBacklogCoalesce=54788 TCPAutoCorking=6390 TCPOrigDataSent=2982326634 TCPDelivered=2982460251 
+  softirq0_before: NET_TX:225 NET_RX:1246106415 
+  softirq0_after: NET_TX:225 NET_RX:1246191272 
+  gen_rusage: user_s=0.587 sys_s=3.306 nvcsw=399864 nivcsw=1 maxrss_kb=12660
+  syscalls_before: 42 20
+  syscalls_after:  42 31
+  threads_before: rc-c1diag:1:0.000:0.000 jemalloc_bg_thd:4:0.000:0.000 tokio-rt-worker:4:0.070:0.000 
+  threads_after:  rc-c1diag:1:0.000:0.000 jemalloc_bg_thd:4:0.000:0.000 tokio-rt-worker:3:1.100:3.760 
+  stats_before: total_commands_processed:100034 reply_coalesce_diag:flushes=1566,skipped=0,yields=2,migrated=0,gains=0,backoffs=1 
+  stats_after:  total_commands_processed:500034 reply_coalesce_diag:flushes=401569,skipped=399204,yields=800,migrated=0,gains=0,backoffs=400 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=9 cycles=4810594193 opened=9 min_running=1.000 instructions=2818112643 opened=9 min_running=1.000 branch_misses=8068443 opened=9 min_running=1.000 cache_misses=7938329 opened=9 min_running=1.000 l1d_read_misses=115809317 opened=9 min_running=1.000 task_clock_ns=5839526129 opened=9 min_running=1.000 context_switches=0 opened=9 min_running=1.000 
+  bench_err: 0
+  bench: "SET","39952.06","0.021","0.016","0.023","0.023","0.031","0.359"
+cell=bdiag/rc-noaof-set-c50-P1 label=bdiag kind=rc-noaof test=set clients=50 P=1 rep=1 requests=3000000 bin_sha256=1b6ea866955d283ea008e7c838f704d801e2db47316bdec0bed9ed75c30834bb oncpu_s=16.6843 rqwait_s=0.1950 cpu_user_s=4.740 cpu_sys_s=11.940 wall_s=8.529 gen_user_s=2.849 gen_sys_s=15.674 rss_kb=27188 data_dir_bytes=0
+  pressure_before: load=0.85 io_psi10=0.72/0.72 mem_psi10=0.00/0.00 swap_used_mib=4669 dirty_wb_kib=2248 settle_wait_s=0
+  pressure_after: load=1.56 io_psi10=3.10/3.02 mem_psi10=0.00/0.00 swap_used_mib=4669 dirty_wb_kib=1008
+  ctxsw_before: 319 43
+  ctxsw_after:  286160 5226
+  cpu0_before: 1010482 9053 621404 2961347 299475 17529 264791
+  cpu0_after: 1010642 9053 621816 2961433 299475 17537 265001
+  tcp_before: InSegs=3010707610 OutSegs=3016966703 RetransSegs=10334 DelayedACKs=292252 DelayedACKLocked=8 DelayedACKLost=1372 TCPHPHits=2918607671 TCPPureAcks=5031124 TCPHPAcks=2934293110 TCPBacklogCoalesce=54788 TCPAutoCorking=6390 TCPOrigDataSent=2982329820 TCPDelivered=2982463462 
+  tcp_after: InSegs=3016708098 OutSegs=3022967191 RetransSegs=10334 DelayedACKs=292301 DelayedACKLocked=8 DelayedACKLost=1372 TCPHPHits=2924607521 TCPPureAcks=5031292 TCPHPAcks=2940293062 TCPBacklogCoalesce=54788 TCPAutoCorking=6390 TCPOrigDataSent=2988329932 TCPDelivered=2988463627 
+  softirq0_before: NET_TX:225 NET_RX:1246191857 
+  softirq0_after: NET_TX:225 NET_RX:1247185933 
+  gen_rusage: user_s=2.833 sys_s=15.668 nvcsw=5727 nivcsw=762 maxrss_kb=12788
+  syscalls_before: 42 37
+  syscalls_after:  42 94649
+  threads_before: rc-basediag:1:0.000:0.000 jemalloc_bg_thd:4:0.000:0.000 tokio-rt-worker:4:0.060:0.020 
+  threads_after:  rc-basediag:1:0.000:0.000 jemalloc_bg_thd:4:0.000:0.000 tokio-rt-worker:3:4.810:11.960 
+  stats_before: total_commands_processed:100034 reply_coalesce_diag:flushes=1566,skipped=633,yields=933,migrated=303,gains=831,backoffs=21 
+  stats_after:  total_commands_processed:3100034 reply_coalesce_diag:flushes=3001569,skipped=1700823,yields=1300746,migrated=393891,gains=1043516,backoffs=53152 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=9 cycles=24062686795 opened=9 min_running=1.000 instructions=18803197479 opened=9 min_running=1.000 branch_misses=56763923 opened=9 min_running=1.000 cache_misses=51870709 opened=9 min_running=1.000 l1d_read_misses=672160092 opened=9 min_running=1.000 task_clock_ns=23062922543 opened=9 min_running=1.000 context_switches=0 opened=9 min_running=1.000 
+  bench_err: 0
+  bench: "SET","352899.66","0.083","0.008","0.087","0.111","0.167","3.063"
+cell=cdiag/rc-noaof-set-c50-P1 label=cdiag kind=rc-noaof test=set clients=50 P=1 rep=1 requests=3000000 bin_sha256=47f8cce5b90392c0197b2408609a3e6a00f05583078a9b18e6a84258b15da3e4 oncpu_s=16.6789 rqwait_s=0.1798 cpu_user_s=4.590 cpu_sys_s=12.080 wall_s=8.529 gen_user_s=2.860 gen_sys_s=15.710 rss_kb=27192 data_dir_bytes=0
+  pressure_before: load=1.56 io_psi10=3.10/3.02 mem_psi10=0.00/0.00 swap_used_mib=4669 dirty_wb_kib=1832 settle_wait_s=0
+  pressure_after: load=2.17 io_psi10=1.34/1.31 mem_psi10=0.00/0.00 swap_used_mib=4669 dirty_wb_kib=1148
+  ctxsw_before: 254 6
+  ctxsw_after:  295674 5581
+  cpu0_before: 1010646 9055 621818 2961538 299475 17537 265001
+  cpu0_after: 1010802 9055 622230 2961628 299475 17545 265213
+  tcp_before: InSegs=3016711439 OutSegs=3022970532 RetransSegs=10334 DelayedACKs=292301 DelayedACKLocked=8 DelayedACKLost=1372 TCPHPHits=2924609029 TCPPureAcks=5031368 TCPHPAcks=2940294595 TCPBacklogCoalesce=54788 TCPAutoCorking=6390 TCPOrigDataSent=2988333118 TCPDelivered=2988466838 
+  tcp_after: InSegs=3022711930 OutSegs=3028971023 RetransSegs=10334 DelayedACKs=292350 DelayedACKLocked=8 DelayedACKLost=1372 TCPHPHits=2930608879 TCPPureAcks=5031539 TCPHPAcks=2946294547 TCPBacklogCoalesce=54788 TCPAutoCorking=6390 TCPOrigDataSent=2994333230 TCPDelivered=2994467003 
+  softirq0_before: NET_TX:225 NET_RX:1247186459 
+  softirq0_after: NET_TX:225 NET_RX:1248176510 
+  gen_rusage: user_s=2.843 sys_s=15.705 nvcsw=5117 nivcsw=1379 maxrss_kb=12596
+  syscalls_before: 42 23
+  syscalls_after:  42 94665
+  threads_before: rc-c1diag:1:0.000:0.000 jemalloc_bg_thd:4:0.000:0.000 tokio-rt-worker:4:0.070:0.000 
+  threads_after:  rc-c1diag:1:0.000:0.000 jemalloc_bg_thd:4:0.000:0.000 tokio-rt-worker:4:4.660:12.090 
+  stats_before: total_commands_processed:100034 reply_coalesce_diag:flushes=1566,skipped=0,yields=2,migrated=0,gains=0,backoffs=1 
+  stats_after:  total_commands_processed:3100034 reply_coalesce_diag:flushes=3001569,skipped=1752534,yields=1247470,migrated=374685,gains=617041,backoffs=54768 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=9 cycles=23654748367 opened=9 min_running=1.000 instructions=18913140106 opened=9 min_running=1.000 branch_misses=58177967 opened=9 min_running=1.000 cache_misses=51522907 opened=9 min_running=1.000 l1d_read_misses=672229674 opened=9 min_running=1.000 task_clock_ns=23146182997 opened=9 min_running=1.000 context_switches=0 opened=9 min_running=1.000 
+  bench_err: 0
+  bench: "SET","352858.16","0.083","0.008","0.087","0.111","0.159","2.911"
+cell=bdiag/rc-noaof-set-c50-P16 label=bdiag kind=rc-noaof test=set clients=50 P=16 rep=1 requests=30000000 bin_sha256=1b6ea866955d283ea008e7c838f704d801e2db47316bdec0bed9ed75c30834bb oncpu_s=23.3403 rqwait_s=0.0079 cpu_user_s=15.930 cpu_sys_s=7.410 wall_s=9.279 gen_user_s=6.097 gen_sys_s=12.652 rss_kb=27384 data_dir_bytes=0
+  pressure_before: load=2.17 io_psi10=1.34/1.31 mem_psi10=0.00/0.00 swap_used_mib=4669 dirty_wb_kib=1928 settle_wait_s=0
+  pressure_after: load=2.76 io_psi10=1.66/1.65 mem_psi10=0.00/0.00 swap_used_mib=4669 dirty_wb_kib=960
+  ctxsw_before: 262 27
+  ctxsw_after:  6305 703
+  cpu0_before: 1010806 9074 622234 2961742 299480 17545 265214
+  cpu0_after: 1011334 9074 622485 2961789 299480 17548 265337
+  tcp_before: InSegs=3022715271 OutSegs=3028974364 RetransSegs=10334 DelayedACKs=292350 DelayedACKLocked=8 DelayedACKLost=1372 TCPHPHits=2930610412 TCPPureAcks=5031615 TCPHPAcks=2946296105 TCPBacklogCoalesce=54788 TCPAutoCorking=6390 TCPOrigDataSent=2994336416 TCPDelivered=2994470214 
+  tcp_after: InSegs=3026465760 OutSegs=3032724853 RetransSegs=10334 DelayedACKs=292399 DelayedACKLocked=8 DelayedACKLost=1372 TCPHPHits=2934360164 TCPPureAcks=5031784 TCPHPAcks=2950045959 TCPBacklogCoalesce=54788 TCPAutoCorking=6390 TCPOrigDataSent=2998086528 TCPDelivered=2998220379 
+  softirq0_before: NET_TX:225 NET_RX:1248177018 
+  softirq0_after: NET_TX:225 NET_RX:1248797959 
+  gen_rusage: user_s=6.078 sys_s=12.648 nvcsw=227209 nivcsw=6195 maxrss_kb=12596
+  syscalls_before: 42 32
+  syscalls_after:  42 4381
+  threads_before: rc-basediag:1:0.000:0.000 jemalloc_bg_thd:4:0.000:0.000 tokio-rt-worker:4:0.090:0.000 
+  threads_after:  rc-basediag:1:0.000:0.000 jemalloc_bg_thd:4:0.000:0.000 tokio-rt-worker:3:16.020:7.400 
+  stats_before: total_commands_processed:100034 reply_coalesce_diag:flushes=1566,skipped=527,yields=1039,migrated=326,gains=941,backoffs=17 
+  stats_after:  total_commands_processed:30100034 reply_coalesce_diag:flushes=1876569,skipped=66720,yields=1809849,migrated=566536,gains=1747127,backoffs=2085 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=9 cycles=71230843766 opened=9 min_running=1.000 instructions=88580438346 opened=9 min_running=1.000 branch_misses=69369829 opened=9 min_running=1.000 cache_misses=396861610 opened=9 min_running=1.000 l1d_read_misses=807420441 opened=9 min_running=1.000 task_clock_ns=27107859159 opened=9 min_running=1.000 context_switches=0 opened=9 min_running=1.000 
+  bench_err: 0
+  bench: "SET","3242892.50","0.213","0.016","0.199","0.383","0.479","4.071"
+cell=cdiag/rc-noaof-set-c50-P16 label=cdiag kind=rc-noaof test=set clients=50 P=16 rep=1 requests=30000000 bin_sha256=47f8cce5b90392c0197b2408609a3e6a00f05583078a9b18e6a84258b15da3e4 oncpu_s=23.1885 rqwait_s=0.0087 cpu_user_s=15.310 cpu_sys_s=7.870 wall_s=9.279 gen_user_s=5.527 gen_sys_s=12.922 rss_kb=27572 data_dir_bytes=0
+  pressure_before: load=2.76 io_psi10=1.66/1.65 mem_psi10=0.00/0.00 swap_used_mib=4669 dirty_wb_kib=1980 settle_wait_s=0
+  pressure_after: load=3.18 io_psi10=0.77/0.77 mem_psi10=0.00/0.00 swap_used_mib=4669 dirty_wb_kib=1016
+  ctxsw_before: 258 8
+  ctxsw_after:  22662 330
+  cpu0_before: 1011337 9075 622489 2961891 299480 17548 265338
+  cpu0_after: 1011843 9075 622757 2961931 299480 17550 265474
+  tcp_before: InSegs=3026469101 OutSegs=3032728194 RetransSegs=10334 DelayedACKs=292399 DelayedACKLocked=8 DelayedACKLost=1372 TCPHPHits=2934361681 TCPPureAcks=5031860 TCPHPAcks=2950047501 TCPBacklogCoalesce=54788 TCPAutoCorking=6390 TCPOrigDataSent=2998089714 TCPDelivered=2998223590 
+  tcp_after: InSegs=3030219590 OutSegs=3036478683 RetransSegs=10334 DelayedACKs=292448 DelayedACKLocked=8 DelayedACKLost=1372 TCPHPHits=2938111446 TCPPureAcks=5032029 TCPHPAcks=2953797368 TCPBacklogCoalesce=54788 TCPAutoCorking=6390 TCPOrigDataSent=3001839826 TCPDelivered=3001973755 
+  softirq0_before: NET_TX:225 NET_RX:1248798582 
+  softirq0_after: NET_TX:225 NET_RX:1249419863 
+  gen_rusage: user_s=5.508 sys_s=12.918 nvcsw=452028 nivcsw=6154 maxrss_kb=12596
+  syscalls_before: 42 21
+  syscalls_after:  42 5265
+  threads_before: rc-c1diag:1:0.000:0.000 jemalloc_bg_thd:4:0.000:0.000 tokio-rt-worker:4:0.070:0.010 
+  threads_after:  rc-c1diag:1:0.000:0.000 jemalloc_bg_thd:4:0.000:0.000 tokio-rt-worker:3:15.380:7.890 
+  stats_before: total_commands_processed:100034 reply_coalesce_diag:flushes=1566,skipped=0,yields=2,migrated=0,gains=0,backoffs=1 
+  stats_after:  total_commands_processed:30100034 reply_coalesce_diag:flushes=1876569,skipped=0,yields=4,migrated=0,gains=0,backoffs=1 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=9 cycles=68991709836 opened=9 min_running=1.000 instructions=86964256975 opened=9 min_running=1.000 branch_misses=59679585 opened=9 min_running=1.000 cache_misses=385635412 opened=9 min_running=1.000 l1d_read_misses=806439545 opened=9 min_running=1.000 task_clock_ns=27339391451 opened=9 min_running=1.000 context_switches=0 opened=9 min_running=1.000 
+  bench_err: 0
+  bench: "SET","3243243.25","0.233","0.016","0.239","0.359","0.407","4.503"

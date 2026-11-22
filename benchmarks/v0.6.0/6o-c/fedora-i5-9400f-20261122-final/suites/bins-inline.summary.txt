@@ -1,0 +1,2 @@
+     Running unittests src/main.rs (/home/dennispaler/recached-6oc-bench/target-final-test/debug/deps/recached_server-18936a47382cbc5b)
+test result: ok. 637 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 49.83s

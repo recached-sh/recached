@@ -1,0 +1,7 @@
+fmt exit 0
+clippy exit 101
+workspace exit 0
+bins-inline exit 0
+bins-coalesced exit 0
+load-chaos exit 0
+redis-diff exit 0
