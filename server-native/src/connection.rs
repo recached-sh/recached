@@ -2,6 +2,7 @@
 //! they run on, and the HELLO/AUTH handshakes that precede them.
 
 use crate::*;
+use std::pin::Pin;
 
 /// Binds `n` TCP sockets on `addr`, all with `SO_REUSEPORT`, so the OS can
 /// distribute incoming connections across multiple accept loops — one per
@@ -355,6 +356,8 @@ enum Answered {
     Not(Result<core_engine::request::Decoded, core_engine::resp::ParseError>),
 }
 
+/// A TCP connection over any stream (TLS, tests): split with
+/// `tokio::io::split`, whose halves share the stream behind a lock.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_tcp<S>(
     socket: S,
@@ -368,6 +371,150 @@ pub(crate) async fn handle_tcp<S>(
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    let (reader, writer) = tokio::io::split(socket);
+    handle_tcp_halves(
+        reader,
+        writer,
+        store,
+        tx,
+        password,
+        pubsub,
+        watch_registry,
+        state,
+        peer,
+    )
+    .await;
+}
+
+/// A plain TCP connection (6O-C3): split with `TcpStream::into_split`,
+/// whose owned halves poll the socket directly, without the lock
+/// `tokio::io::split`'s halves share on every read and write poll
+/// (measured: 100–360 user cycles per command at P=1).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn handle_tcp_stream(
+    socket: TcpStream,
+    store: Arc<KeyValueStore>,
+    tx: SyncTx,
+    password: Arc<Option<String>>,
+    pubsub: SharedPubSub,
+    watch_registry: WatchRegistry,
+    state: Arc<ServerState>,
+    peer: String,
+) {
+    let (reader, writer) = socket.into_split();
+    let writer = TcpWriteHalf(Some(writer));
+    handle_tcp_halves(
+        reader,
+        writer,
+        store,
+        tx,
+        password,
+        pubsub,
+        watch_registry,
+        state,
+        peer,
+    )
+    .await;
+}
+
+/// A plain TCP connection's write half that, like `tokio::io::split`'s,
+/// leaves the socket open when dropped.
+///
+/// A dropped `OwnedWriteHalf` shuts the write side down (FIN) at once, and
+/// `handle_tcp_halves` drops its writer *before* its cleanup (unsubscribing,
+/// unregistering watches, releasing ephemeral keys). The client would then
+/// see the end of the connection while its subscriptions, watches and
+/// ephemeral keys were still in place, and a client that reconnects on EOF
+/// could observe them. `forget` keeps the socket open until the read half
+/// drops as well, at the end of `handle_tcp_halves`, after the cleanup, and
+/// closes it then without a `shutdown`, as `tokio::io::split` does. (The read
+/// half is now a parameter, so it drops after the function's locals, the
+/// connection's registry guard included: the client is out of `CLIENT LIST`
+/// by the time it sees EOF, which it was not always before.)
+struct TcpWriteHalf(Option<tokio::net::tcp::OwnedWriteHalf>);
+
+impl Drop for TcpWriteHalf {
+    fn drop(&mut self) {
+        if let Some(half) = self.0.take() {
+            half.forget();
+        }
+    }
+}
+
+impl TcpWriteHalf {
+    /// The half; `None` only inside `drop`, after which nothing polls, so
+    /// the error is unreachable.
+    fn half(&mut self) -> std::io::Result<Pin<&mut tokio::net::tcp::OwnedWriteHalf>> {
+        self.0
+            .as_mut()
+            .map(Pin::new)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))
+    }
+}
+
+impl AsyncWrite for TcpWriteHalf {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.half() {
+            Ok(half) => half.poll_write(cx, buf),
+            Err(e) => std::task::Poll::Ready(Err(e)),
+        }
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.half() {
+            Ok(half) => half.poll_write_vectored(cx, bufs),
+            Err(e) => std::task::Poll::Ready(Err(e)),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.0.as_ref().is_some_and(AsyncWrite::is_write_vectored)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.half() {
+            Ok(half) => half.poll_flush(cx),
+            Err(e) => std::task::Poll::Ready(Err(e)),
+        }
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.half() {
+            Ok(half) => half.poll_shutdown(cx),
+            Err(e) => std::task::Poll::Ready(Err(e)),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_tcp_halves<R, W>(
+    mut reader: R,
+    raw_writer: W,
+    store: Arc<KeyValueStore>,
+    tx: SyncTx,
+    password: Arc<Option<String>>,
+    pubsub: SharedPubSub,
+    watch_registry: WatchRegistry,
+    state: Arc<ServerState>,
+    peer: String,
+) where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
     let conn_id = next_conn_id();
     let mut client_meta = ClientMeta::new(
         conn_id,
@@ -375,7 +522,6 @@ pub(crate) async fn handle_tcp<S>(
         format!("127.0.0.1:{}", server_facts().tcp_port),
     );
     let _guard = ConnectionGuard::new("tcp", client_meta.clone());
-    let (mut reader, raw_writer) = tokio::io::split(socket);
     // Replies leave only once the AOF writes of the commands before them
     // have: see `AofGatedWriter`. Without an AOF it holds nothing back.
     let gated = AofGatedWriter::new(raw_writer, Arc::clone(&state));
@@ -1180,7 +1326,8 @@ pub(crate) async fn handle_tcp<S>(
 
     })
     .await;
-    // The socket is gone; queued AOF batches are written regardless.
+    // Releases the write half (queued AOF batches are written regardless);
+    // the socket closes when `reader` drops at the end, after the cleanup.
     drop(writer);
 
     if !subscribed_channels.is_empty() || !subscribed_patterns.is_empty() {

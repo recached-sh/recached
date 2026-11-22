@@ -1131,7 +1131,8 @@ async fn run(
                                     }
                                 }
                             } else {
-                                handle_tcp(socket, s, t, p, ps, wr, sc, addr.to_string()).await;
+                                handle_tcp_stream(socket, s, t, p, ps, wr, sc, addr.to_string())
+                                    .await;
                             }
                         });
                     }
