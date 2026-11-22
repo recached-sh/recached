@@ -21,6 +21,9 @@ pub(super) struct TestServer {
     pub state: Arc<ServerState>,
     /// The server's push router, for asserting what it routed.
     pub router: SyncTx,
+    /// The plain TCP test server's watch registry (`spawn_server_cfg`), for
+    /// tests that drive a write's notifications directly; `None` elsewhere.
+    pub watch_registry: Option<WatchRegistry>,
     _task: tokio::task::JoinHandle<()>,
 }
 
@@ -44,6 +47,7 @@ async fn spawn_server_cfg(
     let router = tx.clone();
     let pubsub: SharedPubSub = Arc::new(tokio::sync::Mutex::new(PubSubHub::new()));
     let watch_registry: WatchRegistry = WatchHub::new();
+    let registry_for_tests = Arc::clone(&watch_registry);
     let semaphore = Arc::new(Semaphore::new(64));
     let snap_cfg = Arc::new(SnapshotConfig {
         path: snap_path.unwrap_or_else(|| tmp_path("test.rdb")),
@@ -104,6 +108,7 @@ async fn spawn_server_cfg(
         store,
         state,
         router,
+        watch_registry: Some(registry_for_tests),
         _task: task,
     }
 }
@@ -1553,6 +1558,7 @@ async fn integration_replica_receives_write() {
             store,
             state,
             router,
+            watch_registry: None,
             _task: task,
         }
     };
@@ -2342,6 +2348,7 @@ pub(super) async fn spawn_ws_server_policy(
         store,
         state,
         router,
+        watch_registry: None,
         _task: task,
     }
 }
@@ -6824,6 +6831,7 @@ mod reply_coalesce_6ob;
 mod request_path;
 mod security_v06_regressions;
 mod sync_routing;
+mod watch_overflow_exec;
 mod write_gate;
 mod ws_auth;
 mod ws_fastpath;
