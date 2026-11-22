@@ -197,6 +197,10 @@ fn script() -> Vec<Command> {
 fn probed_writes_account_exactly_like_the_general_path() {
     let probed = KeyValueStore::new();
     let general = KeyValueStore::with_config(Some(usize::MAX), None, EvictionPolicy::NoEviction);
+    // The server's entry point, by reference, run through the whole script
+    // on one store: every reply and every accounting step must match the
+    // probed (owned) store's, on existing keys, wrong types and grown sets.
+    let by_ref_persistent = KeyValueStore::new();
     assert!(!probed.has_capacity_limits() && general.has_capacity_limits());
     for (i, cmd) in script().into_iter().enumerate() {
         let what = format!("step {i} {cmd:?}");
@@ -211,6 +215,17 @@ fn probed_writes_account_exactly_like_the_general_path() {
         assert_eq!(probed.key_count(), general.key_count(), "{what}: key count");
         assert_accounting_exact(&probed, &what);
         assert_accounting_exact(&general, &what);
+        let (c, _) = by_ref_persistent.execute_reporting_ref(&cmd);
+        assert_eq!(a.0, c, "{what}: reply by reference");
+        assert_eq!(
+            by_ref_persistent.approximate_memory_bytes(),
+            probed.approximate_memory_bytes(),
+            "{what}: memory by reference"
+        );
+        assert_accounting_exact(
+            &by_ref_persistent,
+            &format!("{what} by reference, cumulative"),
+        );
         // The by-reference entry point the server uses takes the same path.
         let by_ref = KeyValueStore::new();
         let _ = by_ref.execute_reporting_ref(&cmd);

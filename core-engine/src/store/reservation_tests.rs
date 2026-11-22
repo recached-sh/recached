@@ -526,6 +526,41 @@ fn reserved_and_gated_stores_end_in_the_same_state_with_lists_and_sets() {
     }
 }
 
+/// 6O-B: each of the three writes takes the reservation fast path on its
+/// own when it fits (and a WRONGTYPE one releases its reservation).
+#[test]
+fn lpush_rpush_and_sadd_each_take_the_reserved_path() {
+    let store = reserved_store(Some(100), Some(1 << 20), EvictionPolicy::NoEviction);
+    for (cmd, want) in [
+        (
+            Command::LPush("l".into(), vec![b"a".to_vec()]),
+            Value::Integer(1),
+        ),
+        (
+            Command::RPush("l".into(), vec![b"b".to_vec()]),
+            Value::Integer(2),
+        ),
+        (
+            Command::SAdd("s".into(), vec!["m".into()]),
+            Value::Integer(1),
+        ),
+        (
+            Command::SAdd("l".into(), vec!["m".into()]),
+            Value::Error(WRONGTYPE.to_string()),
+        ),
+    ] {
+        RESERVED_OUTCOMES.with(|o| o.set((0, 0)));
+        let what = format!("{cmd:?}");
+        assert_eq!(store.execute(cmd), want, "{what}");
+        assert_eq!(
+            RESERVED_OUTCOMES.with(|o| o.get()),
+            (1, 0),
+            "{what}: one reserved write, no fallback"
+        );
+        assert_settled(&store, &what);
+    }
+}
+
 /// 6O-B: eight threads pushing and adding into a capped store stay under
 /// its caps, with both the fast path and the fallback exercised.
 #[test]
@@ -534,11 +569,11 @@ fn eight_threads_pushing_and_adding_stay_under_the_caps() {
     let ((hits, fallbacks), samples) = race(&store, move |t, store| {
         for i in 0..400 {
             let key = format!("t{t}:{}", i % 60);
-            if i % 2 == 0 {
-                store.execute(Command::RPush(key, vec![vec![b'x'; 48]]));
-            } else {
-                store.execute(Command::SAdd(key, vec![format!("member:{i}")]));
-            }
+            match i % 3 {
+                0 => store.execute(Command::RPush(key, vec![vec![b'x'; 48]])),
+                1 => store.execute(Command::LPush(key, vec![vec![b'y'; 32]])),
+                _ => store.execute(Command::SAdd(key, vec![format!("member:{i}")])),
+            };
         }
     });
     assert!(

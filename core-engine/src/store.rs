@@ -871,7 +871,7 @@ enum End {
 /// set.insert(m.clone()))` allocated and copied every member only to drop the
 /// original — and a borrowed one is copied only when it is new, so the
 /// common re-add of a present member allocates nothing.
-trait SetMember: AsRef<str> {
+trait SetMember {
     fn insert_into(self, set: &mut CompactSet) -> bool;
 }
 
