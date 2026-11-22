@@ -492,6 +492,9 @@ pub(crate) fn command_ref_name(cmd: &CommandRef<'_>) -> &'static str {
         CommandRef::HGet(..) => "hget",
         CommandRef::HSet(..) => "hset",
         CommandRef::MGet(_) => "mget",
+        CommandRef::LPush(..) => "lpush",
+        CommandRef::RPush(..) => "rpush",
+        CommandRef::SAdd(..) => "sadd",
     }
 }
 

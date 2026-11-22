@@ -659,6 +659,34 @@ fn equivalence_stream() -> Vec<u8> {
         vec![b"DEDUP", b"c1", b"1", b"INCR", b"d"],
         vec![b"DEDUP", b"c1", b"1", b"INCR", b"d"],
         vec![b"GET", b"d"],
+        // 6O-C: the collection writes, borrowed. New key, existing key,
+        // order of several values, more values than the inline capacity,
+        // empty and binary values, wrong types both ways, duplicate members
+        // within one SADD and across SADDs, a non-UTF-8 member (refused by
+        // the general path), and the results read back.
+        vec![b"LPUSH", b"l", b"a"],
+        vec![b"LPUSH", b"l", b"b", b"c"],
+        vec![b"RPUSH", b"l", b"", b"\x00\xff\r\n"],
+        vec![b"rpush", b"l", b"1", b"2", b"3", b"4", b"5", b"6"],
+        vec![b"LRANGE", b"l", b"0", b"-1"],
+        vec![b"LPUSH", b"s", b"x"],
+        vec![b"LPUSH", b"l"],
+        vec![b"LPUSH", b"\xff", b"x"],
+        vec![b"SADD", b"set", b"a", b"b", b"a"],
+        vec![b"sadd", b"set", b"b", b"c", b"d", b"e", b"f"],
+        vec![b"SADD", b"set", b"\xff"],
+        vec![b"SADD", b"l", b"m"],
+        vec![b"SADD", b"s", b"m"],
+        vec![b"SMEMBERS", b"set"],
+        vec![b"SCARD", b"set"],
+        vec![b"LLEN", b"l"],
+        vec![b"MULTI"],
+        vec![b"LPUSH", b"txl", b"q"],
+        vec![b"SADD", b"txs", b"q"],
+        vec![b"EXEC"],
+        vec![b"DEDUP", b"c2", b"1", b"RPUSH", b"dl", b"v"],
+        vec![b"DEDUP", b"c2", b"1", b"RPUSH", b"dl", b"v"],
+        vec![b"LLEN", b"dl"],
         vec![b"DEL", b"s", b"h"],
         vec![b"GET", b"s"],
         vec![b"PING"],
@@ -1268,4 +1296,49 @@ fn layered_cost_bench() {
             .expect("BENCH_OUT");
         f.write_all(csv.as_bytes()).expect("write BENCH_OUT");
     }
+}
+
+/// Every borrowed shape agrees with its owned command on what the server
+/// records and gates on: its metric label, whether it writes, and the key a
+/// write names. A swapped label on the borrowed path would otherwise pass
+/// every reply test (6O-C review).
+#[test]
+fn every_borrowed_shape_agrees_with_its_owned_command() {
+    let frames: Vec<Vec<&[u8]>> = vec![
+        vec![b"GET", b"k"],
+        vec![b"SET", b"k", b"v"],
+        vec![b"INCR", b"n"],
+        vec![b"DECR", b"n"],
+        vec![b"HGET", b"h", b"f"],
+        vec![b"HSET", b"h", b"f", b"v"],
+        vec![b"MGET", b"a", b"b"],
+        vec![b"LPUSH", b"l", b"a", b"b"],
+        vec![b"RPUSH", b"l", b"a"],
+        vec![b"SADD", b"s", b"a", b"a"],
+    ];
+    let mut borrowed = 0;
+    for parts in &frames {
+        let mut frame = Vec::new();
+        encode(parts, &mut frame);
+        let mut decoder = core_engine::request::RequestDecoder::new();
+        let core_engine::request::DecodedAny::Borrowed(cmd, _) = decoder.decode_any(&frame) else {
+            panic!("{parts:?} is a borrowed shape");
+        };
+        borrowed += 1;
+        let owned = cmd.to_command();
+        assert_eq!(
+            command_ref_name(&cmd),
+            command_name(&owned),
+            "{parts:?}: label"
+        );
+        assert_eq!(cmd.is_write(), is_write_command(&owned), "{parts:?}: write");
+        if cmd.is_write() {
+            assert_eq!(
+                cmd.write_key().map(str::as_bytes),
+                Some(parts[1]),
+                "{parts:?}: the key a write names"
+            );
+        }
+    }
+    assert_eq!(borrowed, frames.len());
 }

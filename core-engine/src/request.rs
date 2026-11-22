@@ -70,6 +70,14 @@ pub enum CommandRef<'a> {
     HGet(&'a str, &'a str),
     HSet(&'a str, SmallVec<[(&'a str, &'a [u8]); 2]>),
     MGet(SmallVec<[&'a str; 8]>),
+    /// 6O-C: `LPUSH key value…`. The values are payloads (any bytes); the
+    /// store copies each one once, into the list.
+    LPush(&'a str, SmallVec<[&'a [u8]; 4]>),
+    /// `RPUSH key value…`, as `LPush`.
+    RPush(&'a str, SmallVec<[&'a [u8]; 4]>),
+    /// `SADD key member…`. Members are identifiers and must be text; the
+    /// store copies a member only when it is new to the set.
+    SAdd(&'a str, SmallVec<[&'a str; 4]>),
 }
 
 impl CommandRef<'_> {
@@ -92,16 +100,34 @@ impl CommandRef<'_> {
                     .collect(),
             ),
             CommandRef::MGet(keys) => Command::MGet(keys.iter().map(|k| (*k).to_owned()).collect()),
+            CommandRef::LPush(key, vals) => {
+                Command::LPush((*key).to_owned(), vals.iter().map(|v| v.to_vec()).collect())
+            }
+            CommandRef::RPush(key, vals) => {
+                Command::RPush((*key).to_owned(), vals.iter().map(|v| v.to_vec()).collect())
+            }
+            CommandRef::SAdd(key, members) => Command::SAdd(
+                (*key).to_owned(),
+                members.iter().map(|m| (*m).to_owned()).collect(),
+            ),
         }
     }
 
     /// Whether this command writes.
     #[must_use]
     pub fn is_write(&self) -> bool {
-        matches!(
-            self,
-            CommandRef::Set(..) | CommandRef::Incr(_) | CommandRef::Decr(_) | CommandRef::HSet(..)
-        )
+        // Exhaustive: a write variant added later must say so here, or it
+        // would run as a read past every write gate.
+        match self {
+            CommandRef::Set(..)
+            | CommandRef::Incr(_)
+            | CommandRef::Decr(_)
+            | CommandRef::HSet(..)
+            | CommandRef::LPush(..)
+            | CommandRef::RPush(..)
+            | CommandRef::SAdd(..) => true,
+            CommandRef::Get(_) | CommandRef::HGet(..) | CommandRef::MGet(_) => false,
+        }
     }
 
     /// The key a write mutates (every borrowed write names exactly one).
@@ -111,7 +137,10 @@ impl CommandRef<'_> {
             CommandRef::Set(key, _)
             | CommandRef::Incr(key)
             | CommandRef::Decr(key)
-            | CommandRef::HSet(key, _) => Some(key),
+            | CommandRef::HSet(key, _)
+            | CommandRef::LPush(key, _)
+            | CommandRef::RPush(key, _)
+            | CommandRef::SAdd(key, _) => Some(key),
             _ => None,
         }
     }
@@ -312,8 +341,43 @@ fn build_ref(args: Args<'_>) -> Option<CommandRef<'_>> {
                 .map(|i| args.key_ref(i))
                 .collect::<Option<SmallVec<_>>>()?,
         ),
+        // 6O-B built these owned from the read buffer (`build`); 6O-C keeps
+        // them borrowed, so a no-persistence push or add copies each value
+        // once, into the store, and nothing else. Same checks as before: the
+        // key passes `key_ref` (text, `validate_key`), list values are
+        // payloads (any bytes, `is_payload_index`), set members are
+        // identifiers and must be text. A frame failing any of them goes to
+        // the general path for its error.
+        (5, _) if n >= 3 && args.name_is("LPUSH") => {
+            CommandRef::LPush(args.key_ref(1)?, payloads(args, 2)?)
+        }
+        (5, _) if n >= 3 && args.name_is("RPUSH") => {
+            CommandRef::RPush(args.key_ref(1)?, payloads(args, 2)?)
+        }
+        (4, _) if n >= 3 && args.name_is("SADD") => {
+            CommandRef::SAdd(args.key_ref(1)?, identifiers(args, 2)?)
+        }
         _ => return None,
     })
+}
+
+/// Payload arguments from `from` on, borrowed. Sized up front: collecting
+/// an `Option` iterator would grow the vector by doubling past 4.
+fn payloads<'a>(args: Args<'a>, from: usize) -> Option<SmallVec<[&'a [u8]; 4]>> {
+    let mut out = SmallVec::with_capacity(args.len().saturating_sub(from));
+    for i in from..args.len() {
+        out.push(args.get(i)?);
+    }
+    Some(out)
+}
+
+/// Identifier arguments from `from` on, borrowed: text, else `None`.
+fn identifiers<'a>(args: Args<'a>, from: usize) -> Option<SmallVec<[&'a str; 4]>> {
+    let mut out = SmallVec::with_capacity(args.len().saturating_sub(from));
+    for i in from..args.len() {
+        out.push(args.text(i)?);
+    }
+    Some(out)
 }
 
 /// The owned shapes not covered by [`build_ref`] — whose arguments the
@@ -335,18 +399,8 @@ fn build(args: Args<'_>) -> Option<Result<Command, String>> {
             Command::MSet(pairs)
         }
         (4, 1) if args.name_is("PING") => Command::Ping(None),
-        // 6O-B: the collection writes redis-benchmark and most queues send.
-        // On the general path each built a `Value` per argument and then
-        // `from_value` copied every one of them again, plus the upper-cased
-        // name: ~1,200–1,450 user cycles per command, the largest cost a
-        // `LPUSH` or `SADD` paid outside the store. Same checks, same
-        // command: the key passes `key` (text, `validate_key`), list values
-        // are payloads (any bytes, `is_payload_index`), set members are
-        // identifiers and so must be text — a frame failing any of them goes
-        // to the general path for its error.
-        (5, _) if n >= 3 && args.name_is("LPUSH") => Command::LPush(args.key(1)?, values(args, 2)?),
-        (5, _) if n >= 3 && args.name_is("RPUSH") => Command::RPush(args.key(1)?, values(args, 2)?),
-        (4, _) if n >= 3 && args.name_is("SADD") => Command::SAdd(args.key(1)?, texts(args, 2)?),
+        // LPUSH, RPUSH and SADD (6O-B: built here, owned) are borrowed
+        // shapes since 6O-C, so `build_ref` above returns them.
         (5, _) if n >= 4 && args.name_is("DEDUP") => return dedup(args),
         _ => return None,
     };
@@ -355,18 +409,6 @@ fn build(args: Args<'_>) -> Option<Result<Command, String>> {
 
 fn keys(args: Args<'_>, from: usize) -> Option<Vec<String>> {
     (from..args.len()).map(|i| args.key(i)).collect()
-}
-
-/// Payload arguments from `from` on, as the bytes that arrived.
-fn values(args: Args<'_>, from: usize) -> Option<Vec<Vec<u8>>> {
-    (from..args.len()).map(|i| args.bytes(i)).collect()
-}
-
-/// Identifier arguments from `from` on: text, else `None`.
-fn texts(args: Args<'_>, from: usize) -> Option<Vec<String>> {
-    (from..args.len())
-        .map(|i| args.text(i).map(str::to_owned))
-        .collect()
 }
 
 /// `DEDUP <client> <id> <command…>` without copying the wrapped command.
@@ -613,5 +655,95 @@ mod tests {
         assert_eq!(d.decode(&short), general(&short));
         assert_eq!(d.decode(b"*1\r\n$-1\r\n"), general(b"*1\r\n$-1\r\n"));
         assert_eq!(d.decode(&short), general(&short));
+    }
+
+    /// 6O-C: LPUSH, RPUSH and SADD are decoded borrowed (not merely
+    /// equivalent), and become exactly the owned command; the frames the
+    /// general path must answer are not borrowed.
+    #[test]
+    fn collection_writes_decode_borrowed_and_become_the_owned_command() {
+        let six: Vec<&[u8]> = vec![b"1", b"2", b"3", b"4", b"5", b"6"];
+        let mut many: Vec<&[u8]> = vec![b"LPUSH", b"l"];
+        many.extend(six.iter().copied());
+        let borrowed: Vec<(Vec<&[u8]>, Command)> = vec![
+            (
+                vec![b"LPUSH", b"l", b"v"],
+                Command::LPush("l".into(), vec![b"v".to_vec()]),
+            ),
+            (
+                vec![b"lpush", b"l", b"a", b"b"],
+                Command::LPush("l".into(), vec![b"a".to_vec(), b"b".to_vec()]),
+            ),
+            (
+                many.clone(),
+                Command::LPush("l".into(), six.iter().map(|v| v.to_vec()).collect()),
+            ),
+            (
+                vec![b"RPUSH", b"l", b"", b"\xff\x00\r\n"],
+                Command::RPush("l".into(), vec![Vec::new(), b"\xff\x00\r\n".to_vec()]),
+            ),
+            (
+                vec![b"SADD", b"s", b"a", b"a", b"caf\xC3\xA9"],
+                Command::SAdd("s".into(), vec!["a".into(), "a".into(), "café".into()]),
+            ),
+            (
+                vec![b"Sadd", b"s", b""],
+                Command::SAdd("s".into(), vec![String::new()]),
+            ),
+        ];
+        let mut d = RequestDecoder::new();
+        for (parts, want) in &borrowed {
+            let buf = frame(parts);
+            match d.decode_any(&buf) {
+                DecodedAny::Borrowed(command, consumed) => {
+                    assert_eq!(consumed, buf.len());
+                    assert!(command.is_write());
+                    assert_eq!(
+                        command.write_key(),
+                        Some(if parts[1] == b"l" { "l" } else { "s" })
+                    );
+                    assert_eq!(&command.to_command(), want, "{parts:?}");
+                }
+                DecodedAny::Owned(other) => panic!("{parts:?} not borrowed: {other:?}"),
+            }
+            assert_same(&buf);
+        }
+        let general_only: Vec<Vec<&[u8]>> = vec![
+            vec![b"LPUSH", b"l"],
+            vec![b"SADD", b"s"],
+            vec![b"LPUSH", b"\xff", b"v"],
+            vec![b"LPUSH", b"", b"v"],
+            vec![b"SADD", b"s", b"ok", b"\xff"],
+            vec![b"\xC5\xBFadd", b"s", b"m"],
+            vec![b"lpu\xC5\xBFh", b"l", b"v"],
+            vec![b"LPUSHX", b"l", b"v"],
+        ];
+        for parts in &general_only {
+            let buf = frame(parts);
+            assert!(
+                !matches!(d.decode_any(&buf), DecodedAny::Borrowed(..)),
+                "{parts:?} must go to the general path"
+            );
+            assert_same(&buf);
+        }
+    }
+
+    /// A collection write split across reads: every prefix is what the
+    /// general path says (incomplete, with its bound), and the whole frame
+    /// is borrowed.
+    #[test]
+    fn collection_writes_split_anywhere_match_the_general_path() {
+        for parts in [
+            vec![b"LPUSH".as_slice(), b"list", b"value-1", b"value-2"],
+            vec![b"RPUSH", b"list", b"\r\n"],
+            vec![b"SADD", b"set", b"member", b"member"],
+        ] {
+            let buf = frame(&parts);
+            for cut in 0..buf.len() {
+                assert_same(&buf[..cut]);
+            }
+            let mut d = RequestDecoder::new();
+            assert!(matches!(d.decode_any(&buf), DecodedAny::Borrowed(..)));
+        }
     }
 }

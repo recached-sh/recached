@@ -575,12 +575,25 @@ pub(crate) fn try_execute_borrowed(
     if borrowed_switch::OFF.load(Ordering::Relaxed) {
         return None;
     }
-    let started = std::time::Instant::now();
     let is_write = cmd.is_write();
+    // A write the owned path will take anyway is turned away before the
+    // clock and the gate: with the AOF on, a replica, push receivers,
+    // watchers or ephemeral keys, entering the gate only to leave it again
+    // made every declined write pay it twice (6O-C review). This check can
+    // only decline; the one after entering the gate stays authoritative.
+    if is_write
+        && (!state.persistence_is_healthy()
+            || state.is_replica()
+            || store.has_capacity_limits()
+            || state.needs_write_log()
+            || state.replicas.unordered.has_push_receivers()
+            || !watch_registry.is_empty()
+            || state.ephemeral_in_use.load(Ordering::Acquire))
+    {
+        return None;
+    }
+    let started = std::time::Instant::now();
     let outcome = if is_write {
-        if !state.persistence_is_healthy() || state.is_replica() || store.has_capacity_limits() {
-            return None;
-        }
         let _pass = enter_unordered(state, watch_registry)?;
         #[cfg(test)]
         unordered_pause::pause(|| cmd.write_key().into_iter().collect());

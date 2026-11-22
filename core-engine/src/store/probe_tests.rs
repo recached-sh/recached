@@ -551,3 +551,228 @@ fn within_capacity_runs_only_writes_that_cannot_evict() {
     assert_eq!((reply, evicted.len()), (Value::Integer(1), 0));
     assert_accounting_exact(&mem, "memory cap after DEL");
 }
+
+// ── 6O-C: the borrowed collection writes ──────────────────────────────────────
+
+fn resp_frame(args: &[&[u8]]) -> Vec<u8> {
+    let mut out = format!("*{}\r\n", args.len()).into_bytes();
+    for a in args {
+        out.extend_from_slice(format!("${}\r\n", a.len()).as_bytes());
+        out.extend_from_slice(a);
+        out.extend_from_slice(b"\r\n");
+    }
+    out
+}
+
+/// Run `frame` on `store` as the TCP loop does with no persistence: borrowed
+/// when the decoder borrows it and the store takes it (`execute_ref_into`),
+/// owned otherwise. The reply's bytes, and whether it was borrowed.
+fn run_as_server(store: &KeyValueStore, frame: &[u8]) -> (Vec<u8>, bool) {
+    let mut decoder = crate::request::RequestDecoder::new();
+    let mut out = Vec::new();
+    match decoder.decode_any(frame) {
+        crate::request::DecodedAny::Borrowed(cmd, _) => {
+            if store.execute_ref_into(&cmd, &mut out).is_some() {
+                return (out, true);
+            }
+            let (reply, _) = store.execute_reporting_ref(&cmd.to_command());
+            reply.serialize_into(&mut out);
+            (out, false)
+        }
+        crate::request::DecodedAny::Owned(Ok((Ok(cmd), _))) => {
+            let (reply, _) = store.execute_reporting_ref(&cmd);
+            reply.serialize_into(&mut out);
+            (out, false)
+        }
+        crate::request::DecodedAny::Owned(other) => panic!("not a command: {other:?}"),
+    }
+}
+
+/// Run `frame` owned: decoded the same way, then always `to_command` and the
+/// server's owned entry point — the path a borrowed write took before 6O-C.
+fn run_owned(store: &KeyValueStore, frame: &[u8]) -> Vec<u8> {
+    let mut decoder = crate::request::RequestDecoder::new();
+    let cmd = match decoder.decode(frame) {
+        Ok((Ok(cmd), _)) => cmd,
+        other => panic!("not a command: {other:?}"),
+    };
+    let (reply, _) = store.execute_reporting_ref(&cmd);
+    let mut out = Vec::new();
+    reply.serialize_into(&mut out);
+    out
+}
+
+fn collection_script() -> Vec<Vec<u8>> {
+    let mut members: Vec<Vec<u8>> = (0..200).map(|i| format!("m{i}").into_bytes()).collect();
+    members.insert(0, b"SADD".to_vec());
+    members.insert(1, b"big".to_vec());
+    let members: Vec<&[u8]> = members.iter().map(Vec::as_slice).collect();
+    let mut f: Vec<Vec<u8>> = vec![
+        resp_frame(&[b"LPUSH", b"l", b"a"]),
+        resp_frame(&[b"LPUSH", b"l", b"b", b"c"]),
+        resp_frame(&[b"RPUSH", b"l", b"", b"\xff\x00\r\n"]),
+        resp_frame(&[b"RPUSH", b"l", b"1", b"2", b"3", b"4", b"5", b"6", b"7"]),
+        resp_frame(&[b"LRANGE", b"l", b"0", b"-1"]),
+        resp_frame(&[b"SET", b"str", b"v"]),
+        resp_frame(&[b"LPUSH", b"str", b"x"]),
+        resp_frame(&[b"SADD", b"str", b"x"]),
+        resp_frame(&[b"SADD", b"l", b"x"]),
+        resp_frame(&[b"SADD", b"set", b"a", b"b", b"a"]),
+        resp_frame(&[b"RPUSH", b"set", b"x"]),
+        resp_frame(&[b"SADD", b"set", b"b", b"c"]),
+        resp_frame(&[b"SADD", b"set", b"c"]),
+        resp_frame(&[b"SADD", b"set", b"caf\xC3\xA9", b""]),
+        resp_frame(&[b"SMEMBERS", b"set"]),
+        // The set's inline-to-table switch, then re-adds that copy nothing.
+        resp_frame(&members),
+        resp_frame(&members),
+        resp_frame(&[b"SCARD", b"big"]),
+        // An emptied list is gone; a push recreates it.
+        resp_frame(&[b"LPOP", b"l", b"100"]),
+        resp_frame(&[b"EXISTS", b"l"]),
+        resp_frame(&[b"RPUSH", b"l", b"again"]),
+        // TTLs: a push keeps the list's TTL; an expired key is recreated.
+        resp_frame(&[b"EXPIRE", b"l", b"100"]),
+        resp_frame(&[b"LPUSH", b"l", b"ttl"]),
+        resp_frame(&[b"PERSIST", b"l"]),
+        resp_frame(&[b"PEXPIRE", b"set", b"1"]),
+    ];
+    f.push(Vec::new()); // a pause for the expiry, see the test
+    f.extend([
+        resp_frame(&[b"SADD", b"set", b"new"]),
+        resp_frame(&[b"SMEMBERS", b"set"]),
+        resp_frame(&[b"EXISTS", b"set"]),
+        resp_frame(&[b"DEL", b"l", b"set", b"big"]),
+        resp_frame(&[b"LPUSH", b"l", b"after"]),
+    ]);
+    f
+}
+
+/// Every collection write the server now runs borrowed replies and accounts
+/// exactly as the owned path did: on one persistent store per path, every
+/// reply byte, the memory estimate, the key count and an independent
+/// recomputation of the accounting agree at every step. Several values per
+/// push (more than the inline capacity), duplicates within and across
+/// SADDs, wrong types both ways, an emptied list, a TTL kept across a push
+/// (`PERSIST` answers 1 only if it was) and a revived expired key are all
+/// in the script.
+#[test]
+fn borrowed_collection_writes_reply_and_account_like_the_owned_path() {
+    let borrowed = KeyValueStore::new();
+    let owned = KeyValueStore::new();
+    for (i, frame) in collection_script().iter().enumerate() {
+        if frame.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            continue;
+        }
+        let what = format!("step {i} {:?}", String::from_utf8_lossy(frame));
+        let (b, was_borrowed) = run_as_server(&borrowed, frame);
+        let collection = [b"$5\r\nLPUSH".as_slice(), b"$5\r\nRPUSH", b"$4\r\nSADD"]
+            .iter()
+            .any(|name| frame[frame.iter().position(|&c| c == b'$').unwrap()..].starts_with(name));
+        assert!(
+            !collection || was_borrowed,
+            "{what}: a collection write ran owned"
+        );
+        let o = run_owned(&owned, frame);
+        assert_eq!(
+            String::from_utf8_lossy(&b),
+            String::from_utf8_lossy(&o),
+            "{what}: reply"
+        );
+        assert_eq!(
+            borrowed.approximate_memory_bytes(),
+            owned.approximate_memory_bytes(),
+            "{what}: memory"
+        );
+        assert_eq!(borrowed.key_count(), owned.key_count(), "{what}: key count");
+        assert_accounting_exact(&borrowed, &format!("{what} borrowed"));
+    }
+}
+
+/// Borrowed pushes and adds from eight threads on shared keys: no push is
+/// lost (LLEN equals the pushes made), every distinct member is reported
+/// added exactly once across all threads (the SADD replies sum to the
+/// set's size), and the accounting is exact — with owned pops, deletes and
+/// type changes racing on a third key.
+#[test]
+fn borrowed_pushes_and_adds_racing_lose_nothing_and_account_exactly() {
+    let store = KeyValueStore::new();
+    let pushes = AtomicUsize::new(0);
+    let added = AtomicUsize::new(0);
+    race(8, 2_000, |t, r| {
+        let frame = match (t + r) % 6 {
+            0 => {
+                pushes.fetch_add(1, Ordering::Relaxed);
+                resp_frame(&[b"LPUSH", b"q", &vec![b'v'; (r * 5) % 90]])
+            }
+            1 => {
+                pushes.fetch_add(2, Ordering::Relaxed);
+                resp_frame(&[b"RPUSH", b"q", b"x", format!("{t}:{r}").as_bytes()])
+            }
+            2 => resp_frame(&[
+                b"SADD",
+                b"pool",
+                format!("m{}", (t * 7 + r) % 64).as_bytes(),
+                format!("m{}", r % 64).as_bytes(),
+            ]),
+            3 => resp_frame(&[b"LPUSH", b"churn", b"c"]),
+            4 => resp_frame(&[b"SADD", b"churn", b"c"]),
+            _ => resp_frame(&[b"LPOP", b"churn"]),
+        };
+        let (reply, _) = run_as_server(&store, &frame);
+        if frame.starts_with(b"*4\r\n$4\r\nSADD\r\n$4\r\npool") {
+            let n: usize = std::str::from_utf8(&reply[1..reply.len() - 2])
+                .unwrap()
+                .parse()
+                .unwrap();
+            added.fetch_add(n, Ordering::Relaxed);
+        }
+        if (t + r) % 97 == 0 {
+            store.execute(Command::Del(vec!["churn".into()]));
+        }
+    });
+    assert_accounting_exact(&store, "borrowed writers");
+    assert_eq!(
+        store.execute(Command::LLen("q".into())),
+        Value::Integer(pushes.load(Ordering::Relaxed) as i64),
+        "every borrowed push landed once"
+    );
+    assert_eq!(
+        store.execute(Command::SCard("pool".into())),
+        Value::Integer(64)
+    );
+    assert_eq!(
+        added.load(Ordering::Relaxed),
+        64,
+        "each member reported added once"
+    );
+}
+
+/// A capped store declines every borrowed write, having changed nothing:
+/// capacity reservations belong to the owned path, which then runs it.
+#[test]
+fn a_capped_store_declines_borrowed_collection_writes() {
+    let store = KeyValueStore::with_config(Some(1_000), None, EvictionPolicy::NoEviction);
+    for parts in [
+        vec![b"LPUSH".as_slice(), b"l1", b"v"],
+        vec![b"RPUSH", b"l2", b"v"],
+        vec![b"SADD", b"s", b"m"],
+    ] {
+        let frame = resp_frame(&parts);
+        let mut decoder = crate::request::RequestDecoder::new();
+        let crate::request::DecodedAny::Borrowed(cmd, _) = decoder.decode_any(&frame) else {
+            panic!("{parts:?} not borrowed");
+        };
+        let (keys, memory) = (store.key_count(), store.approximate_memory_bytes());
+        let mut out = Vec::new();
+        assert!(store.execute_ref_into(&cmd, &mut out).is_none());
+        assert!(out.is_empty(), "nothing written");
+        assert_eq!(store.key_count(), keys, "nothing run");
+        assert_eq!(store.approximate_memory_bytes(), memory);
+        let (reply, was_borrowed) = run_as_server(&store, &frame);
+        assert!(!was_borrowed);
+        assert_eq!(reply, b":1\r\n");
+    }
+    assert_accounting_exact(&store, "capped");
+}

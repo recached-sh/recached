@@ -53,6 +53,25 @@ fn script() -> Vec<CommandRef<'static>> {
         CommandRef::Set("h", b"string now"),
         CommandRef::HGet("h", "f"),
         CommandRef::Get("expiring"),
+        // 6O-C: the collection writes, more values than the inline capacity,
+        // duplicate members, wrong types both ways.
+        CommandRef::LPush("l", smallvec![b"a".as_slice()]),
+        CommandRef::LPush(
+            "l",
+            smallvec![
+                b"b".as_slice(),
+                b"".as_slice(),
+                b"\xff\x00".as_slice(),
+                b"c".as_slice(),
+                b"d".as_slice()
+            ],
+        ),
+        CommandRef::RPush("l", smallvec![b"z".as_slice()]),
+        CommandRef::LPush("s", smallvec![b"x".as_slice()]),
+        CommandRef::SAdd("set", smallvec!["a", "b", "a", "c", "d", "e"]),
+        CommandRef::SAdd("set", smallvec!["a"]),
+        CommandRef::SAdd("l", smallvec!["m"]),
+        CommandRef::RPush("set", smallvec![b"x".as_slice()]),
     ]
 }
 
