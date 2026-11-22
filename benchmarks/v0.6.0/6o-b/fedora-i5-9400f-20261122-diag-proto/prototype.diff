@@ -1,0 +1,84 @@
+diff --git a/server-native/src/connection.rs b/server-native/src/connection.rs
+index a0b379c..64684bd 100644
+--- a/server-native/src/connection.rs
++++ b/server-native/src/connection.rs
+@@ -348,6 +348,10 @@ pub(crate) fn process_auth(
+ 
+ // ── main ─────────────────────────────────────────────────────────────────────
+ 
++// 6O-B PROTOTYPE (diagnostic build only, never merged): env toggles.
++static PROTO_YIELD: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("PROTO_YIELD").is_ok_and(|v| v == "1"));
++static PROTO_OVERFLOW: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("PROTO_OVERFLOW").is_ok_and(|v| v == "1"));
++
+ /// A frame the TCP loop answered on the borrowed path (and its length), or
+ /// the decoded frame for the ordinary path.
+ enum Answered {
+@@ -419,9 +423,12 @@ pub(crate) async fn handle_tcp<S>(
+         Arc::new(AtomicBool::new(false)),
+     );
+ 
++    let proto_yield = *PROTO_YIELD;
++    let mut overflow_armed = !*PROTO_OVERFLOW;
+     with_deferred_aof(deferral, async {
+     'outer: loop {
+         let is_subscribed = !subscribed_channels.is_empty() || !subscribed_patterns.is_empty();
++        overflow_armed |= is_subscribed || !watched_keys.is_empty();
+         // Republish only when the counts moved: CLIENT LIST has to see live
+         // subscription state, but taking the registry's write lock once per
+         // command would put it on the hot path.
+@@ -1046,6 +1053,9 @@ pub(crate) async fn handle_tcp<S>(
+                                 }
+                             }
+                         }
++                        if proto_yield && !writer.buffer().is_empty() {
++                            tokio::task::yield_now().await;
++                        }
+                         // Flush all responses for this read batch in one syscall.
+                         if writer.flush().await.is_err() {
+                             break 'outer;
+@@ -1089,7 +1099,7 @@ pub(crate) async fn handle_tcp<S>(
+                 }
+             }
+ 
+-            overflow = overflow_rx.recv() => {
++            overflow = overflow_rx.recv(), if overflow_armed => {
+                 if overflow.is_some() {
+                     warn!("TCP conn {} notification queue overflowed; disconnecting", conn_id);
+                 }
+diff --git a/server-native/src/persistence.rs b/server-native/src/persistence.rs
+index b44a435..54ebbf0 100644
+--- a/server-native/src/persistence.rs
++++ b/server-native/src/persistence.rs
+@@ -1281,7 +1281,9 @@ pub(crate) async fn with_deferred_aof<F: std::future::Future>(
+ #[derive(Default)]
+ pub(crate) struct DeferredAof {
+     tickets: std::sync::Mutex<VecDeque<(Arc<AofShared>, Arc<AofDone>)>>,
++    len: std::sync::atomic::AtomicUsize,
+ }
++static PROTO_DEFERRED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("PROTO_DEFERRED").is_ok_and(|v| v == "1"));
+ 
+ impl DeferredAof {
+     fn push(&self, shared: &Arc<AofShared>, done: Arc<AofDone>) {
+@@ -1297,13 +1299,19 @@ impl DeferredAof {
+             return;
+         }
+         tickets.push_back((Arc::clone(shared), done));
++        self.len.store(tickets.len(), std::sync::atomic::Ordering::Release);
+     }
+ 
+     fn pop(&self) -> Option<(Arc<AofShared>, Arc<AofDone>)> {
+-        self.tickets
++        if *PROTO_DEFERRED && self.len.load(std::sync::atomic::Ordering::Acquire) == 0 {
++            return None;
++        }
++        let mut t = self.tickets
+             .lock()
+-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+-            .pop_front()
++            .unwrap_or_else(|poisoned| poisoned.into_inner());
++        let r = t.pop_front();
++        self.len.store(t.len(), std::sync::atomic::Ordering::Release);
++        r
+     }
+ }
+ 

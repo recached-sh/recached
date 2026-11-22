@@ -1,0 +1,39 @@
+date_utc: 2026-11-22T10:01:02Z
+rc_bin[p0]: /home/dennispaler/recached-6ob-bench/bin/rc-proto sha256=0290ce48c4bfc99288458a3144a83831ae27301d5c164dff3225d8ea151f14c4 source=proto version=recached-server 0.6.0
+rc_bin[base]: /home/dennispaler/recached-6ob-bench/bin/rc-base sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 source=51ae15c version=recached-server 0.6.0
+rc_bin[py]: /home/dennispaler/recached-6ob-bench/bin/rc-proto sha256=0290ce48c4bfc99288458a3144a83831ae27301d5c164dff3225d8ea151f14c4 source=proto version=recached-server 0.6.0
+rc_bin[pa]: /home/dennispaler/recached-6ob-bench/bin/rc-proto sha256=0290ce48c4bfc99288458a3144a83831ae27301d5c164dff3225d8ea151f14c4 source=proto version=recached-server 0.6.0
+rc_bin[pc]: /home/dennispaler/recached-6ob-bench/bin/rc-proto sha256=0290ce48c4bfc99288458a3144a83831ae27301d5c164dff3225d8ea151f14c4 source=proto version=recached-server 0.6.0
+kit_sha: 51ae15c97ff19d3e7390c05f9655afead770e24f run-6ob.sh sha256=6fea3d53224b875f821980a10b3979d3ad5dee7b1d7bc8294088139902604f99
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 1.56 1.42 1.51 2/1525 203378
+pressure_at_start: load=1.56 io_psi10=1.04/0.82 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=6304
+memory: total=15918 used=9258 available=6660 swap_total=8191 swap_used=3385
+aof_fs: /dev/sda3 btrfs rotational=1
+perf: absent perf_event_paranoid=2 uprof=/home/dennispaler/recached-6ob-bench/bin/uprof sha256=93aa43d37198729ef1c4b7c1d9e30084454ccb37b94ec72f0ce30391b6467afa
+cpus: server=0 bench=3-5 reps=2 req_c1_p1=300000 req_c1_p16=2000000 req_c50_p1=1000000 req_c50_p16=3000000 always_requests=50000 bench_threads=2 keyspace=100000
+order: alternate=1 settle_io=8 settle_max_s=90
+label_env: LABEL_ENV_py=PROTO_YIELD=1
+label_env: LABEL_ENV_pa=PROTO_YIELD=1 PROTO_OVERFLOW=1 PROTO_DEFERRED=1
+label_env: LABEL_ENV_pc=PROTO_OVERFLOW=1 PROTO_DEFERRED=1
+cells: base/rc-noaof-set-c50-P1 p0/rc-noaof-set-c50-P1 py/rc-noaof-set-c50-P1 pc/rc-noaof-set-c50-P1 pa/rc-noaof-set-c50-P1 redis-noaof-set-c50-P1 base/rc-noaof-lpush-c50-P1 p0/rc-noaof-lpush-c50-P1 py/rc-noaof-lpush-c50-P1 pc/rc-noaof-lpush-c50-P1 pa/rc-noaof-lpush-c50-P1 redis-noaof-lpush-c50-P1 base/rc-noaof-set-c1-P1 p0/rc-noaof-set-c1-P1 py/rc-noaof-set-c1-P1 pc/rc-noaof-set-c1-P1 pa/rc-noaof-set-c1-P1 redis-noaof-set-c1-P1 base/rc-noaof-set-c50-P16 p0/rc-noaof-set-c50-P16 py/rc-noaof-set-c50-P16 pc/rc-noaof-set-c50-P16 pa/rc-noaof-set-c50-P16 redis-noaof-set-c50-P16 
+record_cells: none freq=2999
+sysc: off cells=none
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: unknown
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+ 192240 root      20   0       0      0      0 I  14.6   0.0   0:07.70 kworker+
+   2285 dennisp+  20   0 3627624 159040  75748 S   9.7   1.0   6:01.19 gnome-s+
+   2648 dennisp+  39  19  856540  59584  14132 S   4.9   0.4   0:44.65 localse+
+   4327 dennisp+  20   0 1448.4g 140544 101620 S   4.9   0.9   0:57.33 code
+   4386 dennisp+  20   0   52.6g  74284  54144 S   4.9   0.5   3:23.65 code
+   4713 dennisp+  20   0 1448.1g 313256  91080 S   4.9   1.9   8:34.88 code
+   5399 dennisp+  20   0  692236  64368  55408 S   4.9   0.4   5:03.78 RDD Pro+
+loadavg_at_end: 3.28 2.25 1.83 2/1508 211412
+pressure_at_end: load=3.28 io_psi10=1.05/1.03 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=2744

@@ -1,0 +1,28 @@
+--focus=decode (all)=RequestDecoder>::decode_any
+--focus=decode: general Value path (Args::general)=Args>::general
+--focus=decode: from_value=Command>::from_value
+--focus=decode: build (owned MSET/DEL)=core_engine::request::build$|core_engine::request::build::
+--focus=to_command (borrowed -> owned)=CommandRef>::to_command
+--focus=borrowed execute (try_execute_borrowed)=try_execute_borrowed
+--focus=ordered write entry (execute_ordered_write)=execute_ordered_write
+--focus=store execute (all)=execute_and_record|KeyValueStore>::execute
+--focus=store: Command clone=<core_engine::cmd::Command as core::clone::Clone>::clone
+--focus=store: key hash (sip)=hash::sip|hash_u64
+--focus=store: entry_state=KeyValueStore>::entry_state
+--focus=store: extract_key=extract_key
+--focus=clock reads=Timespec>::now|clock_gettime|\[vdso\]
+--focus=metrics record=record_metrics|record_outcome|record_command
+--focus=reply serialize (Value)=serialize_into
+--focus=Value drop=drop_in_place<core_engine::resp::Value|drop_glue::<core_engine::resp::Value
+--focus=Command drop=drop_in_place<core_engine::cmd::Command|drop_glue::<core_engine::cmd::Command
+--focus=allocator (all)=^(_rjem|do_rallocx|je_|mallocx|sdallocx)
+--focus=select overflow arm (mpsc recv)=mpsc::bounded::Receiver<\(\)>>::recv
+--focus=BufWriter flush (all)=io::util::flush::Flush
+--focus=AofGatedWriter (all)=AofGatedWriter
+--focus=DeferredAof pop=DeferredAof>::pop
+--focus=socket read (poll_read_priv)=TcpStream>::poll_read_priv
+--focus=socket write (poll_write_priv)=TcpStream>::poll_write_priv
+--focus=split lock (ReadHalf/WriteHalf)=io::split::
+--focus=tokio park/driver=park_internal|Driver>::turn
+--focus=tokio run_task (scheduler)=worker::Context>::run_task
+--focus=task-local scope (with_deferred_aof)=LocalKey.*scope|TaskLocalFuture

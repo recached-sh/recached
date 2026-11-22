@@ -1,0 +1,174 @@
+cell=base/rc-noaof-set-c50-P1 label=base kind=rc-noaof test=set clients=50 P=1 rep=1 requests=300000 bin_sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 oncpu_s=1.2409 rqwait_s=0.0026 cpu_user_s=0.320 cpu_sys_s=0.920 wall_s=2.006 gen_user_s=0.382 gen_sys_s=2.038 rss_kb=27924 data_dir_bytes=0
+  pressure_before: load=2.57 io_psi10=5.91/5.43 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=5084 settle_wait_s=0
+  pressure_after: load=2.44 io_psi10=9.28/8.81 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=404
+  ctxsw_before: 30 23
+  ctxsw_after:  75 163
+  syscalls_before: 45 23
+  syscalls_after:  45 27
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.070:0.010 rc-base:1:0.090:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.390:0.940 rc-base:1:0.090:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:400034 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903999055 pid=193949 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=215110 write.calls=23 write.pos_sum=2583 write.eagain=0 write.zero=0 write.err=0 write.tsc=416773 recv.calls=1590 recv.pos_sum=7502505 recv.eagain=1 recv.zero=23 recv.err=0 recv.tsc=4765556 send.calls=1566 send.pos_sum=500223 send.eagain=0 send.zero=0 send.err=0 send.tsc=29872884 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=102 epoll_wait.pos_sum=1540 epoll_wait.eagain=0 epoll_wait.zero=3 epoll_wait.err=0 epoll_wait.tsc=2619969561 epoll_wait_t0.calls=27 epoll_wait_t0.pos_sum=42 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=54604 epoll_ctl.calls=50 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=50 epoll_ctl.err=0 epoll_ctl.tsc=210787 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=466027 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=85835 accept4.calls=27 accept4.pos_sum=463 accept4.eagain=4 accept4.zero=0 accept4.err=0 accept4.tsc=211576
+  sysc_after: tsc_hz=2903999055 pid=193949 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=215110 write.calls=27 write.pos_sum=2615 write.eagain=0 write.zero=0 write.err=0 write.tsc=427782 recv.calls=301696 recv.pos_sum=30002639 recv.eagain=51 recv.zero=76 recv.err=0 recv.tsc=481110703 send.calls=301569 send.pos_sum=2000551 send.eagain=0 send.zero=0 send.err=0 send.tsc=3567069770 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=5254 epoll_wait.pos_sum=237878 epoll_wait.eagain=0 epoll_wait.zero=3 epoll_wait.err=0 epoll_wait.tsc=5523485811 epoll_wait_t0.calls=5035 epoll_wait_t0.pos_sum=63866 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=2 epoll_wait_t0.err=0 epoll_wait_t0.tsc=25431305 epoll_ctl.calls=156 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=156 epoll_ctl.err=0 epoll_ctl.tsc=492893 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=466027 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=85835 accept4.calls=132 accept4.pos_sum=2271 accept4.eagain=56 accept4.zero=0 accept4.err=0 accept4.tsc=989764
+  uprof: uprof_threads=4 cycles=1813298054 opened=4 min_running=1.000 instructions=1681254866 opened=4 min_running=1.000 branch_misses=5031548 opened=4 min_running=1.000 cache_misses=12411677 opened=4 min_running=1.000 l1d_read_misses=60452063 opened=4 min_running=1.000 task_clock_ns=1861244500 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "SET","149925.05","0.305","0.008","0.319","0.343","0.391","1.151"
+cell=redis-noaof-set-c50-P1 label=none kind=redis-noaof test=set clients=50 P=1 rep=1 requests=300000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e oncpu_s=1.0665 rqwait_s=0.0116 cpu_user_s=0.210 cpu_sys_s=0.850 wall_s=1.758 gen_user_s=0.299 gen_sys_s=1.760 rss_kb=20144 data_dir_bytes=0
+  pressure_before: load=2.24 io_psi10=7.97/7.44 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=4588 settle_wait_s=4
+  pressure_after: load=2.30 io_psi10=8.15/7.72 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=644
+  ctxsw_before: 33 12
+  ctxsw_after:  138 138
+  syscalls_before: 1634 1575
+  syscalls_after:  301708 301577
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.150:0.010 
+  threads_after:  bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.360:0.860 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:62198 total_net_input_bytes:7502530 total_net_output_bytes:500223 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:400039 instantaneous_ops_per_sec:168473 total_net_input_bytes:30002632 total_net_output_bytes:2001883 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903998985 pid=194106 read.calls=1602 read.pos_sum=7506780 read.eagain=0 read.zero=23 read.err=0 read.tsc=4701074 write.calls=1566 write.pos_sum=500223 write.eagain=0 write.zero=0 write.err=0 write.tsc=18897041 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=175 epoll_wait.pos_sum=1582 epoll_wait.eagain=0 epoll_wait.zero=12 epoll_wait.err=0 epoll_wait.tsc=3301174402 epoll_wait_t0.calls=1 epoll_wait_t0.pos_sum=11 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=5729 epoll_ctl.calls=48 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=48 epoll_ctl.err=0 epoll_ctl.tsc=127566 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=78300 accept4.calls=27 accept4.pos_sum=351 accept4.eagain=4 accept4.zero=0 accept4.err=0 accept4.tsc=187942
+  sysc_after: tsc_hz=2903998985 pid=194106 read.calls=301676 read.pos_sum=30013478 read.eagain=0 read.zero=75 read.err=0 read.tsc=469953103 write.calls=301568 write.pos_sum=2001883 write.eagain=0 write.zero=0 write.err=0 write.tsc=3201005019 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=10484 epoll_wait.pos_sum=301199 epoll_wait.eagain=0 epoll_wait.zero=16 epoll_wait.err=0 epoll_wait.tsc=4594115946 epoll_wait_t0.calls=13 epoll_wait_t0.pos_sum=495 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=180047 epoll_ctl.calls=152 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=152 epoll_ctl.err=0 epoll_ctl.tsc=396541 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=78300 accept4.calls=126 accept4.pos_sum=1940 accept4.eagain=51 accept4.zero=0 accept4.err=0 accept4.tsc=936834
+  uprof: uprof_threads=5 cycles=1282656107 opened=5 min_running=1.000 instructions=1467536258 opened=5 min_running=1.000 branch_misses=3222381 opened=5 min_running=1.000 cache_misses=7201288 opened=5 min_running=1.000 l1d_read_misses=27569575 opened=5 min_running=1.000 task_clock_ns=1596620987 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "SET","171135.19","0.252","0.048","0.239","0.319","0.447","4.607"
+cell=base/rc-noaof-lpush-c1-P1 label=base kind=rc-noaof test=lpush clients=1 P=1 rep=1 requests=50000 bin_sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 oncpu_s=0.7202 rqwait_s=0.0057 cpu_user_s=0.210 cpu_sys_s=0.520 wall_s=1.506 gen_user_s=0.077 gen_sys_s=0.420 rss_kb=28044 data_dir_bytes=0
+  pressure_before: load=2.30 io_psi10=6.68/6.32 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=1660 settle_wait_s=0
+  pressure_after: load=2.30 io_psi10=5.65/5.36 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=656
+  ctxsw_before: 22 14
+  ctxsw_after:  50015 56
+  syscalls_before: 42 20
+cell=base/rc-noaof-set-c50-P1 label=base kind=rc-noaof test=set clients=50 P=1 rep=1 requests=300000 bin_sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 oncpu_s=1.2719 rqwait_s=0.0029 cpu_user_s=0.350 cpu_sys_s=0.920 wall_s=2.006 gen_user_s=0.350 gen_sys_s=2.074 rss_kb=27676 data_dir_bytes=0
+  pressure_before: load=1.79 io_psi10=2.26/1.98 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=3704 settle_wait_s=0
+  pressure_after: load=1.81 io_psi10=3.12/2.71 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=816
+  ctxsw_before: 34 25
+  ctxsw_after:  142 166
+  syscalls_before: 45 22
+  syscalls_after:  45 27
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.070:0.010 rc-base:1:0.100:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.430:0.930 rc-base:1:0.100:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:400034 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903998903 pid=194571 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=208649 write.calls=22 write.pos_sum=2575 write.eagain=0 write.zero=0 write.err=0 write.tsc=403668 recv.calls=1609 recv.pos_sum=7502505 recv.eagain=20 recv.zero=23 recv.err=0 recv.tsc=4589233 send.calls=1566 send.pos_sum=500223 send.eagain=0 send.zero=0 send.err=0 send.tsc=29629915 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=133 epoll_wait.pos_sum=1594 epoll_wait.eagain=0 epoll_wait.zero=1 epoll_wait.err=0 epoll_wait.tsc=448505573 epoll_wait_t0.calls=28 epoll_wait_t0.pos_sum=42 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=2 epoll_wait_t0.err=0 epoll_wait_t0.tsc=71465 epoll_ctl.calls=50 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=50 epoll_ctl.err=0 epoll_ctl.tsc=149858 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=405174 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=84316 accept4.calls=44 accept4.pos_sum=443 accept4.eagain=21 accept4.zero=0 accept4.err=0 accept4.tsc=365426
+  sysc_after: tsc_hz=2903998903 pid=194571 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=208649 write.calls=27 write.pos_sum=2615 write.eagain=0 write.zero=0 write.err=0 write.tsc=425273 recv.calls=301717 recv.pos_sum=30002664 recv.eagain=70 recv.zero=77 recv.err=0 recv.tsc=491722343 send.calls=301570 send.pos_sum=2000686 send.eagain=0 send.zero=0 send.err=0 send.tsc=3573363698 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=5907 epoll_wait.pos_sum=238306 epoll_wait.eagain=0 epoll_wait.zero=4 epoll_wait.err=0 epoll_wait.tsc=3366130545 epoll_wait_t0.calls=5045 epoll_wait_t0.pos_sum=63494 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=21 epoll_wait_t0.err=0 epoll_wait_t0.tsc=24993582 epoll_ctl.calls=158 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=158 epoll_ctl.err=0 epoll_ctl.tsc=461896 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=405174 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=84316 accept4.calls=149 accept4.pos_sum=2262 accept4.eagain=72 accept4.zero=0 accept4.err=0 accept4.tsc=1173886
+  uprof: uprof_threads=4 cycles=1921689071 opened=4 min_running=1.000 instructions=1683030415 opened=4 min_running=1.000 branch_misses=4918130 opened=4 min_running=1.000 cache_misses=12430413 opened=4 min_running=1.000 l1d_read_misses=60420490 opened=4 min_running=1.000 task_clock_ns=1894680669 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "SET","149925.05","0.311","0.008","0.319","0.351","0.383","2.359"
+cell=redis-noaof-set-c50-P1 label=none kind=redis-noaof test=set clients=50 P=1 rep=1 requests=300000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e oncpu_s=1.0695 rqwait_s=0.0023 cpu_user_s=0.220 cpu_sys_s=0.840 wall_s=1.756 gen_user_s=0.318 gen_sys_s=1.818 rss_kb=20176 data_dir_bytes=0
+  pressure_before: load=1.81 io_psi10=2.56/2.22 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=1552 settle_wait_s=0
+  pressure_after: load=1.99 io_psi10=2.45/2.18 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=532
+  ctxsw_before: 20 16
+  ctxsw_after:  181 136
+  syscalls_before: 1625 1575
+  syscalls_after:  301699 301577
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.150:0.010 
+  threads_after:  bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.370:0.850 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:62221 total_net_input_bytes:7502530 total_net_output_bytes:500223 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:400039 instantaneous_ops_per_sec:178017 total_net_input_bytes:30002632 total_net_output_bytes:2001883 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903999589 pid=194719 read.calls=1593 read.pos_sum=7503819 read.eagain=0 read.zero=23 read.err=0 read.tsc=4406400 write.calls=1566 write.pos_sum=500223 write.eagain=0 write.zero=0 write.err=0 write.tsc=18983912 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=172 epoll_wait.pos_sum=1593 epoll_wait.eagain=0 epoll_wait.zero=3 epoll_wait.err=0 epoll_wait.tsc=686380684 epoll_wait_t0.calls=0 epoll_wait_t0.pos_sum=0 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=0 epoll_ctl.calls=48 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=48 epoll_ctl.err=0 epoll_ctl.tsc=139493 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=79614 accept4.calls=27 accept4.pos_sum=351 accept4.eagain=4 accept4.zero=0 accept4.err=0 accept4.tsc=190075
+  sysc_after: tsc_hz=2903999589 pid=194719 read.calls=301670 read.pos_sum=30010872 read.eagain=0 read.zero=76 read.err=0 read.tsc=461976973 write.calls=301569 write.pos_sum=2003510 write.eagain=0 write.zero=0 write.err=0 write.tsc=3196132058 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=11410 epoll_wait.pos_sum=301208 epoll_wait.eagain=0 epoll_wait.zero=8 epoll_wait.err=0 epoll_wait.tsc=2282200558 epoll_wait_t0.calls=13 epoll_wait_t0.pos_sum=486 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=185055 epoll_ctl.calls=154 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=154 epoll_ctl.err=0 epoll_ctl.tsc=425599 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=79614 accept4.calls=125 accept4.pos_sum=1947 accept4.eagain=49 accept4.zero=0 accept4.err=0 accept4.tsc=910841
+  uprof: uprof_threads=5 cycles=1284991012 opened=5 min_running=1.000 instructions=1474424948 opened=5 min_running=1.000 branch_misses=3209518 opened=5 min_running=1.000 cache_misses=7176271 opened=5 min_running=1.000 l1d_read_misses=27591121 opened=5 min_running=1.000 task_clock_ns=1595329912 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "SET","171428.58","0.248","0.056","0.239","0.311","0.439","4.159"
+cell=base/rc-noaof-lpush-c1-P1 label=base kind=rc-noaof test=lpush clients=1 P=1 rep=1 requests=50000 bin_sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 oncpu_s=0.7201 rqwait_s=0.0128 cpu_user_s=0.220 cpu_sys_s=0.500 wall_s=1.506 gen_user_s=0.080 gen_sys_s=0.418 rss_kb=27288 data_dir_bytes=0
+  pressure_before: load=1.99 io_psi10=2.45/2.18 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=2384 settle_wait_s=0
+  pressure_after: load=1.99 io_psi10=4.91/4.50 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=408
+  ctxsw_before: 22 15
+  ctxsw_after:  50021 67
+  syscalls_before: 42 22
+  syscalls_after:  42 24
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.060:0.010 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.280:0.510 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:150034 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=4 cycles=896276283 opened=4 min_running=1.000 instructions=500401172 opened=4 min_running=1.000 branch_misses=1268560 opened=4 min_running=1.000 cache_misses=424537 opened=4 min_running=1.000 l1d_read_misses=18312008 opened=4 min_running=1.000 task_clock_ns=871729923 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "LPUSH","33266.80","0.027","0.016","0.031","0.031","0.071","2.039"
+cell=base/rc-noaof-sadd-c50-P16 label=base kind=rc-noaof test=sadd clients=50 P=16 rep=1 requests=500000 bin_sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 oncpu_s=0.5999 rqwait_s=0.0009 cpu_user_s=0.450 cpu_sys_s=0.150 wall_s=0.756 gen_user_s=0.107 gen_sys_s=0.336 rss_kb=22024 data_dir_bytes=0
+  pressure_before: load=1.99 io_psi10=4.02/3.68 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=1164 settle_wait_s=0
+  pressure_after: load=1.83 io_psi10=3.47/3.20 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=804
+  ctxsw_before: 21 15
+  ctxsw_after:  74 66
+  syscalls_before: 42 20
+  syscalls_after:  42 22
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:4:0.070:0.010 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:4:0.520:0.160 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:600034 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=6 cycles=1941619649 opened=6 min_running=1.000 instructions=3159389628 opened=6 min_running=1.000 branch_misses=1186249 opened=6 min_running=1.000 cache_misses=5862558 opened=6 min_running=1.000 l1d_read_misses=13101273 opened=6 min_running=1.000 task_clock_ns=683536985 opened=6 min_running=1.000 context_switches=0 opened=6 min_running=1.000 
+  bench_err: 0
+  bench: "SADD","666666.69","1.086","0.032","1.119","1.191","1.247","1.503"
+cell=base/rc-noaof-mset-c50-P1 label=base kind=rc-noaof test=mset clients=50 P=1 rep=1 requests=300000 bin_sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 oncpu_s=2.6899 rqwait_s=0.0046 cpu_user_s=1.450 cpu_sys_s=1.240 wall_s=3.506 gen_user_s=0.466 gen_sys_s=2.233 rss_kb=27536 data_dir_bytes=0
+  pressure_before: load=1.83 io_psi10=3.47/3.20 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=1744 settle_wait_s=0
+  pressure_after: load=1.84 io_psi10=2.47/2.29 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=1520
+  ctxsw_before: 43 48
+  ctxsw_after:  72 296
+  syscalls_before: 42 23
+  syscalls_after:  42 26
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.480:0.050 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:1.930:1.290 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:400034 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=4 cycles=7111094301 opened=4 min_running=1.000 instructions=8821632208 opened=4 min_running=1.000 branch_misses=15461962 opened=4 min_running=1.000 cache_misses=55725368 opened=4 min_running=1.000 l1d_read_misses=132547379 opened=4 min_running=1.000 task_clock_ns=3404143670 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "MSET (10 keys)","85689.80","0.564","0.016","0.583","0.623","0.687","1.903"
+cell=redis-noaof-mset-c50-P1 label=none kind=redis-noaof test=mset clients=50 P=1 rep=1 requests=300000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e oncpu_s=2.0927 rqwait_s=0.0036 cpu_user_s=1.160 cpu_sys_s=0.940 wall_s=2.756 gen_user_s=0.372 gen_sys_s=1.871 rss_kb=20740 data_dir_bytes=0
+  pressure_before: load=1.84 io_psi10=2.47/2.29 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=1592 settle_wait_s=0
+  pressure_after: load=1.93 io_psi10=3.71/3.46 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=688
+  ctxsw_before: 49 35
+  ctxsw_after:  104 232
+  syscalls_before: 3221 3158
+  syscalls_after:  303305 303160
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.340:0.030 
+  threads_after:  bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:1.500:0.970 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:61809 total_net_input_bytes:63520450 total_net_output_bytes:500223 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:400039 instantaneous_ops_per_sec:104622 total_net_input_bytes:254020552 total_net_output_bytes:2001888 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=5185105898 opened=5 min_running=1.000 instructions=6100783418 opened=5 min_running=1.000 branch_misses=4899822 opened=5 min_running=1.000 cache_misses=49163689 opened=5 min_running=1.000 l1d_read_misses=64866435 opened=5 min_running=1.000 task_clock_ns=2622712469 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "MSET (10 keys)","109051.26","0.408","0.080","0.399","0.567","0.647","2.599"
+cell=base/rc-noaof-get-c50-P1 label=base kind=rc-noaof test=get clients=50 P=1 rep=1 requests=300000 bin_sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 oncpu_s=1.1807 rqwait_s=0.0026 cpu_user_s=0.290 cpu_sys_s=0.900 wall_s=2.006 gen_user_s=0.374 gen_sys_s=2.111 rss_kb=26844 data_dir_bytes=0
+  pressure_before: load=1.93 io_psi10=3.71/3.46 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=3252 settle_wait_s=0
+  pressure_after: load=2.18 io_psi10=4.69/4.20 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=656
+  ctxsw_before: 36 27
+  ctxsw_after:  229 162
+  syscalls_before: 42 21
+  syscalls_after:  42 25
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:3:0.180:0.040 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:3:0.460:0.940 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:300034 
+  stats_after:  total_commands_processed:600034 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=5 cycles=1616772628 opened=5 min_running=1.000 instructions=1352961794 opened=5 min_running=1.000 branch_misses=5142429 opened=5 min_running=1.000 cache_misses=7956884 opened=5 min_running=1.000 l1d_read_misses=46014085 opened=5 min_running=1.000 task_clock_ns=1811548080 opened=5 min_running=1.000 context_switches=0 opened=5 min_running=1.000 
+  bench_err: 0
+  bench: "GET","150000.00","0.296","0.008","0.311","0.327","0.375","3.031"
+cell=valkey-noaof-zadd-c50-P1 label=none kind=valkey-noaof test=zadd clients=50 P=1 rep=1 requests=300000 bin_sha256=8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 oncpu_s=1.5590 rqwait_s=0.0029 cpu_user_s=0.580 cpu_sys_s=0.980 wall_s=2.256 gen_user_s=0.309 gen_sys_s=1.804 rss_kb=16980 data_dir_bytes=0
+  pressure_before: load=2.18 io_psi10=4.69/4.20 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=1656 settle_wait_s=0
+  pressure_after: load=2.18 io_psi10=3.29/2.96 mem_psi10=0.00/0.00 swap_used_mib=3386 dirty_wb_kib=52
+  ctxsw_before: 46 18
+  ctxsw_after:  116 172
+  syscalls_before: 1626 1576
+  syscalls_after:  301705 301578
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.140:0.010 
+  threads_after:  bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_tls_reload:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_rdb_save:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 valkey-server:1:0.720:0.990 
+  stats_before: total_commands_processed:100038 instantaneous_ops_per_sec:62059 total_net_input_bytes:7202434 total_net_output_bytes:400191 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:400041 instantaneous_ops_per_sec:128997 total_net_input_bytes:28802536 total_net_output_bytes:1602328 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  uprof: uprof_threads=7 cycles=3145585898 opened=7 min_running=1.000 instructions=2835547074 opened=7 min_running=1.000 branch_misses=8646534 opened=7 min_running=1.000 cache_misses=23334221 opened=7 min_running=1.000 l1d_read_misses=77291155 opened=7 min_running=1.000 task_clock_ns=2085698978 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "ZADD","133274.11","0.327","0.056","0.303","0.447","0.559","3.335"

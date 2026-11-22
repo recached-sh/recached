@@ -1,0 +1,240 @@
+cell=base/rc-noaof-lpush-c50-P1 label=base kind=rc-noaof test=lpush clients=50 P=1 rep=1 requests=1000000 bin_sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 oncpu_s=5.1205 rqwait_s=0.0313 cpu_user_s=1.680 cpu_sys_s=3.450 wall_s=7.530 gen_user_s=1.136 gen_sys_s=6.802 rss_kb=95232 data_dir_bytes=0
+  pressure_before: load=2.11 io_psi10=6.50/6.00 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=3472 settle_wait_s=0
+  pressure_after: load=2.10 io_psi10=5.25/4.73 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=880
+  ctxsw_before: 21 43
+  ctxsw_after:  107 1902
+  cpu0_before: 311271 591 98530 1636276 151681 6743 22454
+  cpu0_after: 311441 591 98877 1636293 151681 6746 22674
+  tcp_before: InSegs=162451199 OutSegs=168709701 RetransSegs=4817 DelayedACKs=209036 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=101980367 TCPPureAcks=4644558 TCPHPAcks=113379740 TCPBacklogCoalesce=1477 TCPAutoCorking=2836 TCPOrigDataSent=140088214 TCPDelivered=140140450 
+  tcp_after: InSegs=164451732 OutSegs=170710238 RetransSegs=4817 DelayedACKs=209086 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=103980225 TCPPureAcks=4644728 TCPHPAcks=115379700 TCPBacklogCoalesce=1477 TCPAutoCorking=2837 TCPOrigDataSent=142088346 TCPDelivered=142140637 
+  softirq0_before: NET_TX:98 NET_RX:60936814 
+  softirq0_after: NET_TX:98 NET_RX:61936872 
+  gen_rusage: user_s=1.119 sys_s=6.796 nvcsw=385921 nivcsw=698 maxrss_kb=12584
+  syscalls_before: 45 20
+  syscalls_after:  45 27
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:4:0.060:0.010 rc-base:1:0.090:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:4:1.740:3.450 rc-base:1:0.090:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:1100034 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903997915 pid=200345 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=216601 write.calls=20 write.pos_sum=2571 write.eagain=0 write.zero=0 write.err=0 write.tsc=209007 recv.calls=1589 recv.pos_sum=6602217 recv.eagain=0 recv.zero=23 recv.err=0 recv.tsc=4186312 send.calls=1566 send.pos_sum=789246 send.eagain=0 send.zero=0 send.err=0 send.tsc=26928813 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=96 epoll_wait.pos_sum=1530 epoll_wait.eagain=0 epoll_wait.zero=2 epoll_wait.err=0 epoll_wait.tsc=2542419602 epoll_wait_t0.calls=27 epoll_wait_t0.pos_sum=47 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=1 epoll_wait_t0.err=0 epoll_wait_t0.tsc=52261 epoll_ctl.calls=50 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=50 epoll_ctl.err=0 epoll_ctl.tsc=141795 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=2030472 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=95569 accept4.calls=27 accept4.pos_sum=463 accept4.eagain=4 accept4.zero=0 accept4.err=0 accept4.tsc=192621
+  sysc_after: tsc_hz=2903997915 pid=200345 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=216601 write.calls=27 write.pos_sum=2627 write.eagain=0 write.zero=0 write.err=0 write.tsc=231847 recv.calls=1001697 recv.pos_sum=72602376 recv.eagain=50 recv.zero=77 recv.err=0 recv.tsc=1675606801 send.calls=1001570 send.pos_sum=9889743 send.eagain=0 send.zero=0 send.err=0 send.tsc=12973966912 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=20548 epoll_wait.pos_sum=794978 epoll_wait.eagain=0 epoll_wait.zero=3 epoll_wait.err=0 epoll_wait.tsc=3492978524 epoll_wait_t0.calls=16770 epoll_wait_t0.pos_sum=206765 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=59 epoll_wait_t0.err=0 epoll_wait_t0.tsc=83136664 epoll_ctl.calls=158 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=158 epoll_ctl.err=0 epoll_ctl.tsc=462237 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=2030472 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=95569 accept4.calls=132 accept4.pos_sum=2282 accept4.eagain=55 accept4.zero=0 accept4.err=0 accept4.tsc=948444
+  bench_err: 0
+  bench: "LPUSH","133297.80","0.362","0.008","0.375","0.407","0.439","17.887"
+cell=redis-noaof-lpush-c50-P1 label=none kind=redis-noaof test=lpush clients=50 P=1 rep=1 requests=1000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e oncpu_s=3.3960 rqwait_s=0.0202 cpu_user_s=0.620 cpu_sys_s=2.770 wall_s=5.281 gen_user_s=0.937 gen_sys_s=5.561 rss_kb=46316 data_dir_bytes=0
+  pressure_before: load=2.10 io_psi10=4.30/3.87 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=1640 settle_wait_s=0
+  pressure_after: load=2.09 io_psi10=3.21/2.85 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=772
+  ctxsw_before: 26 35
+  ctxsw_after:  308 1375
+  cpu0_before: 311455 596 98884 1636384 151709 6746 22675
+  cpu0_after: 311518 596 99164 1636398 151709 6748 22848
+  tcp_before: InSegs=164455073 OutSegs=170713579 RetransSegs=4817 DelayedACKs=209086 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=103981768 TCPPureAcks=4644804 TCPHPAcks=115381268 TCPBacklogCoalesce=1477 TCPAutoCorking=2837 TCPOrigDataSent=142091532 TCPDelivered=142143848 
+  tcp_after: InSegs=166455572 OutSegs=172714082 RetransSegs=4817 DelayedACKs=209135 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=105981620 TCPPureAcks=4644972 TCPHPAcks=117381226 TCPBacklogCoalesce=1477 TCPAutoCorking=2839 TCPOrigDataSent=144091658 TCPDelivered=144144027 
+  softirq0_before: NET_TX:98 NET_RX:61938589 
+  softirq0_after: NET_TX:98 NET_RX:62938649 
+  gen_rusage: user_s=0.917 sys_s=5.558 nvcsw=50281 nivcsw=231 maxrss_kb=12660
+  syscalls_before: 1629 1575
+  syscalls_after:  1001736 1001577
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.140:0.010 
+  threads_after:  bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.760:2.780 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:62379 total_net_input_bytes:6602242 total_net_output_bytes:789246 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:1100039 instantaneous_ops_per_sec:185090 total_net_input_bytes:72602344 total_net_output_bytes:9890939 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903998961 pid=200539 read.calls=1597 read.pos_sum=6604847 read.eagain=0 read.zero=23 read.err=0 read.tsc=3920588 write.calls=1566 write.pos_sum=789246 write.eagain=0 write.zero=0 write.err=0 write.tsc=18530016 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=173 epoll_wait.pos_sum=1593 epoll_wait.eagain=0 epoll_wait.zero=7 epoll_wait.err=0 epoll_wait.tsc=1877822682 epoll_wait_t0.calls=0 epoll_wait_t0.pos_sum=0 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=0 epoll_ctl.calls=48 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=48 epoll_ctl.err=0 epoll_ctl.tsc=139429 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=71505 accept4.calls=27 accept4.pos_sum=351 accept4.eagain=4 accept4.zero=0 accept4.err=0 accept4.tsc=193642
+  sysc_after: tsc_hz=2903998961 pid=200539 read.calls=1001706 read.pos_sum=72622511 read.eagain=0 read.zero=76 read.err=0 read.tsc=1594116209 write.calls=1001569 write.pos_sum=9892570 write.eagain=0 write.zero=0 write.err=0 write.tsc=10561953923 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=39834 epoll_wait.pos_sum=1000161 epoll_wait.eagain=0 epoll_wait.zero=8 epoll_wait.err=0 epoll_wait.tsc=2867450399 epoll_wait_t0.calls=39 epoll_wait_t0.pos_sum=1540 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=577287 epoll_ctl.calls=154 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=154 epoll_ctl.err=0 epoll_ctl.tsc=419431 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=71505 accept4.calls=132 accept4.pos_sum=1947 accept4.eagain=56 accept4.zero=0 accept4.err=0 accept4.tsc=892399
+  bench_err: 0
+  bench: "LPUSH","190367.42","0.240","0.048","0.231","0.303","0.431","4.255"
+cell=base/rc-noaof-sadd-c50-P1 label=base kind=rc-noaof test=sadd clients=50 P=1 rep=1 requests=1000000 bin_sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 oncpu_s=5.3999 rqwait_s=0.0283 cpu_user_s=1.770 cpu_sys_s=3.630 wall_s=7.779 gen_user_s=1.143 gen_sys_s=6.888 rss_kb=21704 data_dir_bytes=0
+  pressure_before: load=2.09 io_psi10=3.21/2.85 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=3552 settle_wait_s=0
+  pressure_after: load=2.16 io_psi10=2.68/2.47 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=964
+  ctxsw_before: 34 50
+  ctxsw_after:  136 1942
+  cpu0_before: 311536 600 99172 1636513 151714 6749 22848
+  cpu0_after: 311713 600 99538 1636527 151714 6751 23069
+  tcp_before: InSegs=166458903 OutSegs=172717413 RetransSegs=4817 DelayedACKs=209135 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=105983157 TCPPureAcks=4645046 TCPHPAcks=117382786 TCPBacklogCoalesce=1477 TCPAutoCorking=2839 TCPOrigDataSent=144094840 TCPDelivered=144147233 
+  tcp_after: InSegs=168459413 OutSegs=174717926 RetransSegs=4817 DelayedACKs=209184 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=107983011 TCPPureAcks=4645218 TCPHPAcks=119382742 TCPBacklogCoalesce=1477 TCPAutoCorking=2840 TCPOrigDataSent=146094966 TCPDelivered=146147409 
+  softirq0_before: NET_TX:98 NET_RX:62940244 
+  softirq0_after: NET_TX:98 NET_RX:63940301 
+  gen_rusage: user_s=1.123 sys_s=6.885 nvcsw=398328 nivcsw=619 maxrss_kb=12596
+  syscalls_before: 45 22
+  syscalls_after:  45 30
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.070:0.010 rc-base:1:0.100:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:1.840:3.640 rc-base:1:0.100:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:1100034 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903998321 pid=200682 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=210467 write.calls=22 write.pos_sum=2586 write.eagain=0 write.zero=0 write.err=0 write.tsc=395071 recv.calls=1609 recv.pos_sum=5201769 recv.eagain=20 recv.zero=23 recv.err=0 recv.tsc=4290312 send.calls=1566 send.pos_sum=400191 send.eagain=0 send.zero=0 send.err=0 send.tsc=28775027 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=136 epoll_wait.pos_sum=1596 epoll_wait.eagain=0 epoll_wait.zero=1 epoll_wait.err=0 epoll_wait.tsc=449689772 epoll_wait_t0.calls=28 epoll_wait_t0.pos_sum=41 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=1 epoll_wait_t0.err=0 epoll_wait_t0.tsc=48470 epoll_ctl.calls=50 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=50 epoll_ctl.err=0 epoll_ctl.tsc=143879 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=485631 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=78412 accept4.calls=45 accept4.pos_sum=443 accept4.eagain=22 accept4.zero=0 accept4.err=0 accept4.tsc=372879
+  sysc_after: tsc_hz=2903998321 pid=200682 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=210467 write.calls=30 write.pos_sum=2650 write.eagain=0 write.zero=0 write.err=0 write.tsc=416116 recv.calls=1001717 recv.pos_sum=57201928 recv.eagain=70 recv.zero=77 recv.err=0 recv.tsc=1687781469 send.calls=1001570 send.pos_sum=4400655 send.eagain=0 send.zero=0 send.err=0 send.tsc=13136424477 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=18027 epoll_wait.pos_sum=794437 epoll_wait.eagain=0 epoll_wait.zero=1 epoll_wait.err=0 epoll_wait.tsc=2907227390 epoll_wait_t0.calls=16729 epoll_wait_t0.pos_sum=207368 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=28 epoll_wait_t0.err=0 epoll_wait_t0.tsc=84325516 epoll_ctl.calls=158 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=158 epoll_ctl.err=0 epoll_ctl.tsc=444173 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=485631 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=78412 accept4.calls=151 accept4.pos_sum=2262 accept4.eagain=74 accept4.zero=0 accept4.err=0 accept4.tsc=1130302
+  bench_err: 0
+  bench: "SADD","129032.26","0.377","0.008","0.391","0.423","0.455","2.647"
+cell=redis-noaof-sadd-c50-P1 label=none kind=redis-noaof test=sadd clients=50 P=1 rep=1 requests=1000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e oncpu_s=3.3964 rqwait_s=0.0195 cpu_user_s=0.710 cpu_sys_s=2.690 wall_s=5.279 gen_user_s=0.964 gen_sys_s=5.551 rss_kb=12796 data_dir_bytes=0
+  pressure_before: load=2.16 io_psi10=2.68/2.47 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=2076 settle_wait_s=0
+  pressure_after: load=2.30 io_psi10=1.71/1.59 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=808
+  ctxsw_before: 43 38
+  ctxsw_after:  280 1360
+  cpu0_before: 311726 610 99547 1636616 151719 6752 23069
+  cpu0_after: 311799 610 99819 1636626 151719 6753 23243
+  tcp_before: InSegs=168462760 OutSegs=174721273 RetransSegs=4817 DelayedACKs=209184 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=107984534 TCPPureAcks=4645294 TCPHPAcks=119384293 TCPBacklogCoalesce=1477 TCPAutoCorking=2840 TCPOrigDataSent=146098157 TCPDelivered=146150625 
+  tcp_after: InSegs=170463241 OutSegs=176721753 RetransSegs=4817 DelayedACKs=209233 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=109984385 TCPPureAcks=4645456 TCPHPAcks=121384247 TCPBacklogCoalesce=1477 TCPAutoCorking=2840 TCPOrigDataSent=148098269 TCPDelivered=148150789 
+  softirq0_before: NET_TX:98 NET_RX:63941894 
+  softirq0_after: NET_TX:98 NET_RX:64941949 
+  gen_rusage: user_s=0.944 sys_s=5.548 nvcsw=50387 nivcsw=168 maxrss_kb=12596
+  syscalls_before: 1627 1575
+  syscalls_after:  1001734 1001577
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.140:0.010 
+  threads_after:  bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.850:2.700 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:62372 total_net_input_bytes:5201794 total_net_output_bytes:400191 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:1100039 instantaneous_ops_per_sec:187543 total_net_input_bytes:57201896 total_net_output_bytes:4401851 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903999633 pid=200836 read.calls=1595 read.pos_sum=5203741 read.eagain=0 read.zero=23 read.err=0 read.tsc=3667146 write.calls=1566 write.pos_sum=400191 write.eagain=0 write.zero=0 write.err=0 write.tsc=18756025 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=196 epoll_wait.pos_sum=1612 epoll_wait.eagain=0 epoll_wait.zero=5 epoll_wait.err=0 epoll_wait.tsc=1288452880 epoll_wait_t0.calls=0 epoll_wait_t0.pos_sum=0 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=0 epoll_ctl.calls=48 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=48 epoll_ctl.err=0 epoll_ctl.tsc=135303 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=78136 accept4.calls=46 accept4.pos_sum=351 accept4.eagain=23 accept4.zero=0 accept4.err=0 accept4.tsc=344330
+  sysc_after: tsc_hz=2903999633 pid=200836 read.calls=1001704 read.pos_sum=57221390 read.eagain=0 read.zero=76 read.err=0 read.tsc=1514321931 write.calls=1001569 write.pos_sum=4403480 write.eagain=0 write.zero=0 write.err=0 write.tsc=10524817711 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=36306 epoll_wait.pos_sum=1000165 epoll_wait.eagain=0 epoll_wait.zero=6 epoll_wait.err=0 epoll_wait.tsc=2252269978 epoll_wait_t0.calls=39 epoll_wait_t0.pos_sum=1552 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=574124 epoll_ctl.calls=154 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=154 epoll_ctl.err=0 epoll_ctl.tsc=418687 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=78136 accept4.calls=148 accept4.pos_sum=1947 accept4.eagain=72 accept4.zero=0 accept4.err=0 accept4.tsc=1038899
+  bench_err: 0
+  bench: "SADD","190476.19","0.242","0.048","0.231","0.303","0.431","4.159"
+cell=base/rc-noaof-mset-c50-P1 label=base kind=rc-noaof test=mset clients=50 P=1 rep=1 requests=1000000 bin_sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 oncpu_s=9.1377 rqwait_s=0.0478 cpu_user_s=4.950 cpu_sys_s=4.190 wall_s=11.781 gen_user_s=1.467 gen_sys_s=7.284 rss_kb=28088 data_dir_bytes=0
+  pressure_before: load=2.30 io_psi10=1.71/1.59 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=2652 settle_wait_s=0
+  pressure_after: load=2.52 io_psi10=0.93/0.90 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=1376
+  ctxsw_before: 37 167
+  ctxsw_after:  85 2905
+  cpu0_before: 311857 620 99831 1636729 151729 6754 23245
+  cpu0_after: 312355 620 100253 1636748 151729 6758 23483
+  tcp_before: InSegs=170471325 OutSegs=176729837 RetransSegs=4817 DelayedACKs=209233 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=109985307 TCPPureAcks=4645554 TCPHPAcks=121386769 TCPBacklogCoalesce=1477 TCPAutoCorking=2840 TCPOrigDataSent=148104597 TCPDelivered=148157141 
+  tcp_after: InSegs=172471888 OutSegs=178730411 RetransSegs=4817 DelayedACKs=209283 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=111985171 TCPPureAcks=4645736 TCPHPAcks=123386736 TCPBacklogCoalesce=1478 TCPAutoCorking=2841 TCPOrigDataSent=150104751 TCPDelivered=150157351 
+  softirq0_before: NET_TX:98 NET_RX:64946698 
+  softirq0_after: NET_TX:98 NET_RX:65946755 
+  gen_rusage: user_s=1.445 sys_s=7.283 nvcsw=476325 nivcsw=312 maxrss_kb=12596
+  syscalls_before: 45 23
+  syscalls_after:  45 34
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.490:0.040 rc-base:1:0.100:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:1:5.440:4.220 rc-base:1:0.100:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:1100034 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903998431 pid=200985 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=214263 write.calls=23 write.pos_sum=2594 write.eagain=0 write.zero=0 write.err=0 write.tsc=400489 recv.calls=4736 recv.pos_sum=63520425 recv.eagain=21 recv.zero=23 recv.err=0 recv.tsc=24399941 send.calls=4692 send.pos_sum=500223 send.eagain=0 send.zero=0 send.err=0 send.tsc=91461965 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=135 epoll_wait.pos_sum=1596 epoll_wait.eagain=0 epoll_wait.zero=3 epoll_wait.err=0 epoll_wait.tsc=1278339023 epoll_wait_t0.calls=28 epoll_wait_t0.pos_sum=40 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=2 epoll_wait_t0.err=0 epoll_wait_t0.tsc=69070 epoll_ctl.calls=50 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=50 epoll_ctl.err=0 epoll_ctl.tsc=152502 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=376361 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=87346 accept4.calls=42 accept4.pos_sum=443 accept4.eagain=19 accept4.zero=0 accept4.err=0 accept4.tsc=360624
+  sysc_after: tsc_hz=2903998431 pid=200985 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=214263 write.calls=34 write.pos_sum=2682 write.eagain=0 write.zero=0 write.err=0 write.tsc=433620 recv.calls=1004844 recv.pos_sum=698520584 recv.eagain=71 recv.zero=77 recv.err=0 recv.tsc=1773990090 send.calls=1004696 send.pos_sum=5500687 send.eagain=0 send.zero=0 send.err=0 send.tsc=14030549258 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=16918 epoll_wait.pos_sum=811465 epoll_wait.eagain=0 epoll_wait.zero=5 epoll_wait.err=0 epoll_wait.tsc=2960428982 epoll_wait_t0.calls=16718 epoll_wait_t0.pos_sum=190338 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=12 epoll_wait_t0.err=0 epoll_wait_t0.tsc=79749722 epoll_ctl.calls=158 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=158 epoll_ctl.err=0 epoll_ctl.tsc=447397 futex.calls=7 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=1 futex.tsc=29039545329 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=87346 accept4.calls=146 accept4.pos_sum=2262 accept4.eagain=69 accept4.zero=0 accept4.err=0 accept4.tsc=1175901
+  bench_err: 0
+  bench: "MSET (10 keys)","85084.66","0.576","0.016","0.591","0.647","0.695","2.863"
+cell=redis-noaof-mset-c50-P1 label=none kind=redis-noaof test=mset clients=50 P=1 rep=1 requests=1000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e oncpu_s=6.8646 rqwait_s=0.0352 cpu_user_s=3.850 cpu_sys_s=3.010 wall_s=8.781 gen_user_s=1.264 gen_sys_s=5.957 rss_kb=20404 data_dir_bytes=0
+  pressure_before: load=2.52 io_psi10=0.93/0.90 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=2276 settle_wait_s=0
+  pressure_after: load=2.43 io_psi10=0.67/0.65 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=1268
+  ctxsw_before: 24 138
+  ctxsw_after:  80 2434
+  cpu0_before: 312405 630 100262 1636845 151736 6759 23484
+  cpu0_after: 312794 630 100565 1636861 151736 6762 23654
+  tcp_before: InSegs=172478414 OutSegs=178736936 RetransSegs=4817 DelayedACKs=209283 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=111985171 TCPPureAcks=4645811 TCPHPAcks=123388344 TCPBacklogCoalesce=1478 TCPAutoCorking=2841 TCPOrigDataSent=150109539 TCPDelivered=150162162 
+  tcp_after: InSegs=174478939 OutSegs=180737463 RetransSegs=4817 DelayedACKs=209332 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=113984987 TCPPureAcks=4646003 TCPHPAcks=125388262 TCPBacklogCoalesce=1478 TCPAutoCorking=2843 TCPOrigDataSent=152109666 TCPDelivered=152162342 
+  softirq0_before: NET_TX:98 NET_RX:65950014 
+  softirq0_after: NET_TX:98 NET_RX:66950092 
+  gen_rusage: user_s=1.241 sys_s=5.956 nvcsw=61380 nivcsw=144 maxrss_kb=12596
+  syscalls_before: 3215 3158
+  syscalls_after:  1003357 1003160
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.460:0.020 
+  threads_after:  bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:4.310:3.030 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:61924 total_net_input_bytes:63520450 total_net_output_bytes:500223 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:1100039 instantaneous_ops_per_sec:106231 total_net_input_bytes:698520552 total_net_output_bytes:5501888 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903999063 pid=201163 read.calls=3182 read.pos_sum=63523713 read.eagain=0 read.zero=22 read.err=1 read.tsc=21619208 write.calls=3149 write.pos_sum=500223 write.eagain=0 write.zero=0 write.err=0 write.tsc=42889548 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=257 epoll_wait.pos_sum=3177 epoll_wait.eagain=0 epoll_wait.zero=6 epoll_wait.err=0 epoll_wait.tsc=1493188607 epoll_wait_t0.calls=0 epoll_wait_t0.pos_sum=0 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=0 epoll_ctl.calls=48 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=48 epoll_ctl.err=0 epoll_ctl.tsc=132180 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=70136 accept4.calls=28 accept4.pos_sum=351 accept4.eagain=5 accept4.zero=0 accept4.err=0 accept4.tsc=241384
+  sysc_after: tsc_hz=2903999063 pid=201163 read.calls=1003327 read.pos_sum=698553343 read.eagain=0 read.zero=75 read.err=1 read.tsc=1785938843 write.calls=1003152 write.pos_sum=5503520 write.eagain=0 write.zero=0 write.err=0 write.tsc=10465616019 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=30580 epoll_wait.pos_sum=1002271 epoll_wait.eagain=0 epoll_wait.zero=9 epoll_wait.err=0 epoll_wait.tsc=2803808151 epoll_wait_t0.calls=30 epoll_wait_t0.pos_sum=1010 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=412348 epoll_ctl.calls=154 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=154 epoll_ctl.err=0 epoll_ctl.tsc=425017 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=70136 accept4.calls=129 accept4.pos_sum=1947 accept4.eagain=53 accept4.zero=0 accept4.err=0 accept4.tsc=968589
+  bench_err: 0
+  bench: "MSET (10 keys)","114246.54","0.402","0.072","0.391","0.551","0.631","2.191"
+cell=base/rc-noaof-set-c1-P1 label=base kind=rc-noaof test=set clients=1 P=1 rep=1 requests=300000 bin_sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 oncpu_s=2.7889 rqwait_s=0.1123 cpu_user_s=0.830 cpu_sys_s=1.970 wall_s=7.035 gen_user_s=0.513 gen_sys_s=2.497 rss_kb=25644 data_dir_bytes=0
+  pressure_before: load=2.43 io_psi10=0.67/0.65 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=2712 settle_wait_s=0
+  pressure_after: load=2.32 io_psi10=1.41/1.41 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=1040
+  ctxsw_before: 35 55
+  ctxsw_after:  299839 814
+  cpu0_before: 312812 640 100573 1636955 151751 6763 23655
+  cpu0_after: 312908 640 100787 1637265 151751 6765 23739
+  tcp_before: InSegs=174482276 OutSegs=180740799 RetransSegs=4817 DelayedACKs=209332 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=113986529 TCPPureAcks=4646077 TCPHPAcks=125389830 TCPBacklogCoalesce=1478 TCPAutoCorking=2843 TCPOrigDataSent=152112852 TCPDelivered=152165552 
+  tcp_after: InSegs=175082324 OutSegs=181340846 RetransSegs=4817 DelayedACKs=209332 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=114586526 TCPPureAcks=4646097 TCPHPAcks=125989832 TCPBacklogCoalesce=1478 TCPAutoCorking=2843 TCPOrigDataSent=152712867 TCPDelivered=152765571 
+  softirq0_before: NET_TX:98 NET_RX:66951685 
+  softirq0_after: NET_TX:98 NET_RX:67251692 
+  gen_rusage: user_s=0.494 sys_s=2.492 nvcsw=299803 nivcsw=33 maxrss_kb=12660
+  syscalls_before: 45 22
+  syscalls_after:  45 29
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.070:0.010 rc-base:1:0.100:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.900:1.970 rc-base:1:0.100:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:400034 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903999065 pid=201316 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=212861 write.calls=22 write.pos_sum=2584 write.eagain=0 write.zero=0 write.err=0 write.tsc=404670 recv.calls=1609 recv.pos_sum=7502505 recv.eagain=20 recv.zero=23 recv.err=0 recv.tsc=4701294 send.calls=1566 send.pos_sum=500223 send.eagain=0 send.zero=0 send.err=0 send.tsc=30718319 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=134 epoll_wait.pos_sum=1595 epoll_wait.eagain=0 epoll_wait.zero=1 epoll_wait.err=0 epoll_wait.tsc=448906742 epoll_wait_t0.calls=28 epoll_wait_t0.pos_sum=42 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=1 epoll_wait_t0.err=0 epoll_wait_t0.tsc=56846 epoll_ctl.calls=50 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=50 epoll_ctl.err=0 epoll_ctl.tsc=151178 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=406405 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=81130 accept4.calls=45 accept4.pos_sum=443 accept4.eagain=22 accept4.zero=0 accept4.err=0 accept4.tsc=363555
+  sysc_after: tsc_hz=2903999065 pid=201316 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=212861 write.calls=29 write.pos_sum=2640 write.eagain=0 write.zero=0 write.err=0 write.tsc=425746 recv.calls=301619 recv.pos_sum=30002664 recv.eagain=21 recv.zero=28 recv.err=0 recv.tsc=655636165 send.calls=301570 send.pos_sum=2000686 send.eagain=0 send.zero=0 send.err=0 send.tsc=5087315194 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=300151 epoll_wait.pos_sum=301612 epoll_wait.eagain=0 epoll_wait.zero=1 epoll_wait.err=0 epoll_wait.tsc=14153316247 epoll_wait_t0.calls=9870 epoll_wait_t0.pos_sum=46 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=9839 epoll_wait_t0.err=0 epoll_wait_t0.tsc=6366130 epoll_ctl.calls=60 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=60 epoll_ctl.err=0 epoll_ctl.tsc=211319 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=406405 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=81130 accept4.calls=55 accept4.pos_sum=498 accept4.eagain=27 accept4.zero=0 accept4.err=0 accept4.tsc=517329
+  bench_err: 0
+  bench: "SET","42808.22","0.021","0.008","0.023","0.023","0.047","2.447"
+cell=redis-noaof-set-c1-P1 label=none kind=redis-noaof test=set clients=1 P=1 rep=1 requests=300000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e oncpu_s=3.3107 rqwait_s=0.0965 cpu_user_s=1.070 cpu_sys_s=2.240 wall_s=7.785 gen_user_s=0.561 gen_sys_s=2.515 rss_kb=19544 data_dir_bytes=0
+  pressure_before: load=2.32 io_psi10=1.41/1.41 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=1912 settle_wait_s=0
+  pressure_after: load=2.26 io_psi10=0.72/0.71 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=1320
+  ctxsw_before: 28 52
+  ctxsw_after:  299807 840
+  cpu0_before: 312931 645 100792 1637345 151753 6765 23740
+  cpu0_after: 313058 645 101040 1637655 151753 6768 23835
+  tcp_before: InSegs=175085665 OutSegs=181344187 RetransSegs=4817 DelayedACKs=209332 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=114588052 TCPPureAcks=4646173 TCPHPAcks=125991383 TCPBacklogCoalesce=1478 TCPAutoCorking=2843 TCPOrigDataSent=152716053 TCPDelivered=152768782 
+  tcp_after: InSegs=175685746 OutSegs=181944273 RetransSegs=4817 DelayedACKs=209333 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=115188060 TCPPureAcks=4646196 TCPHPAcks=126591391 TCPBacklogCoalesce=1478 TCPAutoCorking=2843 TCPOrigDataSent=153316083 TCPDelivered=153368817 
+  softirq0_before: NET_TX:98 NET_RX:67253349 
+  softirq0_after: NET_TX:98 NET_RX:67553354 
+  gen_rusage: user_s=0.542 sys_s=2.511 nvcsw=299846 nivcsw=34 maxrss_kb=12592
+  syscalls_before: 1626 1575
+  syscalls_after:  301709 301577
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.160:0.000 
+  threads_after:  bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:1.230:2.240 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:62304 total_net_input_bytes:7502530 total_net_output_bytes:500223 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:400039 instantaneous_ops_per_sec:37326 total_net_input_bytes:30002632 total_net_output_bytes:2001883 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903998921 pid=201470 read.calls=1594 read.pos_sum=7504148 read.eagain=0 read.zero=23 read.err=0 read.tsc=4564754 write.calls=1566 write.pos_sum=500223 write.eagain=0 write.zero=0 write.err=0 write.tsc=19551162 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=180 epoll_wait.pos_sum=1599 epoll_wait.eagain=0 epoll_wait.zero=4 epoll_wait.err=0 epoll_wait.tsc=970705241 epoll_wait_t0.calls=0 epoll_wait_t0.pos_sum=0 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=0 epoll_ctl.calls=48 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=48 epoll_ctl.err=0 epoll_ctl.tsc=209453 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=79203 accept4.calls=33 accept4.pos_sum=351 accept4.eagain=10 accept4.zero=0 accept4.err=0 accept4.tsc=305405
+  sysc_after: tsc_hz=2903998921 pid=201470 read.calls=301679 read.pos_sum=30030075 read.eagain=0 read.zero=27 read.err=0 read.tsc=825918867 write.calls=301569 write.pos_sum=2003508 write.eagain=0 write.zero=0 write.err=0 write.tsc=5803594176 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=300193 epoll_wait.pos_sum=301610 epoll_wait.eagain=0 epoll_wait.zero=6 epoll_wait.err=0 epoll_wait.tsc=13755596202 epoll_wait_t0.calls=25 epoll_wait_t0.pos_sum=0 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=25 epoll_wait_t0.err=0 epoll_wait_t0.tsc=42726 epoll_ctl.calls=56 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=56 epoll_ctl.err=0 epoll_ctl.tsc=250048 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=79203 accept4.calls=41 accept4.pos_sum=379 accept4.eagain=14 accept4.zero=0 accept4.err=0 accept4.tsc=432210
+  bench_err: 0
+  bench: "SET","38664.78","0.021","0.016","0.023","0.031","0.055","5.919"
+cell=base/rc-noaof-set-c50-P16 label=base kind=rc-noaof test=set clients=50 P=16 rep=1 requests=3000000 bin_sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 oncpu_s=2.2677 rqwait_s=0.0111 cpu_user_s=1.420 cpu_sys_s=0.840 wall_s=2.779 gen_user_s=0.552 gen_sys_s=1.462 rss_kb=27468 data_dir_bytes=0
+  pressure_before: load=2.26 io_psi10=0.72/0.71 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=1556 settle_wait_s=0
+  pressure_after: load=2.16 io_psi10=3.20/3.05 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=1816
+  ctxsw_before: 28 59
+  ctxsw_after:  76 755
+  cpu0_before: 313075 651 101048 1637838 151759 6768 23835
+  cpu0_after: 313220 651 101134 1637841 151759 6769 23881
+  tcp_before: InSegs=175689080 OutSegs=181947606 RetransSegs=4817 DelayedACKs=209333 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=115189589 TCPPureAcks=4646271 TCPHPAcks=126592944 TCPBacklogCoalesce=1478 TCPAutoCorking=2843 TCPOrigDataSent=153319266 TCPDelivered=153372024 
+  tcp_after: InSegs=176064590 OutSegs=182323098 RetransSegs=4817 DelayedACKs=209334 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=115564454 TCPPureAcks=4646437 TCPHPAcks=126967850 TCPBacklogCoalesce=1478 TCPAutoCorking=2843 TCPOrigDataSent=153694388 TCPDelivered=153747201 
+  softirq0_before: NET_TX:98 NET_RX:67555009 
+  softirq0_after: NET_TX:98 NET_RX:67742565 
+  gen_rusage: user_s=0.532 sys_s=1.459 nvcsw=113363 nivcsw=42 maxrss_kb=12596
+  syscalls_before: 45 23
+  syscalls_after:  45 26
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.070:0.010 rc-base:1:0.100:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:1.490:0.860 rc-base:1:0.100:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:3100034 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903999051 pid=201643 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=216871 write.calls=23 write.pos_sum=2594 write.eagain=0 write.zero=0 write.err=0 write.tsc=389757 recv.calls=1605 recv.pos_sum=7502505 recv.eagain=16 recv.zero=23 recv.err=0 recv.tsc=4717054 send.calls=1566 send.pos_sum=500223 send.eagain=0 send.zero=0 send.err=0 send.tsc=31165045 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=109 epoll_wait.pos_sum=1574 epoll_wait.eagain=0 epoll_wait.zero=3 epoll_wait.err=0 epoll_wait.tsc=2623582885 epoll_wait_t0.calls=28 epoll_wait_t0.pos_sum=45 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=1 epoll_wait_t0.err=0 epoll_wait_t0.tsc=56175 epoll_ctl.calls=50 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=50 epoll_ctl.err=0 epoll_ctl.tsc=190538 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=371418 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=81126 accept4.calls=31 accept4.pos_sum=443 accept4.eagain=8 accept4.zero=0 accept4.err=0 accept4.tsc=250649
+  sysc_after: tsc_hz=2903999051 pid=201643 read.calls=17 read.pos_sum=3538 read.eagain=0 read.zero=8 read.err=0 read.tsc=216871 write.calls=26 write.pos_sum=2618 write.eagain=0 write.zero=0 write.err=0 write.tsc=398532 recv.calls=189213 recv.pos_sum=232502664 recv.eagain=66 recv.zero=77 recv.err=0 recv.tsc=353371464 send.calls=189070 send.pos_sum=15500687 send.eagain=0 send.zero=0 send.err=0 send.tsc=2623187635 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=3337 epoll_wait.pos_sum=154025 epoll_wait.eagain=0 epoll_wait.zero=3 epoll_wait.err=0 epoll_wait.tsc=4463680242 epoll_wait_t0.calls=3160 epoll_wait_t0.pos_sum=35257 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=2 epoll_wait_t0.err=0 epoll_wait_t0.tsc=14699815 epoll_ctl.calls=158 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=158 epoll_ctl.err=0 epoll_ctl.tsc=469660 futex.calls=6 futex.pos_sum=3 futex.eagain=0 futex.zero=3 futex.err=0 futex.tsc=371418 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=81126 accept4.calls=137 accept4.pos_sum=2262 accept4.eagain=60 accept4.zero=0 accept4.err=0 accept4.tsc=995491
+  bench_err: 0
+  bench: "SET","1090512.62","0.727","0.016","0.743","0.847","0.951","2.983"
+cell=redis-noaof-set-c50-P16 label=none kind=redis-noaof test=set clients=50 P=16 rep=1 requests=3000000 bin_sha256=d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e oncpu_s=2.4663 rqwait_s=0.0116 cpu_user_s=1.840 cpu_sys_s=0.620 wall_s=3.029 gen_user_s=0.547 gen_sys_s=1.406 rss_kb=20392 data_dir_bytes=0
+  pressure_before: load=2.16 io_psi10=3.20/3.05 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=3192 settle_wait_s=0
+  pressure_after: load=2.07 io_psi10=3.72/3.62 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=1356
+  ctxsw_before: 27 49
+  ctxsw_after:  85 793
+  cpu0_before: 313234 656 101141 1637939 151767 6770 23882
+  cpu0_after: 313420 656 101204 1637962 151767 6771 23915
+  tcp_before: InSegs=176067935 OutSegs=182326444 RetransSegs=4817 DelayedACKs=209334 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=115565997 TCPPureAcks=4646514 TCPHPAcks=126969419 TCPBacklogCoalesce=1478 TCPAutoCorking=2843 TCPOrigDataSent=153697578 TCPDelivered=153750416 
+  tcp_after: InSegs=176443436 OutSegs=182701948 RetransSegs=4817 DelayedACKs=209384 DelayedACKLocked=7 DelayedACKLost=975 TCPHPHits=115940848 TCPPureAcks=4646680 TCPHPAcks=127344369 TCPBacklogCoalesce=1478 TCPAutoCorking=2844 TCPOrigDataSent=154072703 TCPDelivered=154125588 
+  softirq0_before: NET_TX:98 NET_RX:67744282 
+  softirq0_after: NET_TX:98 NET_RX:67931838 
+  gen_rusage: user_s=0.526 sys_s=1.404 nvcsw=13380 nivcsw=55 maxrss_kb=12596
+  syscalls_before: 1628 1575
+  syscalls_after:  189212 189077
+  threads_before: bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:0.150:0.010 
+  threads_after:  bio_aof:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 bio_close_file:1:0.000:0.000 bio_lazy_free:1:0.000:0.000 redis-server:1:1.990:0.630 
+  stats_before: total_commands_processed:100036 instantaneous_ops_per_sec:62377 total_net_input_bytes:7502530 total_net_output_bytes:500223 rejected_connections:0 total_error_replies:0 
+  stats_after:  total_commands_processed:3100039 instantaneous_ops_per_sec:978481 total_net_input_bytes:232502632 total_net_output_bytes:15501883 rejected_connections:0 total_error_replies:0 
+  aof_before: 
+  aof_after:  
+  sysc_before: tsc_hz=2903999713 pid=201791 read.calls=1596 read.pos_sum=7504806 read.eagain=0 read.zero=23 read.err=0 read.tsc=4488657 write.calls=1566 write.pos_sum=500223 write.eagain=0 write.zero=0 write.err=0 write.tsc=19034636 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=173 epoll_wait.pos_sum=1593 epoll_wait.eagain=0 epoll_wait.zero=6 epoll_wait.err=0 epoll_wait.tsc=1550293926 epoll_wait_t0.calls=0 epoll_wait_t0.pos_sum=0 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=0 epoll_ctl.calls=48 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=48 epoll_ctl.err=0 epoll_ctl.tsc=124468 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=71503 accept4.calls=27 accept4.pos_sum=351 accept4.eagain=4 accept4.zero=0 accept4.err=0 accept4.tsc=189795
+  sysc_after: tsc_hz=2903999713 pid=201791 read.calls=189183 read.pos_sum=232515178 read.eagain=0 read.zero=76 read.err=0 read.tsc=346312545 write.calls=189069 write.pos_sum=15503514 write.eagain=0 write.zero=0 write.err=0 write.tsc=2028432592 recv.calls=0 recv.pos_sum=0 recv.eagain=0 recv.zero=0 recv.err=0 recv.tsc=0 send.calls=0 send.pos_sum=0 send.eagain=0 send.zero=0 send.err=0 send.tsc=0 readv.calls=0 readv.pos_sum=0 readv.eagain=0 readv.zero=0 readv.err=0 readv.tsc=0 writev.calls=0 writev.pos_sum=0 writev.eagain=0 writev.zero=0 writev.err=0 writev.tsc=0 epoll_wait.calls=6919 epoll_wait.pos_sum=189001 epoll_wait.eagain=0 epoll_wait.zero=9 epoll_wait.err=0 epoll_wait.tsc=2490308753 epoll_wait_t0.calls=7 epoll_wait_t0.pos_sum=200 epoll_wait_t0.eagain=0 epoll_wait_t0.zero=0 epoll_wait_t0.err=0 epoll_wait_t0.tsc=90656 epoll_ctl.calls=154 epoll_ctl.pos_sum=0 epoll_ctl.eagain=0 epoll_ctl.zero=154 epoll_ctl.err=0 epoll_ctl.tsc=409437 futex.calls=0 futex.pos_sum=0 futex.eagain=0 futex.zero=0 futex.err=0 futex.tsc=0 syscall_other.calls=6 syscall_other.pos_sum=30 syscall_other.eagain=0 syscall_other.zero=2 syscall_other.err=0 syscall_other.tsc=71503 accept4.calls=132 accept4.pos_sum=1947 accept4.eagain=56 accept4.zero=0 accept4.err=0 accept4.tsc=922812
+  bench_err: 0
+  bench: "SET","999666.81","0.703","0.200","0.727","0.895","0.975","1.735"

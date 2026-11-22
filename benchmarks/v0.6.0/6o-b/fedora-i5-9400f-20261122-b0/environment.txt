@@ -1,0 +1,32 @@
+date_utc: 2026-11-22T10:11:13Z
+rc_bin[base]: /home/dennispaler/recached-6ob-bench/bin/rc-base sha256=b77e4e775abe4ca67bafd940134f8c37862ad006638c91ba794dcc9d08af33d4 source=51ae15c97ff19d3e7390c05f9655afead770e24f version=recached-server 0.6.0
+kit_sha: unknown run-6ob.sh sha256=6fea3d53224b875f821980a10b3979d3ad5dee7b1d7bc8294088139902604f99
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 0.58 1.33 1.54 3/1504 212185
+pressure_at_start: load=0.58 io_psi10=1.34/1.33 mem_psi10=0.00/0.00 swap_used_mib=3385 dirty_wb_kib=1724
+memory: total=15918 used=9256 available=6661 swap_total=8191 swap_used=3385
+aof_fs: /dev/sda3 btrfs rotational=1
+perf: absent perf_event_paranoid=2 uprof=/home/dennispaler/recached-6ob-bench/bin/uprof sha256=93aa43d37198729ef1c4b7c1d9e30084454ccb37b94ec72f0ce30391b6467afa
+cpus: server=0 bench=3-5 reps=3 req_c1_p1=500000 req_c1_p16=2000000 req_c50_p1=2000000 req_c50_p16=5000000 always_requests=50000 bench_threads=2 keyspace=100000
+order: alternate=1 settle_io=8 settle_max_s=90
+cells: base/rc-noaof-set-c50-P1 redis-noaof-set-c50-P1 valkey-noaof-set-c50-P1 base/rc-noaof-set-c50-P16 redis-noaof-set-c50-P16 valkey-noaof-set-c50-P16 base/rc-noaof-set-c1-P1 redis-noaof-set-c1-P1 valkey-noaof-set-c1-P1 base/rc-noaof-set-c1-P16 redis-noaof-set-c1-P16 valkey-noaof-set-c1-P16 base/rc-noaof-lpush-c50-P1 redis-noaof-lpush-c50-P1 valkey-noaof-lpush-c50-P1 base/rc-noaof-lpush-c50-P16 redis-noaof-lpush-c50-P16 valkey-noaof-lpush-c50-P16 base/rc-noaof-lpush-c1-P1 redis-noaof-lpush-c1-P1 valkey-noaof-lpush-c1-P1 base/rc-noaof-lpush-c1-P16 redis-noaof-lpush-c1-P16 valkey-noaof-lpush-c1-P16 base/rc-noaof-sadd-c50-P1 redis-noaof-sadd-c50-P1 valkey-noaof-sadd-c50-P1 base/rc-noaof-sadd-c50-P16 redis-noaof-sadd-c50-P16 valkey-noaof-sadd-c50-P16 base/rc-noaof-sadd-c1-P1 redis-noaof-sadd-c1-P1 valkey-noaof-sadd-c1-P1 base/rc-noaof-sadd-c1-P16 redis-noaof-sadd-c1-P16 valkey-noaof-sadd-c1-P16 base/rc-noaof-mset-c50-P1 redis-noaof-mset-c50-P1 valkey-noaof-mset-c50-P1 base/rc-noaof-mset-c50-P16 redis-noaof-mset-c50-P16 valkey-noaof-mset-c50-P16 base/rc-noaof-mset-c1-P1 redis-noaof-mset-c1-P1 valkey-noaof-mset-c1-P1 base/rc-noaof-mset-c1-P16 redis-noaof-mset-c1-P16 valkey-noaof-mset-c1-P16 base/rc-noaof-get-c50-P1 redis-noaof-get-c50-P1 valkey-noaof-get-c50-P1 base/rc-noaof-incr-c50-P1 redis-noaof-incr-c50-P1 valkey-noaof-incr-c50-P1 base/rc-noaof-zadd-c50-P1 redis-noaof-zadd-c50-P1 valkey-noaof-zadd-c50-P1 
+record_cells: none freq=2999
+sysc: off cells=none
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: rustc 1.98.0 (88d9e12ae 2026-08-18)
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+   2648 dennisp+  39  19  856604  59824  14132 S  29.2   0.4   1:06.16 localse+
+   5901 dennisp+  20   0 4273324 977848 111032 S   9.7   6.0  17:47.71 Isolate+
+ 136226 root      20   0       0      0      0 I   9.7   0.0   1:46.86 kworker+
+   2285 dennisp+  20   0 3627624 158944  75748 S   4.9   1.0   6:18.11 gnome-s+
+   4386 dennisp+  20   0   52.6g  74344  54144 S   4.9   0.5   3:44.43 code
+   4713 dennisp+  20   0 1448.1g 318380  91080 S   4.9   2.0   9:05.05 code
+      1 root      20   0   37260  13684   9412 S   0.0   0.1   0:02.22 systemd
+loadavg_at_end: 2.48 2.10 2.03 4/1531 268719
+pressure_at_end: load=2.48 io_psi10=3.17/3.01 mem_psi10=0.00/0.00 swap_used_mib=3381 dirty_wb_kib=4948
