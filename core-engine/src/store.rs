@@ -4927,6 +4927,28 @@ impl KeyValueStore {
                 }),
                 out,
             ),
+            // 6O-C: the same primitives the owned arms of
+            // `execute_inner_ref` call, with the values still in the read
+            // buffer: each list value is copied once, into the list; a set
+            // member only when it is new (`SetMember for &str`).
+            CommandRef::LPush(key, vals) => write(
+                self.run_probed_write(key, (), |store, (), probe| {
+                    store.push(*key, vals.iter().copied(), End::Front, probe)
+                }),
+                out,
+            ),
+            CommandRef::RPush(key, vals) => write(
+                self.run_probed_write(key, (), |store, (), probe| {
+                    store.push(*key, vals.iter().copied(), End::Back, probe)
+                }),
+                out,
+            ),
+            CommandRef::SAdd(key, members) => write(
+                self.run_probed_write(key, (), |store, (), probe| {
+                    store.sadd(*key, members.iter().copied(), probe)
+                }),
+                out,
+            ),
         })
     }
 
