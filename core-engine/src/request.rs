@@ -335,6 +335,18 @@ fn build(args: Args<'_>) -> Option<Result<Command, String>> {
             Command::MSet(pairs)
         }
         (4, 1) if args.name_is("PING") => Command::Ping(None),
+        // 6O-B: the collection writes redis-benchmark and most queues send.
+        // On the general path each built a `Value` per argument and then
+        // `from_value` copied every one of them again, plus the upper-cased
+        // name: ~1,200–1,450 user cycles per command, the largest cost a
+        // `LPUSH` or `SADD` paid outside the store. Same checks, same
+        // command: the key passes `key` (text, `validate_key`), list values
+        // are payloads (any bytes, `is_payload_index`), set members are
+        // identifiers and so must be text — a frame failing any of them goes
+        // to the general path for its error.
+        (5, _) if n >= 3 && args.name_is("LPUSH") => Command::LPush(args.key(1)?, values(args, 2)?),
+        (5, _) if n >= 3 && args.name_is("RPUSH") => Command::RPush(args.key(1)?, values(args, 2)?),
+        (4, _) if n >= 3 && args.name_is("SADD") => Command::SAdd(args.key(1)?, texts(args, 2)?),
         (5, _) if n >= 4 && args.name_is("DEDUP") => return dedup(args),
         _ => return None,
     };
@@ -343,6 +355,18 @@ fn build(args: Args<'_>) -> Option<Result<Command, String>> {
 
 fn keys(args: Args<'_>, from: usize) -> Option<Vec<String>> {
     (from..args.len()).map(|i| args.key(i)).collect()
+}
+
+/// Payload arguments from `from` on, as the bytes that arrived.
+fn values(args: Args<'_>, from: usize) -> Option<Vec<Vec<u8>>> {
+    (from..args.len()).map(|i| args.bytes(i)).collect()
+}
+
+/// Identifier arguments from `from` on: text, else `None`.
+fn texts(args: Args<'_>, from: usize) -> Option<Vec<String>> {
+    (from..args.len())
+        .map(|i| args.text(i).map(str::to_owned))
+        .collect()
 }
 
 /// `DEDUP <client> <id> <command…>` without copying the wrapped command.
@@ -424,6 +448,19 @@ mod tests {
             b"PING",
             b"ping",
             b"HMSET",
+            b"LPUSH",
+            b"lpush",
+            b"LPush",
+            b"RPUSH",
+            b"rpush",
+            b"SADD",
+            b"sadd",
+            b"LPUSHX",
+            b"LPUS",
+            b"SADDX",
+            b"SREM",
+            b"\xC5\xBFadd",
+            b"lpu\xC5\xBFh",
             b"EXISTS",
             b"GETX",
             b"SE",
@@ -476,6 +513,13 @@ mod tests {
             &[b"NOPE", b"k"],
             &[b"SET", b"", b"v"],
             &[b"SET", b"\xff", b"v"],
+            &[b"LPUSH", b"l", b"\xff\x00", b"b"],
+            &[b"rpush", b"l", b"a"],
+            &[b"LPUSH", b"\xff", b"a"],
+            &[b"LPUSH", b"l"],
+            &[b"SADD", b"s", b"a", b"b", b"a"],
+            &[b"SADD", b"s", b"\xff"],
+            &[b"sadd", b"", b"m"],
         ];
         let clients: &[&[u8]] = &[b"client-a", b"", &[b'c'; 65], b"\xff"];
         let ids: &[&[u8]] = &[b"9", b"0", b"-1", b"+7", b"x", b"99999999999999999999"];

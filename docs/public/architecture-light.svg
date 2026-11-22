@@ -1,40 +1,52 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 380" width="1040" height="380" role="img" aria-label="Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory.">
-<title>Recached server and local client caches</title>
-<desc>Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory. Mobile SDKs are implemented previews.</desc>
-<style>
-  .wire { fill:none; stroke:#d6dae0; stroke-width:2; }
-  .node { fill:#f6f8fa; stroke:#d6dae0; stroke-width:1.5; }
-  .server { stroke:#D97706; }
-  .pill { fill:#ffffff; stroke:#d6dae0; }
-  text { font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; text-anchor:middle; }
-  .title { fill:#171C2B; font-size:16px; font-weight:700; }
-  .sub { fill:#656d76; font-size:12px; }
-  .code { fill:#171C2B; font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace; }
-  .label { fill:#656d76; font-size:12px; font-weight:600; }
-</style>
-<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto-start-reverse"><path d="M1 1 L6 4 L1 7" fill="none" stroke="#d6dae0" stroke-width="1.5"/></marker></defs>
-<path class="wire" d="M190 190 H320" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
-<path class="wire" d="M530 190 H625 M625 80 V300 M625 80 H710 M625 190 H710 M625 300 H710"/>
-<path class="wire" d="M635 80 H704" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
-<path class="wire" d="M635 190 H704" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
-<path class="wire" d="M635 300 H704" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
-<rect class="node" x="20" y="149" width="170" height="82" rx="14"/>
-<text x="105" y="182" class="title">Your backend</text><text x="105" y="207" class="sub">RESP clients</text>
-<text x="255" y="174" class="label">RESP :6379</text>
-<rect class="node server" x="320" y="123" width="210" height="134" rx="16"/>
-<text x="425" y="153" class="title">Recached server</text>
-<rect class="pill" x="338" y="168" width="174" height="28" rx="7"/><text x="425" y="187" class="code">server-native</text>
-<rect class="pill" x="338" y="207" width="174" height="28" rx="7"/><text x="425" y="226" class="code">core-engine</text>
-<text x="620" y="24" class="label">WebSocket :6380</text>
-<text x="620" y="43" class="sub">writes + updates</text>
-<rect class="node" x="710" y="32" width="306" height="96" rx="14"/>
-<text x="863" y="58" class="title">Browser</text><text x="863" y="80" class="code">wasm-edge + sync-client</text>
-<text x="863" y="103" class="sub">Local WASM reads · optional IndexedDB</text>
-<rect class="node" x="710" y="142" width="306" height="96" rx="14"/>
-<text x="863" y="168" class="title">Android / iOS / macOS</text><text x="863" y="190" class="code">recached-mobile + sync-client</text>
-<text x="863" y="213" class="sub">Native reads · SQLite · Kotlin / Swift previews</text>
-<rect class="node" x="710" y="252" width="306" height="96" rx="14"/>
-<text x="863" y="278" class="title">Rust service</text><text x="863" y="300" class="code">recached-embed + sync-client</text>
-<text x="863" y="323" class="sub">Local native reads · in-memory outbox</text>
-<text x="520" y="371" class="sub">Every runtime shares core-engine; client reads stay in local memory.</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 420" width="1040" height="420" role="img" aria-labelledby="t d">
+<title id="t">Recached architecture</title>
+<desc id="d">Your database stays the source of truth. Your backend publishes committed state to the Recached server over RESP on port 6379. Browser, Android and Apple, and Rust service clients sync with the server over WebSocket on port 6380 and read from a local cache. The mobile SDKs are previews.</desc>
+<style>text{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}.m{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace}</style>
+<defs><marker id="a" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto-start-reverse"><path d="M2 1.5 7 5 2 8.5" fill="none" stroke="#B9B2A3" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<rect x="12" y="166" width="150" height="88" rx="14" fill="none" stroke="#B9B2A3" stroke-width="1.5" stroke-dasharray="5 5"/>
+<text x="87" y="200" text-anchor="middle" font-size="15" font-weight="650" fill="#171C2B">Your database</text>
+<text x="87" y="222" text-anchor="middle" font-size="12" fill="#5B6376">source of truth</text>
+<text x="87" y="240" text-anchor="middle" font-size="12" fill="#5B6376">(optional)</text>
+<path d="M162 210H206" stroke="#B9B2A3" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<rect x="210" y="162" width="160" height="96" rx="14" fill="#FFFFFF" stroke="#D6D0C2" stroke-width="1.25"/>
+<text x="290" y="200" text-anchor="middle" font-size="15" font-weight="650" fill="#171C2B">Your backend</text>
+<text x="290" y="222" text-anchor="middle" font-size="12" fill="#5B6376" class="m">ioredis · redis-py</text>
+<text x="290" y="240" text-anchor="middle" font-size="12" fill="#5B6376" class="m">redis-cli · …</text>
+<path d="M370 210H446" stroke="#B9B2A3" stroke-width="1.5" fill="none" marker-start="url(#a)" marker-end="url(#a)"/>
+<text x="410" y="198" text-anchor="middle" font-size="12" font-weight="600" fill="#464D5F" class="m">RESP</text>
+<text x="410" y="230" text-anchor="middle" font-size="12" fill="#5B6376" class="m">:6379</text>
+<rect x="450" y="130" width="220" height="160" rx="18" fill="#FAF9F6" stroke="#D97706" stroke-width="1.75"/>
+<g transform="translate(536 148) scale(.375)"><rect x="4" y="4" width="120" height="120" rx="28" fill="#171C2B" stroke="#F59E0B" stroke-opacity=".35" stroke-width="2"/><path d="M38 94V34H61C84 34 86 64 63 67H56L83 94" stroke="#F59E0B" stroke-width="11" stroke-linecap="square" stroke-linejoin="round" fill="none"/><circle cx="92" cy="27" r="7" fill="#FDE68A"/><circle cx="94" cy="96" r="6" fill="#FBBF24"/></g>
+<text x="560" y="222" text-anchor="middle" font-size="17" font-weight="700" fill="#171C2B">Recached server</text>
+<text x="560" y="244" text-anchor="middle" font-size="12" fill="#5B6376" class="m">in-memory cache</text>
+<text x="560" y="262" text-anchor="middle" font-size="12" fill="#5B6376" class="m">persistence · sync fan-out</text>
+<path d="M670 210H730M730 90V330" stroke="#B9B2A3" stroke-width="1.5" fill="none"/>
+<path d="M730 90H770" stroke="#B9B2A3" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<path d="M730 210H770" stroke="#B9B2A3" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<path d="M730 330H770" stroke="#B9B2A3" stroke-width="1.5" fill="none" marker-end="url(#a)"/>
+<path d="M676 210H690" stroke="#B9B2A3" stroke-width="1.5" fill="none" marker-start="url(#a)"/>
+<text x="718" y="66" text-anchor="end" font-size="12" font-weight="600" fill="#464D5F" class="m">WebSocket :6380</text>
+<text x="718" y="84" text-anchor="end" font-size="11.5" fill="#5B6376">writes + live updates</text>
+<rect x="774" y="40" width="258" height="100" rx="14" fill="#FFFFFF" stroke="#D6D0C2" stroke-width="1.25"/>
+<text x="794" y="70" font-size="15" font-weight="650" fill="#171C2B">Browser</text>
+<text x="794" y="90" font-size="12" fill="#5B6376" class="m">recached-edge · WebAssembly</text>
+<rect x="794" y="104" width="104" height="24" rx="6" fill="#FEF3C7" stroke="#E7B85A"/>
+<circle cx="807" cy="116" r="3" fill="#D97706"/>
+<text x="856" y="120" text-anchor="middle" font-size="11.5" font-weight="600" fill="#92400E" class="m">local cache</text>
+<text x="908" y="120" font-size="12" fill="#5B6376">optional IndexedDB</text>
+<rect x="774" y="160" width="258" height="100" rx="14" fill="#FFFFFF" stroke="#D6D0C2" stroke-width="1.25"/>
+<text x="794" y="190" font-size="15" font-weight="650" fill="#171C2B">Android · iOS · macOS</text>
+<text x="794" y="210" font-size="12" fill="#5B6376" class="m">Kotlin · Swift previews</text>
+<rect x="794" y="224" width="104" height="24" rx="6" fill="#FEF3C7" stroke="#E7B85A"/>
+<circle cx="807" cy="236" r="3" fill="#D97706"/>
+<text x="856" y="240" text-anchor="middle" font-size="11.5" font-weight="600" fill="#92400E" class="m">local cache</text>
+<text x="908" y="240" font-size="12" fill="#5B6376">SQLite + outbox</text>
+<rect x="774" y="280" width="258" height="100" rx="14" fill="#FFFFFF" stroke="#D6D0C2" stroke-width="1.25"/>
+<text x="794" y="310" font-size="15" font-weight="650" fill="#171C2B">Rust service</text>
+<text x="794" y="330" font-size="12" fill="#5B6376" class="m">recached-embed</text>
+<rect x="794" y="344" width="104" height="24" rx="6" fill="#FEF3C7" stroke="#E7B85A"/>
+<circle cx="807" cy="356" r="3" fill="#D97706"/>
+<text x="856" y="360" text-anchor="middle" font-size="11.5" font-weight="600" fill="#92400E" class="m">local cache</text>
+<text x="908" y="360" font-size="12" fill="#5B6376">in-memory outbox</text>
+<text x="520" y="404" text-anchor="middle" font-size="12.5" fill="#5B6376">Every runtime shares core-engine. Client reads are served from local memory.</text>
 </svg>

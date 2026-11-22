@@ -1,172 +1,709 @@
-/* Recached Amber Signal — accessible colors on light/dark themes.
-   Gold is used for decorative accents; small text on white uses dark amber.
-   Colors come from brand/README.md. Where VitePress exposes a variable, set the
-   variable: its scoped component styles outrank plain class selectors, so a
-   `.VPButton.brand { color }` override silently loses. */
+/* ==========================================================================
+   Recached — documentation theme
+   --------------------------------------------------------------------------
+   1. Brand tokens        (the four brand colors, never redefined)
+   2. Semantic tokens     (surfaces, text, borders, per theme)
+   3. VitePress mapping   (set VitePress variables, do not fight its CSS)
+   4. Base & typography
+   5. Navigation, sidebar, outline
+   6. Documentation content
+   7. Utilities shared with Markdown pages
+
+   Where VitePress exposes a variable, set the variable: its scoped component
+   styles outrank plain class selectors, so a `.VPButton.brand { color }`
+   override silently loses.
+   ========================================================================== */
+
+/* 1. Brand tokens --------------------------------------------------------- */
 :root {
   --rc-amber: #f59e0b;
   --rc-gold: #fbbf24;
   --rc-pale-gold: #fde68a;
-  --rc-dark-amber: #92400e;
-  --rc-navy: #171c2b;
-  --rc-navy-mid: #242938;
+  --rc-midnight: #171c2b;
 
-  --vp-c-brand-1: var(--rc-dark-amber);
-  --vp-c-brand-2: #b45309;
+  /* Darker steps of the same amber, for text on light surfaces. Amber itself
+     is 2.1:1 on white and fails WCAG for text of any size. */
+  --rc-amber-600: #d97706; /* 3.2:1 on white — large text and UI marks only */
+  --rc-amber-700: #b45309; /* 5.0:1 on white — body links */
+  --rc-amber-800: #92400e; /* 7.1:1 on white — small text, hover */
+
+  /* Typography */
+  --rc-font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --rc-font-mono: ui-monospace, 'SF Mono', SFMono-Regular, 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* Radii */
+  --rc-radius-xs: 6px;
+  --rc-radius-sm: 8px;
+  --rc-radius-md: 12px;
+  --rc-radius-lg: 16px;
+  --rc-radius-xl: 20px;
+
+  /* Spacing scale (4px base) */
+  --rc-space-1: 4px;
+  --rc-space-2: 8px;
+  --rc-space-3: 12px;
+  --rc-space-4: 16px;
+  --rc-space-5: 24px;
+  --rc-space-6: 32px;
+  --rc-space-7: 48px;
+  --rc-space-8: 64px;
+  --rc-space-9: 96px;
+
+  /* Layout */
+  --rc-content-max: 1200px;
+  --rc-gutter: 24px;
+
+  /* Motion */
+  --rc-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --rc-duration: 160ms;
+}
+
+/* 2. Semantic tokens — light ---------------------------------------------- */
+:root {
+  --rc-bg: #ffffff;
+  --rc-bg-alt: #faf9f6;
+  --rc-surface: #ffffff;
+  --rc-surface-raised: #faf9f6;
+  --rc-surface-sunken: #f5f3ee;
+  --rc-surface-mute: #eeebe3;
+
+  --rc-text-1: #171c2b;
+  --rc-text-2: #464d5f;
+  --rc-text-3: #626a7d;
+
+  --rc-border: #e6e2d8;
+  --rc-border-strong: #d6d0c2;
+  --rc-divider: #eeebe4;
+
+  --rc-accent: var(--rc-amber-700);
+  --rc-accent-strong: var(--rc-amber-800);
+  --rc-accent-mark: var(--rc-amber-600);
+  --rc-accent-soft: rgba(245, 158, 11, 0.12);
+  --rc-accent-border: rgba(217, 119, 6, 0.38);
+
+  /* The slogan's second line. Exact brand amber fails contrast on white, so
+     light mode uses the next step down; dark mode uses #F59E0B itself. */
+  --rc-slogan-accent: var(--rc-amber-600);
+
+  --rc-line: #d6d0c2;
+  --rc-shadow-sm: 0 1px 2px rgba(23, 28, 43, 0.06);
+  --rc-shadow-md: 0 1px 2px rgba(23, 28, 43, 0.04), 0 8px 24px -8px rgba(23, 28, 43, 0.12);
+  --rc-shadow-lg: 0 2px 4px rgba(23, 28, 43, 0.04), 0 24px 48px -16px rgba(23, 28, 43, 0.18);
+
+  --rc-focus-ring: 0 0 0 2px var(--rc-bg), 0 0 0 4px var(--rc-amber-700);
+  --rc-grid-dot: rgba(23, 28, 43, 0.07);
+}
+
+/* 2. Semantic tokens — dark ----------------------------------------------- */
+.dark {
+  --rc-bg: #0d111c;
+  --rc-bg-alt: #0a0d16;
+  --rc-surface: #121726;
+  --rc-surface-raised: var(--rc-midnight);
+  --rc-surface-sunken: #0a0d16;
+  --rc-surface-mute: #1f2536;
+
+  --rc-text-1: #eef0f4;
+  --rc-text-2: #aab1c1;
+  --rc-text-3: #848c9e;
+
+  --rc-border: #232a3b;
+  --rc-border-strong: #313a50;
+  --rc-divider: #1b2130;
+
+  --rc-accent: var(--rc-gold);
+  --rc-accent-strong: var(--rc-pale-gold);
+  --rc-accent-mark: var(--rc-amber);
+  --rc-accent-soft: rgba(251, 191, 36, 0.12);
+  --rc-accent-border: rgba(245, 158, 11, 0.4);
+
+  --rc-slogan-accent: var(--rc-amber);
+
+  --rc-line: #343d54;
+  --rc-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --rc-shadow-md: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -8px rgba(0, 0, 0, 0.5);
+  --rc-shadow-lg: 0 2px 4px rgba(0, 0, 0, 0.3), 0 24px 48px -16px rgba(0, 0, 0, 0.6);
+
+  --rc-focus-ring: 0 0 0 2px var(--rc-bg), 0 0 0 4px var(--rc-gold);
+  --rc-grid-dot: rgba(253, 230, 138, 0.07);
+}
+
+/* 3. VitePress mapping ---------------------------------------------------- */
+:root,
+.dark {
+  --vp-font-family-base: var(--rc-font-sans);
+  --vp-font-family-mono: var(--rc-font-mono);
+
+  --vp-c-bg: var(--rc-bg);
+  --vp-c-bg-alt: var(--rc-bg-alt);
+  --vp-c-bg-elv: var(--rc-surface);
+  --vp-c-bg-soft: var(--rc-surface-sunken);
+  --vp-c-bg-mute: var(--rc-surface-mute);
+
+  --vp-c-text-1: var(--rc-text-1);
+  --vp-c-text-2: var(--rc-text-2);
+  --vp-c-text-3: var(--rc-text-3);
+
+  --vp-c-border: var(--rc-border-strong);
+  --vp-c-divider: var(--rc-divider);
+  --vp-c-gutter: var(--rc-divider);
+
+  --vp-c-brand-1: var(--rc-accent);
+  --vp-c-brand-2: var(--rc-accent-strong);
   --vp-c-brand-3: var(--rc-amber);
-  --vp-c-brand-soft: rgba(245, 158, 11, 0.12);
+  --vp-c-brand-soft: var(--rc-accent-soft);
 
-  /* Navy text on amber: 7.9:1. White on amber is 2.2:1 and fails WCAG AA. */
+  /* Midnight text on amber: 7.9:1. White on amber is 2.2:1 and fails AA. */
   --vp-button-brand-border: transparent;
-  --vp-button-brand-text: var(--rc-navy);
+  --vp-button-brand-text: var(--rc-midnight);
   --vp-button-brand-bg: var(--rc-amber);
   --vp-button-brand-hover-border: transparent;
-  --vp-button-brand-hover-text: var(--rc-navy);
+  --vp-button-brand-hover-text: var(--rc-midnight);
   --vp-button-brand-hover-bg: var(--rc-gold);
   --vp-button-brand-active-border: transparent;
-  --vp-button-brand-active-text: var(--rc-navy);
-  --vp-button-brand-active-bg: #d97706;
+  --vp-button-brand-active-text: var(--rc-midnight);
+  --vp-button-brand-active-bg: var(--rc-amber-600);
 
-  /* Ends on #D97706 (3.2:1 on white), above the 3:1 large-text minimum; pale
-     gold would fade to 1.3:1. */
-  --vp-home-hero-name-color: transparent;
-  --vp-home-hero-name-background: linear-gradient(135deg, var(--rc-dark-amber) 0%, #d97706 100%);
+  --vp-nav-bg-color: var(--rc-bg);
+  --vp-nav-screen-bg-color: var(--rc-bg);
+  --vp-local-nav-bg-color: var(--rc-bg);
+  --vp-sidebar-bg-color: var(--rc-bg-alt);
+
+  --vp-code-font-size: 0.875em;
+  --vp-code-color: var(--rc-accent-strong);
+  --vp-code-bg: var(--rc-accent-soft);
+  --vp-code-block-bg: var(--rc-surface-raised);
+  --vp-code-block-divider-color: var(--rc-border);
+  --vp-code-tab-bg: var(--rc-surface-raised);
+  --vp-code-tab-divider: var(--rc-border);
+  --vp-code-tab-text-color: var(--rc-text-2);
+  --vp-code-tab-hover-text-color: var(--rc-text-1);
+  --vp-code-tab-active-text-color: var(--rc-text-1);
+  --vp-code-tab-active-bar-color: var(--rc-amber);
+  --vp-code-copy-code-bg: var(--rc-surface);
+  --vp-code-copy-code-hover-bg: var(--rc-surface-mute);
+  --vp-code-copy-code-border-color: var(--rc-border);
+  --vp-code-copy-code-hover-border-color: var(--rc-border-strong);
+  --vp-code-copy-code-active-text: var(--rc-text-2);
+  --vp-code-copy-copied-text-content: 'Copied';
+
+  --vp-custom-block-tip-border: var(--rc-accent-border);
+  --vp-custom-block-tip-text: var(--rc-text-1);
+  --vp-custom-block-tip-bg: var(--rc-accent-soft);
+  --vp-custom-block-tip-code-bg: var(--rc-accent-soft);
+
+  --vp-home-hero-name-color: var(--rc-text-1);
+
+  --vp-layout-max-width: 1440px;
+}
+
+:root {
+  --vp-code-color: var(--rc-amber-800);
 }
 
 .dark {
-  --vp-c-brand-1: var(--rc-gold);
-  --vp-c-brand-2: var(--rc-amber);
-  --vp-c-brand-3: #d97706;
-  --vp-c-brand-soft: rgba(251, 191, 36, 0.16);
-
-  /* Every background tier is navy, so the sidebar and code blocks do not fall
-     back to VitePress's neutral grays (#161618 / #202127) beside the page. */
-  --vp-c-bg: #101522;
-  --vp-c-bg-alt: #0c101b;
-  --vp-c-bg-elv: #1a2030;
-  --vp-c-bg-soft: var(--rc-navy);
-  --vp-c-bg-mute: var(--rc-navy-mid);
-  --vp-nav-bg-color: #101522;
-  --vp-code-block-bg: #0c101b;
-
-  --vp-home-hero-name-background: linear-gradient(135deg, var(--rc-amber) 0%, var(--rc-pale-gold) 100%);
+  --vp-code-color: var(--rc-pale-gold);
+  --vp-code-bg: rgba(251, 191, 36, 0.1);
 }
 
-/* ── Nav title ───────────────────────────────────────────────────────────── */
+/* 4. Base & typography ---------------------------------------------------- */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  background-color: var(--rc-bg);
+  color: var(--rc-text-1);
+  font-feature-settings: 'cv11', 'ss01';
+  font-optical-sizing: auto;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgba(245, 158, 11, 0.28);
+}
+
+/* One visible focus ring everywhere, keyboard only. */
+:where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex='-1'])):focus-visible {
+  /* Transparent, not none: forced-colors mode drops box-shadow but paints
+     outlines, so keyboard focus stays visible there. */
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  box-shadow: var(--rc-focus-ring);
+  border-radius: var(--rc-radius-xs);
+}
+
+/* Theme switch: fade colors, nothing else. Disabled for reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .VPNav,
+  .VPSidebar,
+  .VPContent,
+  .VPFooter,
+  .VPLocalNav {
+    transition: background-color var(--rc-duration) var(--rc-ease), border-color var(--rc-duration) var(--rc-ease);
+  }
+}
+
+/* 5. Navigation ----------------------------------------------------------- */
+.VPNavBar .title {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  gap: 10px;
+}
 
 .VPNavBarTitle .logo {
-  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
 }
 
-/* ── Nav active link ─────────────────────────────────────────────────────── */
+/* Translucent bar once the page scrolls under it. */
+@media (min-width: 960px) {
+  .VPNav .VPNavBar:not(.home.top) .content-body,
+  .VPNav .VPNavBar.has-sidebar .content-body {
+    background-color: color-mix(in srgb, var(--rc-bg) 86%, transparent);
+    backdrop-filter: saturate(160%) blur(10px);
+    -webkit-backdrop-filter: saturate(160%) blur(10px);
+  }
+}
 
+.VPNavBarMenuLink,
+.VPNavBarMenuGroup .button {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+/* Five menu items, search and the overflow menu only just fit at 768px. */
+@media (min-width: 768px) and (max-width: 1023px) {
+  .VPNavBarMenuLink,
+  .VPNavBarMenuGroup .button {
+    padding: 0 9px !important;
+  }
+}
+
+/* Active links and active dropdowns: VitePress colors both with the brand
+   accent; add weight so the current section also reads without color. */
 .VPNavBarMenuLink.active,
-.VPNavBarMenuLink:hover {
-  color: var(--vp-c-brand-1) !important;
+.VPNavBarMenuGroup.active .text {
+  font-weight: 600;
 }
 
-/* ── Sidebar active link ─────────────────────────────────────────────────── */
+/* Search button: a quiet pill in both themes (icon-only below 768px). */
+@media (min-width: 768px) {
+  .DocSearch-Button {
+    border: 1px solid var(--rc-border) !important;
+    background: var(--rc-surface-sunken) !important;
+    border-radius: 999px !important;
+  }
+
+  .DocSearch-Button:hover {
+    border-color: var(--rc-accent-border) !important;
+  }
+}
+
+.VPMenu {
+  border-radius: var(--rc-radius-md) !important;
+  border-color: var(--rc-border) !important;
+  box-shadow: var(--rc-shadow-lg) !important;
+}
+
+.VPMenuGroup .title {
+  font-size: 11px !important;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--rc-text-3) !important;
+}
+
+/* Sidebar ----------------------------------------------------------------- */
+.VPSidebar {
+  border-right: 1px solid var(--rc-divider);
+}
+
+.VPSidebarItem.level-0 > .item > .text,
+.VPSidebarItem.level-0 > .item > .VPLink > .text {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--rc-text-3);
+}
+
+.VPSidebarItem.level-0 {
+  padding-bottom: 16px;
+}
+
+.VPSidebarItem.level-0 + .VPSidebarItem.level-0 {
+  border-top: 1px solid var(--rc-divider);
+  padding-top: 12px;
+}
+
+.VPSidebarItem .text {
+  font-size: 14px;
+}
+
+.VPSidebarItem.level-1 .text,
+.VPSidebarItem.level-2 .text {
+  color: var(--rc-text-2);
+  font-weight: 450;
+}
+
+.VPSidebarItem.level-1 > .item:hover .text,
+.VPSidebarItem.level-2 > .item:hover .text {
+  color: var(--rc-text-1);
+}
+
+.VPSidebarItem.is-active > .item .link > .text {
+  color: var(--rc-text-1) !important;
+  font-weight: 600;
+}
 
 .VPSidebarItem.is-active > .item .indicator {
   background-color: var(--rc-amber);
+  width: 2px;
 }
 
-/* ── Code blocks ─────────────────────────────────────────────────────────── */
-
-.dark .vp-code-group .tabs label:hover,
-.dark .vp-code-group .tabs input:checked + label {
-  color: var(--rc-amber);
+/* Outline (on this page) -------------------------------------------------- */
+.VPDocAsideOutline .outline-title {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--rc-text-3);
 }
 
-/* ── Feature cards ───────────────────────────────────────────────────────── */
-
-.VPFeature:hover {
-  border-color: rgba(245, 158, 11, 0.35) !important;
+.VPDocAsideOutline .outline-link {
+  color: var(--rc-text-2);
 }
 
-/* The feature icons are amber line art on a navy tile in both themes. */
-.VPFeature .icon {
-  background-color: var(--rc-navy) !important;
+.VPDocAsideOutline .outline-link:hover,
+.VPDocAsideOutline .outline-link.active {
+  color: var(--rc-text-1);
 }
 
-/* Dark cards are already navy (--vp-c-bg-soft), so lift the tile off them. */
-.dark .VPFeature .icon {
-  background-color: var(--rc-navy-mid) !important;
+.VPDocAsideOutline .outline-marker {
+  background-color: var(--rc-amber);
 }
 
-/* ── Home hero image — constrain and add glow ────────────────────────────── */
-
-.VPHero .image-container img {
-  border-radius: 12px;
-  box-shadow:
-    0 0 0 1px rgba(245, 158, 11, 0.2),
-    0 24px 64px rgba(245, 158, 11, 0.15),
-    0 8px 24px rgba(0, 0, 0, 0.4);
+/* 6. Documentation content ------------------------------------------------ */
+.vp-doc {
+  font-size: 16px;
+  line-height: 1.75;
 }
 
-.dark .VPHero .image-container img {
-  box-shadow:
-    0 0 0 1px rgba(245, 158, 11, 0.3),
-    0 24px 64px rgba(245, 158, 11, 0.2),
-    0 8px 24px rgba(0, 0, 0, 0.6);
+.vp-doc h1 {
+  font-size: clamp(30px, 4vw, 38px);
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+  font-weight: 750;
+  margin-bottom: 20px;
 }
 
-/* ── Inline code ─────────────────────────────────────────────────────────── */
-
-:not(pre) > code {
-  color: var(--rc-dark-amber);
+.vp-doc h2 {
+  margin-top: 56px;
+  padding-top: 28px;
+  font-size: 24px;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  font-weight: 700;
+  border-top-color: var(--rc-divider);
 }
 
-.dark :not(pre) > code {
-  color: var(--rc-gold);
+.vp-doc h3 {
+  margin-top: 36px;
+  font-size: 19px;
+  letter-spacing: -0.012em;
+  font-weight: 650;
 }
 
-/* ── Custom block — tip uses amber accent ─────────────────────────────────── */
-
-.custom-block.tip {
-  border-color: var(--vp-c-brand-1);
+.vp-doc h4 {
+  font-size: 16px;
+  font-weight: 650;
 }
 
-.custom-block.tip .custom-block-title {
-  color: var(--vp-c-text-1);
+.vp-doc p,
+.vp-doc li {
+  color: var(--rc-text-2);
 }
 
-/* ── Footer ──────────────────────────────────────────────────────────────── */
-
-.dark .VPFooter {
-  background-color: #101522;
-  border-top-color: var(--rc-navy-mid);
+.vp-doc strong {
+  color: var(--rc-text-1);
+  font-weight: 650;
 }
 
-/* ── Theme-swapped figures ───────────────────────────────────────────────────
-   VitePress toggles dark mode with a class on <html>, so a `prefers-color-scheme`
-   media query inside an image cannot follow the site's theme switch — it tracks
-   the OS instead. Ship both variants and swap them on the same class VitePress
-   uses, so the diagram always matches the page. */
+.vp-doc a {
+  color: var(--rc-accent);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--rc-accent-border);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: color var(--rc-duration) var(--rc-ease), text-decoration-color var(--rc-duration) var(--rc-ease);
+}
 
+.vp-doc a:hover {
+  color: var(--rc-accent-strong);
+  text-decoration-color: currentColor;
+}
+
+.vp-doc .header-anchor {
+  text-decoration: none;
+  color: var(--rc-text-3);
+}
+
+/* Inline code */
+.vp-doc :not(pre, h1, h2, h3, h4, h5, h6) > code {
+  border-radius: 5px;
+  padding: 0.15em 0.4em;
+  font-weight: 500;
+  /* break-word, not anywhere: it only breaks a token that cannot fit on a
+     line of its own, and leaves table column sizing alone. */
+  overflow-wrap: break-word;
+}
+
+/* Identifiers in the first column of reference tables stay whole; the
+   table scrolls inside its own box instead. */
+.vp-doc td:first-child > code {
+  white-space: nowrap;
+}
+
+.vp-doc a > code {
+  color: inherit;
+}
+
+/* Code blocks: a bordered surface rather than a slab of color. */
+.vp-doc div[class*='language-'] {
+  border: 1px solid var(--rc-border);
+  border-radius: var(--rc-radius-md);
+  box-shadow: var(--rc-shadow-sm);
+}
+
+@media (max-width: 639px) {
+  /* VitePress bleeds code blocks to the screen edge on phones; keep the
+     border visible and the gutter consistent instead. */
+  .vp-doc div[class*='language-'],
+  .vp-doc .vp-code-group {
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+  }
+  .vp-doc div[class*='language-'] {
+    border-radius: var(--rc-radius-sm);
+  }
+}
+
+.vp-doc div[class*='language-'] > span.lang {
+  font-family: var(--rc-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--rc-text-3);
+}
+
+.vp-doc [class*='language-'] code {
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+.vp-doc .vp-code-group .tabs {
+  border: 1px solid var(--rc-border);
+  border-bottom: 0;
+  border-radius: var(--rc-radius-md) var(--rc-radius-md) 0 0;
+  box-shadow: inset 0 -1px var(--rc-border);
+}
+
+.vp-doc .vp-code-group div[class*='language-'] {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+  margin-top: 0;
+}
+
+@media (max-width: 639px) {
+  .vp-doc .vp-code-group .tabs {
+    border-radius: var(--rc-radius-sm) var(--rc-radius-sm) 0 0;
+  }
+}
+
+.vp-doc .vp-code-group .tabs label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* Tables: scroll inside their own box on narrow screens, never the page. */
+.vp-doc table {
+  /* fit-content: the border hugs a narrow table, prose cells still wrap, and
+     a table wider than the column scrolls inside its own box. */
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--rc-border);
+  border-radius: var(--rc-radius-md);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.vp-doc tr {
+  border-top: 0;
+  background-color: transparent !important;
+}
+
+.vp-doc th,
+.vp-doc td {
+  border: 0;
+  border-bottom: 1px solid var(--rc-divider);
+  padding: 10px 16px;
+}
+
+.vp-doc th + th,
+.vp-doc td + td {
+  border-left: 1px solid var(--rc-divider);
+}
+
+.vp-doc tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.vp-doc th {
+  background-color: var(--rc-surface-raised);
+  color: var(--rc-text-1);
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.vp-doc td {
+  color: var(--rc-text-2);
+}
+
+/* Blockquotes */
+.vp-doc blockquote {
+  border-left: 2px solid var(--rc-accent-border);
+  padding: 2px 0 2px 18px;
+  color: var(--rc-text-2);
+}
+
+/* Custom blocks (tip, info, warning, danger, details) */
+.vp-doc .custom-block {
+  border-radius: var(--rc-radius-md);
+  border-width: 1px;
+  border-style: solid;
+  padding: 14px 18px;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.vp-doc .custom-block p,
+.vp-doc .custom-block li {
+  color: inherit;
+}
+
+.vp-doc .custom-block .custom-block-title {
+  font-weight: 650;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+.vp-doc .custom-block.info {
+  border-color: var(--rc-border);
+  background-color: var(--rc-surface-raised);
+}
+
+.vp-doc .custom-block.details {
+  border-color: var(--rc-border);
+}
+
+.vp-doc .custom-block.tip a,
+.vp-doc .custom-block.info a {
+  color: var(--rc-accent);
+}
+
+/* Images and diagrams */
+.vp-doc img {
+  border-radius: var(--rc-radius-md);
+}
+
+/* Previous / next */
+.VPDocFooter .pager-link {
+  border-radius: var(--rc-radius-md);
+  border-color: var(--rc-border);
+  transition: border-color var(--rc-duration) var(--rc-ease), background-color var(--rc-duration) var(--rc-ease);
+}
+
+.VPDocFooter .pager-link:hover {
+  border-color: var(--rc-accent-border);
+  background-color: var(--rc-surface-raised);
+}
+
+.VPDocFooter .pager-link .title {
+  color: var(--rc-text-1);
+}
+
+/* Footer */
+.VPFooter {
+  border-top: 1px solid var(--rc-divider) !important;
+  background-color: var(--rc-bg-alt) !important;
+}
+
+/* Local search modal */
+.VPLocalSearchBox .shell {
+  border-radius: var(--rc-radius-lg) !important;
+  border: 1px solid var(--rc-border);
+}
+
+.VPLocalSearchBox .result {
+  border-radius: var(--rc-radius-sm) !important;
+}
+
+/* 7. Utilities shared with Markdown pages -------------------------------- */
+
+/* Theme-swapped figures. VitePress toggles dark mode with a class on <html>,
+   so a `prefers-color-scheme` media query inside an image cannot follow the
+   site's theme switch — it tracks the OS instead. Ship both variants and swap
+   them on the same class VitePress uses. */
 html.dark .light-only {
-  display: none;
+  display: none !important;
 }
 
 html:not(.dark) .dark-only {
-  display: none;
+  display: none !important;
 }
 
-figure {
-  margin: 1.5rem 0;
+.vp-doc figure,
+.rc-figure {
+  margin: 28px 0;
 }
 
-figure img {
+.vp-doc figure img,
+.rc-figure img {
   width: 100%;
-  max-width: 880px;
+  max-width: 960px;
   height: auto;
   display: block;
   margin: 0 auto;
+  border-radius: 0;
 }
 
-figcaption {
+.vp-doc figcaption {
   text-align: center;
-  color: var(--vp-c-text-2);
-  font-size: 0.85rem;
-  margin-top: 0.75rem;
+  color: var(--rc-text-3);
+  font-size: 13px;
+  margin-top: 12px;
+}
+
+/* Reduced motion: stop every theme transition and animation. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* The search field draws its own focus state inside its bordered box. */
+.VPLocalSearchBox .search-input:focus-visible {
+  box-shadow: none;
 }

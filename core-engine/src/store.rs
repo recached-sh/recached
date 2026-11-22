@@ -860,6 +860,33 @@ enum CompactSetRepr {
     Table(IndexSet<String>),
 }
 
+/// Which end of a list a push writes to.
+#[derive(Clone, Copy)]
+enum End {
+    Front,
+    Back,
+}
+
+/// A member `SADD` can insert: an owned one moves in — `filter(|m|
+/// set.insert(m.clone()))` allocated and copied every member only to drop the
+/// original — and a borrowed one is copied only when it is new, so the
+/// common re-add of a present member allocates nothing.
+trait SetMember {
+    fn insert_into(self, set: &mut CompactSet) -> bool;
+}
+
+impl SetMember for String {
+    fn insert_into(self, set: &mut CompactSet) -> bool {
+        set.insert(self)
+    }
+}
+
+impl SetMember for &str {
+    fn insert_into(self, set: &mut CompactSet) -> bool {
+        !set.contains(self) && set.insert(self.to_owned())
+    }
+}
+
 impl CompactSet {
     fn new() -> Self {
         Self {
@@ -4747,6 +4774,24 @@ impl KeyValueStore {
                 probe,
             ),
             Command::Append(key, suffix) => self.append(key.as_str(), suffix, probe),
+            // 6O-B: by reference, as the server runs every unlogged write —
+            // these fell to `execute_inner(cmd.clone())`, which copied the
+            // whole command (key, every value, the vector) to move it in.
+            Command::LPush(key, vals) => self.push(
+                key.as_str(),
+                vals.iter().map(Vec::as_slice),
+                End::Front,
+                probe,
+            ),
+            Command::RPush(key, vals) => self.push(
+                key.as_str(),
+                vals.iter().map(Vec::as_slice),
+                End::Back,
+                probe,
+            ),
+            Command::SAdd(key, members) => {
+                self.sadd(key.as_str(), members.iter().map(String::as_str), probe)
+            }
             Command::HIncrBy(key, field, delta) => {
                 hash_incr_int(&self.data, key.as_str(), field.as_str(), *delta, probe)
             }
@@ -4899,6 +4944,9 @@ impl KeyValueStore {
                 None => Value::Error("ERR increment or decrement would overflow".to_string()),
             },
             Command::HSet(key, pairs) => self.hset(key, pairs.into_iter(), probe),
+            Command::LPush(key, vals) => self.push(key, vals.into_iter(), End::Front, probe),
+            Command::RPush(key, vals) => self.push(key, vals.into_iter(), End::Back, probe),
+            Command::SAdd(key, members) => self.sadd(key, members.into_iter(), probe),
             Command::Append(key, suffix) => self.append(key, &suffix, probe),
             Command::HIncrBy(key, field, delta) => {
                 hash_incr_int(&self.data, key, field, delta, probe)
@@ -4960,6 +5008,71 @@ impl KeyValueStore {
             .filter(|&added| added)
             .count();
         Value::Integer(new_count as i64)
+    }
+
+    /// `LPUSH` (`End::Front`) or `RPUSH` (`End::Back`), for owned or
+    /// borrowed values, through the key's one write slot (and so accounted
+    /// by `probe`, see [`probe_eligible`]).
+    fn push<K, V>(
+        &self,
+        key: K,
+        vals: impl Iterator<Item = V>,
+        end: End,
+        probe: Option<&KeyProbe>,
+    ) -> Value
+    where
+        K: AsRef<str> + Into<Key>,
+        V: Into<Blob>,
+    {
+        let now = now_ms();
+        typed_entry!(
+            entry,
+            list,
+            self.data,
+            key,
+            now,
+            EntryValue::List,
+            Box::new(CompactList::new()),
+            probe
+        );
+        for v in vals {
+            match end {
+                End::Front => list.push_front(v.into()),
+                End::Back => list.push_back(v.into()),
+            }
+        }
+        Value::Integer(list.len() as i64)
+    }
+
+    /// `SADD`, for owned or borrowed members, through the key's one write
+    /// slot. The count is of members the command added, so one named twice
+    /// counts once.
+    fn sadd<K, M>(
+        &self,
+        key: K,
+        members: impl Iterator<Item = M>,
+        probe: Option<&KeyProbe>,
+    ) -> Value
+    where
+        K: AsRef<str> + Into<Key>,
+        M: SetMember,
+    {
+        let now = now_ms();
+        typed_entry!(
+            entry,
+            set,
+            self.data,
+            key,
+            now,
+            EntryValue::Set,
+            Box::new(CompactSet::new()),
+            probe
+        );
+        let added = members
+            .map(|m| m.insert_into(set))
+            .filter(|&added| added)
+            .count();
+        Value::Integer(added as i64)
     }
 
     /// `MSET`, for owned or borrowed pairs.
@@ -5702,39 +5815,8 @@ impl KeyValueStore {
             }
 
             // ── List ──────────────────────────────────────────────────────────
-            Command::LPush(key, vals) => {
-                let now = now_ms();
-                typed_entry!(
-                    entry,
-                    list,
-                    self.data,
-                    key,
-                    now,
-                    EntryValue::List,
-                    Box::new(CompactList::new())
-                );
-                for v in vals {
-                    list.push_front(v.into());
-                }
-                Value::Integer(list.len() as i64)
-            }
-
-            Command::RPush(key, vals) => {
-                let now = now_ms();
-                typed_entry!(
-                    entry,
-                    list,
-                    self.data,
-                    key,
-                    now,
-                    EntryValue::List,
-                    Box::new(CompactList::new())
-                );
-                for v in vals {
-                    list.push_back(v.into());
-                }
-                Value::Integer(list.len() as i64)
-            }
+            Command::LPush(key, vals) => self.push(key, vals.into_iter(), End::Front, None),
+            Command::RPush(key, vals) => self.push(key, vals.into_iter(), End::Back, None),
 
             Command::LPushX(key, vals) => {
                 let now = now_ms();
@@ -5968,26 +6050,7 @@ impl KeyValueStore {
             }
 
             // ── Set ───────────────────────────────────────────────────────────
-            Command::SAdd(key, members) => {
-                let now = now_ms();
-                typed_entry!(
-                    entry,
-                    set,
-                    self.data,
-                    key,
-                    now,
-                    EntryValue::Set,
-                    Box::new(CompactSet::new())
-                );
-                // Members are moved in: `filter(|m| set.insert(m.clone()))`
-                // allocated and copied every member only to drop the original.
-                let added = members
-                    .into_iter()
-                    .map(|m| set.insert(m))
-                    .filter(|&added| added)
-                    .count();
-                Value::Integer(added as i64)
-            }
+            Command::SAdd(key, members) => self.sadd(key, members.into_iter(), None),
 
             Command::SMembers(key) => {
                 let now = now_ms();
@@ -6884,6 +6947,9 @@ fn probe_eligible(cmd: &Command) -> bool {
             | Command::HSet(..)
             | Command::Append(..)
             | Command::HIncrBy(..)
+            | Command::LPush(..)
+            | Command::RPush(..)
+            | Command::SAdd(..)
     )
 }
 
