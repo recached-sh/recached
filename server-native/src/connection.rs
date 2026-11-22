@@ -355,6 +355,8 @@ enum Answered {
     Not(Result<core_engine::request::Decoded, core_engine::resp::ParseError>),
 }
 
+/// A TCP connection over any stream (TLS, tests): split with
+/// `tokio::io::split`, whose halves share the stream behind a lock.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_tcp<S>(
     socket: S,
@@ -368,6 +370,65 @@ pub(crate) async fn handle_tcp<S>(
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    let (reader, writer) = tokio::io::split(socket);
+    handle_tcp_halves(
+        reader,
+        writer,
+        store,
+        tx,
+        password,
+        pubsub,
+        watch_registry,
+        state,
+        peer,
+    )
+    .await;
+}
+
+/// A plain TCP connection (6O-C3 prototype): split with
+/// `TcpStream::into_split`, whose owned halves poll the socket directly,
+/// without the lock `tokio::io::split` takes on every read and write poll.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn handle_tcp_stream(
+    socket: TcpStream,
+    store: Arc<KeyValueStore>,
+    tx: SyncTx,
+    password: Arc<Option<String>>,
+    pubsub: SharedPubSub,
+    watch_registry: WatchRegistry,
+    state: Arc<ServerState>,
+    peer: String,
+) {
+    let (reader, writer) = socket.into_split();
+    handle_tcp_halves(
+        reader,
+        writer,
+        store,
+        tx,
+        password,
+        pubsub,
+        watch_registry,
+        state,
+        peer,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_tcp_halves<R, W>(
+    mut reader: R,
+    raw_writer: W,
+    store: Arc<KeyValueStore>,
+    tx: SyncTx,
+    password: Arc<Option<String>>,
+    pubsub: SharedPubSub,
+    watch_registry: WatchRegistry,
+    state: Arc<ServerState>,
+    peer: String,
+) where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
     let conn_id = next_conn_id();
     let mut client_meta = ClientMeta::new(
         conn_id,
@@ -375,7 +436,6 @@ pub(crate) async fn handle_tcp<S>(
         format!("127.0.0.1:{}", server_facts().tcp_port),
     );
     let _guard = ConnectionGuard::new("tcp", client_meta.clone());
-    let (mut reader, raw_writer) = tokio::io::split(socket);
     // Replies leave only once the AOF writes of the commands before them
     // have: see `AofGatedWriter`. Without an AOF it holds nothing back.
     let gated = AofGatedWriter::new(raw_writer, Arc::clone(&state));
