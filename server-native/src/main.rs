@@ -47,6 +47,7 @@ mod persistence;
 mod propagation;
 mod pubsub;
 mod replication;
+mod reply_coalesce;
 mod server_state;
 mod sync_router;
 mod sync_scopes;
@@ -510,6 +511,26 @@ async fn run(
             .into());
         }
     };
+
+    // Cross-connection reply coalescing (6O-B): on unless turned off. It
+    // changes only when replies reach the kernel within one scheduler pass,
+    // never what they say or wait for; see `reply_coalesce`.
+    let reply_coalesce_raw = std::env::var("RECACHED_REPLY_COALESCE").unwrap_or_default();
+    let reply_coalesce_on = match reply_coalesce_raw.to_lowercase().as_str() {
+        "" | "on" | "1" | "true" => true,
+        "off" | "0" | "false" => false,
+        _ => {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("RECACHED_REPLY_COALESCE must be on or off, not '{reply_coalesce_raw}'"),
+            )
+            .into());
+        }
+    };
+    reply_coalesce::set_enabled(reply_coalesce_on);
+    if !reply_coalesce_on {
+        info!("Reply coalescing off (RECACHED_REPLY_COALESCE=off): every flush is immediate");
+    }
 
     // How writes that wait for their own AOF stage append (6N-C Option D):
     // `inline` unless set. Only `inline` and `coalesced` exist; anything else

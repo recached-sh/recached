@@ -6820,6 +6820,7 @@ mod repl_cpu_bench;
 mod repl_sender_batching;
 mod replica_6l;
 mod replication_dedup;
+mod reply_coalesce_6ob;
 mod request_path;
 mod security_v06_regressions;
 mod sync_routing;
