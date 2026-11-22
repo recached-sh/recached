@@ -14,7 +14,7 @@ All notable changes to Recached are documented here.
 - **The sync fan-out fails closed.** A mutation that names no keys reaches a scoped connection only when it is keyspace-wide (`FLUSHDB`); before, any write missing from the key extractor would have been pushed to every tenant. `RLCHECK` was such a write — it is never broadcast, so nothing leaked — and is now listed
 - Five refused `SYNC TOKEN`s close the socket, as five refused passwords do
 - **A push names only keys its receiver may read.** `COPY src dst` and `SINTERSTORE`/`SUNIONSTORE`/`SDIFFSTORE` were pushed to every socket that could read the destination, but the frame names the sources too, so a socket scoped to the destination tenant learned another tenant's key names (and got a frame it could not apply). A multi-key push now reaches a scoped socket only when it may read every key the frame names; live queries and watches on the destination still receive the new value. The `*STORE` case predates 0.6
-- **A WebSocket that has not authenticated is pushed nothing.** With `RECACHED_PASSWORD` set and no sync secret, a socket that never sent `AUTH` was refused every command with `NOAUTH` but still received every mutation push — keys and values. Present before 0.6; pushes now start only once `AUTH` succeeds
+- **A WebSocket that has not authenticated is pushed nothing.** With `RECACHED_PASSWORD` set and no sync secret, a socket that never sent `AUTH` was refused every command with `NOAUTH` but still received every mutation push — keys and values. Already fixed in [0.5.2](#052-2026-11-17--security-fix) ([GHSA-3f7f-vqch-f76m](https://github.com/recached-sh/recached/security/advisories/GHSA-3f7f-vqch-f76m)) and carried into 0.6: pushes start only once `AUTH` succeeds
 - **A push stops at its token's expiry.** Pushes could still be forwarded in the moment between a token's deadline and the connection closing with `4002`
 - **An empty `RECACHED_PASSWORD` or `RECACHED_REPL_PASSWORD` is treated as unset.** It was a password that `AUTH ""` matched, while the multitenant profile and the public-replication-bind check both counted it as configured
 
@@ -123,6 +123,14 @@ Measured with persistence, replication, a memory cap and browser clients switche
 - **Breaking for strict deployments that use pub/sub from browsers:** add `chr=`/`chrw=` grants to tokens before upgrading, or set `RECACHED_SYNC_PUBSUB=open` for the transition
 - A token carrying claims is refused by a 0.5 server (fail-closed); mint the two-segment form until every server is on 0.6
 - Applications should renew tokens before they expire (`syncToken(newToken)`); a socket that outlives its token is now closed
+
+## [0.5.2] (2026-11-17) — security fix
+
+### Security
+- WebSocket: a connection is sent no sync pushes until it has authenticated. With `RECACHED_PASSWORD` set and no `RECACHED_SYNC_SECRET`, an unauthenticated connection was refused every command but was still sent other clients' mutations, including keys and values. Strict sync mode (`RECACHED_SYNC_SECRET` set), servers without a password, and the RESP port were not affected. See [GHSA-3f7f-vqch-f76m](https://github.com/recached-sh/recached/security/advisories/GHSA-3f7f-vqch-f76m)
+
+### Upgrade notes
+- Server-only change. No protocol, storage or client change. The browser, mobile and React/Vue clients need no update
 
 ## [0.5.1] (2026-11-11) — sync stabilization
 
