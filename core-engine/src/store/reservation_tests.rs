@@ -452,6 +452,138 @@ fn reserved_and_gated_stores_end_in_the_same_state() {
     assert_eq!(run(true), run(false));
 }
 
+/// 6O-B: LPUSH, RPUSH and SADD are probe-eligible, so a capped store now
+/// runs them through reservations too. Same differential as above, with the
+/// list and set writes in the mix (and a SET or DEL changing a key's type
+/// under them): identical replies, contents and accounting either way.
+#[test]
+fn reserved_and_gated_stores_end_in_the_same_state_with_lists_and_sets() {
+    let run = |reserved: bool, max_keys: Option<usize>, max_memory: usize| {
+        let store =
+            KeyValueStore::with_config(max_keys, Some(max_memory), EvictionPolicy::NoEviction);
+        store.set_reserved_writes(reserved);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(11);
+        let mut replies = Vec::new();
+        for _ in 0..5_000 {
+            let key = format!("c{}", rng.random_range(0..160));
+            let cmd = match rng.random_range(0..6) {
+                0 => Command::LPush(key, vec!["v".repeat(rng.random_range(0..120)).into_bytes()]),
+                1 => Command::RPush(
+                    key,
+                    (0..rng.random_range(1..4))
+                        .map(|_| "w".repeat(rng.random_range(0..40)).into_bytes())
+                        .collect(),
+                ),
+                2 => Command::SAdd(
+                    key,
+                    (0..rng.random_range(1..4))
+                        .map(|_| format!("m{}", rng.random_range(0..30)))
+                        .collect(),
+                ),
+                3 => set(&key, "string"),
+                4 => Command::LPop(key, None),
+                _ => Command::Del(vec![key]),
+            };
+            replies.push(store.execute(cmd));
+        }
+        let mut snap: Vec<(String, Value)> = store
+            .data
+            .iter()
+            .map(|e| e.key().to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|k| {
+                let v = store.get_current(&k);
+                (k, v)
+            })
+            .collect();
+        snap.sort_by(|a, b| a.0.cmp(&b.0));
+        (
+            replies,
+            snap,
+            store.approximate_memory_bytes(),
+            store.key_count(),
+        )
+    };
+    // One run where the key cap binds, one where memory does: each
+    // refusal is part of what the two paths must agree on.
+    for (max_keys, max_memory, refusal) in [
+        (Some(120), 40 * 1024, "ERR max keys"),
+        (None, 8 * 1024, "OOM"),
+    ] {
+        let (reserved, gated) = (
+            run(true, max_keys, max_memory),
+            run(false, max_keys, max_memory),
+        );
+        assert!(
+            reserved
+                .0
+                .iter()
+                .any(|r| matches!(r, Value::Error(e) if e.starts_with(refusal))),
+            "the workload reaches the cap refused with {refusal}"
+        );
+        assert_eq!(reserved, gated, "{refusal}");
+    }
+}
+
+/// 6O-B: each of the three writes takes the reservation fast path on its
+/// own when it fits (and a WRONGTYPE one releases its reservation).
+#[test]
+fn lpush_rpush_and_sadd_each_take_the_reserved_path() {
+    let store = reserved_store(Some(100), Some(1 << 20), EvictionPolicy::NoEviction);
+    for (cmd, want) in [
+        (
+            Command::LPush("l".into(), vec![b"a".to_vec()]),
+            Value::Integer(1),
+        ),
+        (
+            Command::RPush("l".into(), vec![b"b".to_vec()]),
+            Value::Integer(2),
+        ),
+        (
+            Command::SAdd("s".into(), vec!["m".into()]),
+            Value::Integer(1),
+        ),
+        (
+            Command::SAdd("l".into(), vec!["m".into()]),
+            Value::Error(WRONGTYPE.to_string()),
+        ),
+    ] {
+        RESERVED_OUTCOMES.with(|o| o.set((0, 0)));
+        let what = format!("{cmd:?}");
+        assert_eq!(store.execute(cmd), want, "{what}");
+        assert_eq!(
+            RESERVED_OUTCOMES.with(|o| o.get()),
+            (1, 0),
+            "{what}: one reserved write, no fallback"
+        );
+        assert_settled(&store, &what);
+    }
+}
+
+/// 6O-B: eight threads pushing and adding into a capped store stay under
+/// its caps, with both the fast path and the fallback exercised.
+#[test]
+fn eight_threads_pushing_and_adding_stay_under_the_caps() {
+    let store = reserved_store(Some(400), Some(96 * 1024), EvictionPolicy::NoEviction);
+    let ((hits, fallbacks), samples) = race(&store, move |t, store| {
+        for i in 0..400 {
+            let key = format!("t{t}:{}", i % 60);
+            match i % 3 {
+                0 => store.execute(Command::RPush(key, vec![vec![b'x'; 48]])),
+                1 => store.execute(Command::LPush(key, vec![vec![b'y'; 32]])),
+                _ => store.execute(Command::SAdd(key, vec![format!("member:{i}")])),
+            };
+        }
+    });
+    assert!(
+        hits > 0 && fallbacks > 0,
+        "both paths ran: {hits} fast, {fallbacks} fell back"
+    );
+    assert!(samples > 0);
+    assert_settled(&store, "list and set race");
+}
+
 /// Gated vs reserved capped writes, in process (6L-B). Run with
 /// `cargo test --release -p core-engine --lib bench_reserved_writes -- --ignored --nocapture`.
 ///
