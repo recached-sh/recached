@@ -9,6 +9,8 @@ Verdict and scorecard: [V0.6O-C-RELEASE-GATE.md](V0.6O-C-RELEASE-GATE.md).
 - The P=16 tail regressions and the one-client CPU overhead are fixed.
 - The pre-existing WATCH overflow High is fixed in #157.
 
+Merged into `dev`: #157, #158, #159. Open: #160 (C3), #163 (follow-ups), #162 (the MSET design).
+
 | Report | Content |
 |---|---|
 | [V0.6O-C-BASELINE.md](V0.6O-C-BASELINE.md) | Starting point, binaries, host, kit |
