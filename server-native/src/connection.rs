@@ -380,6 +380,9 @@ pub(crate) async fn handle_tcp<S>(
     // have: see `AofGatedWriter`. Without an AOF it holds nothing back.
     let gated = AofGatedWriter::new(raw_writer, Arc::clone(&state));
     let deferral = gated.deferral();
+    // The same queue, kept to tell whether a flush has AOF batches to wait
+    // for: the gate then does the cross-connection yield itself.
+    let aof_pending = Arc::clone(&deferral);
     let mut writer = tokio::io::BufWriter::with_capacity(32 * 1024, gated);
     let mut buf = Vec::<u8>::new();
     let mut read_pos: usize = 0;
@@ -419,9 +422,19 @@ pub(crate) async fn handle_tcp<S>(
         Arc::new(AtomicBool::new(false)),
     );
 
+    // Nothing can arrive on `overflow_rx` until this connection hands one of
+    // its senders to a registry: `ps_tx` on SUBSCRIBE or PSUBSCRIBE,
+    // `watch_subscriber` on WATCH. Until then the arm cannot fire, and
+    // polling it on every pass of the loop cost ~440 user cycles per command
+    // (6O-B profile), so it is left out of the `select!` until the first of
+    // those, and kept from then on — the same behaviour as before for any
+    // connection that ever subscribed or watched.
+    let mut overflow_armed = false;
+
     with_deferred_aof(deferral, async {
     'outer: loop {
         let is_subscribed = !subscribed_channels.is_empty() || !subscribed_patterns.is_empty();
+        overflow_armed |= is_subscribed || !watched_keys.is_empty();
         // Republish only when the counts moved: CLIENT LIST has to see live
         // subscription state, but taking the registry's write lock once per
         // command would put it on the hot path.
@@ -454,6 +467,7 @@ pub(crate) async fn handle_tcp<S>(
                         if buf.len() - read_pos < need {
                             continue 'outer;
                         }
+                        reply_coalesce::note_batch();
                         'parse: loop {
                             // An empty line between commands is nothing, as
                             // in Redis's inline protocol — and `redis-cli
@@ -1046,6 +1060,13 @@ pub(crate) async fn handle_tcp<S>(
                                 }
                             }
                         }
+                        // Let the other connections ready on this worker run
+                        // first, so the replies of the pass leave together
+                        // (see `reply_coalesce`). A flush with AOF batches to
+                        // wait for is yielded by the gate instead, once.
+                        if !writer.buffer().is_empty() && aof_pending.is_empty() {
+                            reply_coalesce::before_flush().await;
+                        }
                         // Flush all responses for this read batch in one syscall.
                         if writer.flush().await.is_err() {
                             break 'outer;
@@ -1089,7 +1110,7 @@ pub(crate) async fn handle_tcp<S>(
                 }
             }
 
-            overflow = overflow_rx.recv() => {
+            overflow = overflow_rx.recv(), if overflow_armed => {
                 if overflow.is_some() {
                     warn!("TCP conn {} notification queue overflowed; disconnecting", conn_id);
                 }

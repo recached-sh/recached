@@ -1281,6 +1281,17 @@ pub(crate) async fn with_deferred_aof<F: std::future::Future>(
 #[derive(Default)]
 pub(crate) struct DeferredAof {
     tickets: std::sync::Mutex<VecDeque<(Arc<AofShared>, Arc<AofDone>)>>,
+    /// `tickets.len()`, stored under the lock after every change, so an empty
+    /// queue — every flush without an AOF, and every read-only batch — is
+    /// seen without taking the lock. The gate checked it on each
+    /// `poll_write` and `poll_flush`: two lock round trips per command on a
+    /// server with no AOF at all (~150 user cycles, 6O-B profile).
+    ///
+    /// Every push and pop runs on the connection's own task (the task-local
+    /// `AOF_DEFERRED` and the gate both belong to it), so this never races a
+    /// push in practice; if it ever did, reading 0 is the same as popping
+    /// just before that push, which the lock allowed too.
+    queued: std::sync::atomic::AtomicUsize,
 }
 
 impl DeferredAof {
@@ -1297,13 +1308,27 @@ impl DeferredAof {
             return;
         }
         tickets.push_back((Arc::clone(shared), done));
+        self.queued
+            .store(tickets.len(), std::sync::atomic::Ordering::Release);
     }
 
     fn pop(&self) -> Option<(Arc<AofShared>, Arc<AofDone>)> {
-        self.tickets
+        if self.is_empty() {
+            return None;
+        }
+        let mut tickets = self
+            .tickets
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .pop_front()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let ticket = tickets.pop_front();
+        self.queued
+            .store(tickets.len(), std::sync::atomic::Ordering::Release);
+        ticket
+    }
+
+    /// Whether no batch is queued for the connection to wait for.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.queued.load(std::sync::atomic::Ordering::Acquire) == 0
     }
 }
 
