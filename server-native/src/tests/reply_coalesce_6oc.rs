@@ -631,3 +631,37 @@ fn a_client_gone_during_the_pending_flush_is_cleaned_up() {
         reply_coalesce::reset();
     });
 }
+
+/// A gain alone starts the escalation over (mutation testing found the
+/// doubling test's gain also set `company`, which resets it too): here the
+/// gaining batch comes from the connection that ran the last batch, so only
+/// the gain can reset the period.
+#[test]
+fn a_gain_without_company_still_starts_the_escalation_over() {
+    let _g = switch_lock();
+    reply_coalesce::reset();
+    let back_off = || {
+        for _ in 0..reply_coalesce::MISSES {
+            let probe = reply_coalesce::begin().expect("probing");
+            assert!(!reply_coalesce::end(probe));
+        }
+        let (skip, _) = reply_coalesce::state();
+        for _ in 0..skip {
+            assert!(reply_coalesce::begin().is_none());
+        }
+        skip
+    };
+    // Connection 7 ran a batch, and the back-off that follows consumes the
+    // company that set (it starts at 32).
+    reply_coalesce::note_batch(7);
+    assert_eq!(back_off(), 32);
+    // Lone from now on: it escalates.
+    assert_eq!(back_off(), 64);
+    assert_eq!(back_off(), 128);
+    // A gain from connection 7 again: no new company, only the gain.
+    let probe = reply_coalesce::begin().unwrap();
+    reply_coalesce::note_batch(7);
+    assert!(reply_coalesce::end(probe));
+    assert_eq!(back_off(), reply_coalesce::BACKOFF, "the gain started over");
+    reply_coalesce::reset();
+}
