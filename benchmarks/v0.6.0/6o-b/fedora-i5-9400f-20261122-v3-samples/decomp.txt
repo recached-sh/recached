@@ -1,0 +1,5 @@
+cell                            n      rps     wall     task       si     idle     vcsw      cyc      ins      p99
+prof/rc-noaof-set-c50-P1        1   166667    6.028    4.039    1.870    0.270    0.115     5735     5816    0.431
+prof/rc-noaof-lpush-c50-P1      1   166611    6.029    3.920    1.860    0.350    0.123     5202     6512    0.423
+prof/rc-noaof-sadd-c50-P1       1   159923    6.281    4.153    1.850    0.380    0.118     6333     6790    0.431
+prof/rc-noaof-mset-c50-P1       1    92980   10.782    8.631    1.950    0.310    0.168    22968    31056    0.743

@@ -1,0 +1,1 @@
+user_s=1.009 sys_s=5.123 nvcsw=54857 nivcsw=3 maxrss_kb=12596

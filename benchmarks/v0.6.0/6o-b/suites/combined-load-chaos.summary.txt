@@ -1,0 +1,12 @@
+     Running unittests src/main.rs (target/debug/deps/recached_server-18936a47382cbc5b)
+test result: ok. 611 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 47.97s
+     Running tests/aof_v06.rs (target/debug/deps/aof_v06-425f911d6b1d8a30)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+     Running tests/dedup_bench.rs (target/debug/deps/dedup_bench-0cef6b32958a143c)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+     Running tests/redis_diff.rs (target/debug/deps/redis_diff-913119278e782e3e)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+     Running tests/restart.rs (target/debug/deps/restart-60438d970b23aa15)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running tests/sync_bench.rs (target/debug/deps/sync_bench-72433bcc01c35311)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
