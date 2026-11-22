@@ -132,10 +132,11 @@ async fn an_overflow_from_another_writer_before_exec_never_commits() {
     }
 }
 
-/// WATCH and UNWATCH within one batch with the overflow between them, then
-/// a transaction: the connection is condemned by the overflow, so it is
-/// disconnected and its transaction does not run, as before when the
-/// overflow arm won.
+/// Policy, not WATCH safety: WATCH and UNWATCH within one batch with the
+/// overflow between them, then a transaction. Nothing is watched at EXEC, so
+/// Redis would run it; here the overflow condemns the connection, which is
+/// disconnected and its transaction not run — the outcome whenever the
+/// overflow arm wins `select!`, now the only one.
 #[tokio::test]
 async fn watch_unwatch_in_one_batch_then_exec_is_disconnected_without_committing() {
     let server = spawn_server().await;
@@ -255,7 +256,7 @@ async fn concurrent_check_and_set_with_overflowing_values_loses_no_update() {
                 if c.stream.write_all(&req).await.is_err() {
                     continue;
                 }
-                let (replies, _) = replies_until_close_or(&mut c, 3, 2).await;
+                let (replies, _) = replies_until_close_or(&mut c, 20, 2).await;
                 let current = match replies.as_slice() {
                     [Value::SimpleString(ok), Value::BulkString(Some(v))] if ok == "OK" => {
                         v.clone()
@@ -274,7 +275,7 @@ async fn concurrent_check_and_set_with_overflowing_values_loses_no_update() {
                 if c.stream.write_all(&req).await.is_err() {
                     continue;
                 }
-                let (replies, _) = replies_until_close_or(&mut c, 3, 3).await;
+                let (replies, _) = replies_until_close_or(&mut c, 20, 3).await;
                 if replies.iter().any(is_committed_exec) {
                     committed += 1;
                 }
@@ -297,7 +298,60 @@ async fn concurrent_check_and_set_with_overflowing_values_loses_no_update() {
         .unwrap()
         .parse()
         .unwrap();
+    assert!(
+        committed > 0,
+        "some transactions committed: the test is not vacuous"
+    );
     assert_eq!(n, committed, "every committed increment, and only those");
+}
+
+/// The claim the fix rests on, deterministically: a write to a watched key
+/// that is in flight while EXEC waits for its guards notifies (and
+/// overflows) before EXEC can check. The test holds the key's ordering
+/// guard, so the watcher's EXEC blocks on it inside the connection's task,
+/// where the overflow arm cannot run; under that hold the test runs an
+/// overflowing write as the ordered path would, then releases. Before the
+/// fix EXEC then committed every time.
+#[tokio::test]
+async fn an_overflowing_write_in_flight_while_exec_waits_never_commits() {
+    let server = spawn_server().await;
+    let registry = server
+        .watch_registry
+        .clone()
+        .expect("the TCP test server's registry");
+    let mut c = RespClient::connect(server.tcp_addr).await;
+    assert_eq!(
+        c.cmd(&["WATCH", "k"]).await,
+        Value::SimpleString("OK".into())
+    );
+    assert_eq!(c.cmd(&["MULTI"]).await, Value::SimpleString("OK".into()));
+    assert_eq!(
+        c.cmd(&["SET", "marker", "1"]).await,
+        Value::SimpleString("QUEUED".into())
+    );
+    let guards = server
+        .state
+        .replicas
+        .lock_commands_and_keys(&[], ["k"])
+        .await;
+    c.stream.write_all(&frame(&["EXEC"])).await.unwrap();
+    // EXEC is now waiting for the guard, inside the connection's task.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let big = "x".repeat(BIG);
+    let reply = execute_locked_write(
+        &Command::Set("k".into(), big.into_bytes(), Default::default()),
+        &server.router,
+        0,
+        &server.state,
+        &registry,
+        &server.store,
+    )
+    .await;
+    assert_eq!(reply, Value::SimpleString("OK".into()));
+    drop(guards);
+    let (replies, closed) = replies_until_close(&mut c, 10).await;
+    assert_not_committed(&replies, &server.store, "marker", "in flight");
+    assert!(closed, "disconnected");
 }
 
 /// Like [`replies_until_close`], but also stops once `want` replies arrived.
@@ -514,5 +568,43 @@ async fn ws_pipelined_messages_after_an_overflow_never_commit() {
     assert_eq!(
         committed, 0,
         "rounds whose EXEC committed after the overflow"
+    );
+}
+
+/// Commands that ran earlier in the batch of a condemned EXEC still get their
+/// replies (review): `SET a`, `WATCH`, the overflowing `APPEND`, `MULTI` and
+/// the queued `SET` are answered in order, and EXEC is not.
+#[tokio::test]
+async fn the_replies_before_a_condemned_exec_in_its_batch_still_arrive() {
+    let server = spawn_server().await;
+    let mut setup = RespClient::connect(server.tcp_addr).await;
+    store_big(&mut setup, "k").await;
+    let mut c = RespClient::connect(server.tcp_addr).await;
+    let req = frames(&[
+        &["SET", "a", "1"],
+        &["WATCH", "k"],
+        &["APPEND", "k", "x"],
+        &["MULTI"],
+        &["SET", "marker", "1"],
+        &["EXEC"],
+    ]);
+    c.stream.write_all(&req).await.unwrap();
+    let (replies, closed) = replies_until_close(&mut c, 10).await;
+    assert_not_committed(&replies, &server.store, "marker", "earlier replies");
+    assert!(closed);
+    assert_eq!(
+        replies,
+        vec![
+            Value::SimpleString("OK".into()),
+            Value::SimpleString("OK".into()),
+            Value::Integer((BIG + 1) as i64),
+            Value::SimpleString("OK".into()),
+            Value::SimpleString("QUEUED".into()),
+        ],
+        "every reply but EXEC's"
+    );
+    assert_eq!(
+        server.store.get_current("a"),
+        Value::BulkString(Some(b"1".to_vec()))
     );
 }

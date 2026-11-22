@@ -720,6 +720,12 @@ pub(crate) async fn handle_tcp<S>(
                                                     // has finished notifying (and overflowing) already.
                                                     if overflow_rx.try_recv().is_ok() {
                                                         warn!("TCP conn {} notification queue overflowed before EXEC; disconnecting", conn_id);
+                                                        // The replies of the batch's earlier
+                                                        // commands, which did run, still leave;
+                                                        // EXEC's never does. The guards go first:
+                                                        // EXEC ran nothing under them.
+                                                        drop(_write_guards);
+                                                        let _ = writer.flush().await;
                                                         break 'outer;
                                                     }
                                                     while watch_rx.try_recv().is_ok() {
