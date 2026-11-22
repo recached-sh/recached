@@ -6819,6 +6819,7 @@ mod dedup_ack_order;
 mod frame_encoding_6oa;
 mod integration_6nc;
 mod live_query_6k;
+mod mset_atomicity;
 mod multitenant;
 mod qsub_aof_cut;
 mod repl_6l_cpu;

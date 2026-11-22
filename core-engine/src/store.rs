@@ -2680,8 +2680,9 @@ pub struct KeyValueStore {
     /// Set while this store follows a primary (see [`Self::set_follower`]):
     /// caps are accounted but not enforced, and nothing is evicted locally.
     follower: Arc<AtomicBool>,
-    /// Per-key write ordering, striped by key hash. See [`Self::order_keys`].
-    write_order: Arc<[std::sync::Mutex<()>]>,
+    /// Per-key write ordering, striped by key hash. See [`Self::order_keys`]
+    /// and, for what readers learn from it, [`Stripe`].
+    write_order: Arc<[Stripe]>,
 }
 
 /// Stripes in [`KeyValueStore::write_order`]. Unrelated keys share a stripe
@@ -2733,15 +2734,101 @@ fn lock_stripe(stripe: &std::sync::Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Write-order stripes held by one write; released on drop.
-enum WriteOrder<'a> {
-    One(#[allow(dead_code)] std::sync::MutexGuard<'a, ()>),
-    Many(#[allow(dead_code)] SmallVec<[std::sync::MutexGuard<'a, ()>; 4]>),
+/// One write-order stripe: the lock keyed writers take, and a sequence word
+/// that tells readers whether a write holding it is in progress (6O-D).
+///
+/// The lock alone ordered writers against writers. Readers took nothing, so a
+/// multi-key write — MSET, DEL k1 k2, RENAME — was visible key by key: a
+/// reader could see one key new and another old, a state that never existed
+/// (`V0.6O-D-ATOMICITY-ROOT-CAUSE.md`). The word lets readers avoid that
+/// without writing to anything a writer uses:
+///
+/// - `seq` is changed only by the stripe's holder, so plain loads and stores
+///   suffice (no read-modify-write on the hot path). A holder sets
+///   [`SEQ_ACTIVE`] — and, for a write naming several keys, [`SEQ_MULTI`] —
+///   before its first mutation, and on release clears both and advances the
+///   version ([`SEQ_STEP`]). So the word only ever grows, and a reader that
+///   loads it before and after a read, with no flag set and no change between,
+///   knows no writer held the stripe in between.
+/// - A **single-key read** is atomic for its own key already (one shard
+///   guard). What it must not do is see a key a multi-key write has not yet
+///   reached after another reader saw one it has. So it waits — by taking the
+///   lock, which the writer holds to its end — only while [`SEQ_MULTI`] is set
+///   ([`KeyValueStore::read_one`]).
+/// - A **multi-key read** validates the words of its keys around the read
+///   and retries, falling back to taking the locks after
+///   [`OPTIMISTIC_READS`] attempts ([`KeyValueStore::read_many`]).
+///
+/// Memory ordering: a writer's flag store precedes its mutations, which it
+/// publishes by releasing a shard guard; a reader that sees a mutation took
+/// that guard after, so its later loads of `seq` see the flag or a later value.
+/// The version is published with `Release` after the last mutation and loaded
+/// with `Acquire`. Correctness does not rest on `seq` alone: every mutation and
+/// read stays under its shard guard, as before.
+struct Stripe {
+    lock: std::sync::Mutex<()>,
+    seq: AtomicU64,
 }
 
-fn write_order_stripes() -> Arc<[std::sync::Mutex<()>]> {
+/// [`Stripe::seq`]: a write holding the stripe is in progress.
+const SEQ_ACTIVE: u64 = 1;
+/// [`Stripe::seq`]: that write names more than one key.
+const SEQ_MULTI: u64 = 2;
+/// [`Stripe::seq`]: one write's advance of the version, above the flags.
+const SEQ_STEP: u64 = 4;
+
+/// Validated attempts a multi-key read makes before it takes its keys' locks.
+/// A write holds a stripe for a few hundred nanoseconds, so a retry nearly
+/// always succeeds; the bound keeps a reader from starving behind a stream
+/// of writes to its keys.
+const OPTIMISTIC_READS: u32 = 4;
+
+/// A write-order stripe held by a write, marked in progress until dropped.
+struct StripeHold<'a> {
+    stripe: &'a Stripe,
+    _guard: std::sync::MutexGuard<'a, ()>,
+}
+
+impl<'a> StripeHold<'a> {
+    /// Take `stripe` and mark a write in progress (`flags`: [`SEQ_ACTIVE`],
+    /// with [`SEQ_MULTI`] for a multi-key write) before the caller mutates
+    /// anything under it.
+    fn take(stripe: &'a Stripe, flags: u64) -> Self {
+        let guard = lock_stripe(&stripe.lock);
+        // Only the holder writes `seq`: load and store, no read-modify-write.
+        let seq = stripe.seq.load(Ordering::Relaxed);
+        stripe.seq.store(seq | flags, Ordering::Relaxed);
+        StripeHold {
+            stripe,
+            _guard: guard,
+        }
+    }
+}
+
+impl Drop for StripeHold<'_> {
+    /// Clear the flags and advance the version, then (the field drops after
+    /// this) release the lock — on every exit path, an unwinding panic
+    /// included.
+    fn drop(&mut self) {
+        let seq = self.stripe.seq.load(Ordering::Relaxed);
+        self.stripe
+            .seq
+            .store((seq | (SEQ_STEP - 1)) + 1, Ordering::Release);
+    }
+}
+
+/// Write-order stripes held by one write; released on drop.
+enum WriteOrder<'a> {
+    One(#[allow(dead_code)] StripeHold<'a>),
+    Many(#[allow(dead_code)] SmallVec<[StripeHold<'a>; 4]>),
+}
+
+fn write_order_stripes() -> Arc<[Stripe]> {
     (0..WRITE_ORDER_STRIPES)
-        .map(|_| std::sync::Mutex::new(()))
+        .map(|_| Stripe {
+            lock: std::sync::Mutex::new(()),
+            seq: AtomicU64::new(0),
+        })
         .collect()
 }
 
@@ -3003,12 +3090,22 @@ impl KeyValueStore {
     ///
     /// Stripes are taken in ascending order, and always after the capacity
     /// gate, so two multi-key writers cannot deadlock.
+    ///
+    /// Each stripe is marked in progress while held, and multi-key for a
+    /// write naming several keys (`keys` holds distinct keys), so readers do
+    /// not see the write part-done ([`Stripe`]). Every stripe is marked as it
+    /// is taken, so all are marked before the caller's first mutation.
     fn order_keys<K: AsRef<str>>(&self, keys: &[K]) -> WriteOrder<'_> {
-        let lock = |stripe: usize| lock_stripe(&self.write_order[stripe]);
         // Nearly every write names one key: skip the sort and the guard list.
         if let [key] = keys {
-            return WriteOrder::One(lock(write_order_stripe(key.as_ref())));
+            return WriteOrder::One(StripeHold::take(
+                &self.write_order[write_order_stripe(key.as_ref())],
+                SEQ_ACTIVE,
+            ));
         }
+        // Two keys on one stripe still need the multi-key mark.
+        let lock =
+            |stripe: usize| StripeHold::take(&self.write_order[stripe], SEQ_ACTIVE | SEQ_MULTI);
         let mut stripes: SmallVec<[usize; 4]> = keys
             .iter()
             .map(|key| write_order_stripe(key.as_ref()))
@@ -3020,11 +3117,17 @@ impl KeyValueStore {
 
     /// Hold every write-order stripe: for whole-keyspace rewrites (`FLUSHDB`,
     /// restore) whose metadata rebuild must not interleave with keyed writes.
+    ///
+    /// Not marked in progress ([`Stripe`]): readers keep running during a
+    /// whole-keyspace rewrite, as before 6O-D, instead of every reader on
+    /// every worker blocking for a restore's whole length. So a reader can
+    /// still see a `FLUSHDB` or restore part-done (recorded as a follow-up).
     fn order_all(&self) -> Vec<std::sync::MutexGuard<'_, ()>> {
         self.write_order
             .iter()
             .map(|stripe| {
                 stripe
+                    .lock
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
             })
@@ -4065,7 +4168,7 @@ impl KeyValueStore {
             )),
         };
         match scope {
-            None => (self.execute_inner(cmd), Vec::new()),
+            None => (self.execute_read(cmd), Vec::new()),
             Some(scope) => self.run_write(scope, cmd, |store, cmd, probe| {
                 store.execute_inner_probed(cmd, probe)
             }),
@@ -4086,7 +4189,7 @@ impl KeyValueStore {
     /// except who owns the arguments.
     pub fn execute_reporting_ref(&self, cmd: &Command) -> (Value, Vec<String>) {
         let scope = match mutation_scope(cmd) {
-            MutationScope::ReadOnly => return (self.execute_inner(cmd.clone()), Vec::new()),
+            MutationScope::ReadOnly => return (self.execute_read_ref(cmd), Vec::new()),
             MutationScope::All => WriteScope::All,
             MutationScope::Keys(keys) => WriteScope::Keys(keys),
         };
@@ -4132,7 +4235,7 @@ impl KeyValueStore {
             return None;
         }
         let scope = match mutation_scope(cmd) {
-            MutationScope::ReadOnly => return Some((self.execute_inner(cmd.clone()), Vec::new())),
+            MutationScope::ReadOnly => return Some((self.execute_read_ref(cmd), Vec::new())),
             // Whole-keyspace writes rebuild metadata and may evict anywhere.
             MutationScope::All => return None,
             MutationScope::Keys(keys) => WriteScope::Keys(keys),
@@ -4804,12 +4907,179 @@ impl KeyValueStore {
         })
     }
 
+    /// Run `f`, a read of one key on write-order stripe `stripe`, never while
+    /// a multi-key write holding that stripe is part-done (6O-D, [`Stripe`]).
+    ///
+    /// A single key's read is atomic by itself (one shard guard). What it
+    /// must not do is see a key an MSET has not reached yet after some read —
+    /// this one's predecessor on the connection, or anyone's — saw a key the
+    /// MSET has written. While [`SEQ_MULTI`] is set the read waits for the
+    /// write by taking the stripe's lock, which the writer holds to its end.
+    /// Otherwise it runs as before: one load, no write to shared state.
+    ///
+    /// A multi-key write that begins after the load is fine: whatever this
+    /// read sees of it, the write had marked every stripe before that, so any
+    /// later read of another of its keys waits for it.
+    fn read_one_at<R>(&self, stripe: usize, f: impl FnOnce() -> R) -> R {
+        let held = &self.write_order[stripe];
+        if held.seq.load(Ordering::Acquire) & SEQ_MULTI == 0 {
+            return f();
+        }
+        #[cfg(any(test, feature = "test-hooks"))]
+        write_pause::reader_blocked([stripe]);
+        let _held = lock_stripe(&held.lock);
+        f()
+    }
+
+    /// [`read_one_at`](Self::read_one_at) for `key`'s stripe.
+    fn read_one<R>(&self, key: &str, f: impl FnOnce() -> R) -> R {
+        self.read_one_at(write_order_stripe(key), f)
+    }
+
+    /// Run `f`, a read of every key in `keys`, so that it observes them all
+    /// at one instant: no write to any of them in progress or completed
+    /// between the read's first and last key (6O-D, [`Stripe`]).
+    ///
+    /// Optimistic first: load the sequence words of the keys' stripes; if
+    /// none is marked in progress, run `f`, then load them again. The words
+    /// only grow, so equal sums mean every word is unchanged — no writer held
+    /// any of those stripes in between, so nothing `f` read changed while it
+    /// read. Otherwise `f` runs again (it may run more than once: it must only
+    /// read, and start its output over). After [`OPTIMISTIC_READS`] attempts
+    /// the read takes the stripes' locks in ascending order, as writers do,
+    /// and runs once with no writer able to start.
+    ///
+    /// Duplicate keys are fine (a word counted twice still only grows). One
+    /// key is a [`read_one`](Self::read_one): there is nothing to be
+    /// consistent with.
+    fn read_many<K: AsRef<str>, R>(&self, keys: &[K], mut f: impl FnMut() -> R) -> R {
+        match keys {
+            [] => return f(),
+            [key] => return self.read_one(key.as_ref(), f),
+            _ => {}
+        }
+        let seq = |key: &K| {
+            self.write_order[write_order_stripe(key.as_ref())]
+                .seq
+                .load(Ordering::Acquire)
+        };
+        for _ in 0..OPTIMISTIC_READS {
+            let mut before = 0u64;
+            let mut busy = false;
+            for key in keys {
+                let word = seq(key);
+                busy |= word & SEQ_ACTIVE != 0;
+                before = before.wrapping_add(word);
+            }
+            if !busy {
+                #[cfg(any(test, feature = "test-hooks"))]
+                write_pause::reader_loaded();
+                let out = f();
+                let after = keys
+                    .iter()
+                    .fold(0u64, |sum, key| sum.wrapping_add(seq(key)));
+                if after == before {
+                    return out;
+                }
+            }
+            std::hint::spin_loop();
+        }
+        let mut stripes: SmallVec<[usize; 8]> = keys
+            .iter()
+            .map(|key| write_order_stripe(key.as_ref()))
+            .collect();
+        stripes.sort_unstable();
+        stripes.dedup();
+        #[cfg(any(test, feature = "test-hooks"))]
+        {
+            write_pause::LOCKED_READS.fetch_add(1, Ordering::Relaxed);
+            write_pause::reader_blocked(stripes.iter().copied());
+        }
+        let _held: SmallVec<[std::sync::MutexGuard<'_, ()>; 8]> = stripes
+            .iter()
+            .map(|&stripe| lock_stripe(&self.write_order[stripe].lock))
+            .collect();
+        f()
+    }
+
+    /// A read-only command, run under the read-side protocol for the keys it
+    /// names ([`read_scope`]). Owned: a one-key read moves its command in.
+    fn execute_read(&self, cmd: Command) -> Value {
+        match read_scope(&cmd) {
+            ReadScope::One(key) => {
+                let stripe = write_order_stripe(key);
+                self.read_one_at(stripe, || self.execute_inner(cmd))
+            }
+            ReadScope::Many(keys) => self.read_many(keys, || self.execute_multi_read(&cmd)),
+            ReadScope::Unkeyed => self.execute_inner(cmd),
+        }
+    }
+
+    /// [`execute_read`](Self::execute_read) for a borrowed command.
+    fn execute_read_ref(&self, cmd: &Command) -> Value {
+        match read_scope(cmd) {
+            ReadScope::One(key) => self.read_one(key, || self.execute_inner(cmd.clone())),
+            ReadScope::Many(keys) => self.read_many(keys, || self.execute_multi_read(cmd)),
+            ReadScope::Unkeyed => self.execute_inner(cmd.clone()),
+        }
+    }
+
+    /// The multi-key reads, by reference: [`read_many`](Self::read_many) may
+    /// run one more than once.
+    fn execute_multi_read(&self, cmd: &Command) -> Value {
+        match cmd {
+            Command::Dedup(_, _, inner) => self.execute_multi_read(inner),
+            Command::MGet(keys) => self.mget(keys),
+            Command::Exists(keys) => self.exists(keys),
+            Command::SInter(keys) => set_op_reply(set_inter(&self.data, keys, now_ms())),
+            Command::SUnion(keys) => set_op_reply(set_union(&self.data, keys, now_ms())),
+            Command::SDiff(keys) => set_op_reply(set_diff(&self.data, keys, now_ms())),
+            other => self.execute_inner(other.clone()),
+        }
+    }
+
+    /// `MGET`: every key at one `now` (see [`read_str`](Self::read_str)).
+    fn mget(&self, keys: &[String]) -> Value {
+        let now = now_ms();
+        Value::Array(Some(
+            keys.iter()
+                .map(|k| {
+                    // MGET answers nil for a key of another type.
+                    self.read_str(k, now, |read| {
+                        Value::BulkString(read.ok().flatten().map(<[u8]>::to_vec))
+                    })
+                })
+                .collect(),
+        ))
+    }
+
+    /// `EXISTS`: live keys among `keys`, duplicates counted each time.
+    fn exists(&self, keys: &[String]) -> Value {
+        let now = now_ms();
+        let count = keys
+            .iter()
+            .filter(|k| {
+                self.data
+                    .get(k.as_str())
+                    .is_some_and(|e| !e.is_expired(now))
+            })
+            .count();
+        Value::Integer(count as i64)
+    }
+
     /// `GET`'s read of one key, handed to `f` while the entry is held (a
     /// shard read guard: `f` must not block). `Ok(None)` for a missing or
-    /// expired key. The one definition of what `GET` and `MGET` see, whether
-    /// the caller copies the value into a `Value` or straight into a reply.
-    fn read_str<R>(&self, key: &str, f: impl FnOnce(Result<Option<&[u8]>, WrongType>) -> R) -> R {
-        let now = now_ms();
+    /// expired key at `now`. The one definition of what `GET` and `MGET` see,
+    /// whether the caller copies the value into a `Value` or straight into a
+    /// reply. An MGET passes one `now` for all its keys, as Redis evaluates
+    /// expiry against one time per command: keys sharing a deadline are all
+    /// live or all expired in one answer.
+    fn read_str<R>(
+        &self,
+        key: &str,
+        now: u64,
+        f: impl FnOnce(Result<Option<&[u8]>, WrongType>) -> R,
+    ) -> R {
         match self.data.get(key) {
             Some(e) if !e.is_expired(now) => match &e.value {
                 EntryValue::Str(s) => {
@@ -4873,31 +5143,41 @@ impl KeyValueStore {
             return None;
         }
         Some(match cmd {
-            CommandRef::Get(key) => self.read_str(key, |read| match read {
-                Ok(value) => {
-                    write_bulk(out, value);
-                    RefOutcome {
-                        error: false,
-                        hit: Some(value.is_some()),
+            CommandRef::Get(key) => self.read_one(key, || {
+                self.read_str(key, now_ms(), |read| match read {
+                    Ok(value) => {
+                        write_bulk(out, value);
+                        RefOutcome {
+                            error: false,
+                            hit: Some(value.is_some()),
+                        }
                     }
-                }
-                Err(WrongType) => error(out),
+                    Err(WrongType) => error(out),
+                })
             }),
-            CommandRef::HGet(key, field) => self.read_hash_field(key, field, |read| match read {
-                Ok(value) => {
-                    write_bulk(out, value);
-                    RefOutcome {
-                        error: false,
-                        hit: None,
+            CommandRef::HGet(key, field) => self.read_one(key, || {
+                self.read_hash_field(key, field, |read| match read {
+                    Ok(value) => {
+                        write_bulk(out, value);
+                        RefOutcome {
+                            error: false,
+                            hit: None,
+                        }
                     }
-                }
-                Err(WrongType) => error(out),
+                    Err(WrongType) => error(out),
+                })
             }),
             CommandRef::MGet(keys) => {
-                write_array_header(out, keys.len());
-                for key in keys {
-                    self.read_str(key, |read| write_bulk(out, read.ok().flatten()));
-                }
+                // A retried read starts its reply over (`read_many`).
+                let start = out.len();
+                self.read_many(keys, || {
+                    out.truncate(start);
+                    let now = now_ms();
+                    write_array_header(out, keys.len());
+                    for key in keys {
+                        self.read_str(key, now, |read| write_bulk(out, read.ok().flatten()));
+                    }
+                });
                 RefOutcome {
                     error: false,
                     hit: None,
@@ -5190,7 +5470,7 @@ impl KeyValueStore {
             // ── Strings ───────────────────────────────────────────────────────
             Command::Set(key, val, opts) => self.set(key, val, &opts, None),
 
-            Command::Get(key) => self.read_str(&key, |read| match read {
+            Command::Get(key) => self.read_str(&key, now_ms(), |read| match read {
                 Ok(value) => Value::BulkString(value.map(<[u8]>::to_vec)),
                 Err(WrongType) => Value::Error(WRONGTYPE.to_string()),
             }),
@@ -5271,16 +5551,7 @@ impl KeyValueStore {
                 }
             }
 
-            Command::MGet(keys) => Value::Array(Some(
-                keys.iter()
-                    .map(|k| {
-                        // MGET answers nil for a key of another type.
-                        self.read_str(k, |read| {
-                            Value::BulkString(read.ok().flatten().map(<[u8]>::to_vec))
-                        })
-                    })
-                    .collect(),
-            )),
+            Command::MGet(keys) => self.mget(&keys),
 
             Command::MSet(pairs) => self.mset(pairs.into_iter()),
 
@@ -5442,18 +5713,7 @@ impl KeyValueStore {
             }
 
             // ── Keys ──────────────────────────────────────────────────────────
-            Command::Exists(keys) => {
-                let now = now_ms();
-                let count = keys
-                    .iter()
-                    .filter(|k| {
-                        self.data
-                            .get(k.as_str())
-                            .is_some_and(|e| !e.is_expired(now))
-                    })
-                    .count();
-                Value::Integer(count as i64)
-            }
+            Command::Exists(keys) => self.exists(&keys),
 
             Command::Keys(pattern) => {
                 let now = now_ms();
@@ -6190,13 +6450,7 @@ impl KeyValueStore {
                 }
             }
 
-            Command::SInter(keys) => {
-                let now = now_ms();
-                match set_inter(&self.data, &keys, now) {
-                    Err(e) => e,
-                    Ok(result) => set_to_value(result),
-                }
-            }
+            Command::SInter(keys) => set_op_reply(set_inter(&self.data, &keys, now_ms())),
 
             Command::SInterStore(dst, keys) => {
                 let now = now_ms();
@@ -6218,13 +6472,7 @@ impl KeyValueStore {
                 Value::Integer(len as i64)
             }
 
-            Command::SUnion(keys) => {
-                let now = now_ms();
-                match set_union(&self.data, &keys, now) {
-                    Err(e) => e,
-                    Ok(result) => set_to_value(result),
-                }
-            }
+            Command::SUnion(keys) => set_op_reply(set_union(&self.data, &keys, now_ms())),
 
             Command::SUnionStore(dst, keys) => {
                 let now = now_ms();
@@ -6246,13 +6494,7 @@ impl KeyValueStore {
                 Value::Integer(len as i64)
             }
 
-            Command::SDiff(keys) => {
-                let now = now_ms();
-                match set_diff(&self.data, &keys, now) {
-                    Err(e) => e,
-                    Ok(result) => set_to_value(result),
-                }
-            }
+            Command::SDiff(keys) => set_op_reply(set_diff(&self.data, &keys, now_ms())),
 
             Command::SDiffStore(dst, keys) => {
                 let now = now_ms();
@@ -6979,6 +7221,176 @@ fn probe_eligible(cmd: &Command) -> bool {
             | Command::RPush(..)
             | Command::SAdd(..)
     )
+}
+
+/// The keys a read-only command reads, for the read-side protocol (6O-D):
+/// one key, several (validated or locked together), or none that a
+/// multi-key write could split.
+enum ReadScope<'c> {
+    /// Connection-level and whole-keyspace commands. `KEYS`, `SCAN` and
+    /// `DBSIZE` walk the keyspace without a barrier, as before 6O-D: not a
+    /// snapshot (`SCAN` is not one in Redis either; recorded as a follow-up
+    /// for `KEYS` and `DBSIZE`).
+    Unkeyed,
+    One(&'c str),
+    Many(&'c [String]),
+}
+
+/// See [`ReadScope`]. Every variant is listed, so a new command has to be
+/// classified. Writes are listed as [`ReadScope::Unkeyed`]: they never get
+/// here (`mutation_scope` sends them to `run_write`).
+fn read_scope(cmd: &Command) -> ReadScope<'_> {
+    fn keys(keys: &[String]) -> ReadScope<'_> {
+        match keys {
+            [] => ReadScope::Unkeyed,
+            [key] => ReadScope::One(key.as_str()),
+            _ => ReadScope::Many(keys),
+        }
+    }
+    match cmd {
+        Command::Dedup(_, _, inner) => read_scope(inner),
+        Command::MGet(k)
+        | Command::Exists(k)
+        | Command::SInter(k)
+        | Command::SUnion(k)
+        | Command::SDiff(k) => keys(k),
+        Command::Get(key)
+        | Command::Strlen(key)
+        | Command::GetRange(key, _, _)
+        | Command::GetEx(key, None)
+        | Command::Ttl(key)
+        | Command::PTtl(key)
+        | Command::ExpireTime(key)
+        | Command::PExpireTime(key)
+        | Command::Type(key)
+        | Command::MemoryUsage(key)
+        | Command::HGet(key, _)
+        | Command::HStrLen(key, _)
+        | Command::HGetAll(key)
+        | Command::HKeys(key)
+        | Command::HVals(key)
+        | Command::HLen(key)
+        | Command::HExists(key, _)
+        | Command::HMGet(key, _)
+        | Command::HScan(key, _)
+        | Command::LRange(key, _, _)
+        | Command::LLen(key)
+        | Command::LIndex(key, _)
+        | Command::SMembers(key)
+        | Command::SCard(key)
+        | Command::SIsMember(key, _)
+        | Command::SMIsMember(key, _)
+        | Command::SRandMember(key, _)
+        | Command::SScan(key, _)
+        | Command::ZRange(key, _, _, _)
+        | Command::ZRevRange(key, _, _, _)
+        | Command::ZRangeByScore(key, _, _, _, _)
+        | Command::ZRevRangeByScore(key, _, _, _, _)
+        | Command::ZScore(key, _)
+        | Command::ZMScore(key, _)
+        | Command::ZRank(key, _)
+        | Command::ZRevRank(key, _)
+        | Command::ZCard(key)
+        | Command::ZCount(key, _, _)
+        | Command::ZScan(key, _)
+        | Command::JGet(key, _) => ReadScope::One(key.as_str()),
+        Command::Keys(_) | Command::Scan(..) | Command::DbSize => ReadScope::Unkeyed,
+        Command::Ping(_)
+        | Command::Echo(_)
+        | Command::Auth(_)
+        | Command::Hello(_)
+        | Command::Info(_)
+        | Command::Quit
+        | Command::Client(_)
+        | Command::Config(_)
+        | Command::CommandQuery(_)
+        | Command::Cluster(_)
+        | Command::Module(_)
+        | Command::PubSub(_)
+        | Command::Memory(_)
+        | Command::Multi
+        | Command::Exec
+        | Command::Discard
+        | Command::Subscribe(_)
+        | Command::Unsubscribe(_)
+        | Command::PSubscribe(_)
+        | Command::PUnsubscribe(_)
+        | Command::Publish(..)
+        | Command::Watch(_)
+        | Command::Unwatch(_)
+        | Command::Sync(_)
+        | Command::QSub(_)
+        | Command::QUnsub(_)
+        | Command::Save
+        | Command::BgSave
+        | Command::LastSave
+        | Command::ReplicaOfNoOne
+        | Command::Unknown(_) => ReadScope::Unkeyed,
+        Command::Set(..)
+        | Command::ESet(..)
+        | Command::EAdd(..)
+        | Command::Del(_)
+        | Command::Unlink(_)
+        | Command::Append(..)
+        | Command::GetSet(..)
+        | Command::GetDel(_)
+        | Command::GetEx(_, Some(_))
+        | Command::MSet(_)
+        | Command::SetNx(..)
+        | Command::SetEx(..)
+        | Command::PSetEx(..)
+        | Command::Incr(_)
+        | Command::Decr(_)
+        | Command::IncrBy(..)
+        | Command::DecrBy(..)
+        | Command::Expire(..)
+        | Command::PExpire(..)
+        | Command::ExpireAt(..)
+        | Command::PExpireAt(..)
+        | Command::Persist(_)
+        | Command::FlushDb
+        | Command::Rename(..)
+        | Command::RenameNx(..)
+        | Command::Copy(..)
+        | Command::HSet(..)
+        | Command::HDel(..)
+        | Command::HIncrBy(..)
+        | Command::HIncrByFloat(..)
+        | Command::HSetNx(..)
+        | Command::LPush(..)
+        | Command::RPush(..)
+        | Command::LPushX(..)
+        | Command::RPushX(..)
+        | Command::LPop(..)
+        | Command::RPop(..)
+        | Command::LSet(..)
+        | Command::LRem(..)
+        | Command::LTrim(..)
+        | Command::SAdd(..)
+        | Command::SRem(..)
+        | Command::SInterStore(..)
+        | Command::SUnionStore(..)
+        | Command::SDiffStore(..)
+        | Command::SPop(..)
+        | Command::SMove(..)
+        | Command::ZAdd(..)
+        | Command::ZPopMin(..)
+        | Command::ZPopMax(..)
+        | Command::ZRem(..)
+        | Command::ZIncrBy(..)
+        | Command::JSet(..)
+        | Command::JMerge(..)
+        | Command::RlSet(..)
+        | Command::RlCheck(..) => ReadScope::Unkeyed,
+    }
+}
+
+/// The reply to `SINTER`, `SUNION` or `SDIFF`.
+fn set_op_reply(result: Result<IndexSet<String>, Value>) -> Value {
+    match result {
+        Err(e) => e,
+        Ok(result) => set_to_value(result),
+    }
 }
 
 fn mutation_scope<'c>(cmd: &'c Command) -> MutationScope<'c> {
