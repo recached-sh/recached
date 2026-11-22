@@ -434,6 +434,10 @@ pub(crate) async fn handle_tcp<S>(
     // leave no state behind, but an overflow signalled in between must still
     // disconnect (6O-B review).
     let mut overflow_armed = false;
+    // Whether the last read batch that ran a command left part of a frame
+    // behind: the client is still sending a pipeline, so the batch that
+    // completes it is the pipeline's tail, not a lone command (6O-C review).
+    let mut pipeline_tail = false;
 
     with_deferred_aof(deferral, async {
     'outer: loop {
@@ -470,7 +474,9 @@ pub(crate) async fn handle_tcp<S>(
                         if buf.len() - read_pos < need {
                             continue 'outer;
                         }
-                        reply_coalesce::note_batch();
+                        // Frames this read batch consumed, whatever they
+                        // answered: whether its flush may yield (below).
+                        let mut commands: u32 = 0;
                         'parse: loop {
                             // An empty line between commands is nothing, as
                             // in Redis's inline protocol — and `redis-cli
@@ -540,6 +546,7 @@ pub(crate) async fn handle_tcp<S>(
                                 Answered::Not(frame) => frame,
                                 Answered::Borrowed(consumed) => {
                                     read_pos += consumed;
+                                    commands += 1;
                                     if writer.write_all(&resp_buf).await.is_err() {
                                         break 'outer;
                                     }
@@ -549,6 +556,7 @@ pub(crate) async fn handle_tcp<S>(
                             match frame {
                                 Ok((decoded, consumed)) => {
                                     read_pos += consumed;
+                                    commands += 1;
                                     let cmd = match decoded {
                                         Ok(c) => c,
                                         Err(e) => {
@@ -1087,12 +1095,35 @@ pub(crate) async fn handle_tcp<S>(
                         }
                         // Let the other connections ready on this worker run
                         // first, so the replies of the pass leave together
-                        // (see `reply_coalesce`). A flush with AOF batches to
-                        // wait for is left to the gate, whose own coalescer
-                        // decides whether it yields (at most once per flush
-                        // either way; when the gate's coalescer is backed off
-                        // or off, that flush does not yield).
-                        if !writer.buffer().is_empty() && aof_pending.is_empty() {
+                        // (see `reply_coalesce`). Only after a lone command:
+                        // a batch of several, or one that is part of a
+                        // pipeline split across reads (it leaves part of the
+                        // next frame behind, or completes a frame an earlier
+                        // batch of commands left behind), already sends its
+                        // replies together, and the yield would only delay
+                        // them. A
+                        // flush with AOF batches to wait for is left to the
+                        // gate, whose own coalescer decides whether it yields
+                        // (at most once per flush either way; when the gate's
+                        // coalescer is backed off or off, that flush does not
+                        // yield).
+                        // What is left in `buf` is part of a frame.
+                        let partial_left = !buf.is_empty();
+                        if commands > 0 {
+                            // What other connections' yields compare against:
+                            // a batch that ran something.
+                            reply_coalesce::note_batch(conn_id);
+                        }
+                        let eligible = reply_coalesce::batch_eligible(commands)
+                            && !partial_left
+                            && !pipeline_tail;
+                        if commands > 0 {
+                            pipeline_tail = partial_left;
+                        }
+                        if eligible
+                            && !writer.buffer().is_empty()
+                            && aof_pending.is_empty()
+                        {
                             reply_coalesce::before_flush().await;
                         }
                         // Flush all responses for this read batch in one syscall.

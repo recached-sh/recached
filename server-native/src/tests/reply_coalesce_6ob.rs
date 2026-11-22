@@ -14,7 +14,7 @@ use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 /// one at a time.
 static SWITCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn switch_lock() -> std::sync::MutexGuard<'static, ()> {
+pub(super) fn switch_lock() -> std::sync::MutexGuard<'static, ()> {
     SWITCH.lock().unwrap_or_else(|p| p.into_inner())
 }
 
@@ -54,7 +54,7 @@ fn a_yield_another_connection_ran_during_is_a_gain_and_clears_the_misses() {
     let probe = reply_coalesce::begin().unwrap();
     assert!(!reply_coalesce::end(probe));
     let probe = reply_coalesce::begin().unwrap();
-    reply_coalesce::note_batch(); // another connection's read batch
+    reply_coalesce::note_batch(u64::MAX); // another connection's read batch
     assert!(reply_coalesce::end(probe), "a batch ran during the yield");
     assert_eq!(reply_coalesce::state(), (0, 0), "a gain clears the miss");
     // So a later single miss does not back off.
@@ -128,15 +128,33 @@ impl AsyncWrite for Recording {
 /// current-thread worker: for each, how many of the `SET`s had run when its
 /// first reply byte was written, in the order the replies left.
 async fn first_reply_sees(conns: usize) -> Vec<usize> {
-    let shared = Shared::new(false);
     let keys: Vec<String> = (0..conns).map(|i| format!("coalesce:{i}")).collect();
+    let requests = keys
+        .iter()
+        .map(|key| {
+            let frame = format!("*3\r\n$3\r\nSET\r\n${}\r\n{key}\r\n$1\r\nv\r\n", key.len());
+            (frame.into_bytes(), b"+OK\r\n".to_vec())
+        })
+        .collect();
+    first_reply_sees_requests(requests, keys, Shared::new(false)).await
+}
+
+/// One connection per `(request, reply)`, each with its whole `request`
+/// already waiting, served on the current runtime: for each connection, in
+/// the order the replies left, how many of `keys` the store held when its
+/// first reply byte was written. Each connection must answer exactly
+/// `reply`.
+pub(super) async fn first_reply_sees_requests(
+    requests: Vec<(Vec<u8>, Vec<u8>)>,
+    keys: Vec<String>,
+    shared: Shared,
+) -> Vec<usize> {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut clients = Vec::new();
     let mut servers = Vec::new();
-    for key in &keys {
-        let (mut client, server) = tokio::io::duplex(64 * 1024);
-        let frame = format!("*3\r\n$3\r\nSET\r\n${}\r\n{key}\r\n$1\r\nv\r\n", key.len());
-        client.write_all(frame.as_bytes()).await.unwrap();
+    for (request, reply) in requests {
+        let (mut client, server) = tokio::io::duplex(1 << 20);
+        client.write_all(&request).await.unwrap();
         let socket = Recording {
             inner: server,
             store: Arc::clone(&shared.store),
@@ -144,22 +162,13 @@ async fn first_reply_sees(conns: usize) -> Vec<usize> {
             seen: Arc::clone(&seen),
             recorded: false,
         };
-        servers.push(tokio::spawn(handle_tcp(
-            socket,
-            Arc::clone(&shared.store),
-            shared.tx.clone(),
-            Arc::new(None),
-            Arc::clone(&shared.pubsub),
-            Arc::clone(&shared.watch_registry),
-            Arc::clone(&shared.state),
-            "test".to_string(),
-        )));
-        clients.push(client);
+        servers.push(tokio::spawn(shared.serve(socket)));
+        clients.push((client, reply));
     }
-    for client in &mut clients {
-        let mut reply = [0u8; 5];
-        client.read_exact(&mut reply).await.unwrap();
-        assert_eq!(&reply, b"+OK\r\n");
+    for (client, want) in &mut clients {
+        let mut got = vec![0u8; want.len()];
+        client.read_exact(&mut got).await.unwrap();
+        assert_eq!(got, *want, "{:?}", String::from_utf8_lossy(&got));
     }
     drop(clients);
     for server in servers {
