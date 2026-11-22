@@ -116,16 +116,18 @@ impl CommandRef<'_> {
     /// Whether this command writes.
     #[must_use]
     pub fn is_write(&self) -> bool {
-        matches!(
-            self,
+        // Exhaustive: a write variant added later must say so here, or it
+        // would run as a read past every write gate.
+        match self {
             CommandRef::Set(..)
-                | CommandRef::Incr(_)
-                | CommandRef::Decr(_)
-                | CommandRef::HSet(..)
-                | CommandRef::LPush(..)
-                | CommandRef::RPush(..)
-                | CommandRef::SAdd(..)
-        )
+            | CommandRef::Incr(_)
+            | CommandRef::Decr(_)
+            | CommandRef::HSet(..)
+            | CommandRef::LPush(..)
+            | CommandRef::RPush(..)
+            | CommandRef::SAdd(..) => true,
+            CommandRef::Get(_) | CommandRef::HGet(..) | CommandRef::MGet(_) => false,
+        }
     }
 
     /// The key a write mutates (every borrowed write names exactly one).
@@ -359,14 +361,23 @@ fn build_ref(args: Args<'_>) -> Option<CommandRef<'_>> {
     })
 }
 
-/// Payload arguments from `from` on, borrowed.
+/// Payload arguments from `from` on, borrowed. Sized up front: collecting
+/// an `Option` iterator would grow the vector by doubling past 4.
 fn payloads<'a>(args: Args<'a>, from: usize) -> Option<SmallVec<[&'a [u8]; 4]>> {
-    (from..args.len()).map(|i| args.get(i)).collect()
+    let mut out = SmallVec::with_capacity(args.len().saturating_sub(from));
+    for i in from..args.len() {
+        out.push(args.get(i)?);
+    }
+    Some(out)
 }
 
 /// Identifier arguments from `from` on, borrowed: text, else `None`.
 fn identifiers<'a>(args: Args<'a>, from: usize) -> Option<SmallVec<[&'a str; 4]>> {
-    (from..args.len()).map(|i| args.text(i)).collect()
+    let mut out = SmallVec::with_capacity(args.len().saturating_sub(from));
+    for i in from..args.len() {
+        out.push(args.text(i)?);
+    }
+    Some(out)
 }
 
 /// The owned shapes not covered by [`build_ref`] — whose arguments the

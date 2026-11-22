@@ -1297,3 +1297,48 @@ fn layered_cost_bench() {
         f.write_all(csv.as_bytes()).expect("write BENCH_OUT");
     }
 }
+
+/// Every borrowed shape agrees with its owned command on what the server
+/// records and gates on: its metric label, whether it writes, and the key a
+/// write names. A swapped label on the borrowed path would otherwise pass
+/// every reply test (6O-C review).
+#[test]
+fn every_borrowed_shape_agrees_with_its_owned_command() {
+    let frames: Vec<Vec<&[u8]>> = vec![
+        vec![b"GET", b"k"],
+        vec![b"SET", b"k", b"v"],
+        vec![b"INCR", b"n"],
+        vec![b"DECR", b"n"],
+        vec![b"HGET", b"h", b"f"],
+        vec![b"HSET", b"h", b"f", b"v"],
+        vec![b"MGET", b"a", b"b"],
+        vec![b"LPUSH", b"l", b"a", b"b"],
+        vec![b"RPUSH", b"l", b"a"],
+        vec![b"SADD", b"s", b"a", b"a"],
+    ];
+    let mut borrowed = 0;
+    for parts in &frames {
+        let mut frame = Vec::new();
+        encode(parts, &mut frame);
+        let mut decoder = core_engine::request::RequestDecoder::new();
+        let core_engine::request::DecodedAny::Borrowed(cmd, _) = decoder.decode_any(&frame) else {
+            panic!("{parts:?} is a borrowed shape");
+        };
+        borrowed += 1;
+        let owned = cmd.to_command();
+        assert_eq!(
+            command_ref_name(&cmd),
+            command_name(&owned),
+            "{parts:?}: label"
+        );
+        assert_eq!(cmd.is_write(), is_write_command(&owned), "{parts:?}: write");
+        if cmd.is_write() {
+            assert_eq!(
+                cmd.write_key().map(str::as_bytes),
+                Some(parts[1]),
+                "{parts:?}: the key a write names"
+            );
+        }
+    }
+    assert_eq!(borrowed, frames.len());
+}
