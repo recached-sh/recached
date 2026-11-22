@@ -709,6 +709,19 @@ pub(crate) async fn handle_tcp<S>(
                                                             )
                                                             .await
                                                     };
+                                                    // A notification for this connection overflowed: the
+                                                    // connection is being disconnected for it (the overflow
+                                                    // arm), and a watched key may have changed with nothing
+                                                    // queued — the first change alone can exceed the byte
+                                                    // budget, and its registration is dropped. Whichever arm
+                                                    // `select!` polled first, EXEC must not commit: disconnect
+                                                    // here, as that arm would have. Checked under the write
+                                                    // guards, so a write to a watched key that was in flight
+                                                    // has finished notifying (and overflowing) already.
+                                                    if overflow_rx.try_recv().is_ok() {
+                                                        warn!("TCP conn {} notification queue overflowed before EXEC; disconnecting", conn_id);
+                                                        break 'outer;
+                                                    }
                                                     while watch_rx.try_recv().is_ok() {
                                                         watch_dirty = true;
                                                     }
@@ -1852,6 +1865,13 @@ pub(crate) async fn handle_ws<S>(
                                                 )
                                                 .await
                                         };
+                                        // As on TCP: after an overflow the connection is being
+                                        // disconnected, and a watched key may have changed with
+                                        // nothing queued. EXEC must not commit first.
+                                        if overflow_rx.try_recv().is_ok() {
+                                            warn!("WS conn {} notification queue overflowed before EXEC; disconnecting", conn_id);
+                                            break 'outer;
+                                        }
                                         while watch_rx.try_recv().is_ok() {
                                             watch_dirty = true;
                                         }

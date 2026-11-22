@@ -6824,6 +6824,7 @@ mod reply_coalesce_6ob;
 mod request_path;
 mod security_v06_regressions;
 mod sync_routing;
+mod watch_overflow_exec;
 mod write_gate;
 mod ws_auth;
 mod ws_fastpath;
