@@ -146,10 +146,19 @@ pub(super) enum Workload {
     IncrNew,
     /// 6I-F: INCR on existing counters that carry a TTL.
     IncrTtl,
+    /// 6O-B: the 6L battery's shapes (redis-benchmark 7.2.5's own): one list
+    /// that every request grows by a 32-byte value.
+    LPush,
+    /// 6O-B: `SADD myset element:<n>`, one set of at most 100,000 members.
+    SAdd,
+    /// 6O-B: redis-benchmark's "MSET (10 keys)".
+    MSet10,
+    /// 6O-B: `ZADD myzset <n> element:<n>`.
+    ZAdd,
 }
 
 impl Workload {
-    const ALL: [Workload; 12] = [
+    const ALL: [Workload; 16] = [
         Workload::Set,
         Workload::Get,
         Workload::Incr,
@@ -162,6 +171,10 @@ impl Workload {
         Workload::IncrExisting,
         Workload::IncrNew,
         Workload::IncrTtl,
+        Workload::LPush,
+        Workload::SAdd,
+        Workload::MSet10,
+        Workload::ZAdd,
     ];
 
     fn name(self) -> &'static str {
@@ -178,6 +191,10 @@ impl Workload {
             Workload::IncrExisting => "INCR existing",
             Workload::IncrNew => "INCR new key",
             Workload::IncrTtl => "INCR with TTL",
+            Workload::LPush => "LPUSH",
+            Workload::SAdd => "SADD",
+            Workload::MSet10 => "MSET x10",
+            Workload::ZAdd => "ZADD",
         }
     }
 
@@ -229,6 +246,32 @@ impl Workload {
                     encode(&[b"INCR", format!("new:{j:07}").as_bytes()], &mut out);
                 }
                 Workload::IncrTtl => encode(&[b"INCR", k(i, "vol").as_bytes()], &mut out),
+                Workload::LPush => encode(&[b"LPUSH", b"mylist", &value], &mut out),
+                Workload::SAdd => {
+                    encode(&[b"SADD", b"myset", k(i, "element").as_bytes()], &mut out)
+                }
+                Workload::MSet10 => {
+                    let ks: Vec<String> =
+                        (0..10).map(|o| k((i + o * 7919) % KEYS, "key")).collect();
+                    let mut parts: Vec<&[u8]> = vec![b"MSET"];
+                    for key in &ks {
+                        parts.push(key.as_bytes());
+                        parts.push(&value);
+                    }
+                    encode(&parts, &mut out);
+                }
+                Workload::ZAdd => {
+                    let score = i.to_string();
+                    encode(
+                        &[
+                            b"ZADD",
+                            b"myzset",
+                            score.as_bytes(),
+                            k(i, "element").as_bytes(),
+                        ],
+                        &mut out,
+                    );
+                }
                 Workload::SetEx => {
                     let _ = j;
                     encode(
@@ -999,5 +1042,230 @@ fn hot_key_scaling_bench() {
             .open(path)
             .expect("BENCH_OUT_HOT");
         f.write_all(csv.as_bytes()).expect("write BENCH_OUT_HOT");
+    }
+}
+
+// ── 6O-B: layered cost, below the network ─────────────────────────────────────
+
+/// ns and allocations per command at each layer under the socket, for the
+/// 6O-B question "is the command itself slow, or the path around it?":
+///
+/// - `store`: the store alone, `execute_reporting_ref` over commands decoded
+///   beforehand — what the owned path's unordered write runs (the borrowed
+///   commands run `execute_ref_into` instead, which this does not model);
+/// - `decode`: `RequestDecoder::decode_any` over the frames, results dropped;
+/// - `dispatch`: the connection loop's per-frame work without the loop —
+///   decode, the borrowed path or the owned dispatch (`try_execute_unordered`,
+///   as a server with nothing observing write order runs), metrics, reply
+///   serialization — with no task, socket, `select!` or buffered writer;
+/// - `handle_tcp`: the real connection loop over an in-memory pipe, every
+///   command pipelined ([`measure`]).
+///
+/// The network layer (loopback TCP, 1 or 50 clients) is the kit's
+/// (`benchmarks/v0.6.0/6o-b/run-6ob.sh`). Release mode:
+/// `cargo test --release -p recached layered_cost_bench -- --ignored --nocapture`
+/// (`BENCH_ONLY=SET,LPUSH,...`, `BENCH_REPS`, `BENCH_OUT=<csv>`).
+#[test]
+#[ignore = "benchmark: run explicitly in release mode"]
+fn layered_cost_bench() {
+    // Coverage runs every ignored test in a debug build: keep that a smoke.
+    let debug = cfg!(debug_assertions);
+    let n_cmds: usize = if debug { 2_000 } else { 200_000 };
+    let reps: usize = std::env::var("BENCH_REPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(if debug { 1 } else { 5 });
+    let label = std::env::var("BENCH_LABEL").unwrap_or_else(|_| "this".to_string());
+    let only = std::env::var("BENCH_ONLY").ok();
+    let mut csv = String::new();
+    println!(
+        "{:<14} {:>10} {:>8} {:>10} {:>8} {:>10} {:>8} {:>11} {:>8}   (label {label}, median of {reps} x {n_cmds}; ns/op, allocs/op)",
+        "workload",
+        "store",
+        "allocs",
+        "decode",
+        "allocs",
+        "dispatch",
+        "allocs",
+        "handle_tcp",
+        "allocs"
+    );
+    let workloads = [
+        Workload::Set,
+        Workload::Get,
+        Workload::Incr,
+        Workload::LPush,
+        Workload::SAdd,
+        Workload::MSet10,
+        Workload::ZAdd,
+    ];
+    for workload in workloads {
+        // A debug build (coverage) only checks that the bench still runs.
+        if debug && !matches!(workload, Workload::Set | Workload::LPush) {
+            continue;
+        }
+        if let Some(only) = &only
+            && !only
+                .split(',')
+                .any(|w| w.eq_ignore_ascii_case(workload.name()))
+        {
+            continue;
+        }
+        let frames = workload.frames(n_cmds);
+        let mut layers: [Vec<(f64, f64)>; 4] = Default::default();
+        for _ in 0..reps {
+            // store
+            let shared = Shared::new(false);
+            if !debug {
+                prefill(&shared.store);
+            }
+            let commands: Vec<core_engine::cmd::Command> = {
+                let mut decoder = RequestDecoder::new();
+                let mut pos = 0;
+                let mut out = Vec::with_capacity(n_cmds);
+                while pos < frames.len() {
+                    let (cmd, used) = decoder.decode(&frames[pos..]).expect("frame");
+                    out.push(cmd.expect("command"));
+                    pos += used;
+                }
+                out
+            };
+            let started = Instant::now();
+            let ((), allocs) = allocations_in(|| {
+                for cmd in &commands {
+                    std::hint::black_box(shared.store.execute_reporting_ref(cmd));
+                }
+            });
+            layers[0].push((
+                started.elapsed().as_nanos() as f64 / n_cmds as f64,
+                allocs as f64 / n_cmds as f64,
+            ));
+            drop(commands);
+
+            // decode
+            let mut decoder = RequestDecoder::new();
+            let started = Instant::now();
+            let ((), allocs) = allocations_in(|| {
+                let mut pos = 0;
+                while pos < frames.len() {
+                    let used = match decoder.decode_any(&frames[pos..]) {
+                        DecodedAny::Borrowed(cmd, used) => {
+                            std::hint::black_box(&cmd);
+                            used
+                        }
+                        DecodedAny::Owned(decoded) => {
+                            let (cmd, used) = decoded.expect("frame");
+                            std::hint::black_box(cmd.expect("command"));
+                            used
+                        }
+                    };
+                    pos += used;
+                }
+            });
+            layers[1].push((
+                started.elapsed().as_nanos() as f64 / n_cmds as f64,
+                allocs as f64 / n_cmds as f64,
+            ));
+
+            // dispatch: the loop body, no loop
+            let shared = Shared::new(false);
+            if !debug {
+                prefill(&shared.store);
+            }
+            let mut decoder = RequestDecoder::new();
+            let mut resp = Vec::with_capacity(4096);
+            let started = Instant::now();
+            let ((), allocs) = allocations_in(|| {
+                let mut pos = 0;
+                while pos < frames.len() {
+                    resp.clear();
+                    let used = match decoder.decode_any(&frames[pos..]) {
+                        DecodedAny::Borrowed(cmd, used) => {
+                            if try_execute_borrowed(
+                                &cmd,
+                                &shared.state,
+                                &shared.watch_registry,
+                                &shared.store,
+                                &mut resp,
+                            )
+                            .is_none()
+                            {
+                                execute_and_record(&shared.store, cmd.to_command())
+                                    .serialize_into(&mut resp);
+                            }
+                            used
+                        }
+                        DecodedAny::Owned(decoded) => {
+                            let (cmd, used) = decoded.expect("frame");
+                            let cmd = cmd.expect("command");
+                            let reply = if is_write_command(&cmd) {
+                                try_execute_unordered(
+                                    &cmd,
+                                    &shared.state,
+                                    &shared.watch_registry,
+                                    &shared.store,
+                                )
+                                .expect("nothing observes write order here")
+                            } else {
+                                execute_and_record(&shared.store, cmd)
+                            };
+                            reply.serialize_into(&mut resp);
+                            used
+                        }
+                    };
+                    std::hint::black_box(&resp);
+                    pos += used;
+                }
+            });
+            layers[2].push((
+                started.elapsed().as_nanos() as f64 / n_cmds as f64,
+                allocs as f64 / n_cmds as f64,
+            ));
+
+            // handle_tcp
+            let run = measure(workload, n_cmds, false);
+            layers[3].push((
+                run.elapsed.as_nanos() as f64 / n_cmds as f64,
+                run.allocs as f64 / n_cmds as f64,
+            ));
+        }
+        let med = |v: &mut Vec<(f64, f64)>| {
+            v.sort_by(|a, b| a.0.total_cmp(&b.0));
+            v[v.len() / 2]
+        };
+        let m: Vec<(f64, f64)> = layers.iter_mut().map(med).collect();
+        println!(
+            "{:<14} {:>10.1} {:>8.2} {:>10.1} {:>8.2} {:>10.1} {:>8.2} {:>11.1} {:>8.2}",
+            workload.name(),
+            m[0].0,
+            m[0].1,
+            m[1].0,
+            m[1].1,
+            m[2].0,
+            m[2].1,
+            m[3].0,
+            m[3].1
+        );
+        csv.push_str(&format!(
+            "{label},{},{:.1},{:.2},{:.1},{:.2},{:.1},{:.2},{:.1},{:.2}\n",
+            workload.name(),
+            m[0].0,
+            m[0].1,
+            m[1].0,
+            m[1].1,
+            m[2].0,
+            m[2].1,
+            m[3].0,
+            m[3].1
+        ));
+    }
+    if let Ok(path) = std::env::var("BENCH_OUT") {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("BENCH_OUT");
+        f.write_all(csv.as_bytes()).expect("write BENCH_OUT");
     }
 }

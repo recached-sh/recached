@@ -1,0 +1,19 @@
+# tcpcost 400000 5, native, taskset -c 0, 3 runs, 2026-11-22; binary sha256 4ad0212834faa21e549af40958a4fea255c71d65f9787409de9cd0a8a9e57b80
+payload=5 iterations_per_kind=400000 tsc_hz=2903998819
+kind            reply ns      read ns
+send+recv         2741.2       2654.4
+write+recv        2811.0       2651.5
+send+read         2758.7       2778.1
+write+read        2841.5       2777.6
+payload=5 iterations_per_kind=400000 tsc_hz=2903998765
+kind            reply ns      read ns
+send+recv         2767.2       2673.7
+write+recv        2844.4       2684.6
+send+read         2769.8       2821.8
+write+read        2835.5       2828.2
+payload=5 iterations_per_kind=400000 tsc_hz=2903998820
+kind            reply ns      read ns
+send+recv         2780.3       2677.3
+write+recv        2864.3       2680.0
+send+read         2796.9       2812.9
+write+read        2876.6       2815.8

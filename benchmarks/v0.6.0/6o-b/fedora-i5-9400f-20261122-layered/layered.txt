@@ -1,0 +1,11 @@
+# layered_cost_bench, dev 51ae15c + 6O-B harness, release, native, taskset -c 0, BENCH_REPS=5 x 200000; 2026-11-22. First line: /proc/loadavg at start (1-min 3.19: a release build had just finished).
+# columns: workload | store ns | allocs | decode ns | allocs | dispatch ns | allocs | handle_tcp ns | allocs (medians)
+3.19 4.70 4.81 1/1517 388563
+SET                 339.7     1.00       66.1     0.00      487.1     1.00       568.1     1.00
+GET                 290.9     2.00       56.5     0.00      394.5     0.00       467.0     0.00
+INCR                845.3     0.92       56.7     0.00     1015.1     0.92      1064.7     0.92
+LPUSH               285.4     3.00      197.5     7.00      629.1    10.00       723.2    10.00
+SADD                384.3     3.00      211.8     6.00      760.4     9.00       851.3     9.00
+MSET x10           3984.2     6.00      627.6    21.00     4570.1    27.00      5213.1    27.00
+ZADD                397.8     3.43      340.4    11.00      926.7    14.43      1035.5    14.43
+ok

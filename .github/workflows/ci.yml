@@ -473,6 +473,7 @@ jobs:
           --skip request_path_bench
           --skip hot_key_scaling_bench
           --skip bench_replicated_set_cpu
+          --skip layered_cost_bench
         timeout-minutes: 5
 
   typecheck-js:

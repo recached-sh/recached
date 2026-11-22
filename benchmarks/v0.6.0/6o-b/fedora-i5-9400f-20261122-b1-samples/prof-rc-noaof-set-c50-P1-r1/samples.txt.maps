@@ -1,0 +1,47 @@
+56095e987000-56095eb8b000 r--p 00000000 00:24 24793621                   /home/dennispaler/recached-6ob-bench/bin/rc-base-prof
+56095eb8b000-56095f2ed000 r-xp 00203000 00:24 24793621                   /home/dennispaler/recached-6ob-bench/bin/rc-base-prof
+56095f2ed000-56095f33a000 r--p 00964000 00:24 24793621                   /home/dennispaler/recached-6ob-bench/bin/rc-base-prof
+56095f33a000-56095f33e000 rw-p 009b0000 00:24 24793621                   /home/dennispaler/recached-6ob-bench/bin/rc-base-prof
+56095f33e000-56095f54c000 rw-p 00000000 00:00 0 
+56099a972000-56099a993000 rw-p 00000000 00:00 0                          [heap]
+7fb60c000000-7fb60c021000 rw-p 00000000 00:00 0 
+7fb60c021000-7fb610000000 ---p 00000000 00:00 0 
+7fb614000000-7fb614021000 rw-p 00000000 00:00 0 
+7fb614021000-7fb618000000 ---p 00000000 00:00 0 
+7fb61a200000-7fb61a600000 rw-p 00000000 00:00 0 
+7fb61a6fd000-7fb61affd000 rw-p 00000000 00:00 0 
+7fb61affd000-7fb61bc00000 rw-p 00000000 00:00 0 
+7fb61bc00000-7fb61c400000 rw-p 00000000 00:00 0 
+7fb61c4e8000-7fb61c4e9000 ---p 00000000 00:00 0 
+7fb61c4e9000-7fb61c4eb000 rw-p 00000000 00:00 0 
+7fb61c4eb000-7fb61c4ec000 ---p 00000000 00:00 0 
+7fb61c4ec000-7fb61c4ee000 rw-p 00000000 00:00 0 
+7fb61c4ee000-7fb61c4ef000 rw-p 00000000 00:00 0 
+7fb61c4ef000-7fb61c4f0000 rw-p 00000000 00:00 0 
+7fb61c4f0000-7fb61c4f1000 ---p 00000000 00:00 0 
+7fb61c4f1000-7fb61c4f3000 rw-p 00000000 00:00 0 
+7fb61c4f3000-7fb61c4f8000 rw-p 00000000 00:00 0 
+7fb61c4f8000-7fb61c572000 r--p 00000000 00:24 249551                     /usr/lib64/libc.so.6
+7fb61c572000-7fb61c6e8000 r-xp 0007a000 00:24 249551                     /usr/lib64/libc.so.6
+7fb61c6e8000-7fb61c6ec000 r--p 001ef000 00:24 249551                     /usr/lib64/libc.so.6
+7fb61c6ec000-7fb61c6ee000 rw-p 001f3000 00:24 249551                     /usr/lib64/libc.so.6
+7fb61c6ee000-7fb61c6f6000 rw-p 00000000 00:00 0 
+7fb61c6f6000-7fb61c77d000 r--p 00000000 00:24 249553                     /usr/lib64/libm.so.6
+7fb61c77d000-7fb61c810000 r-xp 00087000 00:24 249553                     /usr/lib64/libm.so.6
+7fb61c810000-7fb61c811000 r--p 00119000 00:24 249553                     /usr/lib64/libm.so.6
+7fb61c811000-7fb61c812000 rw-p 0011a000 00:24 249553                     /usr/lib64/libm.so.6
+7fb61c812000-7fb61c81a000 r--p 00000000 00:24 239318                     /usr/lib64/libgcc_s-16-20261029.so.1
+7fb61c81a000-7fb61c83e000 r-xp 00008000 00:24 239318                     /usr/lib64/libgcc_s-16-20261029.so.1
+7fb61c83e000-7fb61c83f000 r--p 0002b000 00:24 239318                     /usr/lib64/libgcc_s-16-20261029.so.1
+7fb61c83f000-7fb61c842000 rw-p 00000000 00:00 0 
+7fb61c842000-7fb61c856000 r--p 00000000 00:24 550889                     /etc/ld.so.cache
+7fb61c856000-7fb61c85a000 r--p 00000000 00:00 0                          [vvar]
+7fb61c85a000-7fb61c85c000 r--p 00000000 00:00 0                          [vvar_vclock]
+7fb61c85c000-7fb61c85e000 r-xp 00000000 00:00 0                          [vdso]
+7fb61c85e000-7fb61c86b000 r--p 00000000 00:24 249548                     /usr/lib64/ld-linux-x86-64.so.2
+7fb61c86b000-7fb61c898000 r-xp 0000d000 00:24 249548                     /usr/lib64/ld-linux-x86-64.so.2
+7fb61c898000-7fb61c89a000 r--p 00039000 00:24 249548                     /usr/lib64/ld-linux-x86-64.so.2
+7fb61c89a000-7fb61c89b000 rw-p 0003b000 00:24 249548                     /usr/lib64/ld-linux-x86-64.so.2
+7fb61c89b000-7fb61c89c000 rw-p 00000000 00:00 0 
+7fff997fe000-7fff9981f000 rw-p 00000000 00:00 0                          [stack]
+ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                  [vsyscall]
