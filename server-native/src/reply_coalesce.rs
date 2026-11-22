@@ -36,8 +36,8 @@
 //! AOF gate's coalescer does (`COALESCE_MISSES`, `COALESCE_BACKOFF`). The
 //! state is per worker thread: no shared cache line on the hot path, and a
 //! worker's own recent experience is what predicts whether its next yield
-//! gains. A yield that resumes on another worker is a miss there (6O-C):
-//! see [`end`].
+//! gains. Back-offs with no gain between them double, up to [`MAX_BACKOFF`]
+//! (6O-C); a yield that resumes on another worker is neutral: see [`end`].
 //!
 //! **Only single-command batches yield** (6O-C, [`batch_eligible`]). A read
 //! batch that ran several pipelined commands already sends their replies
@@ -53,6 +53,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub(crate) const MISSES: u32 = 2;
 /// Flushes that go out at once after a back-off, before the next probe.
 pub(crate) const BACKOFF: u32 = 32;
+/// The longest back-off (6O-C). Each back-off that follows another with no
+/// gain in between doubles, up to this: a worker with one connection probes
+/// twice per 1,024 flushes instead of twice per 34.
+pub(crate) const MAX_BACKOFF: u32 = 1024;
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -72,6 +76,9 @@ struct Worker {
     batches: Cell<u64>,
     skip: Cell<u32>,
     misses: Cell<u32>,
+    /// The next back-off's length: [`BACKOFF`] after a gain, doubling with
+    /// each back-off since, up to [`MAX_BACKOFF`].
+    period: Cell<u32>,
 }
 
 thread_local! {
@@ -80,6 +87,7 @@ thread_local! {
             batches: Cell::new(0),
             skip: Cell::new(0),
             misses: Cell::new(0),
+            period: Cell::new(BACKOFF),
         }
     };
 }
@@ -121,34 +129,43 @@ pub(crate) fn begin() -> Option<Probe> {
 ///
 /// A gain is evidence on the worker the yield started on: its batch counter
 /// moved while the task was deferred, so another connection there ran its
-/// commands first. Anything else is a miss, scored on the worker the task
-/// resumed on — including a resume on *another* worker (work stealing).
-/// A task is stolen while yielded only by a worker with nothing of its own
-/// to run, and the origin's counter cannot be read from here, so there is no
-/// evidence of a gain; until 6O-C a migration counted as one, and a lone
-/// connection bouncing between idle workers yielded on every flush without
-/// ever backing off (+3% CPU per op at one client and three workers, 6O-B).
-/// Scoring it on the resumed worker keeps the state per thread and backs
-/// off where the task now runs.
+/// commands first. That clears the misses and the back-off escalation.
+///
+/// A yield resumed on **another** worker is neutral: it changes nothing on
+/// either worker. In Tokio's multi-thread scheduler a yielded task resumes
+/// from its own worker's LIFO slot unless several were deferred together and
+/// an idle worker stole some of them, so a migration happens almost only
+/// when coalescing is paying off; scoring it as a miss on the thief backed
+/// the busy case off (6O-C review), and a lone connection does not migrate
+/// during its yield (measured: no migrations). The one-client cost on
+/// several workers was the probes themselves, which the doubling back-off
+/// ([`MAX_BACKOFF`]) now makes rare.
 pub(crate) fn end(probe: Probe) -> bool {
     WORKER.with(|w| {
         let migrated = std::ptr::from_ref(w) as usize != probe.worker;
         #[cfg(test)]
         {
+            YIELDS.with(|y| y.set(y.get() + 1));
             tally::count(&tally::YIELDS);
             if migrated {
                 MIGRATIONS.with(|m| m.set(m.get() + 1));
                 tally::count(&tally::MIGRATIONS);
             }
         }
-        if !migrated && w.batches.get() != probe.batches {
+        if migrated {
+            return false;
+        }
+        if w.batches.get() != probe.batches {
             w.misses.set(0);
+            w.period.set(BACKOFF);
             return true;
         }
         let misses = w.misses.get() + 1;
         if misses >= MISSES {
             w.misses.set(0);
-            w.skip.set(BACKOFF);
+            let period = w.period.get();
+            w.skip.set(period);
+            w.period.set(period.saturating_mul(2).min(MAX_BACKOFF));
             #[cfg(test)]
             {
                 BACKOFFS.with(|b| b.set(b.get() + 1));
@@ -170,7 +187,9 @@ pub(crate) async fn before_flush() {
 }
 
 /// Whether a flush that ends a read batch should go through
-/// [`before_flush`]: only after a batch that ran exactly one command.
+/// [`before_flush`]: only after a batch that ran exactly one command. The
+/// connection also skips it for a batch that is part of a pipeline split
+/// across reads (see `handle_tcp`).
 ///
 /// A batch of several pipelined commands already sends all their replies in
 /// one `send(2)`, and its client is waiting for the whole batch: what the
@@ -185,6 +204,13 @@ pub(crate) fn batch_eligible(commands: u32) -> bool {
 thread_local! {
     static BACKOFFS: Cell<u64> = const { Cell::new(0) };
     static MIGRATIONS: Cell<u64> = const { Cell::new(0) };
+    static YIELDS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Test-only: yields scored on this thread.
+#[cfg(test)]
+pub(crate) fn yields() -> u64 {
+    YIELDS.with(Cell::get)
 }
 
 /// Test-only: yields this thread scored as resumed from another worker.
@@ -211,6 +237,7 @@ pub(crate) fn reset() {
     WORKER.with(|w| {
         w.skip.set(0);
         w.misses.set(0);
+        w.period.set(BACKOFF);
     });
 }
 

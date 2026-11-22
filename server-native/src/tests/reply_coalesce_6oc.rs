@@ -4,9 +4,10 @@
 //! - **(A)** a read batch that ran more than one command flushes without
 //!   yielding: its replies already leave in one `send(2)`, and the yield only
 //!   delayed them (the 6O-B P=16 p99 regressions);
-//! - **(B)** a yield that resumes on another worker is scored as a miss, so a
-//!   lone connection on a multi-worker runtime backs off (6O-B: +3% CPU per
-//!   op at one client and three workers).
+//! - **(B)** back-offs with no gain between them double, up to
+//!   `MAX_BACKOFF`, so a lone connection on a multi-worker runtime rarely
+//!   probes (6O-B: +3% CPU per op at one client and three workers). A yield
+//!   resumed on another worker stays neutral, as in 6O-B.
 //!
 //! The 6O-B tests in `reply_coalesce_6ob` still cover the single-command
 //! gain, the back-off state machine, a gain clearing the misses, the switch,
@@ -184,6 +185,46 @@ fn a_single_dedup_write_per_batch_still_coalesces() {
     });
 }
 
+/// A pipeline split across reads (6O-C review): the first read runs fifteen
+/// commands and ends inside the sixteenth frame, the second read completes
+/// only that frame. That batch ran one command, but it is the pipeline's
+/// tail and its client is waiting for it: no yield. Control: one large
+/// command split the same way is a lone command, and does yield.
+#[test]
+fn the_tail_of_a_pipeline_split_across_reads_does_not_yield() {
+    let _g = switch_lock();
+    current_thread().block_on(async {
+        let value = "v".repeat(512);
+        let mut pipeline = Vec::new();
+        for j in 0..16 {
+            pipeline.extend_from_slice(&encode_frame(&["SET", &format!("tail:{j}"), &value]));
+        }
+        let single = encode_frame(&["SET", "lone", &value]);
+        for (request, replies, want_yields) in [(pipeline, 16, 0), (single, 1, 1)] {
+            reply_coalesce::reset();
+            let shared = Shared::new(false);
+            let (mut client, server) = tokio::io::duplex(1 << 20);
+            let task = tokio::spawn(shared.serve(server));
+            let cut = request.len() - 100;
+            let yields = reply_coalesce::yields();
+            client.write_all(&request[..cut]).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            client.write_all(&request[cut..]).await.unwrap();
+            let mut got = vec![0u8; 5 * replies];
+            client.read_exact(&mut got).await.unwrap();
+            assert_eq!(got, b"+OK\r\n".repeat(replies));
+            assert_eq!(
+                reply_coalesce::yields() - yields,
+                want_yields,
+                "{replies} command(s) split across two reads"
+            );
+            drop(client);
+            let _ = task.await;
+        }
+        reply_coalesce::reset();
+    });
+}
+
 // ── (B) a resume on another worker ────────────────────────────────────────────
 
 /// A thread that scores yields begun elsewhere, standing in for a worker
@@ -225,36 +266,29 @@ impl OtherWorker {
     }
 }
 
-/// The mechanism behind 6O-B's lone-connection cost: a resume on another
-/// worker counted as a gain, so with work stealing a lone connection kept
-/// yielding. Now it is a miss, scored where the task resumed, and two in a
-/// row back off there. The worker the yields began on is untouched: it
-/// learnt nothing.
+/// A yield resumed on another worker is neutral (6O-C review): no gain, no
+/// miss, on either worker. Scored as a miss, the stolen tasks of a busy
+/// worker — which did gain there — backed their thief off.
 #[test]
-fn a_yield_resumed_on_another_worker_is_a_miss_and_two_back_off_there() {
+fn a_yield_resumed_on_another_worker_changes_nothing_on_either() {
     let _g = switch_lock();
     reply_coalesce::reset();
     let other = OtherWorker::start();
 
     let probe = reply_coalesce::begin().expect("a fresh worker yields");
     let (gained, state, migrations) = other.end(probe);
-    assert!(!gained, "a resume elsewhere is no evidence of a gain");
-    assert_eq!(state, (0, 1), "scored as a miss on the resuming worker");
+    assert!(!gained, "a resume elsewhere is not a gain");
+    assert_eq!(state, (0, 0), "nor a miss on the resuming worker");
     assert_eq!(migrations, 1);
 
-    // Even if this thread's own batch counter moves meanwhile: the yield
-    // was not resumed here, so that is no gain for it either.
-    let probe = reply_coalesce::begin().expect("still not backed off here");
-    reply_coalesce::note_batch();
-    let (gained, state, migrations) = other.end(probe);
-    assert!(!gained);
-    assert_eq!(
-        state,
-        (reply_coalesce::BACKOFF, 0),
-        "the second miss backs off"
-    );
-    assert_eq!(migrations, 2);
-
+    // Many in a row never back the thief off.
+    for n in 2..=8 {
+        let probe = reply_coalesce::begin().expect("the origin is not backed off");
+        let (gained, state, migrations) = other.end(probe);
+        assert!(!gained);
+        assert_eq!(state, (0, 0));
+        assert_eq!(migrations, n);
+    }
     assert_eq!(
         reply_coalesce::state(),
         (0, 0),
@@ -264,14 +298,16 @@ fn a_yield_resumed_on_another_worker_is_a_miss_and_two_back_off_there() {
     reply_coalesce::reset();
 }
 
-/// A migration between two same-worker gains does not back off: misses
-/// must come in a row, and a real gain still clears them.
+/// A migration between two misses does not break the run: misses on this
+/// worker still back it off, and a real gain still clears them.
 #[test]
-fn a_real_gain_after_a_migration_clears_the_miss() {
+fn a_migration_between_two_misses_neither_breaks_nor_adds_to_the_run() {
     let _g = switch_lock();
     reply_coalesce::reset();
-    // The migration's miss lands here: this thread resumes a yield begun on
-    // another one.
+    let probe = reply_coalesce::begin().unwrap();
+    assert!(!reply_coalesce::end(probe));
+    assert_eq!(reply_coalesce::state(), (0, 1));
+    // This thread resumes a yield begun on another one.
     let (probes_tx, probes_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         reply_coalesce::reset();
@@ -280,20 +316,48 @@ fn a_real_gain_after_a_migration_clears_the_miss() {
     .join()
     .unwrap();
     assert!(!reply_coalesce::end(probes_rx.recv().unwrap()));
-    assert_eq!(reply_coalesce::state(), (0, 1));
-    // A real gain on this worker.
+    assert_eq!(reply_coalesce::state(), (0, 1), "neutral");
+    let probe = reply_coalesce::begin().unwrap();
+    reply_coalesce::note_batch();
+    assert!(reply_coalesce::end(probe), "a real gain");
+    assert_eq!(reply_coalesce::state(), (0, 0), "the gain cleared the miss");
+    reply_coalesce::reset();
+}
+
+/// Back-offs with no gain between them double, up to `MAX_BACKOFF`; a gain
+/// starts over at `BACKOFF`.
+#[test]
+fn back_offs_with_no_gain_between_them_double_up_to_the_maximum() {
+    let _g = switch_lock();
+    reply_coalesce::reset();
+    let miss_twice = || {
+        for _ in 0..reply_coalesce::MISSES {
+            let probe = reply_coalesce::begin().expect("probing");
+            assert!(!reply_coalesce::end(probe));
+        }
+        let (skip, _) = reply_coalesce::state();
+        for _ in 0..skip {
+            assert!(reply_coalesce::begin().is_none(), "backed off");
+        }
+        skip
+    };
+    let mut periods = Vec::new();
+    for _ in 0..8 {
+        periods.push(miss_twice());
+    }
+    assert_eq!(periods, vec![32, 64, 128, 256, 512, 1024, 1024, 1024]);
     let probe = reply_coalesce::begin().unwrap();
     reply_coalesce::note_batch();
     assert!(reply_coalesce::end(probe));
-    assert_eq!(reply_coalesce::state(), (0, 0), "the gain cleared the miss");
+    assert_eq!(miss_twice(), reply_coalesce::BACKOFF, "a gain starts over");
     reply_coalesce::reset();
 }
 
 /// A lone connection on a three-worker runtime, its client on a thread of
 /// its own: nobody else ever runs a batch, so no yield can gain. Wherever
-/// each yield resumes, the workers back off, and the yields stay a small
-/// fraction of the flushes. Before 6O-C a resume elsewhere did not count,
-/// so how often the connection yielded depended on how often it migrated.
+/// each yield resumes, the workers back off, and with the doubling back-off
+/// the yields are a few dozen in 1,200 flushes (6O-B's fixed back-off gave
+/// about 74).
 #[test]
 fn a_lone_connection_on_several_workers_backs_off() {
     let _g = switch_lock();
@@ -326,11 +390,11 @@ fn a_lone_connection_on_several_workers_backs_off() {
         "lone connection, 3 workers: {ROUND_TRIPS} flushes, {yields} yields, {migrations} resumed elsewhere, {backoffs} back-offs"
     );
     assert!(backoffs > 0, "the lone connection's workers backed off");
-    // Every yield is a miss, so each worker yields at most MISSES times per
-    // BACKOFF + MISSES flushes it begins. With three workers that is at
-    // most 3 * MISSES at the start and MISSES per BACKOFF flushes after.
-    let bound = 3 * u64::from(reply_coalesce::MISSES)
-        + ROUND_TRIPS * u64::from(reply_coalesce::MISSES) / u64::from(reply_coalesce::BACKOFF);
+    // No yield can gain and none is neutral unless it migrated, so each
+    // worker backs off after every two of its own yields, for 32, 64, ...,
+    // 1,024 flushes: 2 * 6 yields cover the first 2,000 flushes it begins,
+    // whatever the split between workers.
+    let bound = 3 * 2 * 6 + 2 * migrations;
     assert!(
         yields <= bound,
         "{yields} yields for {ROUND_TRIPS} flushes (bound {bound}; {migrations} migrated)"
@@ -413,7 +477,7 @@ fn a_yield_cancelled_while_pending_scores_nothing() {
 /// its reply never left, its socket closes, and the other connection of the
 /// pass is answered.
 #[test]
-fn a_connection_aborted_during_its_yield_strands_nothing() {
+fn a_connection_aborted_during_its_yield_never_replies_and_others_are_answered() {
     let _g = switch_lock();
     current_thread().block_on(async {
         reply_coalesce::reset();
@@ -428,8 +492,10 @@ fn a_connection_aborted_during_its_yield_strands_nothing() {
             .unwrap();
         let a_task = tokio::spawn(shared.serve(a_server));
         let b_task = tokio::spawn(shared.serve(b_server));
-        // This task yields first, so it resumes before the two connections,
-        // which have run their commands and are yielded before their flush.
+        // After the park that runs the two connections (each runs its
+        // command and yields before its flush), a current-thread `block_on`
+        // polls its own future first: this one resumes before either
+        // connection does. (A spawned task would not.)
         tokio::task::yield_now().await;
         assert_ne!(
             shared.store.get_current("abort:a"),
