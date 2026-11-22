@@ -1,0 +1,35 @@
+     Running unittests src/lib.rs (target/debug/deps/core_engine-aef2a983d9297cae)
+test result: ok. 557 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 6.20s
+     Running tests/resp_prealloc.rs (target/debug/deps/resp_prealloc-890547afc103d69d)
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+     Running unittests src/main.rs (target/debug/deps/recached_server-dd79dd4ab04ae577)
+test result: ok. 606 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 47.65s
+     Running tests/aof_v06.rs (target/debug/deps/aof_v06-ccc44a42d48d96c6)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running tests/dedup_bench.rs (target/debug/deps/dedup_bench-59941facaacec826)
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/redis_diff.rs (target/debug/deps/redis_diff-89109717193776ff)
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/restart.rs (target/debug/deps/restart-0de07c0280cba5fe)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+     Running tests/sync_bench.rs (target/debug/deps/sync_bench-31980b709b8a5c80)
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/lib.rs (target/debug/deps/recached_embed-de9de8cd533b7833)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/live.rs (target/debug/deps/live-95828fe598624524)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/lib.rs (target/debug/deps/recached_mobile-bfdf1d9500dc9dc8)
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running unittests src/bin/uniffi-bindgen.rs (target/debug/deps/uniffi_bindgen-58e5e74a66d63589)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/live.rs (target/debug/deps/live-ec54f975ab217510)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/lib.rs (target/debug/deps/sync_client-ce775711621da30d)
+test result: ok. 121 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.85s
+     Running unittests src/lib.rs (target/debug/deps/wasm_edge-1422cfa62f1eadd9)
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

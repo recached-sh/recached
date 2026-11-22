@@ -1,0 +1,8 @@
+uprof_threads=9
+cycles=15028375010 opened=9 min_running=1.000
+instructions=8191148494 opened=9 min_running=1.000
+branch_misses=24229661 opened=9 min_running=1.000
+cache_misses=37626950 opened=9 min_running=1.000
+l1d_read_misses=335568446 opened=9 min_running=1.000
+task_clock_ns=18464350101 opened=9 min_running=1.000
+context_switches=0 opened=9 min_running=1.000

@@ -41,6 +41,7 @@
 #        SERVER_CPUS [0-2]  BENCH_CPUS [3-5]  ALLOW_SANDBOX [0]
 #        UPROF  RECORD_CELLS  RECORD_FREQ [2999]  SYSC_SO  SYSC_CELLS
 #        LABEL_ENV_<label>  ALTERNATE [0]  SETTLE_IO [8]  SETTLE_MAX [90]
+#        REQ_SCALE_<test> [1]  per-command request multiplier (e.g. REQ_SCALE_mset=0.3)
 #        SERVER_PIN [first of SERVER_CPUS]  the server's taskset list, e.g. 0-2 for a
 #                   multi-worker check (with LABEL_ENV_x="RECACHED_WORKER_THREADS=3")
 set -euo pipefail
@@ -118,6 +119,7 @@ pressure() {
   echo "aof_fs: $(df -T "$OUT" | tail -1 | awk '{ print $1, $2 }') rotational=$(lsblk -dno ROTA "$(df "$OUT" | tail -1 | awk '{ print $1 }' | sed 's/[0-9]*$//')" 2>/dev/null || echo unknown)"
   echo "perf: $(command -v perf || echo absent) perf_event_paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo n/a) uprof=${UPROF:-off}${UPROF:+ sha256=$(sha256sum "$UPROF" | cut -d' ' -f1)}"
   echo "cpus: server=${SERVER_CPUS%%-*} bench=$BENCH_CPUS reps=$REPS req_c1_p1=$REQ_C1_P1 req_c1_p16=$REQ_C1_P16 req_c50_p1=$REQ_C50_P1 req_c50_p16=$REQ_C50_P16 always_requests=$ALWAYS_REQUESTS bench_threads=$BENCH_THREADS keyspace=$KEYSPACE"
+  echo "req_scale: $(env | grep "^REQ_SCALE_" | tr "\n" " ")"
   echo "order: alternate=$ALTERNATE settle_io=$SETTLE_IO settle_max_s=$SETTLE_MAX server_pin=${SERVER_PIN:-${SERVER_CPUS%%-*}}"
   env | grep '^LABEL_ENV_' | sed 's/^/label_env: /' || true
   echo "cells: $CELLS"
@@ -173,6 +175,10 @@ run() {
     1/1) requests=$REQ_C1_P1 ;; 1/*) requests=$REQ_C1_P16 ;;
     */1) requests=$REQ_C50_P1 ;; *) requests=$REQ_C50_P16 ;;
   esac
+  # REQ_SCALE_<test> (default 1): a per-command multiplier, equal for every
+  # server, so a slow command's cells last about as long as a fast one's.
+  local scalevar="REQ_SCALE_$test"
+  requests=$(awk -v r="$requests" -v s="${!scalevar:-1}" 'BEGIN { printf "%d", r * s }')
   [[ $kind == *always ]] && requests=$ALWAYS_REQUESTS
   rm -rf "$d"; mkdir -p "$d/p"
   local ppid cpu0=${SERVER_CPUS%%-*} rcbin="" binsum=n/a

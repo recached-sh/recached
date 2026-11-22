@@ -1,0 +1,1 @@
+KILLED: a pop leaves the queued count stale at zero [persistence::gate_tests] test persistence::gate_tests::a_reply_waits_for_every_batch_its_connection_queued ... FAILED | test persistence::gate_tests::no_reply_precedes_its_aof_write_under_any_policy ... FAILED | test result: FAILED. 22 passed; 2 failed; 0 ignored; 0 measured; 590 filtered out; finished in 0.07s

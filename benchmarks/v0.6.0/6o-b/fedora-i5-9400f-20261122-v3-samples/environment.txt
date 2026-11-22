@@ -1,0 +1,33 @@
+date_utc: 2026-11-22T14:53:46Z
+rc_bin[prof]: /home/dennispaler/recached-6ob-bench/bin/rc-new-prof sha256=a89a11c9905bca5a482d5b6bcda50914c5bc08f206dca3b5938cd0fb785db4ec source=d5563d78034f3ccccc91975051de2cb6099b76ba version=recached-server 0.6.0
+kit_sha: unknown run-6ob.sh sha256=2565604dd6bbdfcfa82ef189db4e8914f4805f458f32f7d8aea82808bce54f47
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 0.86 2.10 2.49 5/1520 487689
+pressure_at_start: load=0.86 io_psi10=0.74/0.64 mem_psi10=0.00/0.00 swap_used_mib=7614 dirty_wb_kib=1044
+memory: total=15918 used=7492 available=8426 swap_total=8191 swap_used=7614
+aof_fs: /dev/sda3 btrfs rotational=1
+perf: absent perf_event_paranoid=2 uprof=/home/dennispaler/recached-6ob-bench/bin/uprof sha256=93aa43d37198729ef1c4b7c1d9e30084454ccb37b94ec72f0ce30391b6467afa
+cpus: server=0 bench=3-5 reps=1 req_c1_p1=500000 req_c1_p16=2000000 req_c50_p1=1000000 req_c50_p16=5000000 always_requests=50000 bench_threads=2 keyspace=100000
+req_scale: 
+order: alternate=0 settle_io=8 settle_max_s=90 server_pin=0
+cells: prof/rc-noaof-set-c50-P1 prof/rc-noaof-lpush-c50-P1 prof/rc-noaof-sadd-c50-P1 prof/rc-noaof-mset-c50-P1
+record_cells: prof/rc-noaof-set-c50-P1 prof/rc-noaof-lpush-c50-P1 prof/rc-noaof-sadd-c50-P1 prof/rc-noaof-mset-c50-P1 freq=2999
+sysc: off cells=none
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: rustc 1.98.0 (88d9e12ae 2026-08-18)
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+   2648 dennisp+  39  19  859516  59844  12040 S  38.4   0.4   7:26.26 localse+
+ 475214 root      20   0       0      0      0 I  24.0   0.0   0:43.00 kworker+
+   5399 dennisp+  20   0  679236  79556  56912 S   9.6   0.5  17:06.98 RDD Pro+
+ 487747 dennisp+  20   0  234876   5408   3292 R   4.8   0.0   0:00.01 top
+      1 root      20   0   37428  12272   7932 S   0.0   0.1   0:03.00 systemd
+      2 root      20   0       0      0      0 S   0.0   0.0   0:00.02 kthreadd
+      3 root      20   0       0      0      0 S   0.0   0.0   0:00.00 pool_wo+
+loadavg_at_end: 2.50 2.35 2.56 2/1520 488373
+pressure_at_end: load=2.50 io_psi10=1.83/1.40 mem_psi10=0.00/0.00 swap_used_mib=7611 dirty_wb_kib=1100
