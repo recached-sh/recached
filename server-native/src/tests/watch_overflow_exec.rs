@@ -477,3 +477,42 @@ async fn one_tenants_overflow_leaves_another_tenants_transaction_alone() {
         Value::BulkString(None)
     );
 }
+
+/// The WebSocket handler runs one command per message, so its exposure is
+/// the race alone: WATCH, the connection's own overflowing APPEND, then
+/// MULTI, SET and EXEC sent back to back. After the APPEND both the overflow
+/// arm and the next buffered message are ready, and before the fix EXEC
+/// committed whenever the three messages won the race in a row: measured on
+/// `dev` `be3c90e`, 4 to 8 rounds in 2,000 (detected in 4 runs of 4; a run
+/// misses it with probability about 0.2%). Now no round commits.
+#[tokio::test]
+async fn ws_pipelined_messages_after_an_overflow_never_commit() {
+    let server = spawn_ws_server_policy(SyncPolicy::open(), None, None).await;
+    let mut setup = WsClient::connect(server.tcp_addr).await;
+    ws_store_big(&mut setup, "k").await;
+    const ROUNDS: usize = 2_000;
+    let mut committed = 0;
+    for round in 0..ROUNDS {
+        let marker = format!("marker{round}");
+        let mut c = WsClient::connect(server.tcp_addr).await;
+        ws_send_or_closed(&mut c, &["WATCH", "k"]).await;
+        ws_send_or_closed(&mut c, &["APPEND", "k", "x"]).await;
+        ws_send_or_closed(&mut c, &["MULTI"]).await;
+        ws_send_or_closed(&mut c, &["SET", &marker, "1"]).await;
+        ws_send_or_closed(&mut c, &["EXEC"]).await;
+        let (frames, closed) = ws_frames_until_close(&mut c, 10_000).await;
+        assert!(
+            closed,
+            "round {round}: the overflowed connection was disconnected"
+        );
+        if frames.iter().any(|f| f.starts_with("*1\r\n+OK"))
+            || server.store.get_current(&marker) != Value::BulkString(None)
+        {
+            committed += 1;
+        }
+    }
+    assert_eq!(
+        committed, 0,
+        "rounds whose EXEC committed after the overflow"
+    );
+}
