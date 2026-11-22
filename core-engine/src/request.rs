@@ -141,7 +141,7 @@ impl CommandRef<'_> {
             | CommandRef::LPush(key, _)
             | CommandRef::RPush(key, _)
             | CommandRef::SAdd(key, _) => Some(key),
-            _ => None,
+            CommandRef::Get(_) | CommandRef::HGet(..) | CommandRef::MGet(_) => None,
         }
     }
 }
