@@ -1,0 +1,2 @@
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"RPUSH","1249687.62","0.616","0.056","0.607","0.791","0.831","215.295"

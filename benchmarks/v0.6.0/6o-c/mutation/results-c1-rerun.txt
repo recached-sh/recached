@@ -1,0 +1,1 @@
+KILLED: a gain does not reset the escalation [reply_coalesce] test tests::reply_coalesce_6oc::a_gain_without_company_still_starts_the_escalation_over ... FAILED | test result: FAILED. 26 passed; 1 failed; 0 ignored; 0 measured; 606 filtered out; finished in 0.23s

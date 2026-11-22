@@ -1,0 +1,33 @@
+2026-11-22T16:13:10Z C1a (1 worker) start: load 0.94
+2026-11-22T16:31:17Z C1a exit 0
+2026-11-22T16:32:57Z C1b (3 workers) start: load 0.99
+2026-11-22T16:47:12Z C1b exit 0
+2026-11-22T16:49:12Z C1c (diag counters, 1 worker) start
+2026-11-22T16:50:32Z C1c exit 0
+2026-11-22T16:51:52Z C1d (diag counters, 3 workers) start
+2026-11-22T16:52:56Z C1d exit 0
+2026-11-22T16:52:56Z C1 driver done
+2026-11-22T17:25:58Z c1v2-1w start: load 0.82
+2026-11-22T17:49:33Z c1v2-1w exit 0
+2026-11-22T17:50:13Z c1v2-3w start: load 0.97
+2026-11-22T18:02:09Z c1v2-3w exit 0
+2026-11-22T18:03:49Z c1v2-diag-3w start: load 0.77
+2026-11-22T18:04:55Z c1v2-diag-3w exit 0
+2026-11-22T18:06:35Z c1v2-diag-1w start: load 0.71
+2026-11-22T18:07:50Z c1v2-diag-1w exit 0
+2026-11-22T18:08:10Z c2 start: load 0.92
+2026-11-22T18:41:15Z c2 exit 0
+2026-11-22T18:42:15Z c3-1w start: load 0.79
+2026-11-22T18:58:29Z c3-1w exit 0
+2026-11-22T18:59:09Z c3-3w start: load 0.94
+2026-11-22T19:03:50Z c3-3w exit 0
+2026-11-22T19:03:50Z v1 driver done
+2026-11-22T19:33:03Z final-primary start: load 0.83
+2026-11-22T20:05:27Z final-primary exit 0
+2026-11-22T20:06:47Z final-secondary start: load 0.72
+2026-11-22T20:33:53Z final-secondary exit 0
+2026-11-22T20:34:33Z final-3w start: load 0.84
+2026-11-22T20:39:17Z final-3w exit 0
+2026-11-22T20:40:17Z final-aof start: load 0.99
+2026-11-22T21:02:06Z final-aof exit 0
+2026-11-22T21:02:06Z v2 driver done
