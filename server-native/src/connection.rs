@@ -471,6 +471,9 @@ pub(crate) async fn handle_tcp<S>(
                             continue 'outer;
                         }
                         reply_coalesce::note_batch();
+                        // Frames this read batch consumed, whatever they
+                        // answered: whether its flush may yield (below).
+                        let mut commands: u32 = 0;
                         'parse: loop {
                             // An empty line between commands is nothing, as
                             // in Redis's inline protocol — and `redis-cli
@@ -540,6 +543,7 @@ pub(crate) async fn handle_tcp<S>(
                                 Answered::Not(frame) => frame,
                                 Answered::Borrowed(consumed) => {
                                     read_pos += consumed;
+                                    commands += 1;
                                     if writer.write_all(&resp_buf).await.is_err() {
                                         break 'outer;
                                     }
@@ -549,6 +553,7 @@ pub(crate) async fn handle_tcp<S>(
                             match frame {
                                 Ok((decoded, consumed)) => {
                                     read_pos += consumed;
+                                    commands += 1;
                                     let cmd = match decoded {
                                         Ok(c) => c,
                                         Err(e) => {
@@ -1068,12 +1073,18 @@ pub(crate) async fn handle_tcp<S>(
                         }
                         // Let the other connections ready on this worker run
                         // first, so the replies of the pass leave together
-                        // (see `reply_coalesce`). A flush with AOF batches to
-                        // wait for is left to the gate, whose own coalescer
-                        // decides whether it yields (at most once per flush
-                        // either way; when the gate's coalescer is backed off
-                        // or off, that flush does not yield).
-                        if !writer.buffer().is_empty() && aof_pending.is_empty() {
+                        // (see `reply_coalesce`). Only after a batch of one
+                        // command: several pipelined replies already leave
+                        // together, and the yield would only delay them. A
+                        // flush with AOF batches to wait for is left to the
+                        // gate, whose own coalescer decides whether it yields
+                        // (at most once per flush either way; when the gate's
+                        // coalescer is backed off or off, that flush does not
+                        // yield).
+                        if reply_coalesce::batch_eligible(commands)
+                            && !writer.buffer().is_empty()
+                            && aof_pending.is_empty()
+                        {
                             reply_coalesce::before_flush().await;
                         }
                         // Flush all responses for this read batch in one syscall.

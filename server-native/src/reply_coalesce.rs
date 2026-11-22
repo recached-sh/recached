@@ -36,7 +36,12 @@
 //! AOF gate's coalescer does (`COALESCE_MISSES`, `COALESCE_BACKOFF`). The
 //! state is per worker thread: no shared cache line on the hot path, and a
 //! worker's own recent experience is what predicts whether its next yield
-//! gains.
+//! gains. A yield that resumes on another worker is a miss there (6O-C):
+//! see [`end`].
+//!
+//! **Only single-command batches yield** (6O-C, [`batch_eligible`]). A read
+//! batch that ran several pipelined commands already sends their replies
+//! together, so the yield would only delay them.
 //!
 //! `RECACHED_REPLY_COALESCE=off` turns it off (every flush immediate, the
 //! behaviour before 6O-B).
@@ -114,14 +119,29 @@ pub(crate) fn begin() -> Option<Probe> {
 
 /// Record whether the yield `probe` started gained; returns whether it did.
 ///
-/// Resumed on another worker (work stealing), there is nothing to compare
-/// with on this one: that is neither a gain nor a miss here.
+/// A gain is evidence on the worker the yield started on: its batch counter
+/// moved while the task was deferred, so another connection there ran its
+/// commands first. Anything else is a miss, scored on the worker the task
+/// resumed on — including a resume on *another* worker (work stealing).
+/// A task is stolen while yielded only by a worker with nothing of its own
+/// to run, and the origin's counter cannot be read from here, so there is no
+/// evidence of a gain; until 6O-C a migration counted as one, and a lone
+/// connection bouncing between idle workers yielded on every flush without
+/// ever backing off (+3% CPU per op at one client and three workers, 6O-B).
+/// Scoring it on the resumed worker keeps the state per thread and backs
+/// off where the task now runs.
 pub(crate) fn end(probe: Probe) -> bool {
     WORKER.with(|w| {
-        if std::ptr::from_ref(w) as usize != probe.worker {
-            return true;
+        let migrated = std::ptr::from_ref(w) as usize != probe.worker;
+        #[cfg(test)]
+        {
+            tally::count(&tally::YIELDS);
+            if migrated {
+                MIGRATIONS.with(|m| m.set(m.get() + 1));
+                tally::count(&tally::MIGRATIONS);
+            }
         }
-        if w.batches.get() != probe.batches {
+        if !migrated && w.batches.get() != probe.batches {
             w.misses.set(0);
             return true;
         }
@@ -130,7 +150,10 @@ pub(crate) fn end(probe: Probe) -> bool {
             w.misses.set(0);
             w.skip.set(BACKOFF);
             #[cfg(test)]
-            BACKOFFS.with(|b| b.set(b.get() + 1));
+            {
+                BACKOFFS.with(|b| b.set(b.get() + 1));
+                tally::count(&tally::BACKOFFS);
+            }
         } else {
             w.misses.set(misses);
         }
@@ -146,9 +169,28 @@ pub(crate) async fn before_flush() {
     }
 }
 
+/// Whether a flush that ends a read batch should go through
+/// [`before_flush`]: only after a batch that ran exactly one command.
+///
+/// A batch of several pipelined commands already sends all their replies in
+/// one `send(2)`, and its client is waiting for the whole batch: what the
+/// yield amortizes is already amortized, and the yield only moves the wait
+/// to the end of the pass (6O-B: MSET P=16 p99 +11% at one worker, SET P=16
+/// p99 +26% at three). A batch that ran nothing has no reply to coalesce.
+pub(crate) fn batch_eligible(commands: u32) -> bool {
+    commands == 1
+}
+
 #[cfg(test)]
 thread_local! {
     static BACKOFFS: Cell<u64> = const { Cell::new(0) };
+    static MIGRATIONS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Test-only: yields this thread scored as resumed from another worker.
+#[cfg(test)]
+pub(crate) fn migrations() -> u64 {
+    MIGRATIONS.with(Cell::get)
 }
 
 /// Test-only: back-offs this thread has entered.
@@ -170,4 +212,39 @@ pub(crate) fn reset() {
         w.skip.set(0);
         w.misses.set(0);
     });
+}
+
+/// Test-only counters for a multi-worker runtime, whose workers' thread-local
+/// state a test cannot reach: counted only on threads named with [`PREFIX`],
+/// so tests running in parallel on other threads do not add to them.
+#[cfg(test)]
+pub(crate) mod tally {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// The thread-name prefix of a runtime whose yields are tallied.
+    pub(crate) const PREFIX: &str = "rc6oc-tally";
+    /// Yields scored by [`super::end`].
+    pub(crate) static YIELDS: AtomicU64 = AtomicU64::new(0);
+    /// Of those, yields resumed on another worker.
+    pub(crate) static MIGRATIONS: AtomicU64 = AtomicU64::new(0);
+    /// Back-offs entered.
+    pub(crate) static BACKOFFS: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn count(counter: &AtomicU64) {
+        if std::thread::current()
+            .name()
+            .is_some_and(|n| n.starts_with(PREFIX))
+        {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// `(yields, migrations, backoffs)` so far.
+    pub(crate) fn snapshot() -> (u64, u64, u64) {
+        (
+            YIELDS.load(Ordering::Relaxed),
+            MIGRATIONS.load(Ordering::Relaxed),
+            BACKOFFS.load(Ordering::Relaxed),
+        )
+    }
 }
