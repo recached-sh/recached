@@ -426,15 +426,18 @@ pub(crate) async fn handle_tcp<S>(
     // its senders to a registry: `ps_tx` on SUBSCRIBE or PSUBSCRIBE,
     // `watch_subscriber` on WATCH. Until then the arm cannot fire, and
     // polling it on every pass of the loop cost ~440 user cycles per command
-    // (6O-B profile), so it is left out of the `select!` until the first of
-    // those, and kept from then on — the same behaviour as before for any
-    // connection that ever subscribed or watched.
+    // (6O-B profile), so it is left out of the `select!` until the first
+    // handout and kept from then on — the same behaviour as before for any
+    // connection that ever subscribed or watched. Armed at the handout
+    // itself, not from the subscription state at the top of the loop: a
+    // SUBSCRIBE and UNSUBSCRIBE (or WATCH and UNWATCH) in one read batch
+    // leave no state behind, but an overflow signalled in between must still
+    // disconnect (6O-B review).
     let mut overflow_armed = false;
 
     with_deferred_aof(deferral, async {
     'outer: loop {
         let is_subscribed = !subscribed_channels.is_empty() || !subscribed_patterns.is_empty();
-        overflow_armed |= is_subscribed || !watched_keys.is_empty();
         // Republish only when the counts moved: CLIENT LIST has to see live
         // subscription state, but taking the registry's write lock once per
         // command would put it on the hot path.
@@ -804,6 +807,7 @@ pub(crate) async fn handle_tcp<S>(
                                                     continue;
                                                 }
                                                 if subscribed_channels.insert(ch.clone()) {
+                                                    overflow_armed = true;
                                                     pubsub.lock().await.subscribe(conn_id, &ch, ps_tx.clone());
                                                 }
                                                 let count = subscribed_channels.len() + subscribed_patterns.len();
@@ -840,6 +844,7 @@ pub(crate) async fn handle_tcp<S>(
                                                     continue;
                                                 }
                                                 if subscribed_patterns.insert(pat.clone()) {
+                                                    overflow_armed = true;
                                                     pubsub.lock().await.psubscribe(conn_id, &pat, ps_tx.clone());
                                                 }
                                                 let count = subscribed_channels.len() + subscribed_patterns.len();
@@ -882,6 +887,7 @@ pub(crate) async fn handle_tcp<S>(
                                                     // takes effect or sees the watch and notifies.
                                                     let _closed = state.replicas.unordered.close().await;
                                                     let mut reg = watch_registry.map.lock().await;
+                                                    overflow_armed = true;
                                                     for key in &keys {
                                                         if watched_keys.insert(key.clone()) {
                                                             reg.entry(key.clone()).or_default().push(watch_subscriber.clone());
@@ -1063,7 +1069,10 @@ pub(crate) async fn handle_tcp<S>(
                         // Let the other connections ready on this worker run
                         // first, so the replies of the pass leave together
                         // (see `reply_coalesce`). A flush with AOF batches to
-                        // wait for is yielded by the gate instead, once.
+                        // wait for is left to the gate, whose own coalescer
+                        // decides whether it yields (at most once per flush
+                        // either way; when the gate's coalescer is backed off
+                        // or off, that flush does not yield).
                         if !writer.buffer().is_empty() && aof_pending.is_empty() {
                             reply_coalesce::before_flush().await;
                         }

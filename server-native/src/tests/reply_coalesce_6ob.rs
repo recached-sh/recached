@@ -165,58 +165,80 @@ async fn first_reply_sees(conns: usize) -> Vec<usize> {
     for server in servers {
         let _ = server.await;
     }
-    let seen = seen.lock().unwrap().clone();
-    seen
+    seen.lock().unwrap().clone()
 }
 
-#[tokio::test]
-async fn replies_of_connections_ready_together_leave_after_all_their_commands_ran() {
+#[test]
+fn replies_of_connections_ready_together_leave_after_all_their_commands_ran() {
     let _g = switch_lock();
-    reply_coalesce::reset();
-    // Several passes in a row on this thread: the yields must keep finding
-    // company (the connections record their batches), or the second pass
-    // would already be backed off and reply one by one.
-    for pass in 0..4 {
-        let coalesced = first_reply_sees(3).await;
-        assert_eq!(
-            coalesced,
-            vec![3, 3, 3],
-            "pass {pass}: every reply waits for the other ready connections' commands"
-        );
-    }
+    // The current-thread runtime runs the server on this thread, whose
+    // back-off state the test controls; the lock is held outside it.
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            reply_coalesce::reset();
+            // Several passes in a row on this thread: the yields must keep finding
+            // company (the connections record their batches), or the second pass
+            // would already be backed off and reply one by one.
+            for pass in 0..4 {
+                let coalesced = first_reply_sees(3).await;
+                assert_eq!(
+                    coalesced,
+                    vec![3, 3, 3],
+                    "pass {pass}: every reply waits for the other ready connections' commands"
+                );
+            }
 
-    // Control: with coalescing off the first reply leaves after only its own
-    // command, so the assertion above is about the yield, not the harness.
-    reply_coalesce::reset();
-    reply_coalesce::set_enabled(false);
-    let immediate = first_reply_sees(3).await;
-    reply_coalesce::set_enabled(true);
-    reply_coalesce::reset();
-    assert_eq!(
-        immediate[0], 1,
-        "uncoalesced, the first reply left alone: {immediate:?}"
-    );
+            // Control: with coalescing off the first reply leaves after only its own
+            // command, so the assertion above is about the yield, not the harness.
+            reply_coalesce::reset();
+            reply_coalesce::set_enabled(false);
+            let immediate = first_reply_sees(3).await;
+            reply_coalesce::set_enabled(true);
+            reply_coalesce::reset();
+            assert_eq!(
+                immediate[0], 1,
+                "uncoalesced, the first reply left alone: {immediate:?}"
+            );
+        });
 }
 
-#[tokio::test]
-async fn a_lone_connection_backs_off_and_still_gets_every_reply_in_order() {
+#[test]
+fn a_lone_connection_backs_off_and_still_gets_every_reply_in_order() {
     let _g = switch_lock();
-    reply_coalesce::reset();
-    let server = spawn_server().await;
-    let mut c = RespClient::connect(server.tcp_addr).await;
-    // Far more round trips than MISSES + BACKOFF: the back-off cycles, and
-    // every reply still arrives, in order, with the right content.
-    for i in 0..200 {
-        let key = format!("lone:{i}");
-        assert_eq!(
-            c.cmd(&["SET", &key, &i.to_string()]).await,
-            Value::SimpleString("OK".into())
-        );
-        assert_eq!(
-            c.cmd(&["GET", &key]).await,
-            Value::BulkString(Some(i.to_string().into_bytes()))
-        );
-    }
+    // The current-thread runtime runs the server on this thread, whose
+    // back-off state the test controls; the lock is held outside it.
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            reply_coalesce::reset();
+            let backoffs = reply_coalesce::backoffs();
+            let server = spawn_server().await;
+            let mut c = RespClient::connect(server.tcp_addr).await;
+            // Far more round trips than MISSES + BACKOFF: the back-off cycles, and
+            // every reply still arrives, in order, with the right content.
+            for i in 0..200 {
+                let key = format!("lone:{i}");
+                assert_eq!(
+                    c.cmd(&["SET", &key, &i.to_string()]).await,
+                    Value::SimpleString("OK".into())
+                );
+                assert_eq!(
+                    c.cmd(&["GET", &key]).await,
+                    Value::BulkString(Some(i.to_string().into_bytes()))
+                );
+            }
+            // The server runs on this test's (current-thread) runtime, so its
+            // worker is this thread: alone, its yields gained nothing and backed off.
+            assert!(
+                reply_coalesce::backoffs() > backoffs,
+                "a lone connection's yields back off"
+            );
+        });
 }
 
 // ── the overflow arm ──────────────────────────────────────────────────────────
@@ -248,6 +270,64 @@ async fn a_subscriber_whose_queue_overflows_is_disconnected() {
         Ok(true),
         "the overflowed subscriber was disconnected"
     );
+}
+
+/// Pattern subscriptions hand out the same sender: armed there too.
+#[tokio::test]
+async fn a_pattern_subscriber_whose_queue_overflows_is_disconnected() {
+    let server = spawn_server().await;
+    let mut sub = RespClient::connect(server.tcp_addr).await;
+    let ack = sub.cmd(&["PSUBSCRIBE", "news.*"]).await;
+    assert!(matches!(ack, Value::Array(Some(_))), "subscribed: {ack:?}");
+    let mut publisher = RespClient::connect(server.tcp_addr).await;
+    let big = "x".repeat(9 * 1024 * 1024);
+    let _ = publisher.cmd(&["PUBLISH", "news.today", &big]).await;
+    assert!(
+        closes_within(&mut sub, 10).await,
+        "the overflowed pattern subscriber was disconnected"
+    );
+}
+
+/// 6O-B review: an overflow signalled while the connection held a
+/// subscriber only within one read batch must still disconnect. The key
+/// already holds 9 MiB (set by another connection); the watcher then sends
+/// `WATCH k`, `APPEND k x` and `UNWATCH` in one small write, so one read
+/// batch: its own APPEND is delivered to its own WATCH with the whole value,
+/// over the 8 MiB notification budget, and the UNWATCH leaves no watch
+/// behind. Armed from the state at the top of the loop, the arm never fired
+/// (and would have fired at some later, unrelated WATCH).
+#[tokio::test]
+async fn an_overflow_signalled_and_unwatched_within_one_batch_still_disconnects() {
+    let server = spawn_server().await;
+    let mut writer = RespClient::connect(server.tcp_addr).await;
+    let big = "x".repeat(9 * 1024 * 1024);
+    assert_eq!(
+        writer.cmd(&["SET", "k", &big]).await,
+        Value::SimpleString("OK".into())
+    );
+    let mut c = RespClient::connect(server.tcp_addr).await;
+    let req = b"*2\r\n$5\r\nWATCH\r\n$1\r\nk\r\n*3\r\n$6\r\nAPPEND\r\n$1\r\nk\r\n$1\r\nx\r\n*1\r\n$7\r\nUNWATCH\r\n";
+    c.stream.write_all(req).await.unwrap();
+    assert!(
+        closes_within(&mut c, 10).await,
+        "the overflow disconnected the connection"
+    );
+}
+
+/// Whether the server closes `c`'s connection within `secs`, reading and
+/// discarding whatever it sends first.
+async fn closes_within(c: &mut RespClient, secs: u64) -> bool {
+    let mut buf = [0u8; 4096];
+    tokio::time::timeout(std::time::Duration::from_secs(secs), async {
+        loop {
+            match c.stream.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
+        }
+    })
+    .await
+    .is_ok()
 }
 
 /// A connection that never subscribed or watched keeps working, with

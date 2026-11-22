@@ -22,9 +22,12 @@
 //!
 //! **What it changes.** Only *when* a reply's bytes reach the kernel, within
 //! one scheduler pass. Never what a reply says, the order of replies on a
-//! connection, or what a reply waits for. A reply is delayed by at most the
-//! commands of the connections that were already runnable on its worker:
-//! there is no timer, and nothing waits for work that has not arrived.
+//! connection, or what a reply waits for. Tokio wakes a yielded task once
+//! its worker has run every other task in its queue (including tasks that
+//! input arriving meanwhile made ready, and whatever it steals) and polled
+//! the I/O driver — or at the maintenance tick, every `event_interval` (61)
+//! polls, the hard bound even for a worker that never idles. There is no
+//! timer, and nothing waits for input that has not arrived.
 //!
 //! **When nobody else is ready** (one client, or a quiet moment), the yield
 //! is pure cost: a scheduler round trip and a zero-timeout poll of the I/O
@@ -126,6 +129,8 @@ pub(crate) fn end(probe: Probe) -> bool {
         if misses >= MISSES {
             w.misses.set(0);
             w.skip.set(BACKOFF);
+            #[cfg(test)]
+            BACKOFFS.with(|b| b.set(b.get() + 1));
         } else {
             w.misses.set(misses);
         }
@@ -139,6 +144,17 @@ pub(crate) async fn before_flush() {
         tokio::task::yield_now().await;
         end(probe);
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static BACKOFFS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Test-only: back-offs this thread has entered.
+#[cfg(test)]
+pub(crate) fn backoffs() -> u64 {
+    BACKOFFS.with(Cell::get)
 }
 
 /// Test-only: this thread's back-off state, `(skip, misses)`.
