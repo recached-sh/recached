@@ -1,144 +1,149 @@
 ---
 layout: home
-title: "Recached: in-memory cache with built-in real-time sync"
-description: "A Rust-powered in-memory cache with built-in real-time synchronization. Use the server from Redis clients over a supported RESP subset, read cached data locally in browsers, Android and Apple apps, and Rust services, and sync updates over WebSocket."
+markdownStyles: false
+title: 'Recached — More than a cache. Built to sync.'
+titleTemplate: false
+description: 'A Rust-powered caching engine with real-time synchronization built in. Keep cached data close to your applications and synchronize updates across connected clients.'
 
-hero:
-  name: "Recached"
-  text: "More than a cache. Built to sync."
-  tagline: "A Rust-powered caching engine with real-time synchronization built in. Keep cached data close to your applications, read locally, and synchronize updates across connected clients."
-  image:
-    src: /brand/hero.svg
-    alt: Connected R and synchronized server, browser, mobile, and Rust clients
-  actions:
-    - theme: brand
-      text: Get Started
-      link: /guide/quick-start
-    - theme: alt
-      text: Explore Architecture
-      link: /guide/how-it-works
-    - theme: alt
-      text: GitHub
-      link: https://github.com/recached-sh/recached
-
-features:
-  - icon:
-      src: /brand/icons/server.svg
-      width: 24
-      height: 24
-      wrap: true
-    title: In-memory cache server
-    details: A key-value cache with expiry, counters, collections, and JSON. Connect ioredis, node-redis, or redis-py over RESP using the supported command subset. The server adds TLS, authentication, metrics, persistence, and replication.
-    link: /server/commands
-    linkText: Supported commands
-  - icon:
-      src: /brand/icons/real-time-sync.svg
-      width: 24
-      height: 24
-      wrap: true
-    title: Real-time sync, built in
-    details: Subscribe to key patterns to receive a snapshot and later changes over WebSocket. Reconnecting clients replay queued writes, then refresh what they watch.
-    link: /guide/how-it-works#connect-and-hydrate
-    linkText: Connect and hydrate
-  - icon:
-      src: /brand/icons/local-reads.svg
-      width: 24
-      height: 24
-      wrap: true
-    title: Local reads
-    details: Browser, Android, Apple, and embedded Rust clients read cached values from their own memory instead of making a server request for every read.
-    link: /guide/how-it-works#read-and-write-locally
-    linkText: Read and write locally
-  - icon:
-      src: /brand/icons/offline.svg
-      width: 24
-      height: 24
-      wrap: true
-    title: Offline-capable caching
-    details: Persist browser data to IndexedDB or native data to SQLite. Writes made while disconnected queue and replay on reconnect, within outbox limits.
-    link: /guide/client-support#write-durability-and-replay
-    linkText: Durability and replay
-  - icon:
-      src: /brand/icons/scoped-access.svg
-      width: 24
-      height: 24
-      wrap: true
-    title: Scoped sync access
-    details: Backend-minted sync tokens limit which keys each connection may read and write. Watching a pattern never grants access to it.
-    link: /server/sync-scopes
-    linkText: Sync scopes
-  - icon:
-      src: /brand/icons/rust-engine.svg
-      width: 24
-      height: 24
-      wrap: true
-    title: One Rust engine
-    details: The server and every client run the same core-engine. Each platform adds its own transport, persistence, and reactive API, so behavior differs by client.
-    link: /guide/client-support
-    linkText: Compare clients
+# Homepage copy. Every claim here must match guide/introduction.md and
+# guide/client-support.md; statuses in `runtimes` are the maturity labels used
+# there.
+rcHero:
+  eyebrow: 'Recached — Rust-powered caching & sync'
+  line1: 'More than a cache.'
+  line2: 'Built to sync.'
+  lead: 'A Rust-powered caching engine with real-time synchronization built in. Keep cached data close to your applications and synchronize updates across connected clients.'
+  primary: { text: 'Get Started', link: '/guide/quick-start.html' }
+  secondary: { text: 'Explore Documentation', link: '/guide/introduction.html' }
+  github: 'https://github.com/recached-sh/recached'
 ---
 
-## A cache with synchronization built in
+<HomeHero />
 
-Recached is an in-memory caching engine. The server holds keys and values with expiry, counters, and collections, and your backend uses it through the RESP command subset with the Redis client it already has. Synchronization is part of the same engine, not a separate service: the Rust cache engine also runs in browsers as WebAssembly, inside native Android and Apple apps, and in embedded Rust services. Those clients hold the keys they watch in local memory and receive changes over WebSocket, so a UI can render cached data without a request per read and update when the backend changes it.
+<HomeSection id="capabilities" eyebrow="Capabilities" title="A cache server and the clients that read it locally" lead="Recached is an in-memory key-value cache. The same Rust engine also runs inside your browser, mobile and Rust clients, which hold the keys they watch and receive changes as they happen.">
+  <div class="rc-cards">
+    <FeatureCard icon="server" title="In-memory cache server" details="Strings, expiry, counters, hashes, lists, sets, sorted sets and JSON documents. Your backend connects with ioredis, node-redis, redis-py or redis-cli over a supported RESP command subset." link="/server/commands.html" link-text="Supported commands" />
+    <FeatureCard icon="sync" title="Real-time sync, built in" details="Clients subscribe to key patterns, receive a snapshot and then each change over WebSocket, and re-hydrate what they watch after reconnecting." link="/guide/how-it-works.html#connect-and-hydrate" link-text="Connect and hydrate" />
+    <FeatureCard icon="local" title="Local reads" details="Browser, Android, Apple and embedded Rust clients read cached values from their own memory instead of making a network request for every read." link="/guide/how-it-works.html#read-and-write-locally" link-text="Read and write locally" />
+    <FeatureCard icon="offline" title="Offline-capable clients" details="Browser data can persist to IndexedDB and native data to SQLite. Writes made while disconnected queue and replay on reconnect, within outbox limits." link="/guide/client-support.html#write-durability-and-replay" link-text="Durability and replay" />
+    <FeatureCard icon="scope" title="Scoped sync access" details="Tokens minted by your backend limit which keys each connection may read and write. Watching a pattern never grants access to it." link="/server/sync-scopes.html" link-text="Sync scopes" />
+    <FeatureCard icon="engine" title="One Rust engine" details="The server and every client run the same core-engine. Each platform adds its own transport, persistence and reactive API, so capabilities differ by client." link="/guide/client-support.html" link-text="Compare clients" />
+  </div>
+</HomeSection>
 
-Recached is a cache with built-in sync, not a system of record. Keep MySQL or PostgreSQL as the source of truth and publish committed state into Recached. [What Recached is — and isn't](/guide/introduction#what-recached-is-and-isnt) draws the line.
+<HomeSection id="workflow" tone="alt" eyebrow="Workflow" title="From docker run to a live UI" lead="Your backend keeps writing with the Redis client it already has. Subscribed clients receive the change and read it from local memory.">
+<WorkflowSteps :steps="[
+  { title: 'Run Recached', body: 'Start the server with Docker, Homebrew or Cargo. Port 6379 speaks RESP; port 6380 serves WebSocket sync.' },
+  { title: 'Write from your backend', body: 'Use any Redis client with the supported command subset. No Recached-specific driver is needed.' },
+  { title: 'Watch a key pattern', body: 'A client registers a live query, receives the matching keys, then every later change to them.' },
+  { title: 'Read locally', body: 'Reads come from the client’s own memory. Change listeners fire when the server pushes an update.' },
+]">
 
-## Architecture
+::: code-group
 
-<figure>
-  <img class="light-only" src="/architecture-light.svg" alt="Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory.">
-  <img class="dark-only" src="/architecture-dark.svg" alt="Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory.">
-</figure>
+```bash [Server]
+docker run -p 6379:6379 -p 6380:6380 ghcr.io/recached-sh/recached:latest
 
-- **Browser:** `recached-edge` runs the engine as WebAssembly, with optional IndexedDB persistence and React and Vue adapters.
-- **Android and Apple:** Kotlin and Swift SDKs run the engine natively through UniFFI and persist data and queued writes to SQLite.
-- **Rust services:** `recached-embed` holds a watched slice of the cache in your process's memory.
-- **Recached server:** executes RESP commands from your backend, persists snapshots and an optional AOF, and fans changes out to permitted clients.
-- **Your database (optional):** stays the source of truth. Your backend or an outbox worker publishes committed state to Recached. There is no built-in SQL connector; see [database integration](/guide/database-integration).
+redis-cli ping
+# PONG
+```
 
-[How it works](/guide/how-it-works) covers hydration, reconnect replay, and each client's storage contract.
+```ts [Backend]
+import Redis from 'ioredis'
 
-## Hydrate, then read locally
+const cache = new Redis('redis://127.0.0.1:6379')
+await cache.set('inventory:item:99', '42')
+```
 
-Register a live query to receive initial server state and later changes:
-
-```typescript
+```ts [Browser]
 import { createCache } from 'recached-edge'
 
 const cache = await createCache({
-  connect: { url: 'ws://localhost:6380' },
+  connect: { url: 'ws://127.0.0.1:6380' },
 })
-cache.liveQuery('inventory:*')
+
+cache.liveQuery('inventory:*') // snapshot, then live changes
 cache.onKeyChange('inventory:item:99', () => {
-  console.log(cache.get('inventory:item:99'))
+  render(cache.get('inventory:item:99')) // a local read
 })
 ```
 
-Reads can return a miss before the initial snapshot arrives. On mobile, call `watch(pattern)` to subscribe, then use Kotlin `Flow` or Swift `AsyncStream` to observe local values. [How it works](/guide/how-it-works) covers hydration and reconnect recovery.
+:::
 
-## Use cases
+These are plaintext development endpoints. Read [security](/server/security) before exposing either port.
 
-**Real-time interfaces.** A backend `INCR` on `metrics:orders:today` reaches every subscribed dashboard without a polling loop or a separate push endpoint. The same path carries shared carts, presence, typing indicators, and reactive UI state.
+</WorkflowSteps>
+</HomeSection>
 
-**Offline-capable apps.** An Android or iOS field app reopens without a network and still reads the reference data and configuration it last synced from SQLite. Writes queue locally and replay when the connection returns. Browser persistence saves local writes but not every server update; see [browser persistence](/browser/persistence).
+<HomeSection id="architecture" eyebrow="Architecture" title="One engine, from the server to every client" lead="Backend services write over RESP. Clients sync over WebSocket and serve reads from a local cache. Your database stays the source of truth.">
+  <figure class="rc-figure">
+    <img class="light-only" src="/architecture-light.svg" width="1040" height="420" alt="Your database stays the source of truth; your backend publishes committed state to the Recached server over RESP on port 6379. Browser, Android and iOS, and Rust service clients sync over WebSocket on port 6380 and read from a local cache." />
+    <img class="dark-only" src="/architecture-dark.svg" width="1040" height="420" alt="Your database stays the source of truth; your backend publishes committed state to the Recached server over RESP on port 6379. Browser, Android and iOS, and Rust service clients sync over WebSocket on port 6380 and read from a local cache." />
+  </figure>
+  <div class="rc-arch-notes">
+    <p><strong>A cache, not a system of record.</strong> Keep PostgreSQL or MySQL as the source of truth and publish committed state into Recached. A Recached acknowledgment confirms a cache write, not a database commit.</p>
+    <p><a href="/guide/how-it-works.html">How it works</a> covers hydration, reconnect replay and each client’s storage contract. <a href="/guide/database-integration.html">Database integration</a> shows the outbox pattern.</p>
+  </div>
+</HomeSection>
 
-**Backend services.** A Rust service reads feature flags or tenant configuration from local memory on every request. A change made through the server reaches each instance, and a reconnect re-hydrates whatever the instance missed.
+<HomeSection id="runtimes" tone="alt" eyebrow="Clients and SDKs" title="Choose your runtime" lead="APIs, persistence and guarantees differ by client. Each status below is the project’s own maturity label.">
+<RuntimeGrid :items="[
+  { name: 'Server', package: 'Docker · Homebrew · cargo install --git', status: 'Release candidate for cache workloads', tone: 'rc', link: '/server/installation.html' },
+  { name: 'Browser', package: 'recached-edge (WebAssembly)', status: 'Sync layer beta', tone: 'beta', link: '/browser/getting-started.html' },
+  { name: 'React and Vue', package: '@recached/react · @recached/vue', status: 'Sync layer beta', tone: 'beta', link: '/react/getting-started.html' },
+  { name: 'Android', package: 'dev.recached:recached-android', status: '0.1.2 preview', tone: 'preview', link: '/android/getting-started.html' },
+  { name: 'iOS and macOS', package: 'Recached via SwiftPM', status: '0.1.2 preview', tone: 'preview', link: '/ios/getting-started.html' },
+  { name: 'Rust service', package: 'recached-embed (Git dependency)', status: 'Unpublished', tone: 'unpublished', link: '/rust/getting-started.html' },
+]" />
+  <p class="rc-runtimes-note">React Native, Flutter and a WASI build are <a href="/roadmap.html">planned</a>, not implemented. See <a href="/guide/client-support.html">client support and limits</a>.</p>
+</HomeSection>
 
-[Use cases](/guide/use-cases) explains each pattern, and where Redis, Memcached, or a database is the better tool.
+<DocsCta title="Start with the quick start" body="Run a server, write a key from your backend, and watch the change arrive in a browser client." :primary="{ text: 'Get Started', link: '/guide/quick-start.html' }" :secondary="{ text: 'Explore Documentation', link: '/guide/introduction.html' }" />
 
-## Choose your runtime
+<style>
+.rc-cards {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+}
 
-| Runtime | Package | Status |
-|---|---|---|
-| [Browser](/browser/getting-started), [React](/react/getting-started), [Vue](/vue/getting-started) | `recached-edge`, `@recached/react`, `@recached/vue` on npm | Sync layer beta |
-| [Android](/android/getting-started) | `dev.recached:recached-android` on Maven Central | 0.1.0 preview |
-| [iOS and macOS](/ios/getting-started) | `Recached` via SwiftPM | 0.1.0 preview |
-| [Rust service](/rust/getting-started) | `recached-embed` as a Git dependency | Unpublished |
-| [Server](/server/installation) | Docker image, Homebrew, or `cargo install --git` | Release candidate for cache workloads |
+.rc-arch-notes {
+  display: grid;
+  gap: 8px 40px;
+  margin-top: 32px;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--rc-text-2);
+}
 
-[Client support and limits](/guide/client-support) explains API, persistence, and delivery differences. The [quick start](/guide/quick-start) runs a server and connects a backend and a browser client.
+@media (min-width: 960px) {
+  .rc-arch-notes {
+    grid-template-columns: 1fr 1fr;
+  }
+}
 
-## Use a local cache without a server
+.rc-arch-notes p,
+.rc-runtimes-note {
+  margin: 0;
+}
 
-Omit `connect` in the browser, or omit the URL in a mobile `RecachedConfig`, to keep data on the client. Browser persistence uses IndexedDB; native SDKs save to SQLite. Cross-device sync needs a server. See [local-only use cases](/guide/use-cases#no-server-at-all) and the [outbox limits](/guide/client-support#write-durability-and-replay).
+.rc-arch-notes strong {
+  color: var(--rc-text-1);
+}
+
+.rc-arch-notes a,
+.rc-runtimes-note a,
+.rc-flow-code > p a {
+  color: var(--rc-accent);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--rc-accent-border);
+  text-underline-offset: 3px;
+}
+
+.rc-runtimes-note {
+  margin-top: 20px;
+  font-size: 14px;
+  color: var(--rc-text-3);
+}
+</style>

@@ -3,8 +3,8 @@
 Recached clients keep local cache data in memory and synchronize with the server over WebSocket. The same Rust engine executes cache operations in the server, browser, native mobile SDKs, and embedded Rust client; each adapter owns its transport and persistence.
 
 <figure>
-  <img class="light-only" src="/architecture-light.svg" alt="Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory.">
-  <img class="dark-only" src="/architecture-dark.svg" alt="Backend RESP clients connect to the Recached server on port 6379. Browser, native Android and Apple apps, and embedded Rust services sync over WebSocket on port 6380 and read local memory.">
+  <img class="light-only" src="/architecture-light.svg" alt="Your database stays the source of truth; your backend publishes committed state to the Recached server over RESP on port 6379. Browser, Android and iOS, and Rust service clients sync over WebSocket on port 6380 and read from a local cache.">
+  <img class="dark-only" src="/architecture-dark.svg" alt="Your database stays the source of truth; your backend publishes committed state to the Recached server over RESP on port 6379. Browser, Android and iOS, and Rust service clients sync over WebSocket on port 6380 and read from a local cache.">
   <figcaption>Backend commands execute on the server. Client reads use local memory; writes and updates travel over WebSocket.</figcaption>
 </figure>
 

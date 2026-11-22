@@ -11,8 +11,8 @@ The server exposes a broader command surface than the client SDKs:
 | Backend over RESP | Server package `recached`, binary `recached-server` | Reads run on the server | Snapshot and optional AOF | RESP pub/sub and key notifications | Cache server release candidate |
 | Browser | `recached-edge` | WebAssembly memory | Optional IndexedDB WAL and outbox | `onKeyChange`, `onPatternChange`, `onMutation` | Sync layer beta |
 | React / Vue in a browser | `@recached/react` / `@recached/vue` | Through `recached-edge` | Same as browser client | Hooks / composables | Browser adapters |
-| Android | `dev.recached:recached-android` | Native Rust memory through UniFFI | SQLite local data and outbox | Kotlin `Flow` and `StateFlow` | 0.1.1 preview on Maven Central |
-| iOS / macOS | Swift package `Recached` | Native Rust memory through UniFFI | SQLite local data and outbox | `AsyncStream`, `ObservableKey`, `ObservedKey` | 0.1.1 preview via SwiftPM |
+| Android | `dev.recached:recached-android` | Native Rust memory through UniFFI | SQLite local data and outbox | Kotlin `Flow` and `StateFlow` | 0.1.2 preview on Maven Central |
+| iOS / macOS | Swift package `Recached` | Native Rust memory through UniFFI | SQLite local data and outbox | `AsyncStream`, `ObservableKey`, `ObservedKey` | 0.1.2 preview via SwiftPM |
 | Rust service | `recached-embed` | Native process memory | In-memory store and outbox | `subscribe` pub/sub receiver | Git dependency; unpublished crate |
 
 The native SDKs run Rust directly, without WebAssembly or a WebView. Android supports API 24+ on `arm64-v8a`, `armeabi-v7a`, and `x86_64`. Swift supports iOS 15+ and macOS 12+; `ObservedKey` needs iOS 17+ or macOS 14+.
@@ -120,6 +120,7 @@ Open one mobile instance per database file. Keep its identity and database out o
 | SDK release | Core | Server it needs for every guarantee |
 |---|---|---|
 | `recached-edge`, `@recached/react`, `@recached/vue` 0.5.x | 0.5 | 0.5 |
+| Kotlin `recached-android` 0.1.2, Swift `Recached` 0.1.2 | 0.5.1 | 0.5 |
 | Kotlin `recached-android` 0.1.1, Swift `Recached` 0.1.1 | 0.5.0 | 0.5 |
 | Kotlin and Swift 0.1.0 | 0.4.0 | 0.4 or 0.5 |
 | `recached-embed` (git) | as checked out | same version |

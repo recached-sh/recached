@@ -151,7 +151,7 @@ warning, until this is fixed.
 
 The Kotlin and Swift previews save server-pushed data and pending writes in SQLite, so an app can reopen offline with its saved cache. Register `watch(pattern)` after every open to reconcile missed edits and deletions when the network returns. Kotlin `Flow`, Swift `AsyncStream`, and SwiftUI models react to changes in local memory.
 
-The SDKs are 0.1.0 previews. Watches do not authorize access, local writes can be refused by the server, and replay has capacity and dedup retention limits. Start with [Android](/android/getting-started), [Apple](/ios/getting-started), and [client limits](/guide/client-support).
+The SDKs are 0.1.2 previews. Watches do not authorize access, local writes can be refused by the server, and replay has capacity and dedup retention limits. Start with [Android](/android/getting-started), [Apple](/ios/getting-started), and [client limits](/guide/client-support).
 
 ## Where you should reach for something else
 
@@ -197,7 +197,7 @@ See [Concurrency model](/server/commands#concurrency-model).
 | Cluster / sharding | No | Yes | Client-side sharding |
 | Threading | Multi-threaded — commands execute on every core | Threaded I/O (`io-threads`, off by default); command execution on one thread | Multi-threaded |
 | Cross-key atomicity | Single-key only ([why](/server/commands#concurrency-model)) | Everything, including `MULTI`/`EXEC` | Single-key only |
-| Command coverage | 124 catalog entries | 250+ | ~15 |
+| Command coverage | 134 catalog entries | 250+ | ~15 |
 | Maturity | Server release candidate; sync layer beta | 15+ years | 20+ years |
 | License | Apache 2.0 | AGPLv3 / RSALv2 + SSPLv1 (BSD-3 up to 7.2) | BSD-3 |
 

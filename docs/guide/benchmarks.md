@@ -1,6 +1,6 @@
 # Benchmarks
 
-Recached publishes no cross-project performance comparison. Everything below measures Recached alone, and says nothing about how any other cache performs on this or any other host.
+Recached publishes no cross-project throughput or latency comparison. The throughput and latency numbers below measure Recached alone, and say nothing about how any other cache performs on this or any other host. The one cross-project table, [memory per key](#memory-per-key-v0-6), shows Redis and Valkey using less memory than Recached for small keys.
 
 The supported claim is narrower: Recached schedules command execution across worker threads. Measure throughput, latency, and memory again for the exact commit, images, host, and workload you plan to deploy.
 
