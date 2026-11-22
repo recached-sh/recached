@@ -2931,6 +2931,74 @@ mod gate_tests {
         })
     }
 
+    /// 6O-B: a connection with tickets for two distinct batches waits for
+    /// both. Its first batch is written by another connection's flush; its
+    /// second append then opens a new batch. The lock-free empty check must
+    /// still see the second ticket after the first is taken.
+    #[tokio::test]
+    async fn a_reply_waits_for_every_batch_its_connection_queued() {
+        let dir = scratch("two_batches");
+        let path = dir.join("f.aof");
+        let w = Arc::new(
+            AofWriter::open(path.clone(), AofSync::EverySec)
+                .await
+                .unwrap(),
+        );
+        let state = state();
+        let early = Arc::new(AtomicU64::new(0));
+        let mut a = tokio::io::BufWriter::new(AofGatedWriter::new(
+            ProbeSocket {
+                aof: path.clone(),
+                frame: frame("a2"),
+                early: Arc::clone(&early),
+            },
+            Arc::clone(&state),
+        ));
+        let a_deferral = a.get_ref().deferral();
+        with_deferred_aof(Arc::clone(&a_deferral), async {
+            w.append_client_write(&frame("a1")).await.unwrap();
+        })
+        .await;
+        // Another connection joins that batch and flushes: it is written.
+        let mut b = tokio::io::BufWriter::new(AofGatedWriter::new(
+            ProbeSocket {
+                aof: path.clone(),
+                frame: frame("b1"),
+                early: Arc::clone(&early),
+            },
+            Arc::clone(&state),
+        ));
+        let b_deferral = b.get_ref().deferral();
+        with_deferred_aof(b_deferral, async {
+            w.append_client_write(&frame("b1")).await.unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut b, b"+OK\r\n")
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::flush(&mut b).await.unwrap();
+        })
+        .await;
+        // The first connection's second append opens a new batch.
+        with_deferred_aof(a_deferral, async {
+            w.append_client_write(&frame("a2")).await.unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut a, b"+OK\r\n")
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::flush(&mut a).await.unwrap();
+        })
+        .await;
+        let on_disk = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            early.load(Ordering::SeqCst),
+            0,
+            "a reply preceded its AOF write"
+        );
+        for f in ["a1", "b1", "a2"] {
+            let fr = frame(f);
+            assert!(on_disk.windows(fr.len()).any(|x| x == fr), "{f} on disk");
+        }
+    }
+
     /// The 6M-A finding, as a test: fifty connections ready on one worker
     /// used to cost fifty `write(2)`s. With coalescing they share a few; with
     /// it off — the old behaviour, kept as the control — each is its own.
