@@ -140,6 +140,34 @@ fn script() -> Vec<Command> {
         Command::Append("h".into(), b"wrongtype".to_vec()),
         Command::HIncrBy("s".into(), "f".into(), 1),
         set("h", b"a string replaces a hash", SetOptions::default()),
+        // 6O-B: the list and set writes, probe-accounted since then. A new
+        // key, growth, the inline-to-table switch of a set, re-added members
+        // (counted once, not resized), a member named twice in one command,
+        // binary list values, both ends, and wrong types either way.
+        Command::LPush("l".into(), vec![b"a".to_vec()]),
+        Command::LPush(
+            "l".into(),
+            vec![b"b".to_vec(), vec![b'z'; 200], b"\xff\x00".to_vec()],
+        ),
+        Command::RPush("l".into(), vec![b"tail".to_vec()]),
+        Command::RPush("l2".into(), vec![vec![b'r'; 40]; 3]),
+        Command::SAdd("set".into(), vec!["m1".into()]),
+        Command::SAdd("set".into(), vec!["m1".into(), "m2".into(), "m2".into()]),
+        Command::SAdd(
+            "set".into(),
+            (0..40).map(|i| format!("member:{i}")).collect(),
+        ),
+        Command::SAdd(
+            "set".into(),
+            (0..40).map(|i| format!("member:{i}")).collect(),
+        ),
+        Command::LPush("s".into(), vec![b"wrongtype".to_vec()]),
+        Command::RPush("set".into(), vec![b"wrongtype".to_vec()]),
+        Command::SAdd("l".into(), vec!["wrongtype".into()]),
+        Command::Expire("l2".into(), 100),
+        Command::RPush("l2".into(), vec![b"keeps its ttl".to_vec()]),
+        Command::SAdd("ttl".into(), vec!["wrongtype".into()]),
+        Command::LPop("l".into(), None),
         // Not probe-eligible: these keep the general path in the mix, on the
         // same keys, so the two paths have to agree with each other.
         Command::Del(vec!["a".into(), "nx".into()]),
@@ -217,6 +245,40 @@ fn probed_writes_revive_expired_keys_with_exact_accounting() {
     assert_eq!(store.execute(Command::Ttl("e".into())), Value::Integer(-1));
 }
 
+/// 6O-B: the same for the list and set writes. A push to an expired list
+/// starts a new one (Redis: the expired key is gone), and the TTL index
+/// forgets it.
+#[test]
+fn probed_list_and_set_writes_revive_expired_keys_with_exact_accounting() {
+    let store = KeyValueStore::new();
+    store.execute(Command::RPush(
+        "el".into(),
+        vec![b"old".to_vec(), b"older".to_vec()],
+    ));
+    store.execute(Command::PExpire("el".into(), 1));
+    store.execute(Command::SAdd("es".into(), vec!["old".into()]));
+    store.execute(Command::PExpire("es".into(), 1));
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    assert_eq!(
+        store.execute(Command::LPush("el".into(), vec![b"new".to_vec()])),
+        Value::Integer(1)
+    );
+    assert_accounting_exact(&store, "revived list");
+    assert_eq!(
+        store.execute(Command::SAdd("es".into(), vec!["old".into(), "new".into()])),
+        Value::Integer(2)
+    );
+    assert_accounting_exact(&store, "revived set");
+    assert_eq!(store.execute(Command::Ttl("el".into())), Value::Integer(-1));
+    assert_eq!(store.execute(Command::Ttl("es".into())), Value::Integer(-1));
+    // By reference, as the server runs it.
+    store.execute(Command::PExpire("el".into(), 1));
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (reply, _) = store.execute_reporting_ref(&Command::RPush("el".into(), vec![b"x".to_vec()]));
+    assert_eq!(reply, Value::Integer(1));
+    assert_accounting_exact(&store, "revived list by reference");
+}
+
 /// Run `threads` workers for `rounds`, each calling `work(thread, round)`,
 /// released together so they really overlap.
 fn race(threads: usize, rounds: usize, work: impl Fn(usize, usize) + Sync) {
@@ -248,6 +310,38 @@ fn many_writers_on_one_key_account_exactly() {
         store.execute(cmd);
     });
     assert_accounting_exact(&store, "one hot key");
+}
+
+/// 6O-B: pushes and adds racing each other, a type change, a pop and
+/// expiry on the same keys, by reference as the server runs them. Every
+/// list push lands exactly once (no lost update under the stripe), and the
+/// accounting is exact.
+#[test]
+fn list_and_set_writers_racing_on_shared_keys_account_exactly() {
+    let store = KeyValueStore::new();
+    let pushes = AtomicUsize::new(0);
+    race(8, 2_000, |t, r| {
+        let cmd = match (t + r) % 6 {
+            0 | 1 => {
+                pushes.fetch_add(1, Ordering::Relaxed);
+                Command::LPush("q".into(), vec![vec![b'v'; (r * 5) % 90]])
+            }
+            2 => Command::SAdd(
+                "members".into(),
+                vec![format!("m{}", r % 50), format!("m{}", t)],
+            ),
+            3 => Command::RPush("mixed".into(), vec![b"x".to_vec()]),
+            4 => Command::SAdd("mixed".into(), vec!["y".into()]),
+            _ => Command::PExpire("mixed".into(), 1),
+        };
+        let _ = store.execute_reporting_ref(&cmd);
+    });
+    assert_accounting_exact(&store, "list and set writers");
+    assert_eq!(
+        store.execute(Command::LLen("q".into())),
+        Value::Integer(pushes.load(Ordering::Relaxed) as i64),
+        "every push landed once"
+    );
 }
 
 #[test]
