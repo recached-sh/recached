@@ -17,7 +17,7 @@ use super::*;
 async fn eof_reaches_the_client_only_after_the_connections_cleanup() {
     let server = spawn_server().await;
     let mut setup = Vec::new();
-    let mut watch = format!("*1001\r\n$5\r\nWATCH\r\n").into_bytes();
+    let mut watch = b"*1001\r\n$5\r\nWATCH\r\n".to_vec();
     for i in 0..1_000 {
         let k = format!("eof:w:{i}");
         watch.extend_from_slice(format!("${}\r\n{k}\r\n", k.len()).as_bytes());
@@ -53,9 +53,11 @@ async fn eof_reaches_the_client_only_after_the_connections_cleanup() {
     assert_eq!(gone_early, 0, "rounds whose EOF arrived before the cleanup");
 }
 
-/// The write half is never shut down early by anything else: a reply too
-/// large for the buffer, pipelined requests and a client that half-closes
-/// its own side all still get every reply, then EOF.
+/// Nothing shuts the write half down early: a reply too large for the
+/// buffer, pipelined requests and a client that half-closes its own side
+/// still get every reply, then EOF. (A guard against a future early
+/// `shutdown()`; the drop itself happens after the last flush here, so this
+/// test does not exercise `TcpWriteHalf`'s `forget`.)
 #[tokio::test]
 async fn a_half_closed_client_still_gets_every_reply_then_eof() {
     let server = spawn_server().await;

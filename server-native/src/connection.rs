@@ -426,8 +426,11 @@ pub(crate) async fn handle_tcp_stream(
 /// see the end of the connection while its subscriptions, watches and
 /// ephemeral keys were still in place, and a client that reconnects on EOF
 /// could observe them. `forget` keeps the socket open until the read half
-/// drops as well, at the end of `handle_tcp_halves`, after the cleanup — the
-/// moment the connection always closed.
+/// drops as well, at the end of `handle_tcp_halves`, after the cleanup, and
+/// closes it then without a `shutdown`, as `tokio::io::split` does. (The read
+/// half is now a parameter, so it drops after the function's locals, the
+/// connection's registry guard included: the client is out of `CLIENT LIST`
+/// by the time it sees EOF, which it was not always before.)
 struct TcpWriteHalf(Option<tokio::net::tcp::OwnedWriteHalf>);
 
 impl Drop for TcpWriteHalf {
@@ -439,6 +442,8 @@ impl Drop for TcpWriteHalf {
 }
 
 impl TcpWriteHalf {
+    /// The half; `None` only inside `drop`, after which nothing polls, so
+    /// the error is unreachable.
     fn half(&mut self) -> std::io::Result<Pin<&mut tokio::net::tcp::OwnedWriteHalf>> {
         self.0
             .as_mut()
@@ -1271,7 +1276,8 @@ async fn handle_tcp_halves<R, W>(
 
     })
     .await;
-    // The socket is gone; queued AOF batches are written regardless.
+    // Releases the write half (queued AOF batches are written regardless);
+    // the socket closes when `reader` drops at the end, after the cleanup.
     drop(writer);
 
     if !subscribed_channels.is_empty() || !subscribed_patterns.is_empty() {
