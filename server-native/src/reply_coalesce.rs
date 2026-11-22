@@ -54,8 +54,11 @@ pub(crate) const MISSES: u32 = 2;
 /// Flushes that go out at once after a back-off, before the next probe.
 pub(crate) const BACKOFF: u32 = 32;
 /// The longest back-off (6O-C). Each back-off that follows another with no
-/// gain in between doubles, up to this: a worker with one connection probes
-/// twice per 1,024 flushes instead of twice per 34.
+/// gain in between, on a worker that ran batches for one connection only
+/// since, doubles, up to this: a worker with one connection probes twice per
+/// 1,024 flushes instead of twice per 34. When load returns, the first probe
+/// that gains starts over; the worst case is 1,024 flushes uncoalesced, a
+/// few milliseconds at these rates.
 pub(crate) const MAX_BACKOFF: u32 = 1024;
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
@@ -79,6 +82,10 @@ struct Worker {
     /// The next back-off's length: [`BACKOFF`] after a gain, doubling with
     /// each back-off since, up to [`MAX_BACKOFF`].
     period: Cell<u32>,
+    /// The connection that ran the last read batch here, and whether a
+    /// batch from another connection ran since the last back-off began.
+    last_conn: Cell<u64>,
+    company: Cell<bool>,
 }
 
 thread_local! {
@@ -88,15 +95,24 @@ thread_local! {
             skip: Cell::new(0),
             misses: Cell::new(0),
             period: Cell::new(BACKOFF),
+            last_conn: Cell::new(0),
+            company: Cell::new(false),
         }
     };
 }
 
-/// Record that a connection on this thread is about to run the commands of
-/// one read batch. What a yield compares against: if another connection
-/// recorded one while this one was yielded, the yield gained.
-pub(crate) fn note_batch() {
-    WORKER.with(|w| w.batches.set(w.batches.get().wrapping_add(1)));
+/// Record that connection `conn` on this thread ran the commands of one read
+/// batch. What a yield compares against: if another connection recorded one
+/// while this one was yielded, the yield gained. A batch from a connection
+/// other than the previous one also tells the back-off that the worker has
+/// company (see [`end`]).
+pub(crate) fn note_batch(conn: u64) {
+    WORKER.with(|w| {
+        w.batches.set(w.batches.get().wrapping_add(1));
+        if w.last_conn.replace(conn) != conn {
+            w.company.set(true);
+        }
+    });
 }
 
 /// A yield in progress: which thread it started on, and that thread's
@@ -163,6 +179,13 @@ pub(crate) fn end(probe: Probe) -> bool {
         let misses = w.misses.get() + 1;
         if misses >= MISSES {
             w.misses.set(0);
+            // Escalate only a worker that served one connection since its
+            // last back-off began. With company its yields may still gain
+            // (6O-B's fixed back-off served it), so it starts over instead
+            // of settling at the maximum (6O-C review).
+            if w.company.replace(false) {
+                w.period.set(BACKOFF);
+            }
             let period = w.period.get();
             w.skip.set(period);
             w.period.set(period.saturating_mul(2).min(MAX_BACKOFF));
@@ -196,6 +219,11 @@ pub(crate) async fn before_flush() {
 /// yield amortizes is already amortized, and the yield only moves the wait
 /// to the end of the pass (6O-B: MSET P=16 p99 +11% at one worker, SET P=16
 /// p99 +26% at three). A batch that ran nothing has no reply to coalesce.
+///
+/// Known limit: a client that writes each pipelined command with its own
+/// `write(2)` to a server that keeps up is read one whole frame at a time,
+/// which nothing distinguishes from P=1 without timing, so each of those
+/// still yields, as in 6O-B.
 pub(crate) fn batch_eligible(commands: u32) -> bool {
     commands == 1
 }
@@ -238,6 +266,7 @@ pub(crate) fn reset() {
         w.skip.set(0);
         w.misses.set(0);
         w.period.set(BACKOFF);
+        w.company.set(false);
     });
 }
 

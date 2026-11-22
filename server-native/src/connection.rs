@@ -1093,7 +1093,7 @@ pub(crate) async fn handle_tcp<S>(
                         if commands > 0 {
                             // What other connections' yields compare against:
                             // a batch that ran something.
-                            reply_coalesce::note_batch();
+                            reply_coalesce::note_batch(conn_id);
                         }
                         let eligible = reply_coalesce::batch_eligible(commands)
                             && !partial_left

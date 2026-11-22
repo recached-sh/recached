@@ -188,7 +188,8 @@ fn a_single_dedup_write_per_batch_still_coalesces() {
 /// A pipeline split across reads (6O-C review): the first read runs fifteen
 /// commands and ends inside the sixteenth frame, the second read completes
 /// only that frame. That batch ran one command, but it is the pipeline's
-/// tail and its client is waiting for it: no yield. Control: one large
+/// tail and its client is waiting for it: no yield. Nor does a read that
+/// runs one command and stops inside the next frame. Control: one large
 /// command split the same way is a lone command, and does yield.
 #[test]
 fn the_tail_of_a_pipeline_split_across_reads_does_not_yield() {
@@ -200,12 +201,24 @@ fn the_tail_of_a_pipeline_split_across_reads_does_not_yield() {
             pipeline.extend_from_slice(&encode_frame(&["SET", &format!("tail:{j}"), &value]));
         }
         let single = encode_frame(&["SET", "lone", &value]);
-        for (request, replies, want_yields) in [(pipeline, 16, 0), (single, 1, 1)] {
+        let first = encode_frame(&["SET", "lead:0", &value]);
+        let mut leading = first.clone();
+        leading.extend_from_slice(&encode_frame(&["SET", "lead:1", &value]));
+        let tail_cut = pipeline.len() - 100;
+        let single_cut = single.len() - 100;
+        // A leading split: the first read is frame 1 and a few bytes of
+        // frame 2 (it leaves part of a frame), the second completes frame 2
+        // (the tail). Neither yields.
+        let lead_cut = first.len() + 5;
+        for (request, cut, replies, want_yields) in [
+            (pipeline, tail_cut, 16, 0),
+            (leading, lead_cut, 2, 0),
+            (single, single_cut, 1, 1),
+        ] {
             reply_coalesce::reset();
             let shared = Shared::new(false);
             let (mut client, server) = tokio::io::duplex(1 << 20);
             let task = tokio::spawn(shared.serve(server));
-            let cut = request.len() - 100;
             let yields = reply_coalesce::yields();
             client.write_all(&request[..cut]).await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -221,6 +234,44 @@ fn the_tail_of_a_pipeline_split_across_reads_does_not_yield() {
             drop(client);
             let _ = task.await;
         }
+        reply_coalesce::reset();
+    });
+}
+
+/// A read batch that completes no frame is not another connection's company
+/// (6O-C review): a connection yielding while another one only receives part
+/// of a frame scores a miss, not a gain.
+#[test]
+fn a_batch_that_ran_nothing_is_not_a_gain_for_another_connections_yield() {
+    let _g = switch_lock();
+    current_thread().block_on(async {
+        reply_coalesce::reset();
+        let shared = Shared::new(false);
+        let (mut a, a_server) = tokio::io::duplex(1 << 16);
+        let (mut b, b_server) = tokio::io::duplex(1 << 16);
+        a.write_all(&encode_frame(&["SET", "alone", "v"]))
+            .await
+            .unwrap();
+        let partial = encode_frame(&["SET", "partial", "v"]);
+        b.write_all(&partial[..partial.len() - 3]).await.unwrap();
+        // `a` runs its command and yields; `b` reads part of a frame and runs
+        // nothing; `a` resumes.
+        let a_task = tokio::spawn(shared.serve(a_server));
+        let b_task = tokio::spawn(shared.serve(b_server));
+        let mut reply = [0u8; 5];
+        a.read_exact(&mut reply).await.unwrap();
+        assert_eq!(&reply, b"+OK\r\n");
+        assert_eq!(
+            reply_coalesce::state(),
+            (0, 1),
+            "a miss: nobody ran a command"
+        );
+        b.write_all(&partial[partial.len() - 3..]).await.unwrap();
+        b.read_exact(&mut reply).await.unwrap();
+        assert_eq!(&reply, b"+OK\r\n");
+        drop((a, b));
+        let _ = a_task.await;
+        let _ = b_task.await;
         reply_coalesce::reset();
     });
 }
@@ -318,7 +369,7 @@ fn a_migration_between_two_misses_neither_breaks_nor_adds_to_the_run() {
     assert!(!reply_coalesce::end(probes_rx.recv().unwrap()));
     assert_eq!(reply_coalesce::state(), (0, 1), "neutral");
     let probe = reply_coalesce::begin().unwrap();
-    reply_coalesce::note_batch();
+    reply_coalesce::note_batch(u64::MAX);
     assert!(reply_coalesce::end(probe), "a real gain");
     assert_eq!(reply_coalesce::state(), (0, 0), "the gain cleared the miss");
     reply_coalesce::reset();
@@ -347,7 +398,7 @@ fn back_offs_with_no_gain_between_them_double_up_to_the_maximum() {
     }
     assert_eq!(periods, vec![32, 64, 128, 256, 512, 1024, 1024, 1024]);
     let probe = reply_coalesce::begin().unwrap();
-    reply_coalesce::note_batch();
+    reply_coalesce::note_batch(u64::MAX);
     assert!(reply_coalesce::end(probe));
     assert_eq!(miss_twice(), reply_coalesce::BACKOFF, "a gain starts over");
     reply_coalesce::reset();
@@ -449,6 +500,41 @@ fn pipelined_batches_on_several_workers_never_yield() {
     let after = reply_coalesce::tally::snapshot();
     assert_eq!(after.0 - before.0, 0, "no batch of sixteen yielded");
     rt.shutdown_background();
+}
+
+/// The back-off escalates only for a worker that served one connection
+/// since its last back-off began (6O-C review): with company, its yields may
+/// still gain, so it keeps 6O-B's fixed back-off rather than settling at the
+/// maximum.
+#[test]
+fn a_worker_with_company_does_not_escalate_its_back_off() {
+    let _g = switch_lock();
+    reply_coalesce::reset();
+    let back_off = |batches_by: &[u64]| {
+        for _ in 0..reply_coalesce::MISSES {
+            let probe = reply_coalesce::begin().expect("probing");
+            assert!(!reply_coalesce::end(probe));
+        }
+        let (skip, _) = reply_coalesce::state();
+        for conn in batches_by {
+            reply_coalesce::note_batch(*conn);
+        }
+        for _ in 0..skip {
+            assert!(reply_coalesce::begin().is_none());
+        }
+        skip
+    };
+    // Two connections ran batches during each back-off: it stays at 32.
+    assert_eq!(back_off(&[1, 2]), 32);
+    assert_eq!(back_off(&[1, 2]), 32);
+    assert_eq!(back_off(&[1, 2]), 32);
+    // From now on only connection 3: the first change of connection counts
+    // once, then it doubles.
+    assert_eq!(back_off(&[3, 3]), 32);
+    assert_eq!(back_off(&[3, 3]), 32);
+    assert_eq!(back_off(&[3]), 64);
+    assert_eq!(back_off(&[3]), 128);
+    reply_coalesce::reset();
 }
 
 // ── cancellation and shutdown ─────────────────────────────────────────────────

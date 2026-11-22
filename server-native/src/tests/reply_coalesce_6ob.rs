@@ -54,7 +54,7 @@ fn a_yield_another_connection_ran_during_is_a_gain_and_clears_the_misses() {
     let probe = reply_coalesce::begin().unwrap();
     assert!(!reply_coalesce::end(probe));
     let probe = reply_coalesce::begin().unwrap();
-    reply_coalesce::note_batch(); // another connection's read batch
+    reply_coalesce::note_batch(u64::MAX); // another connection's read batch
     assert!(reply_coalesce::end(probe), "a batch ran during the yield");
     assert_eq!(reply_coalesce::state(), (0, 0), "a gain clears the miss");
     // So a later single miss does not back off.
