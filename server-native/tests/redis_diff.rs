@@ -656,9 +656,12 @@ fn watch_cases() -> Vec<(&'static str, Vec<Vec<&'static str>>)> {
     ]
 }
 
+// Named after `new_commands_match_redis` on purpose: CI's coverage and Load &
+// Chaos steps run ignored tests with `--skip new_commands_match_redis` (a
+// substring filter), and only the redis-compat job, which has a Redis, runs it.
 #[test]
 #[ignore = "needs a Redis: set RECACHED_DIFF_REDIS=host:port and pass --ignored"]
-fn watch_and_transactions_match_redis() {
+fn new_commands_match_redis_for_watch_and_transactions() {
     let redis = std::env::var("RECACHED_DIFF_REDIS")
         .expect("RECACHED_DIFF_REDIS=host:port of a Redis 7.2.x to compare against");
     let (_server, ours) = start_recached();
