@@ -1,0 +1,2 @@
+mode=nowatcher rounds=108842 exec_mixed=645 mget_mixed=0
+mode=watcher rounds=108500 exec_mixed=3727 mget_mixed=0

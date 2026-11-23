@@ -5109,6 +5109,8 @@ impl KeyValueStore {
     {
         let now = now_ms();
         for (key, val) in pairs {
+            #[cfg(any(test, feature = "test-hooks"))]
+            let hooked = write_pause::armed().then(|| key.as_ref().to_owned());
             let entry = Entry {
                 value: EntryValue::Str(val.into()),
                 deadline: Deadline::NONE,
@@ -5124,6 +5126,10 @@ impl KeyValueStore {
                 WriteSlot::Vacant(vacant) => {
                     vacant.insert(Box::new(entry));
                 }
+            }
+            #[cfg(any(test, feature = "test-hooks"))]
+            if let Some(key) = hooked {
+                write_pause::mutated(&key);
             }
         }
         Value::SimpleString("OK".to_string())
@@ -14090,3 +14096,11 @@ mod index_bench;
 
 #[cfg(test)]
 mod growth_bound_tests;
+
+/// Test-only: hold a multi-key write part-way through (6O-D).
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod write_pause;
+
+#[cfg(test)]
+mod atomicity_tests;

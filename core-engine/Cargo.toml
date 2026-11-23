@@ -24,6 +24,12 @@ smallvec.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
 
+[features]
+# Test-only fault injection (`store::write_pause`): lets the server's tests
+# stop a multi-key write part-way through. The server enables it as a
+# dev-dependency feature only, so no release build contains it.
+test-hooks = []
+
 [dev-dependencies]
 # Snapshot back-compatibility tests need to write a pre-0.2.2 snapshot, where
 # values were msgpack strings rather than binary.
