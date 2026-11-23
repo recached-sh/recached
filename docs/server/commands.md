@@ -11,6 +11,7 @@ Recached schedules independent commands across worker threads over a sharded key
 - **Single-key commands are atomic.** Read-modify-write commands such as `INCR`, `SETNX`, `GETSET`, `HINCRBY`, `LPUSH`, and `ZADD` hold one entry guard for the decision and mutation.
 - **Conflicting writers are ordered.** A multi-key write or `MULTI`/`EXEC` reserves all of its write keys against other server writes until persistence, replication, and notifications have recorded the result.
 - **`WATCH` compare-and-swap is sound.** `EXEC` reserves both its write keys and watched keys before checking invalidation, so a writer cannot land between the check and execution.
+- **A transaction's commands see one state** *(0.6)*. `EXEC` reserves every key its queued commands read or write, and every watched key, before it runs the first one. No other connection's write to those keys lands between two of them, so `MULTI GET a GET b EXEC` answers values `a` and `b` held at the same moment. A queued `KEYS`, `SCAN` or `DBSIZE` reserves the whole keyspace. As in Redis, every queued command evaluates expiry at the instant `EXEC` began, and relative deadlines (`SET k v PX 100`) count from it. Writes to keys the transaction does not name go on meanwhile.
 - **Values are not torn.** A reader sees a value before or after an individual mutation, never a partial value.
 - **Multi-key commands are atomic to readers too** *(0.6)*. A reader sees all of an `MSET`, `DEL k1 k2`, `RENAME`, `RENAMENX`, `COPY`, `SMOVE` or `*STORE`, or none of it. That includes a one-key write that changes its key in more than one step, such as `MSET k 1 k 2` or a pop that empties a list. A multi-key read (`MGET`, `EXISTS k1 k2`, `SINTER`, `SUNION`, `SDIFF`) observes all its keys at one instant, and evaluates their expiry at one time. Once a read has seen part of a multi-key write, every read that starts afterwards sees all of it.
   The cost: a read waits for a multi-key write in progress on its keys. A multi-key read that writes keep overlapping takes its keys' write locks for its own duration, and writers to every key on those stripes wait for it. The keyspace has 256 write-order stripes, so a read of a few hundred keys or more (a large `MGET`, a `SUNION` of many sets) can briefly hold back nearly every writer, much as Redis runs every command alone.
@@ -19,8 +20,8 @@ On a server with nothing that records write order — no AOF, no replication, no
 
 **What it does not guarantee**
 
-- **`MULTI`/`EXEC` is writer-isolated, not fully isolated.** Another connection cannot write a key reserved by the transaction, but reads may observe results between queued commands. Conversely, the reads a transaction queues are not isolated from other connections' writes: another command can land between two of them.
-- **Whole-keyspace operations are not snapshots.** A reader can see a `FLUSHDB` or a replica's full-sync restore part-done. `KEYS`, `SCAN` and `DBSIZE` walk the keyspace while writes continue.
+- **A transaction's writes are not atomic to readers outside it.** Another connection cannot write a key reserved by the transaction, but a read from another connection may observe the result of one queued write before the next. A single multi-key command inside the transaction (an `MSET`) is still atomic to readers.
+- **Whole-keyspace operations are not snapshots.** A reader can see a `FLUSHDB` or a replica's full-sync restore part-done. `KEYS`, `SCAN` and `DBSIZE` walk the keyspace while writes continue, except inside `MULTI`/`EXEC`, where they reserve the whole keyspace.
 - **Eviction removes victims one at a time.** On a store with a memory or key cap, a write that evicts several keys removes them in turn, so a reader can see one gone before another.
 
 If correctness depends on values read before a transaction, `WATCH` those keys and retry when `EXEC` returns nil. Use a database or another system with fully isolated multi-key transactions when readers must observe several keys changing as one indivisible state transition.
@@ -524,8 +525,8 @@ client ignores the new shape.
 
 Transactions queue commands and run them as one batch at `EXEC`, with optimistic locking through `WATCH`. The server reserves the union of queued write keys until every command and its persistence, replication, and notification effects finish. After `EXEC`, the full result set is broadcast to WebSocket clients.
 
-::: warning Writer isolation is not reader isolation
-A conflicting server write cannot interleave between queued commands. Reads do not acquire these ordering barriers, so another connection may observe intermediate results between two commands in the transaction.
+::: warning Outside readers may see a transaction part-way
+A conflicting server write cannot interleave between queued commands, and the transaction's own reads all see one state, evaluated at one instant *(0.6)*. Reads from other connections do not acquire these ordering barriers, so another connection may observe the result of one queued write before the next.
 
 - **Nothing runs before `EXEC`.** Queued commands are held until execution.
 - **All or nothing on a queue error.** If any command fails to queue, `EXEC` runs none of them and returns `EXECABORT`.

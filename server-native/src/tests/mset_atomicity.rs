@@ -22,6 +22,20 @@ pub(super) struct Pipe {
 }
 
 impl Pipe {
+    /// [`tcp`](Self::tcp), with the connection's task handle, for a test
+    /// that cancels it.
+    pub(super) fn tcp_task(shared: &Shared) -> (Pipe, tokio::task::JoinHandle<()>) {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let task = tokio::spawn(shared.serve(server));
+        (
+            Pipe {
+                io: client,
+                buf: Vec::new(),
+            },
+            task,
+        )
+    }
+
     pub(super) fn tcp(shared: &Shared) -> Pipe {
         let (client, server) = tokio::io::duplex(64 * 1024);
         tokio::spawn(shared.serve(server));

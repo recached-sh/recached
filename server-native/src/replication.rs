@@ -638,7 +638,7 @@ impl ReplHub {
         }
     }
 
-    fn stripe_for(key: &str) -> usize {
+    pub(crate) fn stripe_for(key: &str) -> usize {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         key.hash(&mut hasher);
         hasher.finish() as usize % WRITE_ORDER_STRIPES
@@ -744,10 +744,9 @@ impl ReplHub {
             .await
     }
 
-    /// Lock command ordering domains plus explicit keys. Transactions include
-    /// their WATCH set here before checking for invalidation, closing the gap
-    /// where a conflicting writer could otherwise land after the check but
-    /// before EXEC acquired its command barriers.
+    /// Lock command ordering domains plus explicit keys (a DEDUP client id).
+    /// `EXEC` uses [`lock_transaction`](Self::lock_transaction) instead, which
+    /// also covers its queued reads.
     pub(crate) async fn lock_commands_and_keys<'a, 'k, I>(
         &'a self,
         commands: &[Command],
@@ -758,6 +757,35 @@ impl ReplHub {
     {
         let closed = self.unordered.close().await;
         self.lock_stripes(commands, extra_keys, Some(closed)).await
+    }
+
+    /// EXEC's guards (6O-E): the unordered gate closed and drained, then the
+    /// stripes of every key any queued command reads or writes, and of the
+    /// watched keys, in ascending order — or every stripe when a queued
+    /// command touches the whole keyspace (`FLUSHDB`, `KEYS`, `SCAN`,
+    /// `DBSIZE`).
+    ///
+    /// With the gate closed no write runs unordered, and every ordered write
+    /// takes its own keys' stripes; so while these are held no other write
+    /// commits to a key the transaction reads, writes or watches. Writes to
+    /// other keys go on. Each command contributes both its write keys
+    /// ([`ordering_key_refs`], with the sources `*STORE` and `COPY` read) and
+    /// its read keys ([`read_keys`]) whatever [`is_write_command`] says of it,
+    /// so a command classified differently by the server and the store is
+    /// still covered.
+    pub(crate) async fn lock_transaction<'a, 'k, I>(
+        &'a self,
+        queue: &[Command],
+        watched: I,
+    ) -> OrderGuards<'a>
+    where
+        I: IntoIterator<Item = &'k str>,
+    {
+        let closed = self.unordered.close().await;
+        match transaction_stripes(queue, watched) {
+            None => self.lock_every_stripe(closed).await,
+            Some(stripes) => self.lock_stripe_list(stripes, Some(closed)).await,
+        }
     }
 
     async fn lock_stripes<'a, 'k, I>(
@@ -794,6 +822,15 @@ impl ReplHub {
             return self.lock_every_stripe(closed).await;
         }
         stripes.extend(extra_keys.into_iter().map(Self::stripe_for));
+        self.lock_stripe_list(stripes, closed).await
+    }
+
+    /// Take `stripes` (any order, duplicates allowed) in ascending order.
+    async fn lock_stripe_list<'a>(
+        &'a self,
+        mut stripes: SmallVec<[usize; 4]>,
+        closed: Option<GateClosed<'a>>,
+    ) -> OrderGuards<'a> {
         stripes.sort_unstable();
         stripes.dedup();
 
@@ -898,6 +935,56 @@ impl ReplHub {
                 .collect(),
         )
     }
+}
+
+/// The replication-order stripes a transaction holds while it runs (see
+/// [`ReplHub::lock_transaction`]); `None` for every stripe.
+pub(crate) fn transaction_stripes<'k, I>(
+    queue: &[Command],
+    watched: I,
+) -> Option<SmallVec<[usize; 4]>>
+where
+    I: IntoIterator<Item = &'k str>,
+{
+    // A set of stripes, not a list of keys: an MGET of a million keys costs
+    // 256 bits, and stops being read once it covers every stripe.
+    let mut set = [0u64; WRITE_ORDER_STRIPES / 64];
+    let mut covered = 0usize;
+    let mut add = |key: &str| {
+        let stripe = ReplHub::stripe_for(key);
+        let (word, bit) = (stripe / 64, 1u64 << (stripe % 64));
+        if set[word] & bit == 0 {
+            set[word] |= bit;
+            covered += 1;
+        }
+        covered == WRITE_ORDER_STRIPES
+    };
+    for command in queue {
+        // `None`: a command conflicting with every key (FLUSHDB).
+        let keys = ordering_key_refs(command)?;
+        if keys.iter().any(|key| add(key)) {
+            return None;
+        }
+        let all = match read_keys(command) {
+            ReadKeys::None => false,
+            ReadKeys::One(key) => add(key),
+            ReadKeys::Many(keys) => keys.iter().any(|key| add(key)),
+            ReadKeys::Keyspace => true,
+        };
+        if all {
+            return None;
+        }
+    }
+    for key in watched {
+        if add(key) {
+            return None;
+        }
+    }
+    Some(
+        (0..WRITE_ORDER_STRIPES)
+            .filter(|&stripe| set[stripe / 64] & (1u64 << (stripe % 64)) != 0)
+            .collect(),
+    )
 }
 
 pub(crate) type ReplRegistry = Arc<ReplHub>;

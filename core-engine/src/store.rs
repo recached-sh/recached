@@ -27,16 +27,58 @@ const WRONGTYPE: &str = "WRONGTYPE Operation against a key holding the wrong kin
 /// every store operation (TTL checks, LRU recency), an unguarded call makes the
 /// whole engine unusable in the browser, so the wasm build reads `Date.now()`.
 #[cfg(target_arch = "wasm32")]
-fn now_ms() -> u64 {
+fn system_now_ms() -> u64 {
     js_sys::Date::now() as u64
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn now_ms() -> u64 {
+fn system_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+thread_local! {
+    /// The instant a transaction runs at, while [`at_instant`] holds it.
+    static FROZEN_NOW: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// The store's clock: the system clock, or the instant [`at_instant`] fixed.
+#[inline]
+fn now_ms() -> u64 {
+    FROZEN_NOW
+        .with(std::cell::Cell::get)
+        .unwrap_or_else(system_now_ms)
+}
+
+/// The store's clock, in milliseconds since the Unix epoch: what expiry and
+/// relative deadlines are evaluated against. Inside [`at_instant`], the
+/// instant it fixed.
+pub fn clock_ms() -> u64 {
+    now_ms()
+}
+
+/// Run `f` with the store's clock fixed at `now` (6O-E).
+///
+/// Redis evaluates every command of a `MULTI`/`EXEC` at the instant `EXEC`
+/// began: a key that expires while the transaction runs is live to all of
+/// its commands, and a relative deadline (`SET k v PX n`) counts from that
+/// instant. The server runs each queued command's store call inside this,
+/// with the instant it read once its guards were held.
+///
+/// The override is per thread and covers only `f`, which must be synchronous:
+/// no other task can run on the thread meanwhile, so nothing else sees it.
+/// It nests, and is restored on return and on unwind.
+pub fn at_instant<R>(now: u64, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<u64>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FROZEN_NOW.with(|frozen| frozen.set(self.0));
+        }
+    }
+    let _restore = Restore(FROZEN_NOW.with(|frozen| frozen.replace(Some(now))));
+    f()
 }
 
 // ── ZSet inner ────────────────────────────────────────────────────────────────
@@ -5160,7 +5202,7 @@ impl KeyValueStore {
         match read_scope(&cmd) {
             ReadScope::One(key) => self.read_one(key, || self.execute_read_inner(&cmd)),
             ReadScope::Many(keys) => self.read_many(keys, || self.execute_read_inner(&cmd)),
-            ReadScope::Unkeyed => self.execute_inner(cmd),
+            ReadScope::Unkeyed | ReadScope::Keyspace => self.execute_inner(cmd),
         }
     }
 
@@ -5169,7 +5211,7 @@ impl KeyValueStore {
         match read_scope(cmd) {
             ReadScope::One(key) => self.read_one(key, || self.execute_read_inner(cmd)),
             ReadScope::Many(keys) => self.read_many(keys, || self.execute_read_inner(cmd)),
-            ReadScope::Unkeyed => self.execute_inner(cmd.clone()),
+            ReadScope::Unkeyed | ReadScope::Keyspace => self.execute_inner(cmd.clone()),
         }
     }
 
@@ -6277,7 +6319,7 @@ impl KeyValueStore {
                 // recurse (6O-D review).
                 debug_assert!(
                     matches!(other, Command::GetEx(_, None))
-                        || matches!(read_scope(other), ReadScope::Unkeyed),
+                        || matches!(read_scope(other), ReadScope::Unkeyed | ReadScope::Keyspace),
                     "read {other:?} has no arm in execute_read_inner"
                 );
                 self.execute_inner(other.clone())
@@ -7482,13 +7524,39 @@ fn probe_eligible(cmd: &Command) -> bool {
 /// one key, several (validated or locked together), or none that a
 /// multi-key write could split.
 enum ReadScope<'c> {
-    /// Connection-level and whole-keyspace commands. `KEYS`, `SCAN` and
-    /// `DBSIZE` walk the keyspace without a barrier, as before 6O-D: not a
-    /// snapshot (`SCAN` is not one in Redis either; recorded as a follow-up
-    /// for `KEYS` and `DBSIZE`).
+    /// Connection-level commands, and the writes (which never get here).
     Unkeyed,
+    /// `KEYS`, `SCAN` and `DBSIZE`: they read every key. They walk the
+    /// keyspace without a barrier, as before 6O-D: not a snapshot (`SCAN` is
+    /// not one in Redis either; recorded as a follow-up for `KEYS` and
+    /// `DBSIZE`). A transaction queuing one takes every stripe (6O-E).
+    Keyspace,
     One(&'c str),
     Many(&'c [String]),
+}
+
+/// The keys a read-only command reads, for a caller that has to keep writers
+/// of those keys out while it runs: the server's `EXEC` (6O-E).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadKeys<'c> {
+    /// No key: a connection-level command, or a write (whose keys the
+    /// caller's own write classification gives).
+    None,
+    One(&'c str),
+    Many(&'c [String]),
+    /// Every key: `KEYS`, `SCAN`, `DBSIZE`.
+    Keyspace,
+}
+
+/// See [`ReadKeys`]. Exhaustive over [`Command`] (through `read_scope`), so a
+/// new command cannot compile without being classified.
+pub fn read_keys(cmd: &Command) -> ReadKeys<'_> {
+    match read_scope(cmd) {
+        ReadScope::Unkeyed => ReadKeys::None,
+        ReadScope::Keyspace => ReadKeys::Keyspace,
+        ReadScope::One(key) => ReadKeys::One(key),
+        ReadScope::Many(keys) => ReadKeys::Many(keys),
+    }
 }
 
 /// See [`ReadScope`]. Every variant is listed, so a new command has to be
@@ -7551,7 +7619,7 @@ fn read_scope(cmd: &Command) -> ReadScope<'_> {
         | Command::ZCount(key, _, _)
         | Command::ZScan(key, _)
         | Command::JGet(key, _) => ReadScope::One(key.as_str()),
-        Command::Keys(_) | Command::Scan(..) | Command::DbSize => ReadScope::Unkeyed,
+        Command::Keys(_) | Command::Scan(..) | Command::DbSize => ReadScope::Keyspace,
         Command::Ping(_)
         | Command::Echo(_)
         | Command::Auth(_)
@@ -14801,3 +14869,107 @@ pub mod write_pause;
 
 #[cfg(test)]
 mod atomicity_tests;
+
+#[cfg(test)]
+mod transaction_clock_tests {
+    //! 6O-E: [`at_instant`] and [`read_keys`].
+    use super::*;
+    use crate::cmd::SetOptions;
+
+    fn set_px(store: &KeyValueStore, key: &str, ms: u64) {
+        let cmd = Command::from_value(Value::Array(Some(
+            ["SET", key, "v", "PX", &ms.to_string()]
+                .iter()
+                .map(|a| Value::BulkString(Some(a.as_bytes().to_vec())))
+                .collect(),
+        )))
+        .unwrap();
+        assert_eq!(store.execute(cmd), Value::SimpleString("OK".into()));
+    }
+
+    #[test]
+    fn a_fixed_instant_decides_expiry_and_relative_deadlines() {
+        let store = KeyValueStore::new();
+        let t = clock_ms();
+        at_instant(t, || set_px(&store, "k", 100));
+        // At the instant it was set, and just before its deadline: live, with
+        // the whole remaining time.
+        assert_eq!(
+            at_instant(t, || store.execute(Command::PTtl("k".into()))),
+            Value::Integer(100)
+        );
+        assert_eq!(
+            at_instant(t + 99, || store.execute(Command::Get("k".into()))),
+            Value::BulkString(Some(b"v".to_vec()))
+        );
+        // At and after the deadline: gone, whatever the system clock says.
+        assert_eq!(
+            at_instant(t + 100, || store.execute(Command::Get("k".into()))),
+            Value::BulkString(None)
+        );
+        assert_eq!(
+            at_instant(t + 100, || store.execute(Command::Exists(vec!["k".into()]))),
+            Value::Integer(0)
+        );
+        // And a moment that has not come yet sees it live again: the key is
+        // masked, not removed, by a read.
+        assert_eq!(
+            at_instant(t + 50, || store.execute(Command::Exists(vec!["k".into()]))),
+            Value::Integer(1)
+        );
+    }
+
+    #[test]
+    fn the_fixed_instant_nests_and_is_restored_on_return_and_unwind() {
+        assert!(FROZEN_NOW.with(std::cell::Cell::get).is_none());
+        at_instant(1_000, || {
+            assert_eq!(clock_ms(), 1_000);
+            at_instant(2_000, || assert_eq!(clock_ms(), 2_000));
+            assert_eq!(clock_ms(), 1_000);
+        });
+        assert!(FROZEN_NOW.with(std::cell::Cell::get).is_none());
+        let unwound = std::panic::catch_unwind(|| at_instant(3_000, || panic!("inside")));
+        assert!(unwound.is_err());
+        assert!(FROZEN_NOW.with(std::cell::Cell::get).is_none());
+        // The system clock again, not an old instant.
+        assert!(clock_ms() > 1_000_000_000_000);
+    }
+
+    #[test]
+    fn the_fixed_instant_is_per_thread() {
+        at_instant(5, || {
+            let other = std::thread::spawn(clock_ms).join().unwrap();
+            assert!(
+                other > 1_000_000_000_000,
+                "another thread saw the fixed instant"
+            );
+            assert_eq!(clock_ms(), 5);
+        });
+    }
+
+    #[test]
+    fn read_keys_classifies_reads_and_whole_keyspace_commands() {
+        assert_eq!(read_keys(&Command::Get("a".into())), ReadKeys::One("a"));
+        let keys = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            read_keys(&Command::MGet(keys.clone())),
+            ReadKeys::Many(&keys)
+        );
+        assert_eq!(
+            read_keys(&Command::Exists(keys.clone())),
+            ReadKeys::Many(&keys)
+        );
+        assert_eq!(read_keys(&Command::Keys("*".into())), ReadKeys::Keyspace);
+        assert_eq!(read_keys(&Command::DbSize), ReadKeys::Keyspace);
+        assert_eq!(read_keys(&Command::Ping(None)), ReadKeys::None);
+        // Writes are classified by the caller's write scope.
+        assert_eq!(
+            read_keys(&Command::Set(
+                "a".into(),
+                b"v".to_vec(),
+                SetOptions::default()
+            )),
+            ReadKeys::None
+        );
+    }
+}
