@@ -190,8 +190,10 @@ Capacity eviction is also propagated as an ordered `DEL`. AOF replay, replicas, 
 
 A successful `qstate` is complete for its pattern, so reconnect reconciliation can safely remove local keys absent from it. If the pattern matches more than `RECACHED_MAX_QSUB_INITIAL_KEYS`, the server returns an error instead of a truncated snapshot; narrow the pattern or raise the limit deliberately. Snapshot capture and registration share an ordering barrier, but response serialization and socket writes occur after that barrier is released.
 
-WATCH, QSUB, and pub/sub delivery queues are limited to 256 messages and 8 MiB per connection. A
-client that cannot drain its queue is disconnected and must reconcile after reconnecting.
+WebSocket WATCH, QSUB, and pub/sub delivery queues are limited to 256 messages and 8 MiB per connection. A
+client that cannot drain its queue is disconnected and must reconcile after reconnecting. A TCP `WATCH`
+is compare-and-set only and queues nothing: a change of any size or number marks the transaction
+dirty, so `EXEC` returns nil and the connection stays open *(0.6)*.
 
 The same rule governs the mutation fan-out that feeds scoped and legacy sync connections, which is
 buffered separately from the queues above. A client that falls far enough behind that the server can
@@ -349,7 +351,7 @@ The HMAC is computed over the base64url payload *text*. A token is valid while `
 | `DEDUP` client id | 64 chars |
 | Watched keys per connection | 1 024 |
 | Bulk string / total message | 64 MB |
-| WATCH/QSUB delivery | 256 messages and 8 MiB per connection |
+| WebSocket WATCH and QSUB delivery | 256 messages and 8 MiB per connection (a TCP `WATCH` queues nothing) |
 | Pub/sub delivery | 256 messages and 8 MiB per connection |
 | Replica delivery | 4 096 messages and 8 MiB per replica by default |
 | Partial-resync backlog | 16 MiB per primary by default |

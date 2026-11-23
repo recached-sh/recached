@@ -81,6 +81,16 @@ pub(crate) struct WatchSubscriber {
     /// (`isWatchedKeyExpired`). True for every other registration, so live
     /// queries are unaffected.
     live_at_watch: bool,
+    /// Set by every notification that invalidates a WATCH, before anything
+    /// is queued or charged (6O-E3), and shared by all of one connection's
+    /// registrations: what `EXEC` checks. A flag cannot be dropped or
+    /// overflow, so a conflict is never lost however large the change.
+    invalidated: Arc<AtomicBool>,
+    /// Whether the connection is sent the change itself: a WebSocket
+    /// watcher's keychange push, or a live query. False for a TCP `WATCH`,
+    /// which is pure compare-and-set: its notifications queue nothing, are
+    /// charged nothing against the byte budget, and cannot overflow it.
+    pushes: bool,
 }
 
 impl WatchSubscriber {
@@ -93,6 +103,18 @@ impl WatchSubscriber {
     /// reserved before anything is cloned.
     pub(crate) fn notify(&self, change: &KeyChange<'_>) -> bool {
         let invalidates = self.live_at_watch || !change.is_removal();
+        if invalidates {
+            // Release: an EXEC that reads the flag also sees the change. It
+            // reads it under the key's ordering stripe, which this writer
+            // holds, so the mutex orders the two anyway.
+            self.invalidated.store(true, Ordering::Release);
+        }
+        if !self.pushes {
+            // Pure CAS: the flag is the whole notification. Kept while the
+            // connection lives; dropped once its receiver is gone, as a
+            // failed send would have dropped it.
+            return !self.tx.is_closed();
+        }
         let delta = change
             .delta
             .as_ref()
@@ -133,6 +155,25 @@ impl WatchSubscriber {
         true
     }
 
+    /// Whether a change invalidated one of this connection's watches since
+    /// [`clear_invalidated`](Self::clear_invalidated).
+    pub(crate) fn invalidated(&self) -> bool {
+        self.invalidated.load(Ordering::Acquire)
+    }
+
+    /// Forget past invalidations: called with the watches already
+    /// unregistered (EXEC, DISCARD, UNWATCH of everything), so no
+    /// notification of them can still be in progress.
+    pub(crate) fn clear_invalidated(&self) {
+        self.invalidated.store(false, Ordering::Release);
+    }
+
+    /// Bytes charged against this connection's notification budget now.
+    #[cfg(test)]
+    pub(crate) fn pending_bytes(&self) -> usize {
+        self.budget.pending_bytes.load(Ordering::Acquire)
+    }
+
     /// This subscriber, registered for a key that was (`live`) or was not
     /// live when watched.
     pub(crate) fn watching(&self, live: bool) -> WatchSubscriber {
@@ -153,7 +194,36 @@ pub(crate) fn notification_channel(
     overflow: mpsc::Sender<()>,
     deltas: Arc<AtomicBool>,
 ) -> (WatchSubscriber, mpsc::Receiver<WatchNotif>) {
-    let (tx, rx) = mpsc::channel(NOTIFICATION_QUEUE_ITEMS);
+    subscriber_channel(conn_id, overflow, deltas, true, NOTIFICATION_QUEUE_ITEMS)
+}
+
+/// A TCP connection's `WATCH` subscriber: compare-and-set only (6O-E3). Its
+/// notifications set [`WatchSubscriber::invalidated`] and queue nothing, so a
+/// change of any size costs the connection one flag instead of a copy of the
+/// value charged against its budget, and never disconnects it. The receiver
+/// carries nothing; the connection keeps it so that its registrations are
+/// dropped once the connection is gone.
+pub(crate) fn cas_watch_channel(
+    conn_id: u64,
+    overflow: mpsc::Sender<()>,
+) -> (WatchSubscriber, mpsc::Receiver<WatchNotif>) {
+    subscriber_channel(
+        conn_id,
+        overflow,
+        Arc::new(AtomicBool::new(false)),
+        false,
+        1,
+    )
+}
+
+fn subscriber_channel(
+    conn_id: u64,
+    overflow: mpsc::Sender<()>,
+    deltas: Arc<AtomicBool>,
+    pushes: bool,
+    capacity: usize,
+) -> (WatchSubscriber, mpsc::Receiver<WatchNotif>) {
+    let (tx, rx) = mpsc::channel(capacity);
     (
         WatchSubscriber {
             conn_id,
@@ -164,6 +234,8 @@ pub(crate) fn notification_channel(
             }),
             deltas,
             live_at_watch: true,
+            invalidated: Arc::new(AtomicBool::new(false)),
+            pushes,
         },
         rx,
     )

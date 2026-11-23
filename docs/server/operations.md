@@ -46,7 +46,7 @@ Traffic metrics are event-driven:
 | `recached_last_successful_save_timestamp_seconds` | gauge | — | Unix timestamp of the last successful checkpoint. |
 | `recached_last_save_age_seconds` | gauge | — | Seconds since the last successful checkpoint. |
 | `recached_aof_bytes` | gauge | — | Current AOF file size when AOF is enabled. |
-| `recached_notification_overflows_total` | counter | — | WATCH/QSUB clients disconnected because their bounded notification queue filled. |
+| `recached_notification_overflows_total` | counter | — | WebSocket WATCH/QSUB clients disconnected because their bounded notification queue filled. A TCP `WATCH` never overflows *(0.6)*. |
 | `recached_replica_full_resync_total` | counter | — | Full snapshots this replica installed (its first sync included). Each one closes its WebSocket clients with `4001` so they rebuild from the new keyspace; partial resynchronisations are not counted. |
 | `recached_sync_lag_disconnects_total` | counter | — | WebSocket sync clients closed (code `4001`) because they fell behind the mutation fan-out far enough to miss frames, or because their replica fully resynchronised. They reconnect and resynchronise via `qstate`, so this is a backpressure signal, not data loss — but a sustained rate means clients cannot drain as fast as you are writing. |
 | `recached_pubsub_overflows_total` | counter | — | Pub/sub clients disconnected because their bounded delivery queue filled. |
