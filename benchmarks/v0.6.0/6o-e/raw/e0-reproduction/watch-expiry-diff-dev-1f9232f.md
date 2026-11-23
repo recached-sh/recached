@@ -1,0 +1,27 @@
+| case | redis-7.2.5 | recached-dev | match |
+|---|---|---|---|
+| live_then_expires | aborted | committed | **NO** |
+| absent_stable | committed | committed | yes |
+| expired_before_watch | committed | committed | yes |
+| expired_before_watch_then_recreated | aborted | aborted | yes |
+| expired_before_watch_then_read | committed | committed | yes |
+| expired_before_watch_then_swept | committed | committed | yes |
+| live_then_expires_then_read | aborted | committed | **NO** |
+| live_then_expires_then_swept | aborted | aborted | yes |
+| live_then_expires_then_recreated | aborted | aborted | yes |
+| live_not_yet_expired | committed | committed | yes |
+| live_deleted | aborted | aborted | yes |
+| absent_deleted | committed | aborted | **NO** |
+| live_ttl_changed | aborted | aborted | yes |
+| live_persisted | aborted | aborted | yes |
+| live_expire_in_past | aborted | aborted | yes |
+| live_same_value | aborted | aborted | yes |
+| absent_created | aborted | aborted | yes |
+| two_keys_one_expires | aborted | committed | **NO** |
+| two_keys_none_change | committed | committed | yes |
+| unwatch_before_expiry | committed | committed | yes |
+| discard_after_expiry | committed | committed | yes |
+| expires_between_multi_and_exec | aborted | committed | **NO** |
+| watch_cycles | acacac | accccc | **NO** |
+| absent_flushdb | committed | aborted | **NO** |
+| live_flushdb | aborted | aborted | yes |

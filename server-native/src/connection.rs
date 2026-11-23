@@ -894,6 +894,8 @@ async fn handle_tcp_halves<R, W>(
                                                     } else {
                                                         let mut results = Vec::with_capacity(queue.len());
                                                         for qcmd in queue {
+                                                            #[cfg(test)]
+                                                            let hook_cmd = qcmd.clone();
                                                             let resp = match qcmd {
                                                                 // Delivery lives in the connection loop, not the
                                                                 // store — `store.execute(Publish)` is a stub that
@@ -916,6 +918,8 @@ async fn handle_tcp_halves<R, W>(
                                                                 }
                                                                 _ => execute_and_record(&store, qcmd),
                                                             };
+                                                            #[cfg(test)]
+                                                            crate::propagation::exec_pause::after(&hook_cmd).await;
                                                             results.push(resp);
                                                         }
                                                         unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
@@ -2069,6 +2073,8 @@ pub(crate) async fn handle_ws<S>(
                                         } else {
                                             let mut results = Vec::with_capacity(queue.len());
                                             for qcmd in queue {
+                                                #[cfg(test)]
+                                                let hook_cmd = qcmd.clone();
                                                 let resp = match qcmd {
                                                     // See the TCP path: delivery lives here,
                                                     // not in the store.
@@ -2088,6 +2094,8 @@ pub(crate) async fn handle_ws<S>(
                                                     }
                                                     _ => execute_and_record(&store, qcmd),
                                                 };
+                                                #[cfg(test)]
+                                                crate::propagation::exec_pause::after(&hook_cmd).await;
                                                 results.push(resp);
                                             }
                                             // EXEC always flushes WATCH state. Drain any

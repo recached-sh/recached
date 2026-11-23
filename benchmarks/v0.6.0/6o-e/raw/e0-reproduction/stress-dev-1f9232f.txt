@@ -1,0 +1,6 @@
+port=17400 mode=unordered writers=2 writes=156565 rounds=144232 exec_illegal=6 mget_illegal=0
+port=17410 mode=unordered writers=2 writes=159709 rounds=143683 exec_illegal=0 mget_illegal=0
+port=17400 mode=watcher writers=2 writes=162161 rounds=144423 exec_illegal=48 mget_illegal=0
+port=17410 mode=watcher writers=2 writes=161306 rounds=143692 exec_illegal=0 mget_illegal=0
+port=17400 mode=sets writers=1 writes=49425 rounds=183741 exec_illegal=0 mget_illegal=0
+port=17410 mode=sets writers=1 writes=48490 rounds=186796 exec_illegal=0 mget_illegal=0
