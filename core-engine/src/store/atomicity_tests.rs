@@ -531,13 +531,18 @@ fn sequential_single_key_reads_are_linearizable_with_an_mset() {
                 recorder.run("GET a", &[], || {
                     vec![(
                         model(0),
-                        match store.execute(Command::Get(keys[0].into())) {
+                        match if round % 2 == 1 {
+                            store.execute_reporting_ref(&Command::Get(keys[0].into())).0
+                        } else {
+                            store.execute(Command::Get(keys[0].into()))
+                        } {
                             Value::BulkString(Some(v)) => Some(String::from_utf8(v).unwrap()),
                             other => panic!("GET a answered {other:?}"),
                         },
                     )]
                 });
-                // Odd rounds read through the by-reference entry point.
+                // Odd rounds make both reads through the by-reference entry
+                // point, so that path is the one whose first read must wait.
                 let cmd = (read.cmd)(keys[read.key]);
                 recorder.run(read.name, &[], || {
                     let reply = if round % 2 == 1 {
@@ -756,7 +761,11 @@ fn mgets_racing_msets_in_any_key_order_see_one_generation() {
             let cmd = CommandRef::MGet(LOAD_KEYS.iter().copied().collect());
             store.execute_ref_into(&cmd, &mut out).unwrap();
             let (reply, used) = Value::parse(&out).unwrap();
-            assert_eq!(used, out.len(), "a retried MGET left a partial reply behind");
+            assert_eq!(
+                used,
+                out.len(),
+                "a retried MGET left a partial reply behind"
+            );
             let seen = values(&reply);
             assert!(
                 seen.windows(2).all(|w| w[0] == w[1]),
@@ -880,51 +889,62 @@ fn rename_and_del_are_atomic_to_readers_too() {
 /// Test F: one MGET evaluates every key's expiry at one time, as Redis does,
 /// so keys sharing a deadline are all live or all expired in one answer —
 /// even when the clock ticks while the MGET runs.
+///
+/// Each round sets a deadline and runs MGETs of 4,000 keys back to back
+/// across it, so the clock passes the deadline while one of them is reading.
+/// The owned and borrowed paths run in separate rounds (if they alternated,
+/// the instant could fall in the other path's MGET every time).
 #[test]
 fn one_mget_sees_keys_sharing_a_deadline_together() {
     let store = KeyValueStore::new();
     let keys: Vec<String> = (0..4_000).map(|i| format!("dl:{i}")).collect();
-    for key in &keys {
-        store.execute(Command::Set(
-            key.clone(),
-            b"v".to_vec(),
-            SetOptions::default(),
-        ));
-    }
-    // Far enough ahead that setting it on every key finishes first.
-    let deadline = now_ms() + 250;
-    for key in &keys {
-        store.execute(Command::PExpireAt(key.clone(), deadline));
-    }
-    assert!(now_ms() < deadline, "setup outran the deadline");
-    let cmd = Command::MGet(keys.clone());
     let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+    let owned = Command::MGet(keys.clone());
     let borrowed = CommandRef::MGet(refs.iter().copied().collect());
-    let mut answers = 0;
-    while now_ms() <= deadline + 5 {
-        let live = values(&store.execute(cmd.clone()))
-            .iter()
-            .filter(|v| v.is_some())
-            .count();
+    let live_in = |reply: &Value| values(reply).iter().filter(|v| v.is_some()).count();
+    for round in 0..6 {
+        for key in &keys {
+            store.execute(Command::Set(
+                key.clone(),
+                b"v".to_vec(),
+                SetOptions::default(),
+            ));
+        }
+        // Far enough ahead that setting it on every key finishes first.
+        let deadline = now_ms() + 400;
+        for key in &keys {
+            store.execute(Command::PExpireAt(key.clone(), deadline));
+        }
+        assert!(now_ms() < deadline, "setup outran the deadline");
+        let (mut saw_live, mut saw_expired) = (false, false);
+        // Until an MGET has answered after the deadline (bounded).
+        while !saw_expired && now_ms() <= deadline + 2_000 {
+            let live = if round % 2 == 0 {
+                live_in(&store.execute(owned.clone()))
+            } else {
+                let mut out = Vec::new();
+                store.execute_ref_into(&borrowed, &mut out).unwrap();
+                let (reply, used) = Value::parse(&out).unwrap();
+                assert_eq!(
+                    used,
+                    out.len(),
+                    "a retried MGET left a partial reply behind"
+                );
+                live_in(&reply)
+            };
+            assert!(
+                live == 0 || live == keys.len(),
+                "round {round}: one MGET saw {live} of {} keys live",
+                keys.len()
+            );
+            saw_live |= live > 0;
+            saw_expired |= live == 0;
+        }
         assert!(
-            live == 0 || live == keys.len(),
-            "one MGET saw {live} of {} live",
-            keys.len()
+            saw_live && saw_expired,
+            "round {round} did not cross the deadline"
         );
-        let mut out = Vec::new();
-        store.execute_ref_into(&borrowed, &mut out).unwrap();
-        let (reply, used) = Value::parse(&out).unwrap();
-        assert_eq!(used, out.len(), "a retried MGET left a partial reply behind");
-        let live = values(&reply).iter().filter(|v| v.is_some()).count();
-        assert!(
-            live == 0 || live == keys.len(),
-            "one borrowed MGET saw {live} live"
-        );
-        answers += 1;
     }
-    // MGETs ran back to back across the deadline, so one of them was
-    // running when the clock passed it.
-    assert!(answers > 1, "only {answers} MGETs ran");
 }
 
 /// Test F: the expiry sweeper (which takes each key's stripe) racing MSETs

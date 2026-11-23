@@ -37,7 +37,9 @@ MUTANTS = [
     ("M2 multi-key read ignores writes in progress (validates only)",
      [("busy |= word & SEQ_ACTIVE != 0;", "busy |= word & 0 != 0;")]),
     ("M3 multi-key read skips its after-validation",
-     [("if after == before {", "if true || after == before {")]),
+     [("""                if after == before {
+                    return out;""", """                if true || after == before {
+                    return out;""")]),
     ("M4 locked fallback takes stripes in descending order",
      [("""        stripes.sort_unstable();
         stripes.dedup();
