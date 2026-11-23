@@ -1095,3 +1095,164 @@ fn the_transaction_scope_covers_every_key_a_command_names() {
     }
     assert!(checked > 100, "only {checked} keys checked");
 }
+
+// ── Review follow-ups (round 1) ──────────────────────────────────────────────
+
+/// A write to the *second* read key alone, while EXEC is stopped after the
+/// first: `[old, new]` is a state (b changed alone), but not one this
+/// transaction may answer once it has read `a`, since the write did not
+/// precede the transaction. It must wait for EXEC (review probe P6: a scope
+/// of the first command's read keys only passed every other test).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lone_write_to_a_later_read_key_waits_for_the_transaction() {
+    let shared = Shared::new(false);
+    let (a, b) = ("6oe:p6:a", "6oe:p6:b");
+    let (mut txc, mut writer) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
+    writer.cmd(&["MSET", a, "old", b, "old"]).await;
+    queue(&mut txc, &[&["GET", a], &["GET", b]]).await;
+    let pause = exec_pause::after_command_naming(a);
+    txc.send(&["EXEC"]).await;
+    assert!(pause.reached(WITHIN).await);
+    let waits = shared.state.replicas.stripe_waits();
+    writer.send(&["SET", b, "new"]).await;
+    let during = reply_or_waiting(&mut writer, &shared, waits).await;
+    drop(pause);
+    let exec = reply_within(&mut txc, "EXEC").await;
+    if during.is_none() {
+        assert_eq!(reply_within(&mut writer, "SET").await, ok());
+    }
+    assert!(
+        during.is_none(),
+        "SET b answered while EXEC was between its reads"
+    );
+    assert_eq!(exec, array(vec![bulk("old"), bulk("old")]));
+}
+
+/// A client that sends a read-only transaction and never reads the reply
+/// holds nothing once its commands have run: the guards are released before
+/// the reply is written (review, High). The reply here is 1 MiB, far past
+/// every buffer between the server and the stalled client.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_that_never_reads_its_exec_reply_blocks_no_writer() {
+    let shared = Shared::new(false);
+    let k = "6oe:stall:big";
+    let (mut stalled, mut writer) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
+    assert_eq!(writer.cmd(&["SET", k, &"x".repeat(1 << 20)]).await, ok());
+    queue(&mut stalled, &[&["GET", k], &["GET", k]]).await;
+    stalled.send(&["EXEC"]).await;
+    // Never read again. The writer's SET of the read key must be answered.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        tokio::time::timeout(WITHIN, writer.cmd(&["SET", k, "small"]))
+            .await
+            .expect("a SET of a key a stalled transaction read"),
+        ok()
+    );
+    assert!(
+        !shared.state.replicas.unordered.is_closed(),
+        "the gate reopened"
+    );
+    drop(stalled);
+}
+
+/// Queued writes run at the transaction's instant too: `SET k v PX 1000`
+/// after the transaction was stopped for 150 ms still counts from the
+/// instant, so `PTTL k` in the same transaction answers 1000 (review: running
+/// queued writes on the wall clock passed every other test).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queued_writes_count_relative_deadlines_from_the_instant() {
+    let shared = Shared::new(false);
+    let (x, k) = ("6oe:wclock:x", "6oe:wclock:k");
+    let mut txc = Pipe::tcp(&shared);
+    queue(
+        &mut txc,
+        &[&["GET", x], &["SET", k, "v", "PX", "1000"], &["PTTL", k]],
+    )
+    .await;
+    let pause = exec_pause::after_command_naming(x);
+    txc.send(&["EXEC"]).await;
+    assert!(pause.reached(WITHIN).await);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    drop(pause);
+    let exec = reply_within(&mut txc, "EXEC").await;
+    assert_eq!(exec, array(vec![nil(), ok(), Value::Integer(1000)]));
+}
+
+/// The instant is read once EXEC holds its guards, not when it starts to wait
+/// for them: a key that expires while EXEC waits behind a conflicting writer
+/// is gone to the transaction, as it would be in Redis, which runs the
+/// transaction after that writer (review: reading the clock first passed
+/// every other test).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_instant_is_taken_once_the_guards_are_held() {
+    let shared = Shared::new(false);
+    let (a, b, k) = ("6oe:after:a", "6oe:after:b", "6oe:after:k");
+    let _ordered = force_ordered(&shared, "6oe:after:unrelated").await;
+    let (mut txc, mut writer) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
+    assert_eq!(txc.cmd(&["SET", k, "v", "PX", "100"]).await, ok());
+    writer.cmd(&["MSET", a, "old", b, "old"]).await;
+    let pause = core_engine::store::write_pause::after_mutation_of(&shared.store, a, &[a, b]);
+    writer.send(&["MSET", a, "new", b, "new"]).await;
+    assert!(pause.wait_reached(WITHIN));
+    queue(&mut txc, &[&["GET", a], &["GET", k]]).await;
+    let waits = shared.state.replicas.stripe_waits();
+    txc.send(&["EXEC"]).await;
+    let deadline = Instant::now() + WITHIN;
+    while shared.state.replicas.stripe_waits() == waits {
+        assert!(Instant::now() < deadline, "EXEC never waited");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    // k expires while EXEC waits.
+    let expired_by = Instant::now() + Duration::from_millis(150);
+    tokio::time::sleep(expired_by.saturating_duration_since(Instant::now())).await;
+    drop(pause);
+    assert_eq!(reply_within(&mut writer, "MSET").await, ok());
+    assert_eq!(
+        reply_within(&mut txc, "EXEC").await,
+        array(vec![bulk("new"), nil()])
+    );
+}
+
+/// What the AOF records for a queued `SET k v PX 40` is the deadline the
+/// store set, counted from the transaction's instant, even when the
+/// transaction ran past it before its write was logged (review, Medium: the
+/// deadline was read back on the wall clock, found expired, and recomputed
+/// from it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_aof_records_a_queued_writes_deadline_from_the_instant() {
+    let (shared, aof, path) = aof_shared(AofSync::No, "deadline").await;
+    let (x, k) = ("6oe:aofdl:x", "6oe:aofdl:k");
+    let mut txc = Pipe::tcp(&shared);
+    let unix_ms = || core_engine::store::clock_ms();
+    queue(&mut txc, &[&["GET", x], &["SET", k, "v", "PX", "40"]]).await;
+    let pause = exec_pause::after_command_naming(x);
+    let sent = unix_ms();
+    txc.send(&["EXEC"]).await;
+    assert!(pause.reached(WITHIN).await);
+    let reached = unix_ms();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    drop(pause);
+    assert_eq!(
+        reply_within(&mut txc, "EXEC").await,
+        array(vec![nil(), ok()])
+    );
+    aof.flush().await.unwrap();
+    let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+    let at = text
+        .find(k)
+        .and_then(|i| {
+            let rest = &text[i..];
+            let p = rest.to_ascii_uppercase().find("PXAT")?;
+            rest[p..]
+                .split("\r\n")
+                .filter_map(|t| t.parse::<u64>().ok())
+                .next()
+        })
+        .unwrap_or_else(|| panic!("no PXAT for {k} in the AOF: {text:?}"));
+    assert!(
+        at >= sent + 40 && at <= reached + 41,
+        "AOF deadline {at}: the instant was between {sent} and {reached}, so {}..={}",
+        sent + 40,
+        reached + 41
+    );
+}

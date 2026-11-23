@@ -887,8 +887,9 @@ async fn handle_tcp_halves<R, W>(
                                                         }
                                                         continue 'parse;
                                                     }
-                                                    // Reserve both the queued write keys and WATCH
-                                                    // keys before the CAS check. A conflicting write
+                                                    // Reserve every key the queued commands read or
+                                                    // write, and the WATCH keys, before the CAS check
+                                                    // (`lock_transaction`). A conflicting write
                                                     // that was already in flight completes first and
                                                     // queues its notification; no new one can enter
                                                     // between this check and transaction execution.
@@ -933,6 +934,10 @@ async fn handle_tcp_halves<R, W>(
                                                         unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
                                                         while watch_rx.try_recv().is_ok() {}
                                                         watch_dirty = false;
+                                                        // Released before the reply is written: every queued write has
+                                                        // reached its AOF stage already, and a client that does not read
+                                                        // its reply must not hold back writers of these keys (6O-E review).
+                                                        drop(_write_guards);
                                                         if writer.write_all(&Value::Array(None).serialize()).await.is_err() { break 'outer; }
                                                     } else {
                                                         let results = run_transaction_queue(
@@ -950,6 +955,10 @@ async fn handle_tcp_halves<R, W>(
                                                         while watch_rx.try_recv().is_ok() {}
                                                         watch_dirty = false;
                                                         let out = Value::Array(Some(results)).serialize();
+                                                        // Released before the reply is written: every queued write has
+                                                        // reached its AOF stage already, and a client that does not read
+                                                        // its reply must not hold back writers of these keys (6O-E review).
+                                                        drop(_write_guards);
                                                         if writer.write_all(&out).await.is_err() { break 'outer; }
                                                     }
                                                 }
@@ -2063,8 +2072,8 @@ pub(crate) async fn handle_ws<S>(
                                             ws_send!(b"-EXECABORT Transaction discarded because a queued command is outside this connection's current sync scopes.\r\n");
                                             continue;
                                         }
-                                        // Match the TCP path: reserve queued write keys and
-                                        // WATCH keys before checking invalidation, so a write
+                                        // Match the TCP path: reserve the queued commands'
+                                        // keys and WATCH keys before checking invalidation, so a write
                                         // cannot land in the check-to-EXEC gap.
                                         let _write_guards = if store.has_capacity_limits() {
                                             state.replicas.lock_all_writes().await
@@ -2095,6 +2104,10 @@ pub(crate) async fn handle_ws<S>(
                                             unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
                                             while watch_rx.try_recv().is_ok() {} // drop stale notifications
                                             watch_dirty = false;
+                                            // Released before the reply is written: every queued write has
+                                            // reached its AOF stage already, and a client that does not read
+                                            // its reply must not hold back writers of these keys (6O-E review).
+                                            drop(_write_guards);
                                             ws_send!(&Value::Array(None).serialize());
                                         } else {
                                             let results = run_transaction_queue(
@@ -2115,6 +2128,10 @@ pub(crate) async fn handle_ws<S>(
                                             while watch_rx.try_recv().is_ok() {}
                                             watch_dirty = false;
                                             let out = Value::Array(Some(results)).serialize();
+                                            // Released before the reply is written: every queued write has
+                                            // reached its AOF stage already, and a client that does not read
+                                            // its reply must not hold back writers of these keys (6O-E review).
+                                            drop(_write_guards);
                                             ws_send!(&out);
                                         }
                                     }

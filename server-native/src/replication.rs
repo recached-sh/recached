@@ -744,10 +744,9 @@ impl ReplHub {
             .await
     }
 
-    /// Lock command ordering domains plus explicit keys. Transactions include
-    /// their WATCH set here before checking for invalidation, closing the gap
-    /// where a conflicting writer could otherwise land after the check but
-    /// before EXEC acquired its command barriers.
+    /// Lock command ordering domains plus explicit keys (a DEDUP client id).
+    /// `EXEC` uses [`lock_transaction`](Self::lock_transaction) instead, which
+    /// also covers its queued reads.
     pub(crate) async fn lock_commands_and_keys<'a, 'k, I>(
         &'a self,
         commands: &[Command],
@@ -947,20 +946,45 @@ pub(crate) fn transaction_stripes<'k, I>(
 where
     I: IntoIterator<Item = &'k str>,
 {
-    let mut stripes: SmallVec<[usize; 4]> = SmallVec::new();
+    // A set of stripes, not a list of keys: an MGET of a million keys costs
+    // 256 bits, and stops being read once it covers every stripe.
+    let mut set = [0u64; WRITE_ORDER_STRIPES / 64];
+    let mut covered = 0usize;
+    let mut add = |key: &str| {
+        let stripe = ReplHub::stripe_for(key);
+        let (word, bit) = (stripe / 64, 1u64 << (stripe % 64));
+        if set[word] & bit == 0 {
+            set[word] |= bit;
+            covered += 1;
+        }
+        covered == WRITE_ORDER_STRIPES
+    };
     for command in queue {
         // `None`: a command conflicting with every key (FLUSHDB).
         let keys = ordering_key_refs(command)?;
-        stripes.extend(keys.iter().map(|key| ReplHub::stripe_for(key)));
-        match read_keys(command) {
-            ReadKeys::None => {}
-            ReadKeys::One(key) => stripes.push(ReplHub::stripe_for(key)),
-            ReadKeys::Many(keys) => stripes.extend(keys.iter().map(|key| ReplHub::stripe_for(key))),
-            ReadKeys::Keyspace => return None,
+        if keys.iter().any(|key| add(key)) {
+            return None;
+        }
+        let all = match read_keys(command) {
+            ReadKeys::None => false,
+            ReadKeys::One(key) => add(key),
+            ReadKeys::Many(keys) => keys.iter().any(|key| add(key)),
+            ReadKeys::Keyspace => true,
+        };
+        if all {
+            return None;
         }
     }
-    stripes.extend(watched.into_iter().map(ReplHub::stripe_for));
-    Some(stripes)
+    for key in watched {
+        if add(key) {
+            return None;
+        }
+    }
+    Some(
+        (0..WRITE_ORDER_STRIPES)
+            .filter(|&stripe| set[stripe / 64] & (1u64 << (stripe % 64)) != 0)
+            .collect(),
+    )
 }
 
 pub(crate) type ReplRegistry = Arc<ReplHub>;

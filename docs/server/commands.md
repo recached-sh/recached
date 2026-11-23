@@ -21,7 +21,7 @@ On a server with nothing that records write order — no AOF, no replication, no
 **What it does not guarantee**
 
 - **A transaction's writes are not atomic to readers outside it.** Another connection cannot write a key reserved by the transaction, but a read from another connection may observe the result of one queued write before the next. A single multi-key command inside the transaction (an `MSET`) is still atomic to readers.
-- **Whole-keyspace operations are not snapshots.** A reader can see a `FLUSHDB` or a replica's full-sync restore part-done. `KEYS`, `SCAN` and `DBSIZE` walk the keyspace while writes continue.
+- **Whole-keyspace operations are not snapshots.** A reader can see a `FLUSHDB` or a replica's full-sync restore part-done. `KEYS`, `SCAN` and `DBSIZE` walk the keyspace while writes continue, except inside `MULTI`/`EXEC`, where they reserve the whole keyspace.
 - **Eviction removes victims one at a time.** On a store with a memory or key cap, a write that evicts several keys removes them in turn, so a reader can see one gone before another.
 
 If correctness depends on values read before a transaction, `WATCH` those keys and retry when `EXEC` returns nil. Use a database or another system with fully isolated multi-key transactions when readers must observe several keys changing as one indivisible state transition.
