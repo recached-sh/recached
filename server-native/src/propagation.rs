@@ -1467,7 +1467,9 @@ pub(crate) async fn notify_flushdb(registry: &WatchRegistry, watched_before: Vec
 /// Live queries need nothing here — they exist only on WebSocket
 /// connections, which that close makes resubscribe.
 pub(crate) async fn notify_keyspace_replaced(registry: &WatchRegistry, store: &KeyValueStore) {
-    if registry.watched_keys.load(Ordering::Relaxed) == 0 {
+    // The writer's half of the registration handshake, as for every other
+    // write (`watched_after_write`; review round 3).
+    if !registry.watched_after_write() {
         return;
     }
     let watched: Vec<String> = {
