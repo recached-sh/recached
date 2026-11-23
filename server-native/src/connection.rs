@@ -935,8 +935,10 @@ async fn handle_tcp_halves<R, W>(
                                                         while watch_rx.try_recv().is_ok() {}
                                                         watch_dirty = false;
                                                         // Released before the reply is written: every queued write has
-                                                        // reached its AOF stage already, and a client that does not read
-                                                        // its reply must not hold back writers of these keys (6O-E review).
+                                                        // been appended to the AOF and replicated in order already, and its
+                                                        // durability still holds the reply back (the TCP `AofGatedWriter`;
+                                                        // the WebSocket write awaits it). A client that does not read its
+                                                        // reply must not hold back writers of these keys (6O-E review).
                                                         drop(_write_guards);
                                                         if writer.write_all(&Value::Array(None).serialize()).await.is_err() { break 'outer; }
                                                     } else {
@@ -956,8 +958,10 @@ async fn handle_tcp_halves<R, W>(
                                                         watch_dirty = false;
                                                         let out = Value::Array(Some(results)).serialize();
                                                         // Released before the reply is written: every queued write has
-                                                        // reached its AOF stage already, and a client that does not read
-                                                        // its reply must not hold back writers of these keys (6O-E review).
+                                                        // been appended to the AOF and replicated in order already, and its
+                                                        // durability still holds the reply back (the TCP `AofGatedWriter`;
+                                                        // the WebSocket write awaits it). A client that does not read its
+                                                        // reply must not hold back writers of these keys (6O-E review).
                                                         drop(_write_guards);
                                                         if writer.write_all(&out).await.is_err() { break 'outer; }
                                                     }
@@ -2105,8 +2109,10 @@ pub(crate) async fn handle_ws<S>(
                                             while watch_rx.try_recv().is_ok() {} // drop stale notifications
                                             watch_dirty = false;
                                             // Released before the reply is written: every queued write has
-                                            // reached its AOF stage already, and a client that does not read
-                                            // its reply must not hold back writers of these keys (6O-E review).
+                                            // been appended to the AOF and replicated in order already, and its
+                                            // durability still holds the reply back (the TCP `AofGatedWriter`;
+                                            // the WebSocket write awaits it). A client that does not read its
+                                            // reply must not hold back writers of these keys (6O-E review).
                                             drop(_write_guards);
                                             ws_send!(&Value::Array(None).serialize());
                                         } else {
@@ -2129,8 +2135,10 @@ pub(crate) async fn handle_ws<S>(
                                             watch_dirty = false;
                                             let out = Value::Array(Some(results)).serialize();
                                             // Released before the reply is written: every queued write has
-                                            // reached its AOF stage already, and a client that does not read
-                                            // its reply must not hold back writers of these keys (6O-E review).
+                                            // been appended to the AOF and replicated in order already, and its
+                                            // durability still holds the reply back (the TCP `AofGatedWriter`;
+                                            // the WebSocket write awaits it). A client that does not read its
+                                            // reply must not hold back writers of these keys (6O-E review).
                                             drop(_write_guards);
                                             ws_send!(&out);
                                         }

@@ -678,3 +678,41 @@ test tests::watch_overflow_exec::ws_pipelined_messages_after_an_overflow_never_c
 test tests::request_path::hot_key_scaling_bench ... ok
 test watch::live_query_routing_bench::bench_live_query_routing ... ok
 test tests::repl_cpu_bench::bench_replicated_set_cpu ... ok
+test tests::request_path::request_path_bench ... ok
+
+test result: ok. 673 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1289.84s
+
+     Running tests/aof_v06.rs (target/debug/deps/aof_v06-7df01a964a5f69a7)
+
+running 1 test
+test new_writes_survive_sigkill_and_replay_exactly ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.51s
+
+     Running tests/dedup_bench.rs (target/debug/deps/dedup_bench-7f643d019ee185fa)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/redis_diff.rs (target/debug/deps/redis_diff-1261be2903e28aa9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/restart.rs (target/debug/deps/restart-ab0abc1fe87f39c5)
+
+running 3 tests
+test test_03_04_an_incr_survives_sigkill_and_its_retry_is_suppressed ... ok
+test a_refused_write_is_still_refused_on_replay_after_sigkill ... ok
+test marks_from_a_checkpoint_and_from_the_aof_after_it_both_survive_sigkill ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/sync_bench.rs (target/debug/deps/sync_bench-ae6ad1a9397f3331)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+

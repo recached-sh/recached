@@ -1256,3 +1256,63 @@ async fn the_aof_records_a_queued_writes_deadline_from_the_instant() {
         reached + 41
     );
 }
+
+// ── Review follow-ups (round 2) ──────────────────────────────────────────────
+
+/// The WebSocket EXEC releases its guards before sending its reply too: a
+/// socket that sends a transaction reading a large value and never reads
+/// again does not hold back a writer of that key (review round 2, M14). The
+/// reply is 16 MiB, past every socket buffer between the two.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_websocket_client_that_never_reads_its_exec_reply_blocks_no_writer() {
+    let srv = super::spawn_ws_server().await;
+    let k = "6oe:wsstall:big";
+    let (mut stalled, mut writer) = (
+        super::WsClient::connect(srv.tcp_addr).await,
+        super::WsClient::connect(srv.tcp_addr).await,
+    );
+    assert_eq!(writer.cmd(&["SET", k, &"x".repeat(4 << 20)]).await, ok());
+    assert_eq!(stalled.cmd(&["MULTI"]).await, ok());
+    for _ in 0..4 {
+        assert_eq!(stalled.cmd(&["GET", k]).await, queued());
+    }
+    stalled.send(&["EXEC"]).await;
+    // `stalled` is never read again.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        tokio::time::timeout(WITHIN, writer.cmd(&["SET", k, "small"]))
+            .await
+            .expect("a SET of a key a stalled WebSocket transaction read"),
+        ok()
+    );
+    drop(stalled);
+}
+
+/// A queued `EADD` decides which members it claims at the transaction's
+/// instant, like the `EADD` itself (review round 2, M15): a member already
+/// in a set that is live at the instant, but whose deadline passes before
+/// the EADD runs, is not this connection's ephemeral member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queued_eadd_claims_members_at_the_instant() {
+    let shared = Shared::new(false);
+    let (x, s) = ("6oe:eadd:x", "6oe:eadd:s");
+    let mut txc = Pipe::tcp(&shared);
+    assert_eq!(txc.cmd(&["SADD", s, "m"]).await, Value::Integer(1));
+    assert_eq!(txc.cmd(&["PEXPIRE", s, "100"]).await, Value::Integer(1));
+    queue(&mut txc, &[&["GET", x], &["EADD", s, "m"]]).await;
+    let pause = exec_pause::after_command_naming(x);
+    txc.send(&["EXEC"]).await;
+    assert!(pause.reached(WITHIN).await);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    drop(pause);
+    let exec = reply_within(&mut txc, "EXEC").await;
+    assert_eq!(
+        exec,
+        array(vec![nil(), Value::Integer(0)]),
+        "m was already in s at the instant"
+    );
+    assert!(
+        !shared.state.is_ephemeral_member(s, "m"),
+        "a member present at the instant was claimed as this connection's"
+    );
+}
