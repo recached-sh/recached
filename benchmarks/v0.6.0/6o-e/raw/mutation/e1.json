@@ -1,0 +1,31 @@
+[
+ {"id":"E1-M1","what":"exclude queued read keys from the scope","edits":[
+   {"file":"server-native/src/replication.rs","old":"            ReadKeys::One(key) => add(key),\n            ReadKeys::Many(keys) => keys.iter().any(|key| add(key)),","new":"            ReadKeys::One(_) => false,\n            ReadKeys::Many(_) => false,"}]},
+ {"id":"E1-M2","what":"only the first queued command's read keys","edits":[
+   {"file":"server-native/src/replication.rs","old":"    for command in queue {\n        // `None`: a command conflicting with every key (FLUSHDB).","new":"    for (qi, command) in queue.iter().enumerate() {\n        // `None`: a command conflicting with every key (FLUSHDB)."},
+   {"file":"server-native/src/replication.rs","old":"            ReadKeys::One(key) => add(key),","new":"            ReadKeys::One(key) => qi == 0 && add(key),"}]},
+ {"id":"E1-M3","what":"drop the watched keys from the scope","edits":[
+   {"file":"server-native/src/replication.rs","old":"    for key in watched {\n        if add(key) {","new":"    for key in watched.into_iter().take(0) {\n        if add(key) {"}]},
+ {"id":"E1-M4","what":"read the clock per queued command","edits":[
+   {"file":"server-native/src/connection.rs","old":"_ => core_engine::store::at_instant(now, || execute_and_record(store, qcmd)),","new":"_ => core_engine::store::at_instant(core_engine::store::clock_ms(), || execute_and_record(store, qcmd)),"}]},
+ {"id":"E1-M5","what":"skip the unordered-gate closure","edits":[
+   {"file":"server-native/src/replication.rs","old":"            Some(stripes) => self.lock_stripe_list(stripes, Some(closed)).await,","new":"            Some(stripes) => {\n                drop(closed);\n                self.lock_stripe_list(stripes, None).await\n            }"}]},
+ {"id":"E1-M6","what":"queued writes not run at the instant","edits":[
+   {"file":"server-native/src/propagation.rs","old":"execute_locked_write_identified(cmd, None, Some(now), tx, origin, state, watch_registry, store)","new":"execute_locked_write_identified(cmd, None, None, tx, origin, state, watch_registry, store)"}]},
+ {"id":"E1-M7","what":"keyspace-wide reads take no stripes","edits":[
+   {"file":"server-native/src/replication.rs","old":"            ReadKeys::Keyspace => true,","new":"            ReadKeys::Keyspace => false,"}]},
+ {"id":"E1-M8","what":"release the guards between queued commands (before the queue runs)","edits":[
+   {"file":"server-native/src/connection.rs","old":"                                                    } else {\n                                                        let results = run_transaction_queue(","new":"                                                    } else {\n                                                        drop(_write_guards);\n                                                        let results = run_transaction_queue("}]},
+ {"id":"E1-M9","what":"read the instant before the guards (TCP)","edits":[
+   {"file":"server-native/src/connection.rs","old":"                                                    let _write_guards = if store.has_capacity_limits() {","new":"                                                    let early_now = core_engine::store::clock_ms();\n                                                    let _write_guards = if store.has_capacity_limits() {"},
+   {"file":"server-native/src/connection.rs","old":"                                                    // instant, as in Redis (6O-E).\n                                                    let now = core_engine::store::clock_ms();","new":"                                                    // instant, as in Redis (6O-E).\n                                                    let now = early_now;"}]},
+ {"id":"E1-M10","what":"inconsistent stripe order: a transaction locks descending","edits":[
+   {"file":"server-native/src/replication.rs","old":"        stripes.sort_unstable();\n        stripes.dedup();\n\n        let mut guards","new":"        if closed.is_some() {\n            stripes.sort_unstable_by(|a, b| b.cmp(a));\n        } else {\n            stripes.sort_unstable();\n        }\n        stripes.dedup();\n\n        let mut guards"}]},
+ {"id":"E1-M11","what":"hold the guards while writing the reply","edits":[
+   {"file":"server-native/src/connection.rs","old":"drop(_write_guards);","new":"let _held = &_write_guards;","count":5}]},
+ {"id":"E1-M12","what":"propagate a queued write's deadline from the wall clock","edits":[
+   {"file":"server-native/src/propagation.rs","old":"            Some(now) => core_engine::store::at_instant(now, read),\n            None => read(),","new":"            Some(_) | None => read(),"},
+   {"file":"server-native/src/propagation.rs","old":"    let now = clock.unwrap_or_else(now_unix_ms);","new":"    let now = now_unix_ms();"}]},
+ {"id":"E1-M13","what":"the clock override never applies","edits":[
+   {"file":"core-engine/src/store.rs","old":"    FROZEN_NOW.with(std::cell::Cell::get).unwrap_or_else(system_now_ms)","new":"    system_now_ms()"}]}
+]

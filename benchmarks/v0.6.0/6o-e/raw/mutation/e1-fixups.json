@@ -1,0 +1,40 @@
+[
+ {
+  "id": "E1-M6",
+  "what": "queued writes not run at the instant",
+  "edits": [
+   {
+    "file": "server-native/src/propagation.rs",
+    "old": "        cmd,\n        None,\n        Some(now),\n        tx,",
+    "new": "        cmd,\n        None,\n        None,\n        tx,"
+   }
+  ]
+ },
+ {
+  "id": "E1-M8",
+  "what": "release the guards before the queue runs",
+  "edits": [
+   {
+    "file": "server-native/src/connection.rs",
+    "old": "                                                    } else {\n                                                        let results = run_transaction_queue(",
+    "new": "                                                    } else {\n                                                        drop(_write_guards);\n                                                        let results = run_transaction_queue("
+   },
+   {
+    "file": "server-native/src/connection.rs",
+    "old": "                                                        let out = Value::Array(Some(results)).serialize();\n                                                        // Released before the reply is written: every queued write has\n                                                        // reached its AOF stage already, and a client that does not read\n                                                        // its reply must not hold back writers of these keys (6O-E review).\n                                                        drop(_write_guards);",
+    "new": "                                                        let out = Value::Array(Some(results)).serialize();"
+   }
+  ]
+ },
+ {
+  "id": "E1-M13",
+  "what": "the clock override never applies",
+  "edits": [
+   {
+    "file": "core-engine/src/store.rs",
+    "old": "fn now_ms() -> u64 {\n    FROZEN_NOW\n        .with(std::cell::Cell::get)\n        .unwrap_or_else(system_now_ms)\n}\n",
+    "new": "fn now_ms() -> u64 {\n    system_now_ms()\n}\n"
+   }
+  ]
+ }
+]

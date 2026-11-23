@@ -1,0 +1,276 @@
+cell=base/rc-everysec-set-c50-P1 label=base kind=rc-everysec test=set clients=50 P=1 rep=1 requests=4000000 bin_sha256=6c12deb97bcf8a797d5be82bdf7eb1fa6b724f65a681997122555e9f594f0eb1 oncpu_s=22.0266 rqwait_s=0.1949 cpu_user_s=7.210 cpu_sys_s=14.820 wall_s=30.530 gen_user_s=4.273 gen_sys_s=24.416 rss_kb=26760 data_dir_bytes=307502400
+  pressure_before: load=0.79 io_psi10=0.14/0.14 mem_psi10=0.00/0.00 swap_used_mib=5547 dirty_wb_kib=1416 settle_wait_s=0
+  pressure_after: load=1.54 io_psi10=4.81/0.24 mem_psi10=0.00/0.00 swap_used_mib=5547 dirty_wb_kib=9888
+  ctxsw_before: 47 13
+  ctxsw_after:  1225 505
+  cpu0_before: 2113444 27527 1432445 6320307 749867 34712 668839
+  cpu0_after: 2114165 27527 1433932 6320335 749910 34721 669629
+  tcp_before: InSegs=7951896829 OutSegs=7958129352 RetransSegs=21016 DelayedACKs=580029 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7786323667 TCPPureAcks=7137922 TCPHPAcks=7799731600 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7918902035 TCPDelivered=7919396824 
+  tcp_after: InSegs=7959897527 OutSegs=7966130043 RetransSegs=21016 DelayedACKs=580179 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7794323318 TCPPureAcks=7138083 TCPHPAcks=7807731559 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7926902154 TCPDelivered=7927396996 
+  softirq0_before: NET_TX:258 NET_RX:3363786142 
+  softirq0_after: NET_TX:258 NET_RX:3367786303 
+  gen_rusage: user_s=4.251 sys_s=24.415 nvcsw=709251 nivcsw=107 maxrss_kb=12660
+  syscalls_before: 43 278
+  syscalls_after:  43 400161
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:6:0.120:0.010 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:6:7.330:14.800 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:4100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:254 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:254 recached_aof_write_usec:4475 recached_aof_fsyncs:1 recached_aof_fsync_usec:27405 recached_aof_queue_wait_usec:131262 recached_aof_batch_waiters:1817 recached_aof_inline_batches:254 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1561 recached_aof_coalesce_missed:2 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,13,69,89,83,0,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:400108 recached_aof_frames:4100032 recached_aof_bytes:307502400 recached_aof_write_calls:400108 recached_aof_write_usec:2627729 recached_aof_fsyncs:32 recached_aof_fsync_usec:4459384 recached_aof_queue_wait_usec:8026799 recached_aof_batch_waiters:4401701 recached_aof_inline_batches:400108 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:4001516 recached_aof_coalesce_missed:15 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:576,3758,130597,190191,74730,2,13,69,89,83,0,0 
+  uprof: uprof_threads=8 cycles=37033667698 opened=8 min_running=1.000 instructions=38452631273 opened=8 min_running=1.000 branch_misses=70701465 opened=8 min_running=1.000 cache_misses=74084763 opened=8 min_running=1.000 l1d_read_misses=1048469475 opened=8 min_running=1.000 task_clock_ns=30024962576 opened=8 min_running=1.000 context_switches=0 opened=8 min_running=1.000 
+  bench_err: 0
+  bench: "SET","131134.64","0.373","0.024","0.359","0.479","0.511","47.263"
+cell=fix/rc-everysec-set-c50-P1 label=fix kind=rc-everysec test=set clients=50 P=1 rep=1 requests=4000000 bin_sha256=d8d7781067b13ee1fa20b3c17d1fc750835a8f6724c31fca683affec4d7d8e0b oncpu_s=21.3801 rqwait_s=0.1928 cpu_user_s=6.710 cpu_sys_s=14.670 wall_s=30.282 gen_user_s=4.083 gen_sys_s=24.471 rss_kb=26696 data_dir_bytes=307502400
+  pressure_before: load=1.54 io_psi10=4.81/0.24 mem_psi10=0.00/0.00 swap_used_mib=5547 dirty_wb_kib=2260 settle_wait_s=0
+  pressure_after: load=2.11 io_psi10=6.03/1.91 mem_psi10=0.00/0.00 swap_used_mib=5547 dirty_wb_kib=3180
+  ctxsw_before: 59 11
+  ctxsw_after:  1115 472
+  cpu0_before: 2114179 27551 1433938 6320521 749928 34722 669630
+  cpu0_after: 2114851 27551 1435410 6320553 749995 34731 670431
+  tcp_before: InSegs=7959900867 OutSegs=7966133383 RetransSegs=21016 DelayedACKs=580179 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7794324859 TCPPureAcks=7138159 TCPHPAcks=7807733124 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7926905340 TCPDelivered=7927400207 
+  tcp_after: InSegs=7967901666 OutSegs=7974134179 RetransSegs=21016 DelayedACKs=580378 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7802324409 TCPPureAcks=7138321 TCPHPAcks=7815733083 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7934905463 TCPDelivered=7935400383 
+  softirq0_before: NET_TX:258 NET_RX:3367787900 
+  softirq0_after: NET_TX:258 NET_RX:3371788056 
+  gen_rusage: user_s=4.067 sys_s=24.465 nvcsw=716373 nivcsw=83 maxrss_kb=12596
+  syscalls_before: 43 283
+  syscalls_after:  43 400124
+  threads_before: rc-fix:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:6:0.130:0.010 
+  threads_after:  rc-fix:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:6:6.840:14.650 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:4100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:258 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:258 recached_aof_write_usec:4520 recached_aof_fsyncs:2 recached_aof_fsync_usec:116887 recached_aof_queue_wait_usec:132839 recached_aof_batch_waiters:1821 recached_aof_inline_batches:258 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1561 recached_aof_coalesce_missed:2 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,7,93,48,109,1,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:400070 recached_aof_frames:4100032 recached_aof_bytes:307502400 recached_aof_write_calls:400070 recached_aof_write_usec:2772846 recached_aof_fsyncs:33 recached_aof_fsync_usec:4462129 recached_aof_queue_wait_usec:7462267 recached_aof_batch_waiters:4401663 recached_aof_inline_batches:400070 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:4001507 recached_aof_coalesce_missed:24 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:655,4625,133410,189218,71888,16,7,93,48,109,1,0 
+  uprof: uprof_threads=8 cycles=34912833281 opened=8 min_running=1.000 instructions=38829492800 opened=8 min_running=1.000 branch_misses=65419190 opened=8 min_running=1.000 cache_misses=83035203 opened=8 min_running=1.000 l1d_read_misses=1043716293 opened=8 min_running=1.000 task_clock_ns=29481820866 opened=8 min_running=1.000 context_switches=0 opened=8 min_running=1.000 
+  bench_err: 0
+  bench: "SET","132213.92","0.370","0.032","0.351","0.479","0.511","306.943"
+cell=base/rc-everysec-mset-c50-P1 label=base kind=rc-everysec test=mset clients=50 P=1 rep=1 requests=2000000 bin_sha256=6c12deb97bcf8a797d5be82bdf7eb1fa6b724f65a681997122555e9f594f0eb1 oncpu_s=23.4690 rqwait_s=0.2872 cpu_user_s=13.680 cpu_sys_s=9.790 wall_s=30.345 gen_user_s=2.616 gen_sys_s=12.845 rss_kb=27332 data_dir_bytes=1333520320
+  pressure_before: load=2.01 io_psi10=7.33/5.39 mem_psi10=0.00/0.00 swap_used_mib=5547 dirty_wb_kib=2040 settle_wait_s=8
+  pressure_after: load=1.98 io_psi10=8.87/4.47 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=1712
+  ctxsw_before: 79 23
+  ctxsw_after:  4277 568
+  cpu0_before: 2114923 27553 1435426 6321423 750125 34732 670433
+  cpu0_after: 2116293 27553 1436437 6321465 750374 34742 670834
+  tcp_before: InSegs=7967909769 OutSegs=7974142281 RetransSegs=21016 DelayedACKs=580392 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7802324845 TCPPureAcks=7138417 TCPHPAcks=7815735137 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7934911795 TCPDelivered=7935406739 
+  tcp_after: InSegs=7971912962 OutSegs=7978145468 RetransSegs=21017 DelayedACKs=581745 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7806322002 TCPPureAcks=7138587 TCPHPAcks=7819735053 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7938911937 TCPDelivered=7939406937 
+  softirq0_before: NET_TX:258 NET_RX:3371792791 
+  softirq0_after: NET_TX:258 NET_RX:3373794100 
+  gen_rusage: user_s=2.601 sys_s=12.837 nvcsw=367051 nivcsw=34 maxrss_kb=12596
+  syscalls_before: 43 3413
+  syscalls_after:  43 203390
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.690:0.080 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:14.370:9.870 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:3383 recached_aof_frames:100032 recached_aof_bytes:63520320 recached_aof_write_calls:3383 recached_aof_write_usec:207488 recached_aof_fsyncs:2 recached_aof_fsync_usec:361453 recached_aof_queue_wait_usec:674835 recached_aof_batch_waiters:27082 recached_aof_inline_batches:3383 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:4662 recached_aof_coalesce_missed:27 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:380,453,559,588,302,490,526,84,1,0,0,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:203331 recached_aof_frames:2100032 recached_aof_bytes:1333520320 recached_aof_write_calls:203331 recached_aof_write_usec:5125072 recached_aof_fsyncs:33 recached_aof_fsync_usec:5921014 recached_aof_queue_wait_usec:14478010 recached_aof_batch_waiters:2227060 recached_aof_inline_batches:203331 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2004660 recached_aof_coalesce_missed:29 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:540,1930,67014,101973,30770,493,526,84,1,0,0,0 
+  uprof: uprof_threads=4 cycles=61295113928 opened=4 min_running=1.000 instructions=85289869429 opened=4 min_running=1.000 branch_misses=137502941 opened=4 min_running=1.000 cache_misses=310291211 opened=4 min_running=1.000 l1d_read_misses=1186961661 opened=4 min_running=1.000 task_clock_ns=27581066545 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "MSET (10 keys)","66065.47","0.741","0.176","0.679","0.863","0.911","241.663"
+cell=fix/rc-everysec-mset-c50-P1 label=fix kind=rc-everysec test=mset clients=50 P=1 rep=1 requests=2000000 bin_sha256=d8d7781067b13ee1fa20b3c17d1fc750835a8f6724c31fca683affec4d7d8e0b oncpu_s=23.3245 rqwait_s=0.3137 cpu_user_s=13.480 cpu_sys_s=9.840 wall_s=30.377 gen_user_s=2.586 gen_sys_s=12.603 rss_kb=26852 data_dir_bytes=1333520320
+  pressure_before: load=1.82 io_psi10=7.72/4.78 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=2628 settle_wait_s=4
+  pressure_after: load=2.27 io_psi10=16.16/11.76 mem_psi10=0.00/0.00 swap_used_mib=5553 dirty_wb_kib=1072
+  ctxsw_before: 82 25
+  ctxsw_after:  3680 597
+  cpu0_before: 2116364 27562 1436463 6321999 750460 34743 670836
+  cpu0_after: 2117712 27563 1437481 6322031 750757 34754 671241
+  tcp_before: InSegs=7971921057 OutSegs=7978153562 RetransSegs=21017 DelayedACKs=581759 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7806322367 TCPPureAcks=7138673 TCPHPAcks=7819737042 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7938918266 TCPDelivered=7939413289 
+  tcp_after: InSegs=7975924060 OutSegs=7982156539 RetransSegs=21018 DelayedACKs=583009 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7810319799 TCPPureAcks=7138854 TCPHPAcks=7823736963 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7942918401 TCPDelivered=7943413480 
+  softirq0_before: NET_TX:258 NET_RX:3373798829 
+  softirq0_after: NET_TX:258 NET_RX:3375800103 
+  gen_rusage: user_s=2.569 sys_s=12.597 nvcsw=367370 nivcsw=217 maxrss_kb=12596
+  syscalls_before: 43 3365
+  syscalls_after:  43 203378
+  threads_before: rc-fix:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.680:0.090 
+  threads_after:  rc-fix:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:14.150:9.940 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:3335 recached_aof_frames:100032 recached_aof_bytes:63520320 recached_aof_write_calls:3335 recached_aof_write_usec:119509 recached_aof_fsyncs:2 recached_aof_fsync_usec:299663 recached_aof_queue_wait_usec:676361 recached_aof_batch_waiters:27048 recached_aof_inline_batches:3335 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:4618 recached_aof_coalesce_missed:39 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:351,437,545,560,362,479,516,85,0,0,0,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:203320 recached_aof_frames:2100032 recached_aof_bytes:1333520320 recached_aof_write_calls:203320 recached_aof_write_usec:5065327 recached_aof_fsyncs:33 recached_aof_fsync_usec:5994840 recached_aof_queue_wait_usec:14413404 recached_aof_batch_waiters:2227063 recached_aof_inline_batches:203320 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2004615 recached_aof_coalesce_missed:42 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:374,604,59339,113878,28042,482,516,85,0,0,0,0 
+  uprof: uprof_threads=4 cycles=60675501851 opened=4 min_running=1.000 instructions=85464612413 opened=4 min_running=1.000 branch_misses=131673659 opened=4 min_running=1.000 cache_misses=307879739 opened=4 min_running=1.000 l1d_read_misses=1190519994 opened=4 min_running=1.000 task_clock_ns=27467392824 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "MSET (10 keys)","66093.85","0.738","0.152","0.671","0.855","0.895","195.711"
+cell=fix/rc-everysec-mset-c50-P1 label=fix kind=rc-everysec test=mset clients=50 P=1 rep=2 requests=2000000 bin_sha256=d8d7781067b13ee1fa20b3c17d1fc750835a8f6724c31fca683affec4d7d8e0b oncpu_s=23.4907 rqwait_s=0.3136 cpu_user_s=13.630 cpu_sys_s=9.860 wall_s=30.335 gen_user_s=2.676 gen_sys_s=12.843 rss_kb=26848 data_dir_bytes=1333520320
+  pressure_before: load=1.92 io_psi10=7.14/5.74 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=2820 settle_wait_s=11
+  pressure_after: load=2.08 io_psi10=14.08/9.19 mem_psi10=0.00/0.00 swap_used_mib=5553 dirty_wb_kib=2656
+  ctxsw_before: 145 91
+  ctxsw_after:  3741 676
+  cpu0_before: 2117790 27579 1437497 6323250 750946 34755 671243
+  cpu0_after: 2119154 27579 1438517 6323321 751221 34766 671651
+  tcp_before: InSegs=7975932160 OutSegs=7982164636 RetransSegs=21018 DelayedACKs=583023 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7810320167 TCPPureAcks=7138943 TCPHPAcks=7823738955 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7942924732 TCPDelivered=7943419834 
+  tcp_after: InSegs=7979935493 OutSegs=7986167970 RetransSegs=21019 DelayedACKs=584474 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7814317195 TCPPureAcks=7139121 TCPHPAcks=7827738895 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7946924871 TCPDelivered=7947420029 
+  softirq0_before: NET_TX:258 NET_RX:3375804833 
+  softirq0_after: NET_TX:258 NET_RX:3377806255 
+  gen_rusage: user_s=2.657 sys_s=12.840 nvcsw=368744 nivcsw=46 maxrss_kb=12596
+  syscalls_before: 43 3408
+  syscalls_after:  43 203436
+  threads_before: rc-fix:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.700:0.080 
+  threads_after:  rc-fix:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:14.330:9.940 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:3379 recached_aof_frames:100032 recached_aof_bytes:63520320 recached_aof_write_calls:3379 recached_aof_write_usec:155813 recached_aof_fsyncs:2 recached_aof_fsync_usec:390077 recached_aof_queue_wait_usec:682290 recached_aof_batch_waiters:27219 recached_aof_inline_batches:3379 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:4650 recached_aof_coalesce_missed:39 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:369,438,572,583,313,481,546,76,1,0,0,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:203377 recached_aof_frames:2100032 recached_aof_bytes:1333520320 recached_aof_write_calls:203377 recached_aof_write_usec:4845543 recached_aof_fsyncs:33 recached_aof_fsync_usec:5615534 recached_aof_queue_wait_usec:14579610 recached_aof_batch_waiters:2227247 recached_aof_inline_batches:203377 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2004617 recached_aof_coalesce_missed:40 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:468,1383,65660,102598,32164,481,546,76,1,0,0,0 
+  uprof: uprof_threads=4 cycles=61426190700 opened=4 min_running=1.000 instructions=85463325272 opened=4 min_running=1.000 branch_misses=136004523 opened=4 min_running=1.000 cache_misses=308259242 opened=4 min_running=1.000 l1d_read_misses=1200182243 opened=4 min_running=1.000 task_clock_ns=27673644212 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "MSET (10 keys)","66093.85","0.737","0.096","0.679","0.863","0.911","233.983"
+cell=base/rc-everysec-mset-c50-P1 label=base kind=rc-everysec test=mset clients=50 P=1 rep=2 requests=2000000 bin_sha256=6c12deb97bcf8a797d5be82bdf7eb1fa6b724f65a681997122555e9f594f0eb1 oncpu_s=23.5510 rqwait_s=0.2978 cpu_user_s=13.680 cpu_sys_s=9.870 wall_s=31.804 gen_user_s=2.534 gen_sys_s=12.609 rss_kb=26828 data_dir_bytes=1333520320
+  pressure_before: load=1.76 io_psi10=7.38/5.50 mem_psi10=0.00/0.00 swap_used_mib=5553 dirty_wb_kib=2028 settle_wait_s=9
+  pressure_after: load=2.62 io_psi10=13.74/8.08 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=9596
+  ctxsw_before: 134 32
+  ctxsw_after:  3326 560
+  cpu0_before: 2119228 27590 1438545 6324407 751318 34767 671653
+  cpu0_after: 2120596 27590 1439566 6324432 751706 34777 672058
+  tcp_before: InSegs=7979943584 OutSegs=7986176059 RetransSegs=21019 DelayedACKs=584489 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7814317195 TCPPureAcks=7139205 TCPHPAcks=7827740516 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7946931201 TCPDelivered=7947426382 
+  tcp_after: InSegs=7983947325 OutSegs=7990179792 RetransSegs=21019 DelayedACKs=586090 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7818313817 TCPPureAcks=7139431 TCPHPAcks=7831740391 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7950931339 TCPDelivered=7951426576 
+  softirq0_before: NET_TX:258 NET_RX:3377810980 
+  softirq0_after: NET_TX:258 NET_RX:3379812553 
+  gen_rusage: user_s=2.514 sys_s=12.605 nvcsw=370978 nivcsw=32 maxrss_kb=12660
+  syscalls_before: 43 3347
+  syscalls_after:  43 203341
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.700:0.070 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:14.370:9.960 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:3318 recached_aof_frames:100032 recached_aof_bytes:63520320 recached_aof_write_calls:3318 recached_aof_write_usec:176138 recached_aof_fsyncs:2 recached_aof_fsync_usec:248758 recached_aof_queue_wait_usec:683038 recached_aof_batch_waiters:27220 recached_aof_inline_batches:3318 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:4655 recached_aof_coalesce_missed:34 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:378,422,554,551,306,491,539,76,1,0,0,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:203284 recached_aof_frames:2100032 recached_aof_bytes:1333520320 recached_aof_write_calls:203284 recached_aof_write_usec:6465653 recached_aof_fsyncs:35 recached_aof_fsync_usec:8153491 recached_aof_queue_wait_usec:14567530 recached_aof_batch_waiters:2227218 recached_aof_inline_batches:203284 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2004650 recached_aof_coalesce_missed:39 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:471,1186,61776,108708,30036,491,539,76,1,0,0,0 
+  uprof: uprof_threads=4 cycles=61313964590 opened=4 min_running=1.000 instructions=85298830659 opened=4 min_running=1.000 branch_misses=137142406 opened=4 min_running=1.000 cache_misses=310383524 opened=4 min_running=1.000 l1d_read_misses=1192956600 opened=4 min_running=1.000 task_clock_ns=27698820660 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "MSET (10 keys)","62938.60","0.778","0.144","0.679","0.863","0.911","298.239"
+cell=fix/rc-everysec-set-c50-P1 label=fix kind=rc-everysec test=set clients=50 P=1 rep=2 requests=4000000 bin_sha256=d8d7781067b13ee1fa20b3c17d1fc750835a8f6724c31fca683affec4d7d8e0b oncpu_s=21.4546 rqwait_s=0.1828 cpu_user_s=6.740 cpu_sys_s=14.720 wall_s=30.030 gen_user_s=4.519 gen_sys_s=24.524 rss_kb=26864 data_dir_bytes=307502400
+  pressure_before: load=2.49 io_psi10=6.97/4.03 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=2228 settle_wait_s=7
+  pressure_after: load=2.69 io_psi10=5.55/0.34 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=3228
+  ctxsw_before: 38 16
+  ctxsw_after:  1143 446
+  cpu0_before: 2120610 27626 1439575 6325246 751714 34778 672059
+  cpu0_after: 2121285 27626 1441051 6325291 751756 34787 672839
+  tcp_before: InSegs=7983950700 OutSegs=7990183167 RetransSegs=21019 DelayedACKs=586090 DelayedACKLocked=17 DelayedACKLost=3894 TCPHPHits=7818315358 TCPPureAcks=7139533 TCPHPAcks=7831741960 TCPBacklogCoalesce=726671 TCPAutoCorking=9258 TCPOrigDataSent=7950934532 TCPDelivered=7951429794 
+  tcp_after: InSegs=7991951338 OutSegs=7998183826 RetransSegs=21020 DelayedACKs=586140 DelayedACKLocked=17 DelayedACKLost=3895 TCPHPHits=7826315216 TCPPureAcks=7139784 TCPHPAcks=7839741946 TCPBacklogCoalesce=726671 TCPAutoCorking=9259 TCPOrigDataSent=7958934702 TCPDelivered=7959430021 
+  softirq0_before: NET_TX:258 NET_RX:3379814210 
+  softirq0_after: NET_TX:258 NET_RX:3383814266 
+  gen_rusage: user_s=4.501 sys_s=24.519 nvcsw=667029 nivcsw=109 maxrss_kb=12592
+  syscalls_before: 43 273
+  syscalls_after:  43 400269
+  threads_before: rc-fix:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.120:0.010 
+  threads_after:  rc-fix:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:6.860:14.720 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:4100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:247 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:247 recached_aof_write_usec:4332 recached_aof_fsyncs:1 recached_aof_fsync_usec:53527 recached_aof_queue_wait_usec:126775 recached_aof_batch_waiters:1810 recached_aof_inline_batches:247 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1556 recached_aof_coalesce_missed:7 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,33,20,116,77,1,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:400215 recached_aof_frames:4100032 recached_aof_bytes:307502400 recached_aof_write_calls:400215 recached_aof_write_usec:2484303 recached_aof_fsyncs:32 recached_aof_fsync_usec:4874638 recached_aof_queue_wait_usec:7657480 recached_aof_batch_waiters:4401808 recached_aof_inline_batches:400215 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:4001506 recached_aof_coalesce_missed:25 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:563,3746,133414,193341,68894,10,33,20,116,77,1,0 
+  uprof: uprof_threads=4 cycles=35214285636 opened=4 min_running=1.000 instructions=38833575162 opened=4 min_running=1.000 branch_misses=63854687 opened=4 min_running=1.000 cache_misses=82086189 opened=4 min_running=1.000 l1d_read_misses=1039928639 opened=4 min_running=1.000 task_clock_ns=29349236148 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "SET","133324.44","0.364","0.040","0.351","0.471","0.503","29.311"
+cell=base/rc-everysec-set-c50-P1 label=base kind=rc-everysec test=set clients=50 P=1 rep=2 requests=4000000 bin_sha256=6c12deb97bcf8a797d5be82bdf7eb1fa6b724f65a681997122555e9f594f0eb1 oncpu_s=21.8342 rqwait_s=0.1991 cpu_user_s=7.220 cpu_sys_s=14.610 wall_s=30.530 gen_user_s=4.563 gen_sys_s=24.761 rss_kb=26596 data_dir_bytes=307502400
+  pressure_before: load=2.69 io_psi10=5.27/0.28 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=3508 settle_wait_s=0
+  pressure_after: load=2.86 io_psi10=5.26/0.42 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=1036
+  ctxsw_before: 55 15
+  ctxsw_after:  1476 533
+  cpu0_before: 2121298 27647 1441060 6325442 751810 34788 672840
+  cpu0_after: 2122022 27647 1442525 6325484 751857 34797 673630
+  tcp_before: InSegs=7991954691 OutSegs=7998187178 RetransSegs=21020 DelayedACKs=586140 DelayedACKLocked=17 DelayedACKLost=3895 TCPHPHits=7826316761 TCPPureAcks=7139868 TCPHPAcks=7839743514 TCPBacklogCoalesce=726671 TCPAutoCorking=9259 TCPOrigDataSent=7958937889 TCPDelivered=7959433233 
+  tcp_after: InSegs=7999955286 OutSegs=8006187777 RetransSegs=21051 DelayedACKs=586191 DelayedACKLocked=17 DelayedACKLost=3895 TCPHPHits=7834316616 TCPPureAcks=7140109 TCPHPAcks=7847743480 TCPBacklogCoalesce=726671 TCPAutoCorking=9259 TCPOrigDataSent=7966938022 TCPDelivered=7967433418 
+  softirq0_before: NET_TX:258 NET_RX:3383815863 
+  softirq0_after: NET_TX:258 NET_RX:3387815919 
+  gen_rusage: user_s=4.544 sys_s=24.757 nvcsw=689918 nivcsw=86 maxrss_kb=12596
+  syscalls_before: 43 279
+  syscalls_after:  43 400290
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:6:0.120:0.020 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:6:7.340:14.600 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:4100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:254 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:254 recached_aof_write_usec:4573 recached_aof_fsyncs:2 recached_aof_fsync_usec:291756 recached_aof_queue_wait_usec:132334 recached_aof_batch_waiters:1817 recached_aof_inline_batches:254 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1557 recached_aof_coalesce_missed:6 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,32,25,123,74,0,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:400236 recached_aof_frames:4100032 recached_aof_bytes:307502400 recached_aof_write_calls:400236 recached_aof_write_usec:2679718 recached_aof_fsyncs:33 recached_aof_fsync_usec:4577065 recached_aof_queue_wait_usec:7820618 recached_aof_batch_waiters:4401829 recached_aof_inline_batches:400236 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:4001511 recached_aof_coalesce_missed:20 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:517,3805,132197,193300,70147,16,32,25,123,74,0,0 
+  uprof: uprof_threads=8 cycles=36501975039 opened=8 min_running=1.000 instructions=38457818904 opened=8 min_running=1.000 branch_misses=72562015 opened=8 min_running=1.000 cache_misses=73474190 opened=8 min_running=1.000 l1d_read_misses=1059718859 opened=8 min_running=1.000 task_clock_ns=29824865588 opened=8 min_running=1.000 context_switches=0 opened=8 min_running=1.000 
+  bench_err: 0
+  bench: "SET","131138.94","0.371","0.056","0.359","0.479","0.511","30.239"
+cell=base/rc-everysec-set-c50-P1 label=base kind=rc-everysec test=set clients=50 P=1 rep=3 requests=4000000 bin_sha256=6c12deb97bcf8a797d5be82bdf7eb1fa6b724f65a681997122555e9f594f0eb1 oncpu_s=21.9063 rqwait_s=0.1945 cpu_user_s=7.340 cpu_sys_s=14.560 wall_s=30.530 gen_user_s=4.371 gen_sys_s=24.597 rss_kb=26240 data_dir_bytes=307502400
+  pressure_before: load=2.86 io_psi10=5.26/0.42 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=6308 settle_wait_s=0
+  pressure_after: load=2.76 io_psi10=5.38/0.37 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=7836
+  ctxsw_before: 59 12
+  ctxsw_after:  1310 482
+  cpu0_before: 2122036 27673 1442532 6325601 751880 34798 673630
+  cpu0_after: 2122771 27673 1443994 6325633 751927 34807 674423
+  tcp_before: InSegs=7999958635 OutSegs=8006191124 RetransSegs=21051 DelayedACKs=586191 DelayedACKLocked=17 DelayedACKLost=3895 TCPHPHits=7834318155 TCPPureAcks=7140190 TCPHPAcks=7847745045 TCPBacklogCoalesce=726671 TCPAutoCorking=9259 TCPOrigDataSent=7966941210 TCPDelivered=7967436631 
+  tcp_after: InSegs=8007959306 OutSegs=8014191788 RetransSegs=21051 DelayedACKs=586290 DelayedACKLocked=17 DelayedACKLost=3895 TCPHPHits=7842317908 TCPPureAcks=7140411 TCPHPAcks=7855745015 TCPBacklogCoalesce=726671 TCPAutoCorking=9259 TCPOrigDataSent=7974941341 TCPDelivered=7975436815 
+  softirq0_before: NET_TX:258 NET_RX:3387817512 
+  softirq0_after: NET_TX:258 NET_RX:3391817619 
+  gen_rusage: user_s=4.353 sys_s=24.593 nvcsw=703464 nivcsw=79 maxrss_kb=12596
+  syscalls_before: 43 278
+  syscalls_after:  43 400175
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.130:0.010 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:7.470:14.560 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:4100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:252 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:252 recached_aof_write_usec:4550 recached_aof_fsyncs:1 recached_aof_fsync_usec:532561 recached_aof_queue_wait_usec:133002 recached_aof_batch_waiters:1815 recached_aof_inline_batches:252 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1558 recached_aof_coalesce_missed:5 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,16,61,82,93,0,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:400120 recached_aof_frames:4100032 recached_aof_bytes:307502400 recached_aof_write_calls:400120 recached_aof_write_usec:2611033 recached_aof_fsyncs:32 recached_aof_fsync_usec:5149649 recached_aof_queue_wait_usec:7898173 recached_aof_batch_waiters:4401713 recached_aof_inline_batches:400120 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:4001509 recached_aof_coalesce_missed:22 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:551,3918,129304,194291,71795,9,16,61,82,93,0,0 
+  uprof: uprof_threads=4 cycles=36960858439 opened=4 min_running=1.000 instructions=38448591289 opened=4 min_running=1.000 branch_misses=67237878 opened=4 min_running=1.000 cache_misses=73624816 opened=4 min_running=1.000 l1d_read_misses=1057578830 opened=4 min_running=1.000 task_clock_ns=29921406275 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "SET","131134.64","0.372","0.064","0.359","0.479","0.511","149.631"
+cell=fix/rc-everysec-set-c50-P1 label=fix kind=rc-everysec test=set clients=50 P=1 rep=3 requests=4000000 bin_sha256=d8d7781067b13ee1fa20b3c17d1fc750835a8f6724c31fca683affec4d7d8e0b oncpu_s=21.4466 rqwait_s=0.2032 cpu_user_s=6.670 cpu_sys_s=14.770 wall_s=30.030 gen_user_s=4.327 gen_sys_s=24.097 rss_kb=26896 data_dir_bytes=307502400
+  pressure_before: load=2.76 io_psi10=6.03/1.57 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=3004 settle_wait_s=0
+  pressure_after: load=2.91 io_psi10=5.58/0.72 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=2620
+  ctxsw_before: 38 16
+  ctxsw_after:  1060 501
+  cpu0_before: 2122785 27697 1444006 6325725 751956 34807 674423
+  cpu0_after: 2123454 27697 1445489 6325762 751994 34816 675215
+  tcp_before: InSegs=8007962650 OutSegs=8014195132 RetransSegs=21051 DelayedACKs=586290 DelayedACKLocked=17 DelayedACKLost=3895 TCPHPHits=7842319435 TCPPureAcks=7140491 TCPHPAcks=7855746566 TCPBacklogCoalesce=726671 TCPAutoCorking=9259 TCPOrigDataSent=7974944527 TCPDelivered=7975440026 
+  tcp_after: InSegs=8015963316 OutSegs=8022195795 RetransSegs=21051 DelayedACKs=586389 DelayedACKLocked=17 DelayedACKLost=3895 TCPHPHits=7850319188 TCPPureAcks=7140713 TCPHPAcks=7863746530 TCPBacklogCoalesce=726671 TCPAutoCorking=9259 TCPOrigDataSent=7982944657 TCPDelivered=7983440209 
+  softirq0_before: NET_TX:258 NET_RX:3391819281 
+  softirq0_after: NET_TX:258 NET_RX:3395819388 
+  gen_rusage: user_s=4.309 sys_s=24.093 nvcsw=724624 nivcsw=82 maxrss_kb=12660
+  syscalls_before: 43 279
+  syscalls_after:  43 400071
+  threads_before: rc-fix:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:5:0.130:0.000 
+  threads_after:  rc-fix:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:5:6.800:14.750 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:4100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:255 recached_aof_frames:100032 recached_aof_bytes:7502400 recached_aof_write_calls:255 recached_aof_write_usec:4462 recached_aof_fsyncs:1 recached_aof_fsync_usec:37679 recached_aof_queue_wait_usec:132408 recached_aof_batch_waiters:1818 recached_aof_inline_batches:255 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:1560 recached_aof_coalesce_missed:3 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:0,0,0,0,0,0,15,83,61,94,2,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:400019 recached_aof_frames:4100032 recached_aof_bytes:307502400 recached_aof_write_calls:400019 recached_aof_write_usec:2435094 recached_aof_fsyncs:32 recached_aof_fsync_usec:4306246 recached_aof_queue_wait_usec:7563024 recached_aof_batch_waiters:4401612 recached_aof_inline_batches:400019 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:4001521 recached_aof_coalesce_missed:10 recached_aof_coalesce_backoffs:1 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:623,4663,134670,188617,71191,0,15,83,61,94,2,0 
+  uprof: uprof_threads=7 cycles=34882785086 opened=7 min_running=1.000 instructions=38815573836 opened=7 min_running=1.000 branch_misses=62460797 opened=7 min_running=1.000 cache_misses=79901735 opened=7 min_running=1.000 l1d_read_misses=1024883489 opened=7 min_running=1.000 task_clock_ns=29447690810 opened=7 min_running=1.000 context_switches=0 opened=7 min_running=1.000 
+  bench_err: 0
+  bench: "SET","133324.44","0.366","0.040","0.351","0.479","0.511","46.751"
+cell=base/rc-everysec-mset-c50-P1 label=base kind=rc-everysec test=mset clients=50 P=1 rep=3 requests=2000000 bin_sha256=6c12deb97bcf8a797d5be82bdf7eb1fa6b724f65a681997122555e9f594f0eb1 oncpu_s=23.8102 rqwait_s=0.2760 cpu_user_s=13.940 cpu_sys_s=9.870 wall_s=32.541 gen_user_s=2.436 gen_sys_s=12.739 rss_kb=26956 data_dir_bytes=1333520320
+  pressure_before: load=2.91 io_psi10=7.83/2.77 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=7772 settle_wait_s=0
+  pressure_after: load=2.29 io_psi10=13.37/8.16 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=20864
+  ctxsw_before: 86 94
+  ctxsw_after:  3765 646
+  cpu0_before: 2123526 27708 1445500 6325875 752061 34817 675217
+  cpu0_after: 2124921 27708 1446519 6325901 752498 34828 675622
+  tcp_before: InSegs=8015971436 OutSegs=8022203916 RetransSegs=21051 DelayedACKs=586406 DelayedACKLocked=17 DelayedACKLost=3895 TCPHPHits=7850319402 TCPPureAcks=7140824 TCPHPAcks=7863748363 TCPBacklogCoalesce=726672 TCPAutoCorking=9259 TCPOrigDataSent=7982950991 TCPDelivered=7983446569 
+  tcp_after: InSegs=8019974944 OutSegs=8026207418 RetransSegs=21051 DelayedACKs=587906 DelayedACKLocked=17 DelayedACKLost=3895 TCPHPHits=7854316252 TCPPureAcks=7141050 TCPHPAcks=7867748271 TCPBacklogCoalesce=726672 TCPAutoCorking=9259 TCPOrigDataSent=7986951109 TCPDelivered=7987446740 
+  softirq0_before: NET_TX:258 NET_RX:3395824120 
+  softirq0_after: NET_TX:258 NET_RX:3397825327 
+  gen_rusage: user_s=2.417 sys_s=12.737 nvcsw=371007 nivcsw=38 maxrss_kb=12596
+  syscalls_before: 43 3357
+  syscalls_after:  43 203369
+  threads_before: jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:6:0.700:0.080 rc-base:1:0.000:0.000 
+  threads_after:  jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:6:14.630:9.930 rc-base:1:0.000:0.000 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:3332 recached_aof_frames:100032 recached_aof_bytes:63520320 recached_aof_write_calls:3332 recached_aof_write_usec:350595 recached_aof_fsyncs:3 recached_aof_fsync_usec:1545529 recached_aof_queue_wait_usec:688764 recached_aof_batch_waiters:27293 recached_aof_inline_batches:3332 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:4647 recached_aof_coalesce_missed:42 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:383,417,611,522,298,469,543,89,0,0,0,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:203315 recached_aof_frames:2100032 recached_aof_bytes:1333520320 recached_aof_write_calls:203315 recached_aof_write_usec:7129134 recached_aof_fsyncs:35 recached_aof_fsync_usec:9255763 recached_aof_queue_wait_usec:14783962 recached_aof_batch_waiters:2227308 recached_aof_inline_batches:203315 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2004645 recached_aof_coalesce_missed:44 recached_aof_coalesce_backoffs:0 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:491,909,58540,114505,27767,471,543,89,0,0,0,0 
+  uprof: uprof_threads=8 cycles=62339090532 opened=8 min_running=1.000 instructions=85398474481 opened=8 min_running=1.000 branch_misses=163608963 opened=8 min_running=1.000 cache_misses=309092203 opened=8 min_running=1.000 l1d_read_misses=1190242876 opened=8 min_running=1.000 task_clock_ns=27962162149 opened=8 min_running=1.000 context_switches=0 opened=8 min_running=1.000 
+  bench_err: 0
+  bench: "MSET (10 keys)","61513.86","0.796","0.168","0.687","0.871","0.911","286.719"
+cell=fix/rc-everysec-mset-c50-P1 label=fix kind=rc-everysec test=mset clients=50 P=1 rep=3 requests=2000000 bin_sha256=d8d7781067b13ee1fa20b3c17d1fc750835a8f6724c31fca683affec4d7d8e0b oncpu_s=23.5999 rqwait_s=0.2903 cpu_user_s=13.780 cpu_sys_s=9.810 wall_s=33.038 gen_user_s=2.585 gen_sys_s=12.710 rss_kb=26976 data_dir_bytes=1333520320
+  pressure_before: load=2.10 io_psi10=7.70/4.96 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=2948 settle_wait_s=6
+  pressure_after: load=2.02 io_psi10=16.00/9.79 mem_psi10=0.00/0.00 swap_used_mib=5552 dirty_wb_kib=1476
+  ctxsw_before: 107 24
+  ctxsw_after:  3785 676
+  cpu0_before: 2124993 27743 1446539 6326587 752582 34829 675624
+  cpu0_after: 2126372 27743 1447556 6326621 753080 34840 676029
+  tcp_before: InSegs=8019983069 OutSegs=8026215541 RetransSegs=21051 DelayedACKs=587924 DelayedACKLocked=17 DelayedACKLost=3895 TCPHPHits=7854316402 TCPPureAcks=7141154 TCPHPAcks=7867750050 TCPBacklogCoalesce=726672 TCPAutoCorking=9259 TCPOrigDataSent=7986957446 TCPDelivered=7987453102 
+  tcp_after: InSegs=8023986850 OutSegs=8030219323 RetransSegs=21052 DelayedACKs=589478 DelayedACKLocked=17 DelayedACKLost=3895 TCPHPHits=7858313284 TCPPureAcks=7141392 TCPHPAcks=7871750046 TCPBacklogCoalesce=726672 TCPAutoCorking=9260 TCPOrigDataSent=7990957658 TCPDelivered=7991453373 
+  softirq0_before: NET_TX:258 NET_RX:3397830143 
+  softirq0_after: NET_TX:258 NET_RX:3399831351 
+  gen_rusage: user_s=2.564 sys_s=12.709 nvcsw=369174 nivcsw=51 maxrss_kb=12660
+  syscalls_before: 43 3335
+  syscalls_after:  43 203351
+  threads_before: rc-fix:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:2:0.690:0.080 
+  threads_after:  rc-fix:1:0.000:0.000 jemalloc_bg_thd:1:0.000:0.000 tokio-rt-worker:3:14.460:9.910 
+  stats_before: total_commands_processed:100034 
+  stats_after:  total_commands_processed:2100034 
+  aof_before: recached_aof_fanout:inline recached_aof_batches:3308 recached_aof_frames:100032 recached_aof_bytes:63520320 recached_aof_write_calls:3308 recached_aof_write_usec:134963 recached_aof_fsyncs:2 recached_aof_fsync_usec:358340 recached_aof_queue_wait_usec:680471 recached_aof_batch_waiters:26886 recached_aof_inline_batches:3308 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:4577 recached_aof_coalesce_missed:48 recached_aof_coalesce_backoffs:2 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:353,394,601,562,298,508,499,93,0,0,0,0 
+  aof_after:  recached_aof_fanout:inline recached_aof_batches:203291 recached_aof_frames:2100032 recached_aof_bytes:1333520320 recached_aof_write_calls:203291 recached_aof_write_usec:7382821 recached_aof_fsyncs:36 recached_aof_fsync_usec:8938719 recached_aof_queue_wait_usec:14718007 recached_aof_batch_waiters:2226901 recached_aof_inline_batches:203291 recached_aof_blocking_batches:0 recached_aof_lead_busy:0 recached_aof_lock_contended:0 recached_aof_gate_parked:0 recached_aof_coalesce_gained:2004543 recached_aof_coalesce_missed:50 recached_aof_coalesce_backoffs:3 recached_aof_fanout_coalesce_gained:0 recached_aof_fanout_coalesce_missed:0 recached_aof_fanout_coalesce_backoffs:0 recached_aof_fanout_found_written:0 recached_aof_fanout_busy_skips:0 recached_aof_torn_writes:0 recached_aof_batch_frames_log2_hist:592,1621,63035,107760,29181,510,499,93,0,0,0,0 
+  uprof: uprof_threads=4 cycles=61734106438 opened=4 min_running=1.000 instructions=85525742185 opened=4 min_running=1.000 branch_misses=164047993 opened=4 min_running=1.000 cache_misses=314638849 opened=4 min_running=1.000 l1d_read_misses=1204022612 opened=4 min_running=1.000 task_clock_ns=27753446721 opened=4 min_running=1.000 context_switches=0 opened=4 min_running=1.000 
+  bench_err: 0
+  bench: "MSET (10 keys)","60587.70","0.803","0.040","0.687","0.871","0.911","421.375"

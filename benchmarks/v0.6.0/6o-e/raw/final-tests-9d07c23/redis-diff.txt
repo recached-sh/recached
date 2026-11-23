@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s
+     Running tests/redis_diff.rs (target/debug/deps/redis_diff-1261be2903e28aa9)
+
+running 2 tests
+comparing against Redis 7.2.5
+test new_commands_match_redis ... ok
+test watch_and_transactions_match_redis ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.94s
+

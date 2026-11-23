@@ -1,0 +1,125 @@
+[
+ {
+  "id": "E2-M1",
+  "what": "ignore lazy expiry at EXEC",
+  "edits": [
+   {
+    "file": "server-native/src/watch.rs",
+    "old": "    if watched_keys.is_empty() {\n        return false;\n    }\n    let reg = registry.map.lock().await;",
+    "new": "    if !watched_keys.is_empty() || watched_keys.is_empty() {\n        return false;\n    }\n    let reg = registry.map.lock().await;"
+   }
+  ]
+ },
+ {
+  "id": "E2-M2",
+  "what": "dirty a stable absent key (every registration live)",
+  "edits": [
+   {
+    "file": "server-native/src/watch.rs",
+    "old": "            live_at_watch: live,",
+    "new": "            live_at_watch: live || true,"
+   }
+  ]
+ },
+ {
+  "id": "E2-M3",
+  "what": "ignore expiry after WATCH (liveness never recorded)",
+  "edits": [
+   {
+    "file": "server-native/src/connection.rs",
+    "old": "let live = key_is_live(&store, key);",
+    "new": "let live = false && key_is_live(&store, key);",
+    "count": 2
+   }
+  ]
+ },
+ {
+  "id": "E2-M4",
+  "what": "a write that recreates an absent watched key does not invalidate",
+  "edits": [
+   {
+    "file": "server-native/src/watch.rs",
+    "old": "            None => true,\n            Some(store) => !key_is_live(store, &self.key),",
+    "new": "            None => true,\n            Some(_) => true,"
+   }
+  ]
+ },
+ {
+  "id": "E2-M5",
+  "what": "EXEC's expiry check on the wall clock, not the instant",
+  "edits": [
+   {
+    "file": "server-native/src/watch.rs",
+    "old": "            && !core_engine::store::at_instant(now, || key_is_live(store, key))",
+    "new": "            && !{ let _ = now; key_is_live(store, key) }"
+   }
+  ]
+ },
+ {
+  "id": "E3-M1",
+  "what": "drop an invalidation without marking dirty",
+  "edits": [
+   {
+    "file": "server-native/src/watch.rs",
+    "old": "            self.invalidated.store(true, Ordering::Release);",
+    "new": "            let _ = &self.invalidated;"
+   }
+  ]
+ },
+ {
+  "id": "E3-M2",
+  "what": "TCP EXEC does not read the flag",
+  "edits": [
+   {
+    "file": "server-native/src/connection.rs",
+    "old": "                                                    watch_dirty |= watch_subscriber.invalidated();\n",
+    "new": "\n"
+   }
+  ]
+ },
+ {
+  "id": "E3-M3",
+  "what": "allow EXEC to commit after an overflow (#157 check removed)",
+  "edits": [
+   {
+    "file": "server-native/src/connection.rs",
+    "old": "if overflow_rx.try_recv().is_ok() {",
+    "new": "if false && overflow_rx.try_recv().is_ok() {",
+    "count": 2
+   }
+  ]
+ },
+ {
+  "id": "E3-M4",
+  "what": "retain the full payload on WATCH-only paths",
+  "edits": [
+   {
+    "file": "server-native/src/watch.rs",
+    "old": "        if !self.pushes {\n",
+    "new": "        if !self.pushes && false {\n"
+   }
+  ]
+ },
+ {
+  "id": "E3-M5",
+  "what": "break notification delivery to push subscribers",
+  "edits": [
+   {
+    "file": "server-native/src/watch.rs",
+    "old": "        if !self.pushes {\n",
+    "new": "        if !self.pushes || true {\n"
+   }
+  ]
+ },
+ {
+  "id": "E3-M6",
+  "what": "clear the flag at a later WATCH",
+  "edits": [
+   {
+    "file": "server-native/src/connection.rs",
+    "old": "                                                            reg.entry(key.clone()).or_default().push(watch_subscriber.watching(live));\n",
+    "new": "                                                            reg.entry(key.clone()).or_default().push(watch_subscriber.watching(live));\n                                                            watch_subscriber.clear_invalidated();\n"
+   }
+  ]
+ }
+]

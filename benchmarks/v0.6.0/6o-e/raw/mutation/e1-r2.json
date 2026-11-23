@@ -1,0 +1,29 @@
+[
+ {
+  "id": "E1-M14",
+  "what": "WebSocket EXEC holds its guards through the reply",
+  "edits": [
+   {
+    "file": "server-native/src/connection.rs",
+    "old": "                                            drop(_write_guards);\n                                            ws_send!(&Value::Array(None).serialize());",
+    "new": "                                            let _held = &_write_guards;\n                                            ws_send!(&Value::Array(None).serialize());"
+   },
+   {
+    "file": "server-native/src/connection.rs",
+    "old": "                                            drop(_write_guards);\n                                            ws_send!(&out);",
+    "new": "                                            let _held = &_write_guards;\n                                            ws_send!(&out);"
+   }
+  ]
+ },
+ {
+  "id": "E1-M15",
+  "what": "queued EADD's claim check on the wall clock",
+  "edits": [
+   {
+    "file": "server-native/src/propagation.rs",
+    "old": "let claimable_members = match clock {\n        Some(now) => {\n            core_engine::store::at_instant(now, || claimable_eadd_members(cmd, state, store))\n        }\n        None => claimable_eadd_members(cmd, state, store),\n    };",
+    "new": "let claimable_members = { let _ = clock; claimable_eadd_members(cmd, state, store) };"
+   }
+  ]
+ }
+]

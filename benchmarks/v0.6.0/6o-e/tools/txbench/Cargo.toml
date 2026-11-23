@@ -1,0 +1,14 @@
+[package]
+name = "txbench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "6O-E: MULTI/EXEC load generator (redis-benchmark cannot send transactions)"
+
+# Standalone: not a member of the Recached workspace.
+[workspace]
+
+[dependencies]
+
+[profile.release]
+debug = false

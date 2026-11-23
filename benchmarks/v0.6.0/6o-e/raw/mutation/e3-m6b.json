@@ -1,0 +1,13 @@
+[
+ {
+  "id": "E3-M6b",
+  "what": "clear the flag at a later WATCH (re-anchored on register_watches)",
+  "edits": [
+   {
+    "file": "server-native/src/connection.rs",
+    "old": "                                                    register_watches(&watch_registry, &mut reg, &watch_subscriber, &keys, &mut watched_keys, &store);\n",
+    "new": "                                                    register_watches(&watch_registry, &mut reg, &watch_subscriber, &keys, &mut watched_keys, &store);\n                                                    watch_subscriber.clear_invalidated();\n"
+   }
+  ]
+ }
+]

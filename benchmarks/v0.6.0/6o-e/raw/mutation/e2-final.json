@@ -1,0 +1,62 @@
+[
+ {
+  "id": "E2-M6",
+  "what": "read liveness before publishing the registration (review R1 order)",
+  "edits": [
+   {
+    "file": "server-native/src/watch.rs",
+    "old": "            reg.entry(key.clone())\n                .or_default()\n                .push(subscriber.watching(false));",
+    "new": "            let live = key_is_live(store, key);\n            reg.entry(key.clone())\n                .or_default()\n                .push(subscriber.watching(live));"
+   },
+   {
+    "file": "server-native/src/watch.rs",
+    "old": "        if key_is_live(store, key)\n            && let Some(sub)",
+    "new": "        if false\n            && let Some(sub)"
+   }
+  ]
+ },
+ {
+  "id": "E2-M7",
+  "what": "never record a key live at WATCH",
+  "edits": [
+   {
+    "file": "server-native/src/watch.rs",
+    "old": "        if key_is_live(store, key)\n            && let Some(sub)",
+    "new": "        if false && key_is_live(store, key)\n            && let Some(sub)"
+   }
+  ]
+ },
+ {
+  "id": "E2-M8",
+  "what": "an empty STORE is not a removal",
+  "edits": [
+   {
+    "file": "server-native/src/propagation.rs",
+    "old": "    let removes = removes_named_keys(cmd) || stored_nothing(cmd, store);",
+    "new": "    let removes = removes_named_keys(cmd) || (false && stored_nothing(cmd, store));"
+   }
+  ]
+ },
+ {
+  "id": "E2-M9",
+  "what": "writers check for watchers without the fence (Relaxed; untestable on x86)",
+  "edits": [
+   {
+    "file": "server-native/src/watch.rs",
+    "old": "    pub(crate) fn watched_after_write(&self) -> bool {\n        std::sync::atomic::fence(Ordering::SeqCst);\n        self.watched_keys.load(Ordering::SeqCst) != 0\n            || self.watched_patterns.load(Ordering::SeqCst) != 0\n    }\n",
+    "new": "    pub(crate) fn watched_after_write(&self) -> bool {\n        !self.is_empty()\n    }\n"
+   }
+  ]
+ },
+ {
+  "id": "E2-M10",
+  "what": "DEL/UNLINK announce current values, not removals",
+  "edits": [
+   {
+    "file": "server-native/src/propagation.rs",
+    "old": "        Command::Del(_) | Command::Unlink(_) => true,\n        _ => false,",
+    "new": "        Command::Del(_) | Command::Unlink(_) => false,\n        _ => false,"
+   }
+  ]
+ }
+]
