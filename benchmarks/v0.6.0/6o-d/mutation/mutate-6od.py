@@ -33,7 +33,9 @@ UNCHECKED_FNS = """    fn read_one_unchecked<R>(&self, _key: &str, f: impl FnOnc
 
 MUTANTS = [
     ("M1 single-key read never waits for a multi-key write",
-     [("if held.seq.load(Ordering::Acquire) & SEQ_MULTI != 0 {", "if false {")]),
+     [("""            let mut before = held.multi.load(Ordering::Acquire);
+            if before & MULTI_ACTIVE != 0 {""", """            let mut before = held.multi.load(Ordering::Acquire);
+            if false {""")]),
     ("M2 multi-key read ignores writes in progress (validates only)",
      [("busy || word & SEQ_ACTIVE != 0", "busy || word & 0 != 0")]),
     ("M3 multi-key read skips its after-validation",
@@ -55,16 +57,16 @@ MUTANTS = [
     ("M6 multi-key write not marked multi-key",
      [("let flags = if several_steps || keys.len() > 1 {", "let flags = if false {")]),
     ("M7 writers never mark a write in progress",
-     [("self.stripe.seq.store(seq | flags, Ordering::Release);",
-       "self.stripe.seq.store(seq | (flags & 0), Ordering::Release);")]),
+     [(".store(seq | (flags & SEQ_ACTIVE), Ordering::Release);",
+       ".store(seq | (flags & 0), Ordering::Release);")]),
     ("M8 release clears the flags without advancing the version",
      [(".store((seq | (SEQ_STEP - 1)) + 1, Ordering::Release);",
        ".store(seq & !(SEQ_STEP - 1), Ordering::Release);")]),
     ("M9 MGET reads the clock per key",
      [("self.read_str(k, now, |read| {", "self.read_str(k, now_ms(), |read| {")]),
     ("M10 owned one-key reads bypass the protocol",
-     [("self.read_one_at(stripe, || self.execute_inner(cmd))",
-       "{ let _ = stripe; self.execute_inner(cmd) }")]),
+     [("ReadScope::One(key) => self.read_one(key, || self.execute_read_inner(&cmd)),",
+       "ReadScope::One(key) => { let _ = key; self.execute_read_inner(&cmd) }")]),
     ("M11 borrowed GET bypasses the protocol",
      [(UNCHECKED, UNCHECKED_FNS),
       ("CommandRef::Get(key) => self.read_one(key, || {",
@@ -75,15 +77,15 @@ MUTANTS = [
                     out.truncate(start);""", """self.read_many_unchecked(keys, || {
                     out.truncate(start);""")]),
     ("M13 by-reference one-key reads bypass the protocol",
-     [("ReadScope::One(key) => self.read_one(key, || self.execute_inner(cmd.clone())),",
-       "ReadScope::One(key) => { let _ = key; self.execute_inner(cmd.clone()) }")]),
+     [("ReadScope::One(key) => self.read_one(key, || self.execute_read_inner(cmd)),",
+       "ReadScope::One(key) => { let _ = key; self.execute_read_inner(cmd) }")]),
     ("M14 a retried borrowed MGET does not restart its reply",
      [("""                    out.truncate(start);
                     let now = now_ms();""", """                    let _ = start;
                     let now = now_ms();""")]),
     ("M15 owned multi-key reads bypass the protocol",
-     [("ReadScope::Many(keys) => self.read_many(keys, || self.execute_multi_read(&cmd)),",
-       "ReadScope::Many(keys) => { let _ = keys; self.execute_multi_read(&cmd) }")]),
+     [("ReadScope::Many(keys) => self.read_many(keys, || self.execute_read_inner(&cmd)),",
+       "ReadScope::Many(keys) => { let _ = keys; self.execute_read_inner(&cmd) }")]),
     ("M16 a one-key write naming its key twice is not marked multi-key",
      [("let several_steps = keys.len() > 1 || leaves_steps_visible(cmd.borrow());",
        "let several_steps = leaves_steps_visible(cmd.borrow());")]),
@@ -98,14 +100,32 @@ MUTANTS = [
         Command::SInter(_) | Command::SUnion(_) | Command::SDiff(_) => ReadScope::Unkeyed,""")]),
     ("M19 a DEDUP-wrapped multi-key read runs (as before review round 1)",
      [("Command::Dedup(..) => ReadScope::Unkeyed,", "Command::Dedup(_, _, inner) => read_scope(inner),"),
-      ("            Command::MGet(keys) => self.mget(keys),\n            Command::Exists(keys) => self.exists(keys),",
-       "            Command::Dedup(_, _, inner) => self.execute_multi_read(inner),\n            Command::MGet(keys) => self.mget(keys),\n            Command::Exists(keys) => self.exists(keys),")]),
+      ("            other => self.execute_inner(other.clone()),\n        }\n    }\n\n    fn execute_inner",
+       "            Command::Dedup(_, _, inner) => self.execute_read_inner(inner),\n            other => self.execute_inner(other.clone()),\n        }\n    }\n\n    fn execute_inner")]),
     ("M20 borrowed HGET bypasses the protocol",
      [(UNCHECKED, UNCHECKED_FNS),
       ("CommandRef::HGet(key, field) => self.read_one(key, || {",
        "CommandRef::HGet(key, field) => self.read_one_unchecked(key, || {")]),
     ("M21 a pop that may empty a collection is not marked multi-key",
      [("        | Command::ZAdd(..) => true,", "        | Command::ZAdd(..) => false,")]),
+    ("M23 a single-key read skips its after-validation",
+     [("if held.multi.load(Ordering::Acquire) == before {", "if true {")]),
+    ("M24 multi-step writes never mark the multi word",
+     [(".store(multi | MULTI_ACTIVE, Ordering::Release);", ".store(multi, Ordering::Release);")]),
+    ("M25 a multi-step release does not advance the epoch",
+     [("self.stripe.multi.store(multi + 1, Ordering::Release);",
+       "self.stripe.multi.store(multi & !MULTI_ACTIVE, Ordering::Release);")]),
+    ("M26 a retried borrowed GET does not restart its reply",
+     [("""                // A retried read starts its reply over (`read_one_at`).
+                out.truncate(start);""", """                let _ = start;""")]),
+    ("M27 HINCRBYFLOAT creates the hash before refusing a non-finite increment",
+     [("""    if !delta.is_finite() {
+        return Value::Error("ERR value is NaN or Infinity".to_string());
+    }""", "")]),
+    ("M28 LPUSH with nothing to add creates the list",
+     [("""        let mut vals = vals.peekable();
+        if vals.peek().is_none() {""", """        let mut vals = vals.peekable();
+        if false {""")]),
     ("M22 a multi-key EXISTS is read as its first key only",
      [("""        Command::MGet(k)
         | Command::Exists(k)""", """        Command::Exists(k) => ReadScope::One(k[0].as_str()),

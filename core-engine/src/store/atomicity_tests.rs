@@ -1269,3 +1269,150 @@ fn a_dedup_wrapped_read_is_refused_by_the_store_whatever_it_reads() {
     assert!(matches!(one, Value::Error(_)), "{one:?}");
     assert_eq!(many, one);
 }
+
+// ── Review follow-ups (6O-D1 round 2) ──────────────────────────────────────
+
+/// A read that loaded its stripe's word *before* a one-key multi-step write
+/// began, and reads while that write is between its steps: it must notice
+/// (the word moved) and read again, never answering the in-between state.
+/// `stop_after` is where the write stops; `read` reports what it saw.
+fn read_overtaken_by_a_stopped_write<T: Send + Sync>(
+    store: &KeyValueStore,
+    write: Command,
+    stop_after: &str,
+    read: impl Fn() -> T + Send + Sync,
+) -> T {
+    let pause = write_pause::after_mutation_of(store, stop_after, &[stop_after]);
+    pause.stop_next_reader(write_pause::ReaderPoint::AfterLoad);
+    let answer = OnceLock::new();
+    std::thread::scope(|scope| {
+        let read = &read;
+        let answer = &answer;
+        let reader = scope.spawn(move || {
+            let _ = answer.set(read());
+        });
+        assert!(pause.wait_reader_stopped(WITHIN), "the read never loaded");
+        let writer = scope.spawn(|| store.execute(write));
+        assert!(
+            pause.wait_reached(WITHIN),
+            "the write never reached its stop"
+        );
+        // The read now runs between the write's steps.
+        pause.release_reader();
+        pause.wait_reader_blocked_or(WITHIN, || answer.get().is_some());
+        pause.release_write();
+        writer.join().unwrap();
+        reader.join().unwrap();
+        drop(pause);
+    });
+    answer.into_inner().expect("the reader answered")
+}
+
+#[test]
+fn a_read_overtaken_by_a_one_key_multi_step_write_reads_again() {
+    // MSET naming its key twice: never the first value.
+    let store = KeyValueStore::new();
+    let k = "atom:r2:dup";
+    store.execute(mset(&[(k, "old")]));
+    let seen = read_overtaken_by_a_stopped_write(&store, mset(&[(k, "1"), (k, "2")]), k, || {
+        store.execute(Command::Get(k.into()))
+    });
+    assert!(seen == bulk("old") || seen == bulk("2"), "GET saw {seen:?}");
+
+    // RENAME k k: never missing.
+    let store = KeyValueStore::new();
+    let k = "atom:r2:self";
+    store.execute(mset(&[(k, "v")]));
+    let seen =
+        read_overtaken_by_a_stopped_write(&store, Command::Rename(k.into(), k.into()), k, || {
+            store.execute(Command::Get(k.into()))
+        });
+    assert_eq!(seen, bulk("v"), "GET saw the key missing during RENAME k k");
+
+    // A capped write refused and rolled back: never its value.
+    let store = KeyValueStore::with_config(None, Some(8 * 1024), EvictionPolicy::NoEviction);
+    let k = "atom:r2:oom";
+    store.execute(mset(&[(k, "base")]));
+    for i in 0..40 {
+        store.execute(Command::Set(
+            format!("fill:{i}"),
+            vec![b'f'; 150],
+            SetOptions::default(),
+        ));
+    }
+    let seen = read_overtaken_by_a_stopped_write(
+        &store,
+        Command::Append(k.into(), vec![b'x'; 16 * 1024]),
+        k,
+        || store.execute(Command::Strlen(k.into())),
+    );
+    assert_eq!(seen, Value::Integer(4), "STRLEN saw the refused APPEND");
+
+    // A pop that empties a list: TYPE never sees the empty list.
+    let store = KeyValueStore::new();
+    let k = "atom:r2:pop";
+    store.execute(Command::RPush(k.into(), vec![b"x".to_vec()]));
+    let seen = read_overtaken_by_a_stopped_write(&store, Command::LPop(k.into(), None), k, || {
+        (
+            store.execute(Command::Type(k.into())),
+            store.execute(Command::LLen(k.into())),
+        )
+    });
+    assert!(
+        seen.0 != Value::SimpleString("list".into()) || seen.1 == Value::Integer(1),
+        "TYPE answered list for an emptied list ({seen:?})"
+    );
+}
+
+/// The same through the borrowed GET the server uses: a retried read starts
+/// its reply over.
+#[test]
+fn a_borrowed_get_overtaken_by_a_one_key_multi_step_write_reads_again() {
+    let store = KeyValueStore::new();
+    let k = "atom:r2:ref";
+    store.execute(mset(&[(k, "old")]));
+    let seen = read_overtaken_by_a_stopped_write(&store, mset(&[(k, "1"), (k, "2")]), k, || {
+        let mut out = b"prefix".to_vec();
+        store
+            .execute_ref_into(&CommandRef::Get(k), &mut out)
+            .unwrap();
+        out
+    });
+    assert!(
+        seen == b"prefix$3\r\nold\r\n" || seen == b"prefix$1\r\n2\r\n",
+        "borrowed GET answered {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+}
+
+/// HINCRBYFLOAT with a non-finite increment is refused as Redis 7.2 refuses
+/// it — before the hash exists — and collection writes given nothing to add
+/// create nothing.
+#[test]
+fn refused_writes_never_create_an_empty_collection() {
+    let store = KeyValueStore::new();
+    assert_eq!(
+        store.execute(Command::HIncrByFloat("h".into(), "f".into(), f64::INFINITY)),
+        Value::Error("ERR value is NaN or Infinity".into())
+    );
+    assert_eq!(
+        store.execute(Command::Exists(vec!["h".into()])),
+        Value::Integer(0)
+    );
+    for cmd in [
+        Command::LPush("l".into(), Vec::new()),
+        Command::RPush("l".into(), Vec::new()),
+        Command::SAdd("s".into(), Vec::new()),
+        Command::HSet("h".into(), Vec::new()),
+    ] {
+        assert!(
+            matches!(store.execute(cmd.clone()), Value::Error(_)),
+            "{cmd:?}"
+        );
+    }
+    assert_eq!(
+        store.execute(Command::Exists(vec!["l".into(), "s".into(), "h".into()])),
+        Value::Integer(0)
+    );
+    assert_eq!(store.key_count(), 0);
+}

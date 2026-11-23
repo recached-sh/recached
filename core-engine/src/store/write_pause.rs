@@ -52,11 +52,11 @@ struct State {
     reader_stop: ReaderStop,
 }
 
-/// A point inside a validated multi-key read.
+/// A point inside a validated read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReaderPoint {
     /// After it loaded its stripes' words, found no write in progress, and
-    /// before it reads anything.
+    /// before it reads anything. Single-key reads stop here too.
     AfterLoad,
     /// After an MGET read its first key, before the others.
     AfterFirstKey,
@@ -160,8 +160,8 @@ impl Pause {
         state().locked_reads
     }
 
-    /// Also stop the next validated multi-key read of `readers_of` at
-    /// `point`, until [`release_reader`](Self::release_reader).
+    /// Also stop the next validated read of `readers_of` at `point`, until
+    /// [`release_reader`](Self::release_reader).
     pub fn stop_next_reader(&self, point: ReaderPoint) {
         state().reader_stop = ReaderStop::Armed(point);
     }

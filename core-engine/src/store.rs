@@ -2685,6 +2685,10 @@ pub struct KeyValueStore {
     write_order: Arc<[Stripe]>,
 }
 
+/// The refusal of a collection write given nothing to add (`LPUSH k` with no
+/// value can only come from a library caller or a malformed request).
+const EMPTY_COLLECTION_WRITE: &str = "ERR wrong number of arguments for command";
+
 /// Stripes in [`KeyValueStore::write_order`]. Unrelated keys share a stripe
 /// one time in this many, which serializes those two writes and nothing more.
 const WRITE_ORDER_STRIPES: usize = 256;
@@ -2779,13 +2783,23 @@ fn lock_stripe(stripe: &std::sync::Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
 #[repr(align(64))]
 struct Stripe {
     lock: std::sync::Mutex<()>,
+    /// Every write's word: [`SEQ_ACTIVE`] while one holds the stripe, and a
+    /// version advanced by each release. Multi-key reads validate it.
     seq: AtomicU64,
+    /// Multi-step writes' word: [`MULTI_ACTIVE`] while one holds the stripe,
+    /// and an epoch advanced by each such release. Single-key reads check it
+    /// before and validate it after reading, so a single-key write leaves it
+    /// alone and costs those reads nothing.
+    multi: AtomicU64,
 }
 
 /// [`Stripe::seq`]: a write holding the stripe is in progress.
 const SEQ_ACTIVE: u64 = 1;
-/// [`Stripe::seq`]: that write names more than one key.
+/// Requested of [`StripeHold::mark`]: the write is visible in more than one
+/// step, so [`Stripe::multi`] is marked too.
 const SEQ_MULTI: u64 = 2;
+/// [`Stripe::multi`]: a write visible in several steps holds the stripe.
+const MULTI_ACTIVE: u64 = 1;
 /// [`Stripe::seq`]: one write's advance of the version, above the flags.
 const SEQ_STEP: u64 = 4;
 
@@ -2820,9 +2834,18 @@ impl<'a> StripeHold<'a> {
     /// for one visible in several steps). The caller marks before it mutates
     /// anything under the stripe.
     fn mark(&self, flags: u64) {
-        // Only the holder writes `seq`: load and store, no read-modify-write.
+        // Only the holder writes either word: load and store, no
+        // read-modify-write.
         let seq = self.stripe.seq.load(Ordering::Relaxed);
-        self.stripe.seq.store(seq | flags, Ordering::Release);
+        self.stripe
+            .seq
+            .store(seq | (flags & SEQ_ACTIVE), Ordering::Release);
+        if flags & SEQ_MULTI != 0 {
+            let multi = self.stripe.multi.load(Ordering::Relaxed);
+            self.stripe
+                .multi
+                .store(multi | MULTI_ACTIVE, Ordering::Release);
+        }
     }
 }
 
@@ -2831,11 +2854,31 @@ impl Drop for StripeHold<'_> {
     /// this) release the lock — on every exit path, an unwinding panic
     /// included.
     fn drop(&mut self) {
+        let multi = self.stripe.multi.load(Ordering::Relaxed);
+        if multi & MULTI_ACTIVE != 0 {
+            self.stripe.multi.store(multi + 1, Ordering::Release);
+        }
         let seq = self.stripe.seq.load(Ordering::Relaxed);
         self.stripe
             .seq
             .store((seq | (SEQ_STEP - 1)) + 1, Ordering::Release);
     }
+}
+
+/// Wait for the multi-step write holding `stripe` to finish: spin on its
+/// word (read-only, so the waiter does not contend with the writer's line),
+/// then, if it is a long one, take and release the lock it holds to its end.
+/// Returns the word as last loaded.
+fn wait_for_multi(stripe: &Stripe) -> u64 {
+    for _ in 0..STRIPE_SPINS {
+        std::hint::spin_loop();
+        let word = stripe.multi.load(Ordering::Acquire);
+        if word & MULTI_ACTIVE == 0 {
+            return word;
+        }
+    }
+    drop(lock_stripe(&stripe.lock));
+    stripe.multi.load(Ordering::Acquire)
 }
 
 /// Write-order stripes held by one write; released on drop.
@@ -2859,6 +2902,7 @@ fn write_order_stripes() -> Arc<[Stripe]> {
         .map(|_| Stripe {
             lock: std::sync::Mutex::new(()),
             seq: AtomicU64::new(0),
+            multi: AtomicU64::new(0),
         })
         .collect()
 }
@@ -4967,41 +5011,60 @@ impl KeyValueStore {
         })
     }
 
-    /// Run `f`, a read of one key on write-order stripe `stripe`, never while
-    /// a multi-key write holding that stripe is part-done (6O-D, [`Stripe`]).
+    /// Run `f`, a read of one key on write-order stripe `stripe`, so that it
+    /// never observes a write visible in several steps part-done (6O-D,
+    /// [`Stripe`]): neither a multi-key write some other read has already
+    /// seen part of, nor a one-key write between its steps (`MSET k 1 k 2`, a
+    /// pop that empties a collection, a rolled-back capped write).
     ///
-    /// A single key's read is atomic by itself (one shard guard). What it
-    /// must not do is see a key an MSET has not reached yet after some read —
-    /// this one's predecessor on the connection, or anyone's — saw a key the
-    /// MSET has written. While [`SEQ_MULTI`] is set the read waits for the
-    /// write by taking the stripe's lock, which the writer holds to its end,
-    /// and releasing it at once. Otherwise it runs as before: one load, no
-    /// write to shared state.
+    /// The read loads [`Stripe::multi`]; while a multi-step write holds the
+    /// stripe it waits for it, spinning on the word (read-only) and then by
+    /// taking the lock. It reads, and loads the word again: unchanged means
+    /// no multi-step write held the stripe in between, so `f` saw none of its
+    /// steps. Otherwise it reads again (`f` must only read, and start its
+    /// output over). After [`OPTIMISTIC_READS`] attempts it reads holding
+    /// the lock, so no such write can start. A single-key write touches only
+    /// [`Stripe::seq`], so the common read costs two loads of an L1-hot word.
     ///
-    /// The read itself never holds the lock: after the wait it is in the
-    /// fast path's position. A multi-key write that begins after the load (or
-    /// the wait) is fine: whatever this read sees of it, the write had marked
-    /// every stripe before that, so any later read of another of its keys
-    /// waits for it.
-    fn read_one_at<R>(&self, stripe: usize, f: impl FnOnce() -> R) -> R {
+    /// Across keys: a multi-key write marks every stripe before its first
+    /// mutation, so once any read has seen one of its keys new, a read of
+    /// another of them that starts afterwards finds the mark and waits.
+    fn read_one_at<R>(&self, stripe: usize, mut f: impl FnMut() -> R) -> R {
         let held = &self.write_order[stripe];
-        if held.seq.load(Ordering::Acquire) & SEQ_MULTI != 0 {
+        for _ in 0..OPTIMISTIC_READS {
+            let mut before = held.multi.load(Ordering::Acquire);
+            if before & MULTI_ACTIVE != 0 {
+                #[cfg(any(test, feature = "test-hooks"))]
+                write_pause::reader_blocked(self.hook_id(), &[stripe], false);
+                before = wait_for_multi(held);
+                if before & MULTI_ACTIVE != 0 {
+                    continue;
+                }
+            }
             #[cfg(any(test, feature = "test-hooks"))]
-            write_pause::reader_blocked(self.hook_id(), &[stripe], false);
-            drop(lock_stripe(&held.lock));
+            write_pause::reader_at(
+                self.hook_id(),
+                write_pause::ReaderPoint::AfterLoad,
+                &[stripe],
+            );
+            let out = f();
+            if held.multi.load(Ordering::Acquire) == before {
+                return out;
+            }
         }
+        let _held = lock_stripe(&held.lock);
         f()
+    }
+
+    /// [`read_one_at`](Self::read_one_at) for `key`'s stripe.
+    fn read_one<R>(&self, key: &str, f: impl FnMut() -> R) -> R {
+        self.read_one_at(write_order_stripe(key), f)
     }
 
     /// This store's identity for the test hooks, which are process-wide.
     #[cfg(any(test, feature = "test-hooks"))]
     fn hook_id(&self) -> usize {
         Arc::as_ptr(&self.write_order).cast::<()>() as usize
-    }
-
-    /// [`read_one_at`](Self::read_one_at) for `key`'s stripe.
-    fn read_one<R>(&self, key: &str, f: impl FnOnce() -> R) -> R {
-        self.read_one_at(write_order_stripe(key), f)
     }
 
     /// Run `f`, a read of every key in `keys`, so that it observes them all
@@ -5045,7 +5108,13 @@ impl KeyValueStore {
             // A write holds its stripes for a few hundred nanoseconds: wait a
             // little for one in progress rather than spend the attempt.
             let (mut before, mut busy) = load();
-            let mut spins = 0;
+            // Not for a large read: rescanning every stripe would cost more
+            // than the attempt (6O-D review).
+            let mut spins = if stripes.len() > LARGE_READ_STRIPES {
+                STRIPE_SPINS
+            } else {
+                0
+            };
             while busy && spins < STRIPE_SPINS {
                 std::hint::spin_loop();
                 (before, busy) = load();
@@ -5081,11 +5150,8 @@ impl KeyValueStore {
     /// names ([`read_scope`]). Owned: a one-key read moves its command in.
     fn execute_read(&self, cmd: Command) -> Value {
         match read_scope(&cmd) {
-            ReadScope::One(key) => {
-                let stripe = write_order_stripe(key);
-                self.read_one_at(stripe, || self.execute_inner(cmd))
-            }
-            ReadScope::Many(keys) => self.read_many(keys, || self.execute_multi_read(&cmd)),
+            ReadScope::One(key) => self.read_one(key, || self.execute_read_inner(&cmd)),
+            ReadScope::Many(keys) => self.read_many(keys, || self.execute_read_inner(&cmd)),
             ReadScope::Unkeyed => self.execute_inner(cmd),
         }
     }
@@ -5093,22 +5159,9 @@ impl KeyValueStore {
     /// [`execute_read`](Self::execute_read) for a borrowed command.
     fn execute_read_ref(&self, cmd: &Command) -> Value {
         match read_scope(cmd) {
-            ReadScope::One(key) => self.read_one(key, || self.execute_inner(cmd.clone())),
-            ReadScope::Many(keys) => self.read_many(keys, || self.execute_multi_read(cmd)),
+            ReadScope::One(key) => self.read_one(key, || self.execute_read_inner(cmd)),
+            ReadScope::Many(keys) => self.read_many(keys, || self.execute_read_inner(cmd)),
             ReadScope::Unkeyed => self.execute_inner(cmd.clone()),
-        }
-    }
-
-    /// The multi-key reads, by reference: [`read_many`](Self::read_many) may
-    /// run one more than once.
-    fn execute_multi_read(&self, cmd: &Command) -> Value {
-        match cmd {
-            Command::MGet(keys) => self.mget(keys),
-            Command::Exists(keys) => self.exists(keys),
-            Command::SInter(keys) => set_op_reply(set_inter(&self.data, keys, now_ms())),
-            Command::SUnion(keys) => set_op_reply(set_union(&self.data, keys, now_ms())),
-            Command::SDiff(keys) => set_op_reply(set_diff(&self.data, keys, now_ms())),
-            other => self.execute_inner(other.clone()),
         }
     }
 
@@ -5226,8 +5279,11 @@ impl KeyValueStore {
         if cmd.is_write() && self.enforces_caps() {
             return None;
         }
+        let start = out.len();
         Some(match cmd {
             CommandRef::Get(key) => self.read_one(key, || {
+                // A retried read starts its reply over (`read_one_at`).
+                out.truncate(start);
                 self.read_str(key, now_ms(), |read| match read {
                     Ok(value) => {
                         write_bulk(out, value);
@@ -5240,6 +5296,7 @@ impl KeyValueStore {
                 })
             }),
             CommandRef::HGet(key, field) => self.read_one(key, || {
+                out.truncate(start);
                 self.read_hash_field(key, field, |read| match read {
                     Ok(value) => {
                         write_bulk(out, value);
@@ -5253,7 +5310,6 @@ impl KeyValueStore {
             }),
             CommandRef::MGet(keys) => {
                 // A retried read starts its reply over (`read_many`).
-                let start = out.len();
                 self.read_many(keys, || {
                     out.truncate(start);
                     let now = now_ms();
@@ -5375,6 +5431,13 @@ impl KeyValueStore {
         F: AsRef<str> + Into<String>,
         V: AsRef<[u8]> + Into<Blob>,
     {
+        // Nothing to add must not create the key (6O-D review): an empty
+        // collection would exist until a second step removed it. The decoder
+        // never builds one from a well-formed request; library callers can.
+        let mut pairs = pairs.peekable();
+        if pairs.peek().is_none() {
+            return Value::Error(EMPTY_COLLECTION_WRITE.to_string());
+        }
         let now = now_ms();
         typed_entry!(
             entry,
@@ -5410,6 +5473,13 @@ impl KeyValueStore {
         K: AsRef<str> + Into<Key>,
         V: Into<Blob>,
     {
+        // Nothing to add must not create the key (6O-D review): an empty
+        // collection would exist until a second step removed it. The decoder
+        // never builds one from a well-formed request; library callers can.
+        let mut vals = vals.peekable();
+        if vals.peek().is_none() {
+            return Value::Error(EMPTY_COLLECTION_WRITE.to_string());
+        }
         let now = now_ms();
         typed_entry!(
             entry,
@@ -5443,6 +5513,13 @@ impl KeyValueStore {
         K: AsRef<str> + Into<Key>,
         M: SetMember,
     {
+        // Nothing to add must not create the key (6O-D review): an empty
+        // collection would exist until a second step removed it. The decoder
+        // never builds one from a well-formed request; library callers can.
+        let mut members = members.peekable();
+        if members.peek().is_none() {
+            return Value::Error(EMPTY_COLLECTION_WRITE.to_string());
+        }
         let now = now_ms();
         typed_entry!(
             entry,
@@ -5497,6 +5574,686 @@ impl KeyValueStore {
             }
         }
         Value::SimpleString("OK".to_string())
+    }
+
+    /// The read-only commands' arms, by reference: the read-side protocol
+    /// ([`read_one_at`](Self::read_one_at), [`read_many`](Self::read_many))
+    /// may run a read again, and must not need to clone the command to do so
+    /// (6O-D). Anything else is run owned, from a clone.
+    fn execute_read_inner(&self, cmd: &Command) -> Value {
+        match cmd {
+            Command::Get(key) => self.read_str(key, now_ms(), |read| match read {
+                Ok(value) => Value::BulkString(value.map(<[u8]>::to_vec)),
+                Err(WrongType) => Value::Error(WRONGTYPE.to_string()),
+            }),
+
+            Command::Strlen(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    Some(e) if !e.is_expired(now) => match &e.value {
+                        EntryValue::Str(s) => Value::Integer(s.len() as i64),
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                    _ => Value::Integer(0),
+                }
+            }
+
+            &Command::GetRange(ref key, start, end) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    Some(e) if !e.is_expired(now) => match &e.value {
+                        EntryValue::Str(s) => {
+                            e.touch(now);
+                            Value::BulkString(Some(byte_range(s.as_slice(), start, end).to_vec()))
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                    // A missing key is an empty string, so every range of it is
+                    // empty — an empty bulk, not a nil.
+                    _ => Value::BulkString(Some(Vec::new())),
+                }
+            }
+
+            Command::MGet(keys) => self.mget(keys),
+
+            Command::ExpireTime(key) => self.expire_time(key, false),
+            Command::PExpireTime(key) => self.expire_time(key, true),
+
+            Command::Ttl(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Integer(-2),
+                    Some(e) if e.is_expired(now) => Value::Integer(-2),
+                    Some(e) => match e.deadline.get() {
+                        None => Value::Integer(-1),
+                        // Rounded to nearest, not truncated, matching Redis.
+                        // Truncating meant `SET k v EX 100` followed
+                        // immediately by `TTL k` answered 99: the handful of
+                        // microseconds spent between the two commands took the
+                        // remainder just below 100_000 ms, and `/ 1000` threw
+                        // the rest away. Every TTL read was up to a second
+                        // short, which breaks ported test suites asserting the
+                        // value they just set and makes any client that renews
+                        // at a threshold renew early, forever.
+                        Some(exp) => Value::Integer(ttl_seconds(exp.saturating_sub(now))),
+                    },
+                }
+            }
+
+            Command::PTtl(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Integer(-2),
+                    Some(e) if e.is_expired(now) => Value::Integer(-2),
+                    Some(e) => match e.deadline.get() {
+                        None => Value::Integer(-1),
+                        Some(exp) => Value::Integer(exp.saturating_sub(now) as i64),
+                    },
+                }
+            }
+
+            Command::Exists(keys) => self.exists(keys),
+
+            Command::Type(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    Some(e) if !e.is_expired(now) => {
+                        Value::SimpleString(e.value.type_name().to_string())
+                    }
+                    _ => Value::SimpleString("none".to_string()),
+                }
+            }
+            Command::MemoryUsage(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    // The same figure the eviction loop bills the key for, so
+                    // "which key is eating my maxmemory" and "which key gets
+                    // evicted next" are answered from one measurement rather
+                    // than two that can disagree.
+                    Some(e) if !e.is_expired(now) => Value::Integer(entry_size(key, &e) as i64),
+                    _ => Value::BulkString(None),
+                }
+            }
+
+            // ── Hash ──────────────────────────────────────────────────────────
+            Command::HStrLen(key, field) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Integer(0),
+                    Some(e) if e.is_expired(now) => Value::Integer(0),
+                    Some(e) => match &e.value {
+                        EntryValue::Hash(h) => {
+                            e.touch(now);
+                            Value::Integer(h.get(field).map_or(0, |v| v.len() as i64))
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::HGet(key, field) => self.read_hash_field(key, field, |read| match read {
+                Ok(value) => Value::BulkString(value.map(<[u8]>::to_vec)),
+                Err(WrongType) => Value::Error(WRONGTYPE.to_string()),
+            }),
+
+            Command::HGetAll(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Array(Some(vec![])),
+                    Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
+                    Some(e) => match &e.value {
+                        EntryValue::Hash(h) => {
+                            e.touch(now);
+                            let mut pairs: Vec<(&str, &[u8])> = h.iter().collect();
+                            pairs.sort_unstable_by_key(|(f, _)| *f);
+                            let out = pairs
+                                .into_iter()
+                                .flat_map(|(f, v)| {
+                                    [
+                                        Value::BulkString(Some(f.as_bytes().to_vec())),
+                                        Value::BulkString(Some(v.to_vec())),
+                                    ]
+                                })
+                                .collect();
+                            Value::Array(Some(out))
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::HKeys(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Array(Some(vec![])),
+                    Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
+                    Some(e) => match &e.value {
+                        EntryValue::Hash(h) => {
+                            let mut keys: Vec<&str> = h.iter().map(|(field, _)| field).collect();
+                            keys.sort_unstable();
+                            Value::Array(Some(
+                                keys.into_iter()
+                                    .map(|k| Value::BulkString(Some(k.as_bytes().to_vec())))
+                                    .collect(),
+                            ))
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::HScan(key, args) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => empty_scan(),
+                    Some(e) if e.is_expired(now) => empty_scan(),
+                    Some(e) => match &e.value {
+                        EntryValue::Hash(h) => {
+                            e.touch(now);
+                            let pat = args.pattern.as_deref().unwrap_or("*");
+                            let mut fields: Vec<(&str, &[u8])> =
+                                h.iter().filter(|(f, _)| glob_match(pat, f)).collect();
+                            fields.sort_unstable_by_key(|(f, _)| *f);
+                            let (page, next) = scan_page(&fields, args.cursor, args.count);
+                            let out = page
+                                .iter()
+                                .flat_map(|(f, v)| {
+                                    let field = Value::BulkString(Some(f.as_bytes().to_vec()));
+                                    if args.novalues {
+                                        vec![field]
+                                    } else {
+                                        vec![field, Value::BulkString(Some(v.to_vec()))]
+                                    }
+                                })
+                                .collect();
+                            scan_reply(next, out)
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::HVals(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Array(Some(vec![])),
+                    Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
+                    Some(e) => match &e.value {
+                        EntryValue::Hash(h) => {
+                            let mut pairs: Vec<(&str, &[u8])> = h.iter().collect();
+                            pairs.sort_unstable_by_key(|(f, _)| *f);
+                            Value::Array(Some(
+                                pairs
+                                    .into_iter()
+                                    .map(|(_, v)| Value::BulkString(Some(v.to_vec())))
+                                    .collect(),
+                            ))
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::HLen(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Integer(0),
+                    Some(e) if e.is_expired(now) => Value::Integer(0),
+                    Some(e) => match &e.value {
+                        EntryValue::Hash(h) => Value::Integer(h.len() as i64),
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::HExists(key, field) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Integer(0),
+                    Some(e) if e.is_expired(now) => Value::Integer(0),
+                    Some(e) => match &e.value {
+                        EntryValue::Hash(h) => {
+                            Value::Integer(if h.contains_key(field) { 1 } else { 0 })
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::HMGet(key, fields) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Array(Some(
+                        fields.iter().map(|_| Value::BulkString(None)).collect(),
+                    )),
+                    Some(e) if e.is_expired(now) => Value::Array(Some(
+                        fields.iter().map(|_| Value::BulkString(None)).collect(),
+                    )),
+                    Some(e) => match &e.value {
+                        EntryValue::Hash(h) => Value::Array(Some(
+                            fields
+                                .iter()
+                                .map(|f| {
+                                    h.get(f)
+                                        .map(|v| Value::BulkString(Some(v.to_vec())))
+                                        .unwrap_or(Value::BulkString(None))
+                                })
+                                .collect(),
+                        )),
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            // ── List ──────────────────────────────────────────────────────────
+            &Command::LRange(ref key, start, stop) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Array(Some(vec![])),
+                    Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
+                    Some(e) => match &e.value {
+                        EntryValue::List(list) => {
+                            e.touch(now);
+                            let slice: Vec<&Blob> = list.iter().collect();
+                            match resolve_range(start, stop, slice.len()) {
+                                None => Value::Array(Some(vec![])),
+                                Some((s, e)) => Value::Array(Some(
+                                    slice[s..=e]
+                                        .iter()
+                                        .map(|v| Value::BulkString(Some(v.as_slice().to_vec())))
+                                        .collect(),
+                                )),
+                            }
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::LLen(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Integer(0),
+                    Some(e) if e.is_expired(now) => Value::Integer(0),
+                    Some(e) => match &e.value {
+                        EntryValue::List(l) => Value::Integer(l.len() as i64),
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            &Command::LIndex(ref key, idx) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::BulkString(None),
+                    Some(e) if e.is_expired(now) => Value::BulkString(None),
+                    Some(e) => match &e.value {
+                        EntryValue::List(list) => {
+                            let slice: Vec<&Blob> = list.iter().collect();
+                            resolve_idx(idx, slice.len())
+                                .map(|i| Value::BulkString(Some(slice[i].as_slice().to_vec())))
+                                .unwrap_or(Value::BulkString(None))
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::SMembers(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Array(Some(vec![])),
+                    Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
+                    Some(e) => match &e.value {
+                        EntryValue::Set(s) => {
+                            e.touch(now);
+                            let mut members: Vec<&str> = s.iter().map(|m| m.as_str()).collect();
+                            members.sort_unstable();
+                            Value::Array(Some(
+                                members
+                                    .into_iter()
+                                    .map(|m| Value::BulkString(Some(m.as_bytes().to_vec())))
+                                    .collect(),
+                            ))
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::SScan(key, args) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => empty_scan(),
+                    Some(e) if e.is_expired(now) => empty_scan(),
+                    Some(e) => match &e.value {
+                        EntryValue::Set(s) => {
+                            e.touch(now);
+                            let pat = args.pattern.as_deref().unwrap_or("*");
+                            let mut members: Vec<&str> = s
+                                .iter()
+                                .map(|m| m.as_str())
+                                .filter(|m| glob_match(pat, m))
+                                .collect();
+                            members.sort_unstable();
+                            let (page, next) = scan_page(&members, args.cursor, args.count);
+                            let out = page
+                                .iter()
+                                .map(|m| Value::BulkString(Some(m.as_bytes().to_vec())))
+                                .collect();
+                            scan_reply(next, out)
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::SCard(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Integer(0),
+                    Some(e) if e.is_expired(now) => Value::Integer(0),
+                    Some(e) => match &e.value {
+                        EntryValue::Set(s) => Value::Integer(s.len() as i64),
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::SIsMember(key, member) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Integer(0),
+                    Some(e) if e.is_expired(now) => Value::Integer(0),
+                    Some(e) => match &e.value {
+                        EntryValue::Set(s) => {
+                            e.touch(now);
+                            Value::Integer(if s.contains(member) { 1 } else { 0 })
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::SMIsMember(key, members) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Array(Some(members.iter().map(|_| Value::Integer(0)).collect())),
+                    Some(e) if e.is_expired(now) => {
+                        Value::Array(Some(members.iter().map(|_| Value::Integer(0)).collect()))
+                    }
+                    Some(e) => match &e.value {
+                        EntryValue::Set(s) => Value::Array(Some(
+                            members
+                                .iter()
+                                .map(|m| Value::Integer(if s.contains(m) { 1 } else { 0 }))
+                                .collect(),
+                        )),
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::SInter(keys) => set_op_reply(set_inter(&self.data, keys, now_ms())),
+
+            Command::SUnion(keys) => set_op_reply(set_union(&self.data, keys, now_ms())),
+
+            Command::SDiff(keys) => set_op_reply(set_diff(&self.data, keys, now_ms())),
+
+            &Command::SRandMember(ref key, count) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => match count {
+                        None => Value::BulkString(None),
+                        Some(_) => Value::Array(Some(vec![])),
+                    },
+                    Some(e) if e.is_expired(now) => match count {
+                        None => Value::BulkString(None),
+                        Some(_) => Value::Array(Some(vec![])),
+                    },
+                    Some(e) => match &e.value {
+                        EntryValue::Set(s) => match count {
+                            None => {
+                                if s.is_empty() {
+                                    return Value::BulkString(None);
+                                }
+                                let mut rng = rand::rng();
+                                let idx = rng.random_range(0..s.len());
+                                Value::BulkString(Some(
+                                    s.get_index(idx)
+                                        .expect("index in range")
+                                        .as_bytes()
+                                        .to_vec(),
+                                ))
+                            }
+                            Some(n) if n >= 0 => {
+                                // Positive count: up to n *distinct* random members.
+                                let mut rng = rand::rng();
+                                // `try_from` rather than `as`: `usize` is
+                                // 32-bit under wasm32, where a count above
+                                // `u32::MAX` would truncate instead of clamp.
+                                let amount = usize::try_from(n).unwrap_or(usize::MAX).min(s.len());
+                                let idxs = rand::seq::index::sample(&mut rng, s.len(), amount);
+                                Value::Array(Some(
+                                    idxs.iter()
+                                        .map(|i| {
+                                            Value::BulkString(Some(
+                                                s.get_index(i)
+                                                    .expect("index in range")
+                                                    .as_bytes()
+                                                    .to_vec(),
+                                            ))
+                                        })
+                                        .collect(),
+                                ))
+                            }
+                            Some(n) => {
+                                // Negative: allow repetition, return |n| random elements.
+                                if s.is_empty() {
+                                    return Value::Array(Some(vec![]));
+                                }
+                                let mut rng = rand::rng();
+                                // The parser refuses a larger magnitude, but a
+                                // `Command` also arrives from AOF replay, a
+                                // replication frame or `sync-client`, none of
+                                // which pass through it.
+                                let abs = usize::try_from(n.unsigned_abs())
+                                    .unwrap_or(usize::MAX)
+                                    .min(crate::resp::MAX_ARRAY_ELEMENTS);
+                                Value::Array(Some(
+                                    (0..abs)
+                                        .map(|_| {
+                                            let idx = rng.random_range(0..s.len());
+                                            Value::BulkString(Some(
+                                                s.get_index(idx)
+                                                    .expect("index in range")
+                                                    .as_bytes()
+                                                    .to_vec(),
+                                            ))
+                                        })
+                                        .collect(),
+                                ))
+                            }
+                        },
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            &Command::ZRange(ref key, start, stop, withscores) => {
+                zset_read(&self.data, key, |zset| {
+                    Ok(encode_zrange(
+                        &index_slice(zset.iter_asc(), zset.len(), start, stop),
+                        withscores,
+                    ))
+                })
+            }
+
+            &Command::ZRevRange(ref key, start, stop, withscores) => {
+                zset_read(&self.data, key, |zset| {
+                    Ok(encode_zrange(
+                        &index_slice(zset.iter_asc().rev(), zset.len(), start, stop),
+                        withscores,
+                    ))
+                })
+            }
+
+            &Command::ZRangeByScore(ref key, ref min_s, ref max_s, withscores, limit) => {
+                zset_read(&self.data, key, |zset| {
+                    let min = ScoreBound::parse(min_s)?;
+                    let max = ScoreBound::parse(max_s)?;
+                    let page = limited_page(zset.range_by_score(&min, &max), limit);
+                    Ok(encode_zrange(&page, withscores))
+                })
+            }
+
+            &Command::ZRevRangeByScore(ref key, ref max_s, ref min_s, withscores, limit) => {
+                zset_read(&self.data, key, |zset| {
+                    let min = ScoreBound::parse(min_s)?;
+                    let max = ScoreBound::parse(max_s)?;
+                    let page = limited_page(zset.range_by_score_rev(&min, &max), limit);
+                    Ok(encode_zrange(&page, withscores))
+                })
+            }
+
+            Command::ZScore(key, member) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::BulkString(None),
+                    Some(e) if e.is_expired(now) => Value::BulkString(None),
+                    Some(e) => match &e.value {
+                        EntryValue::ZSet(z) => {
+                            e.touch(now);
+                            z.score(member)
+                                .map(|s| Value::BulkString(Some(format_score(s).into_bytes())))
+                                .unwrap_or(Value::BulkString(None))
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::ZMScore(key, members) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Array(Some(
+                        members.iter().map(|_| Value::BulkString(None)).collect(),
+                    )),
+                    Some(e) if e.is_expired(now) => Value::Array(Some(
+                        members.iter().map(|_| Value::BulkString(None)).collect(),
+                    )),
+                    Some(e) => match &e.value {
+                        EntryValue::ZSet(z) => Value::Array(Some(
+                            members
+                                .iter()
+                                .map(|m| {
+                                    z.score(m)
+                                        .map(|s| {
+                                            Value::BulkString(Some(format_score(s).into_bytes()))
+                                        })
+                                        .unwrap_or(Value::BulkString(None))
+                                })
+                                .collect(),
+                        )),
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::ZRank(key, member) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::BulkString(None),
+                    Some(e) if e.is_expired(now) => Value::BulkString(None),
+                    Some(e) => match &e.value {
+                        EntryValue::ZSet(z) => z
+                            .rank(member)
+                            .map(|i| Value::Integer(i as i64))
+                            .unwrap_or(Value::BulkString(None)),
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::ZRevRank(key, member) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::BulkString(None),
+                    Some(e) if e.is_expired(now) => Value::BulkString(None),
+                    Some(e) => match &e.value {
+                        EntryValue::ZSet(z) => z
+                            .rank(member)
+                            .map(|i| Value::Integer((z.len() - 1 - i) as i64))
+                            .unwrap_or(Value::BulkString(None)),
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::ZCard(key) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::Integer(0),
+                    Some(e) if e.is_expired(now) => Value::Integer(0),
+                    Some(e) => match &e.value {
+                        EntryValue::ZSet(z) => Value::Integer(z.len() as i64),
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            Command::ZCount(key, min_s, max_s) => zset_read(&self.data, key, |zset| {
+                let min = ScoreBound::parse(min_s)?;
+                let max = ScoreBound::parse(max_s)?;
+                let count = zset.range_by_score(&min, &max).count();
+                Ok(Value::Integer(count as i64))
+            }),
+
+            Command::ZScan(key, args) => zset_read(&self.data, key, |zset| {
+                let pat = args.pattern.as_deref().unwrap_or("*");
+                let mut members: Vec<(&str, f64)> =
+                    zset.members().filter(|(m, _)| glob_match(pat, m)).collect();
+                members.sort_unstable_by_key(|(m, _)| *m);
+                let (page, next) = scan_page(&members, args.cursor, args.count);
+                let out = page
+                    .iter()
+                    .flat_map(|(m, s)| {
+                        [
+                            Value::BulkString(Some(m.as_bytes().to_vec())),
+                            Value::BulkString(Some(format_score(*s).into_bytes())),
+                        ]
+                    })
+                    .collect();
+                Ok(scan_reply(next, out))
+            }),
+
+            // ── JSON ──────────────────────────────────────────────────────────
+            Command::JGet(key, path) => {
+                let now = now_ms();
+                match self.data.get(key.as_str()) {
+                    None => Value::BulkString(None),
+                    Some(e) if e.is_expired(now) => Value::BulkString(None),
+                    Some(e) => match &e.value {
+                        EntryValue::Json(doc) => {
+                            e.touch(now);
+                            let segs = match parse_json_path(path.as_deref().unwrap_or("$")) {
+                                Ok(s) => s,
+                                Err(err) => return Value::Error(err),
+                            };
+                            match json_get_at(doc, &segs) {
+                                Some(v) => Value::BulkString(Some(
+                                    serde_json::to_string(v).unwrap_or_default().into_bytes(),
+                                )),
+                                None => Value::BulkString(None),
+                            }
+                        }
+                        _ => Value::Error(WRONGTYPE.to_string()),
+                    },
+                }
+            }
+
+            other => self.execute_inner(other.clone()),
+        }
     }
 
     fn execute_inner(&self, cmd: Command) -> Value {
@@ -5554,10 +6311,52 @@ impl KeyValueStore {
             // ── Strings ───────────────────────────────────────────────────────
             Command::Set(key, val, opts) => self.set(key, val, &opts, None),
 
-            Command::Get(key) => self.read_str(&key, now_ms(), |read| match read {
-                Ok(value) => Value::BulkString(value.map(<[u8]>::to_vec)),
-                Err(WrongType) => Value::Error(WRONGTYPE.to_string()),
-            }),
+            // Reads run by reference ([`execute_read_inner`](Self::execute_read_inner)):
+            // the read-side protocol may run one more than once.
+            cmd @ (Command::Get(..)
+            | Command::Strlen(..)
+            | Command::GetRange(..)
+            | Command::MGet(..)
+            | Command::ExpireTime(..)
+            | Command::PExpireTime(..)
+            | Command::Ttl(..)
+            | Command::PTtl(..)
+            | Command::Exists(..)
+            | Command::Type(..)
+            | Command::MemoryUsage(..)
+            | Command::HStrLen(..)
+            | Command::HGet(..)
+            | Command::HGetAll(..)
+            | Command::HKeys(..)
+            | Command::HScan(..)
+            | Command::HVals(..)
+            | Command::HLen(..)
+            | Command::HExists(..)
+            | Command::HMGet(..)
+            | Command::LRange(..)
+            | Command::LLen(..)
+            | Command::LIndex(..)
+            | Command::SMembers(..)
+            | Command::SScan(..)
+            | Command::SCard(..)
+            | Command::SIsMember(..)
+            | Command::SMIsMember(..)
+            | Command::SInter(..)
+            | Command::SUnion(..)
+            | Command::SDiff(..)
+            | Command::SRandMember(..)
+            | Command::ZRange(..)
+            | Command::ZRevRange(..)
+            | Command::ZRangeByScore(..)
+            | Command::ZRevRangeByScore(..)
+            | Command::ZScore(..)
+            | Command::ZMScore(..)
+            | Command::ZRank(..)
+            | Command::ZRevRank(..)
+            | Command::ZCard(..)
+            | Command::ZCount(..)
+            | Command::ZScan(..)
+            | Command::JGet(..)) => self.execute_read_inner(&cmd),
 
             Command::Del(keys) | Command::Unlink(keys) => {
                 let now = now_ms();
@@ -5577,33 +6376,6 @@ impl KeyValueStore {
             }
 
             Command::Append(key, suffix) => self.append(key, &suffix, None),
-
-            Command::Strlen(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    Some(e) if !e.is_expired(now) => match &e.value {
-                        EntryValue::Str(s) => Value::Integer(s.len() as i64),
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                    _ => Value::Integer(0),
-                }
-            }
-
-            Command::GetRange(key, start, end) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    Some(e) if !e.is_expired(now) => match &e.value {
-                        EntryValue::Str(s) => {
-                            e.touch(now);
-                            Value::BulkString(Some(byte_range(s.as_slice(), start, end).to_vec()))
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                    // A missing key is an empty string, so every range of it is
-                    // empty — an empty bulk, not a nil.
-                    _ => Value::BulkString(Some(Vec::new())),
-                }
-            }
 
             Command::GetSet(key, new_val) => {
                 let now = now_ms();
@@ -5638,8 +6410,6 @@ impl KeyValueStore {
                     }
                 }
             }
-
-            Command::MGet(keys) => self.mget(&keys),
 
             Command::MSet(pairs) => self.mset(pairs.into_iter()),
 
@@ -5752,42 +6522,6 @@ impl KeyValueStore {
                 value
             }
 
-            Command::ExpireTime(key) => self.expire_time(&key, false),
-            Command::PExpireTime(key) => self.expire_time(&key, true),
-
-            Command::Ttl(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Integer(-2),
-                    Some(e) if e.is_expired(now) => Value::Integer(-2),
-                    Some(e) => match e.deadline.get() {
-                        None => Value::Integer(-1),
-                        // Rounded to nearest, not truncated, matching Redis.
-                        // Truncating meant `SET k v EX 100` followed
-                        // immediately by `TTL k` answered 99: the handful of
-                        // microseconds spent between the two commands took the
-                        // remainder just below 100_000 ms, and `/ 1000` threw
-                        // the rest away. Every TTL read was up to a second
-                        // short, which breaks ported test suites asserting the
-                        // value they just set and makes any client that renews
-                        // at a threshold renew early, forever.
-                        Some(exp) => Value::Integer(ttl_seconds(exp.saturating_sub(now))),
-                    },
-                }
-            }
-
-            Command::PTtl(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Integer(-2),
-                    Some(e) if e.is_expired(now) => Value::Integer(-2),
-                    Some(e) => match e.deadline.get() {
-                        None => Value::Integer(-1),
-                        Some(exp) => Value::Integer(exp.saturating_sub(now) as i64),
-                    },
-                }
-            }
-
             Command::Persist(key) => {
                 let now = now_ms();
                 match self.data.get_mut(key.as_str()) {
@@ -5801,8 +6535,6 @@ impl KeyValueStore {
             }
 
             // ── Keys ──────────────────────────────────────────────────────────
-            Command::Exists(keys) => self.exists(&keys),
-
             Command::Keys(pattern) => {
                 let now = now_ms();
                 let mut keys: Vec<Value> = self
@@ -5962,75 +6694,7 @@ impl KeyValueStore {
                 Value::Integer(1)
             }
 
-            Command::Type(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    Some(e) if !e.is_expired(now) => {
-                        Value::SimpleString(e.value.type_name().to_string())
-                    }
-                    _ => Value::SimpleString("none".to_string()),
-                }
-            }
-            Command::MemoryUsage(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    // The same figure the eviction loop bills the key for, so
-                    // "which key is eating my maxmemory" and "which key gets
-                    // evicted next" are answered from one measurement rather
-                    // than two that can disagree.
-                    Some(e) if !e.is_expired(now) => Value::Integer(entry_size(&key, &e) as i64),
-                    _ => Value::BulkString(None),
-                }
-            }
-
-            // ── Hash ──────────────────────────────────────────────────────────
             Command::HSet(key, pairs) => self.hset(key, pairs.into_iter(), None),
-
-            Command::HStrLen(key, field) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Integer(0),
-                    Some(e) if e.is_expired(now) => Value::Integer(0),
-                    Some(e) => match &e.value {
-                        EntryValue::Hash(h) => {
-                            e.touch(now);
-                            Value::Integer(h.get(&field).map_or(0, |v| v.len() as i64))
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::HGet(key, field) => self.read_hash_field(&key, &field, |read| match read {
-                Ok(value) => Value::BulkString(value.map(<[u8]>::to_vec)),
-                Err(WrongType) => Value::Error(WRONGTYPE.to_string()),
-            }),
-
-            Command::HGetAll(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Array(Some(vec![])),
-                    Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
-                    Some(e) => match &e.value {
-                        EntryValue::Hash(h) => {
-                            e.touch(now);
-                            let mut pairs: Vec<(&str, &[u8])> = h.iter().collect();
-                            pairs.sort_unstable_by_key(|(f, _)| *f);
-                            let out = pairs
-                                .into_iter()
-                                .flat_map(|(f, v)| {
-                                    [
-                                        Value::BulkString(Some(f.as_bytes().to_vec())),
-                                        Value::BulkString(Some(v.to_vec())),
-                                    ]
-                                })
-                                .collect();
-                            Value::Array(Some(out))
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
 
             Command::HDel(key, fields) => {
                 let now = now_ms();
@@ -6047,110 +6711,12 @@ impl KeyValueStore {
                 }
             }
 
-            Command::HKeys(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Array(Some(vec![])),
-                    Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
-                    Some(e) => match &e.value {
-                        EntryValue::Hash(h) => {
-                            let mut keys: Vec<&str> = h.iter().map(|(field, _)| field).collect();
-                            keys.sort_unstable();
-                            Value::Array(Some(
-                                keys.into_iter()
-                                    .map(|k| Value::BulkString(Some(k.as_bytes().to_vec())))
-                                    .collect(),
-                            ))
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::HScan(key, args) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => empty_scan(),
-                    Some(e) if e.is_expired(now) => empty_scan(),
-                    Some(e) => match &e.value {
-                        EntryValue::Hash(h) => {
-                            e.touch(now);
-                            let pat = args.pattern.as_deref().unwrap_or("*");
-                            let mut fields: Vec<(&str, &[u8])> =
-                                h.iter().filter(|(f, _)| glob_match(pat, f)).collect();
-                            fields.sort_unstable_by_key(|(f, _)| *f);
-                            let (page, next) = scan_page(&fields, args.cursor, args.count);
-                            let out = page
-                                .iter()
-                                .flat_map(|(f, v)| {
-                                    let field = Value::BulkString(Some(f.as_bytes().to_vec()));
-                                    if args.novalues {
-                                        vec![field]
-                                    } else {
-                                        vec![field, Value::BulkString(Some(v.to_vec()))]
-                                    }
-                                })
-                                .collect();
-                            scan_reply(next, out)
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::HVals(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Array(Some(vec![])),
-                    Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
-                    Some(e) => match &e.value {
-                        EntryValue::Hash(h) => {
-                            let mut pairs: Vec<(&str, &[u8])> = h.iter().collect();
-                            pairs.sort_unstable_by_key(|(f, _)| *f);
-                            Value::Array(Some(
-                                pairs
-                                    .into_iter()
-                                    .map(|(_, v)| Value::BulkString(Some(v.to_vec())))
-                                    .collect(),
-                            ))
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::HLen(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Integer(0),
-                    Some(e) if e.is_expired(now) => Value::Integer(0),
-                    Some(e) => match &e.value {
-                        EntryValue::Hash(h) => Value::Integer(h.len() as i64),
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
             Command::HIncrBy(key, field, delta) => {
                 hash_incr_int(&self.data, key, field, delta, None)
             }
 
             Command::HIncrByFloat(key, field, delta) => {
                 hash_incr_float(&self.data, key, field, delta)
-            }
-
-            Command::HExists(key, field) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Integer(0),
-                    Some(e) if e.is_expired(now) => Value::Integer(0),
-                    Some(e) => match &e.value {
-                        EntryValue::Hash(h) => {
-                            Value::Integer(if h.contains_key(&field) { 1 } else { 0 })
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
             }
 
             Command::HSetNx(key, field, val) => {
@@ -6167,32 +6733,6 @@ impl KeyValueStore {
                 Value::Integer(if h.insert_if_absent(field, val) { 1 } else { 0 })
             }
 
-            Command::HMGet(key, fields) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Array(Some(
-                        fields.iter().map(|_| Value::BulkString(None)).collect(),
-                    )),
-                    Some(e) if e.is_expired(now) => Value::Array(Some(
-                        fields.iter().map(|_| Value::BulkString(None)).collect(),
-                    )),
-                    Some(e) => match &e.value {
-                        EntryValue::Hash(h) => Value::Array(Some(
-                            fields
-                                .iter()
-                                .map(|f| {
-                                    h.get(f)
-                                        .map(|v| Value::BulkString(Some(v.to_vec())))
-                                        .unwrap_or(Value::BulkString(None))
-                                })
-                                .collect(),
-                        )),
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            // ── List ──────────────────────────────────────────────────────────
             Command::LPush(key, vals) => self.push(key, vals.into_iter(), End::Front, None),
             Command::RPush(key, vals) => self.push(key, vals.into_iter(), End::Back, None),
 
@@ -6292,59 +6832,6 @@ impl KeyValueStore {
                 }
             }
 
-            Command::LRange(key, start, stop) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Array(Some(vec![])),
-                    Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
-                    Some(e) => match &e.value {
-                        EntryValue::List(list) => {
-                            e.touch(now);
-                            let slice: Vec<&Blob> = list.iter().collect();
-                            match resolve_range(start, stop, slice.len()) {
-                                None => Value::Array(Some(vec![])),
-                                Some((s, e)) => Value::Array(Some(
-                                    slice[s..=e]
-                                        .iter()
-                                        .map(|v| Value::BulkString(Some(v.as_slice().to_vec())))
-                                        .collect(),
-                                )),
-                            }
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::LLen(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Integer(0),
-                    Some(e) if e.is_expired(now) => Value::Integer(0),
-                    Some(e) => match &e.value {
-                        EntryValue::List(l) => Value::Integer(l.len() as i64),
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::LIndex(key, idx) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::BulkString(None),
-                    Some(e) if e.is_expired(now) => Value::BulkString(None),
-                    Some(e) => match &e.value {
-                        EntryValue::List(list) => {
-                            let slice: Vec<&Blob> = list.iter().collect();
-                            resolve_idx(idx, slice.len())
-                                .map(|i| Value::BulkString(Some(slice[i].as_slice().to_vec())))
-                                .unwrap_or(Value::BulkString(None))
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
             Command::LSet(key, idx, val) => {
                 let now = now_ms();
                 match self.data.get_mut(key.as_str()) {
@@ -6430,55 +6917,6 @@ impl KeyValueStore {
             // ── Set ───────────────────────────────────────────────────────────
             Command::SAdd(key, members) => self.sadd(key, members.into_iter(), None),
 
-            Command::SMembers(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Array(Some(vec![])),
-                    Some(e) if e.is_expired(now) => Value::Array(Some(vec![])),
-                    Some(e) => match &e.value {
-                        EntryValue::Set(s) => {
-                            e.touch(now);
-                            let mut members: Vec<&str> = s.iter().map(|m| m.as_str()).collect();
-                            members.sort_unstable();
-                            Value::Array(Some(
-                                members
-                                    .into_iter()
-                                    .map(|m| Value::BulkString(Some(m.as_bytes().to_vec())))
-                                    .collect(),
-                            ))
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::SScan(key, args) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => empty_scan(),
-                    Some(e) if e.is_expired(now) => empty_scan(),
-                    Some(e) => match &e.value {
-                        EntryValue::Set(s) => {
-                            e.touch(now);
-                            let pat = args.pattern.as_deref().unwrap_or("*");
-                            let mut members: Vec<&str> = s
-                                .iter()
-                                .map(|m| m.as_str())
-                                .filter(|m| glob_match(pat, m))
-                                .collect();
-                            members.sort_unstable();
-                            let (page, next) = scan_page(&members, args.cursor, args.count);
-                            let out = page
-                                .iter()
-                                .map(|m| Value::BulkString(Some(m.as_bytes().to_vec())))
-                                .collect();
-                            scan_reply(next, out)
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
             Command::SRem(key, members) => {
                 let now = now_ms();
                 match self.data.get_mut(key.as_str()) {
@@ -6493,54 +6931,6 @@ impl KeyValueStore {
                     },
                 }
             }
-
-            Command::SCard(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Integer(0),
-                    Some(e) if e.is_expired(now) => Value::Integer(0),
-                    Some(e) => match &e.value {
-                        EntryValue::Set(s) => Value::Integer(s.len() as i64),
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::SIsMember(key, member) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Integer(0),
-                    Some(e) if e.is_expired(now) => Value::Integer(0),
-                    Some(e) => match &e.value {
-                        EntryValue::Set(s) => {
-                            e.touch(now);
-                            Value::Integer(if s.contains(&member) { 1 } else { 0 })
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::SMIsMember(key, members) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Array(Some(members.iter().map(|_| Value::Integer(0)).collect())),
-                    Some(e) if e.is_expired(now) => {
-                        Value::Array(Some(members.iter().map(|_| Value::Integer(0)).collect()))
-                    }
-                    Some(e) => match &e.value {
-                        EntryValue::Set(s) => Value::Array(Some(
-                            members
-                                .iter()
-                                .map(|m| Value::Integer(if s.contains(m) { 1 } else { 0 }))
-                                .collect(),
-                        )),
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::SInter(keys) => set_op_reply(set_inter(&self.data, &keys, now_ms())),
 
             Command::SInterStore(dst, keys) => {
                 let now = now_ms();
@@ -6562,8 +6952,6 @@ impl KeyValueStore {
                 Value::Integer(len as i64)
             }
 
-            Command::SUnion(keys) => set_op_reply(set_union(&self.data, &keys, now_ms())),
-
             Command::SUnionStore(dst, keys) => {
                 let now = now_ms();
                 let result = {
@@ -6583,8 +6971,6 @@ impl KeyValueStore {
                 );
                 Value::Integer(len as i64)
             }
-
-            Command::SDiff(keys) => set_op_reply(set_diff(&self.data, &keys, now_ms())),
 
             Command::SDiffStore(dst, keys) => {
                 let now = now_ms();
@@ -6648,86 +7034,6 @@ impl KeyValueStore {
                                     .unwrap_or(Value::BulkString(None))
                             }
                         }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::SRandMember(key, count) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => match count {
-                        None => Value::BulkString(None),
-                        Some(_) => Value::Array(Some(vec![])),
-                    },
-                    Some(e) if e.is_expired(now) => match count {
-                        None => Value::BulkString(None),
-                        Some(_) => Value::Array(Some(vec![])),
-                    },
-                    Some(e) => match &e.value {
-                        EntryValue::Set(s) => match count {
-                            None => {
-                                if s.is_empty() {
-                                    return Value::BulkString(None);
-                                }
-                                let mut rng = rand::rng();
-                                let idx = rng.random_range(0..s.len());
-                                Value::BulkString(Some(
-                                    s.get_index(idx)
-                                        .expect("index in range")
-                                        .as_bytes()
-                                        .to_vec(),
-                                ))
-                            }
-                            Some(n) if n >= 0 => {
-                                // Positive count: up to n *distinct* random members.
-                                let mut rng = rand::rng();
-                                // `try_from` rather than `as`: `usize` is
-                                // 32-bit under wasm32, where a count above
-                                // `u32::MAX` would truncate instead of clamp.
-                                let amount = usize::try_from(n).unwrap_or(usize::MAX).min(s.len());
-                                let idxs = rand::seq::index::sample(&mut rng, s.len(), amount);
-                                Value::Array(Some(
-                                    idxs.iter()
-                                        .map(|i| {
-                                            Value::BulkString(Some(
-                                                s.get_index(i)
-                                                    .expect("index in range")
-                                                    .as_bytes()
-                                                    .to_vec(),
-                                            ))
-                                        })
-                                        .collect(),
-                                ))
-                            }
-                            Some(n) => {
-                                // Negative: allow repetition, return |n| random elements.
-                                if s.is_empty() {
-                                    return Value::Array(Some(vec![]));
-                                }
-                                let mut rng = rand::rng();
-                                // The parser refuses a larger magnitude, but a
-                                // `Command` also arrives from AOF replay, a
-                                // replication frame or `sync-client`, none of
-                                // which pass through it.
-                                let abs = usize::try_from(n.unsigned_abs())
-                                    .unwrap_or(usize::MAX)
-                                    .min(crate::resp::MAX_ARRAY_ELEMENTS);
-                                Value::Array(Some(
-                                    (0..abs)
-                                        .map(|_| {
-                                            let idx = rng.random_range(0..s.len());
-                                            Value::BulkString(Some(
-                                                s.get_index(idx)
-                                                    .expect("index in range")
-                                                    .as_bytes()
-                                                    .to_vec(),
-                                            ))
-                                        })
-                                        .collect(),
-                                ))
-                            }
-                        },
                         _ => Value::Error(WRONGTYPE.to_string()),
                     },
                 }
@@ -6817,114 +7123,6 @@ impl KeyValueStore {
                 zadd_exec(zset, opts, pairs)
             }
 
-            Command::ZRange(key, start, stop, withscores) => zset_read(&self.data, &key, |zset| {
-                Ok(encode_zrange(
-                    &index_slice(zset.iter_asc(), zset.len(), start, stop),
-                    withscores,
-                ))
-            }),
-
-            Command::ZRevRange(key, start, stop, withscores) => {
-                zset_read(&self.data, &key, |zset| {
-                    Ok(encode_zrange(
-                        &index_slice(zset.iter_asc().rev(), zset.len(), start, stop),
-                        withscores,
-                    ))
-                })
-            }
-
-            Command::ZRangeByScore(key, min_s, max_s, withscores, limit) => {
-                zset_read(&self.data, &key, |zset| {
-                    let min = ScoreBound::parse(&min_s)?;
-                    let max = ScoreBound::parse(&max_s)?;
-                    let page = limited_page(zset.range_by_score(&min, &max), limit);
-                    Ok(encode_zrange(&page, withscores))
-                })
-            }
-
-            Command::ZRevRangeByScore(key, max_s, min_s, withscores, limit) => {
-                zset_read(&self.data, &key, |zset| {
-                    let min = ScoreBound::parse(&min_s)?;
-                    let max = ScoreBound::parse(&max_s)?;
-                    let page = limited_page(zset.range_by_score_rev(&min, &max), limit);
-                    Ok(encode_zrange(&page, withscores))
-                })
-            }
-
-            Command::ZScore(key, member) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::BulkString(None),
-                    Some(e) if e.is_expired(now) => Value::BulkString(None),
-                    Some(e) => match &e.value {
-                        EntryValue::ZSet(z) => {
-                            e.touch(now);
-                            z.score(&member)
-                                .map(|s| Value::BulkString(Some(format_score(s).into_bytes())))
-                                .unwrap_or(Value::BulkString(None))
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::ZMScore(key, members) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Array(Some(
-                        members.iter().map(|_| Value::BulkString(None)).collect(),
-                    )),
-                    Some(e) if e.is_expired(now) => Value::Array(Some(
-                        members.iter().map(|_| Value::BulkString(None)).collect(),
-                    )),
-                    Some(e) => match &e.value {
-                        EntryValue::ZSet(z) => Value::Array(Some(
-                            members
-                                .iter()
-                                .map(|m| {
-                                    z.score(m)
-                                        .map(|s| {
-                                            Value::BulkString(Some(format_score(s).into_bytes()))
-                                        })
-                                        .unwrap_or(Value::BulkString(None))
-                                })
-                                .collect(),
-                        )),
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::ZRank(key, member) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::BulkString(None),
-                    Some(e) if e.is_expired(now) => Value::BulkString(None),
-                    Some(e) => match &e.value {
-                        EntryValue::ZSet(z) => z
-                            .rank(&member)
-                            .map(|i| Value::Integer(i as i64))
-                            .unwrap_or(Value::BulkString(None)),
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::ZRevRank(key, member) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::BulkString(None),
-                    Some(e) if e.is_expired(now) => Value::BulkString(None),
-                    Some(e) => match &e.value {
-                        EntryValue::ZSet(z) => z
-                            .rank(&member)
-                            .map(|i| Value::Integer((z.len() - 1 - i) as i64))
-                            .unwrap_or(Value::BulkString(None)),
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
             Command::ZPopMin(key, count) => self.zpop(&key, count, false),
             Command::ZPopMax(key, count) => self.zpop(&key, count, true),
 
@@ -6938,18 +7136,6 @@ impl KeyValueStore {
                             let removed = members.iter().filter(|m| z.remove(m).is_some()).count();
                             Value::Integer(removed as i64)
                         }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
-                }
-            }
-
-            Command::ZCard(key) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::Integer(0),
-                    Some(e) if e.is_expired(now) => Value::Integer(0),
-                    Some(e) => match &e.value {
-                        EntryValue::ZSet(z) => Value::Integer(z.len() as i64),
                         _ => Value::Error(WRONGTYPE.to_string()),
                     },
                 }
@@ -6981,32 +7167,6 @@ impl KeyValueStore {
                 Value::BulkString(Some(format_score(new_score).into_bytes()))
             }
 
-            Command::ZCount(key, min_s, max_s) => zset_read(&self.data, &key, |zset| {
-                let min = ScoreBound::parse(&min_s)?;
-                let max = ScoreBound::parse(&max_s)?;
-                let count = zset.range_by_score(&min, &max).count();
-                Ok(Value::Integer(count as i64))
-            }),
-
-            Command::ZScan(key, args) => zset_read(&self.data, &key, |zset| {
-                let pat = args.pattern.as_deref().unwrap_or("*");
-                let mut members: Vec<(&str, f64)> =
-                    zset.members().filter(|(m, _)| glob_match(pat, m)).collect();
-                members.sort_unstable_by_key(|(m, _)| *m);
-                let (page, next) = scan_page(&members, args.cursor, args.count);
-                let out = page
-                    .iter()
-                    .flat_map(|(m, s)| {
-                        [
-                            Value::BulkString(Some(m.as_bytes().to_vec())),
-                            Value::BulkString(Some(format_score(*s).into_bytes())),
-                        ]
-                    })
-                    .collect();
-                Ok(scan_reply(next, out))
-            }),
-
-            // ── JSON ──────────────────────────────────────────────────────────
             Command::JSet(key, path, value) => {
                 let now = now_ms();
                 // Parsed before the map is touched: a malformed path or payload
@@ -7076,30 +7236,6 @@ impl KeyValueStore {
                         debug_assert!(false, "json_check_set accepted a failing path: {e}");
                         Value::Error(e)
                     }
-                }
-            }
-
-            Command::JGet(key, path) => {
-                let now = now_ms();
-                match self.data.get(key.as_str()) {
-                    None => Value::BulkString(None),
-                    Some(e) if e.is_expired(now) => Value::BulkString(None),
-                    Some(e) => match &e.value {
-                        EntryValue::Json(doc) => {
-                            e.touch(now);
-                            let segs = match parse_json_path(path.as_deref().unwrap_or("$")) {
-                                Ok(s) => s,
-                                Err(err) => return Value::Error(err),
-                            };
-                            match json_get_at(doc, &segs) {
-                                Some(v) => Value::BulkString(Some(
-                                    serde_json::to_string(v).unwrap_or_default().into_bytes(),
-                                )),
-                                None => Value::BulkString(None),
-                            }
-                        }
-                        _ => Value::Error(WRONGTYPE.to_string()),
-                    },
                 }
             }
 
@@ -8182,6 +8318,11 @@ where
 }
 
 fn hash_incr_float(data: &Keyspace, key: String, field: String, delta: f64) -> Value {
+    // Refused before the hash is created, as Redis 7.2 does: creating it
+    // first left an empty hash for a second step to remove (6O-D review).
+    if !delta.is_finite() {
+        return Value::Error("ERR value is NaN or Infinity".to_string());
+    }
     let now = now_ms();
     typed_entry!(
         entry,
