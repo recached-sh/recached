@@ -297,16 +297,15 @@ async fn a_pattern_subscriber_whose_queue_overflows_is_disconnected() {
     );
 }
 
-/// 6O-B review: an overflow signalled while the connection held a
-/// subscriber only within one read batch must still disconnect. The key
-/// already holds 9 MiB (set by another connection); the watcher then sends
-/// `WATCH k`, `APPEND k x` and `UNWATCH` in one small write, so one read
-/// batch: its own APPEND is delivered to its own WATCH with the whole value,
-/// over the 8 MiB notification budget, and the UNWATCH leaves no watch
-/// behind. Armed from the state at the top of the loop, the arm never fired
-/// (and would have fired at some later, unrelated WATCH).
+/// 6O-B review, superseded by 6O-E3: `WATCH k`, `APPEND k x` (the
+/// connection's own change to a 9 MiB key) and `UNWATCH` in one read batch.
+/// The test was that the overflow this change used to signal still
+/// disconnected the connection although the UNWATCH left no watch behind. A
+/// TCP `WATCH` now queues nothing for a change, so nothing overflows: the
+/// connection stays, answers the three commands, and serves the next one.
+/// Overflow arming for subscriptions is covered by the tests above.
 #[tokio::test]
-async fn an_overflow_signalled_and_unwatched_within_one_batch_still_disconnects() {
+async fn a_large_change_within_one_watch_batch_keeps_the_connection() {
     let server = spawn_server().await;
     let mut writer = RespClient::connect(server.tcp_addr).await;
     let big = "x".repeat(9 * 1024 * 1024);
@@ -317,10 +316,18 @@ async fn an_overflow_signalled_and_unwatched_within_one_batch_still_disconnects(
     let mut c = RespClient::connect(server.tcp_addr).await;
     let req = b"*2\r\n$5\r\nWATCH\r\n$1\r\nk\r\n*3\r\n$6\r\nAPPEND\r\n$1\r\nk\r\n$1\r\nx\r\n*1\r\n$7\r\nUNWATCH\r\n";
     c.stream.write_all(req).await.unwrap();
-    assert!(
-        closes_within(&mut c, 10).await,
-        "the overflow disconnected the connection"
+    assert_eq!(c.cmd(&[]).await, Value::SimpleString("OK".into()), "WATCH");
+    assert_eq!(
+        c.cmd(&[]).await,
+        Value::Integer(9 * 1024 * 1024 + 1),
+        "APPEND"
     );
+    assert_eq!(
+        c.cmd(&[]).await,
+        Value::SimpleString("OK".into()),
+        "UNWATCH"
+    );
+    assert_eq!(c.cmd(&["PING"]).await, Value::SimpleString("PONG".into()));
 }
 
 /// Whether the server closes `c`'s connection within `secs`, reading and

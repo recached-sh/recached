@@ -13,6 +13,14 @@
 //!
 //! Every test asserts the outcome that matters, whichever arm wins: no
 //! successful EXEC reply, and the transaction's write not applied.
+//!
+//! 6O-E3: a TCP `WATCH` is pure compare-and-set, so its notifications no
+//! longer carry the value: a change sets the connection's invalidated flag,
+//! which `EXEC` reads under its guards, and queues nothing. A change of any
+//! size therefore aborts `EXEC` with a nil reply, as Redis does, instead of
+//! disconnecting the client. The TCP tests below assert that. A WebSocket
+//! watcher is still pushed every change (the observable-keys feature), so an
+//! overflow still disconnects it, and its `EXEC` reads the same flag.
 
 use super::*;
 
@@ -40,30 +48,6 @@ async fn store_big(c: &mut RespClient, key: &str) {
         c.cmd(&["SET", key, &big]).await,
         Value::SimpleString("OK".into())
     );
-}
-
-/// Read replies from `c` until the server closes the connection or `secs`
-/// pass; returns every reply read, and whether it closed.
-async fn replies_until_close(c: &mut RespClient, secs: u64) -> (Vec<Value>, bool) {
-    let mut replies = Vec::new();
-    let mut raw = Vec::new();
-    let mut buf = vec![0u8; 64 * 1024];
-    let closed = tokio::time::timeout(std::time::Duration::from_secs(secs), async {
-        loop {
-            match c.stream.read(&mut buf).await {
-                Ok(0) | Err(_) => return,
-                Ok(n) => raw.extend_from_slice(&buf[..n]),
-            }
-        }
-    })
-    .await
-    .is_ok();
-    let mut at = 0;
-    while let Ok((v, n)) = Value::parse(&raw[at..]) {
-        replies.push(v);
-        at += n;
-    }
-    (replies, closed)
 }
 
 /// Whether `v` is a successful EXEC reply: an array, not nil.
@@ -101,9 +85,15 @@ async fn watch_overflow_and_exec_in_one_batch_never_commit() {
         &["EXEC"],
     ]);
     c.stream.write_all(&req).await.unwrap();
-    let (replies, closed) = replies_until_close(&mut c, 10).await;
+    let (replies, closed) = replies_until_close_or(&mut c, 10, 5).await;
     assert_not_committed(&replies, &server.store, "marker", "one batch");
-    assert!(closed, "the overflowed connection was disconnected");
+    assert!(!closed, "a WATCH-only connection is not disconnected");
+    assert_eq!(
+        replies.last(),
+        Some(&Value::Array(None)),
+        "EXEC aborted: {replies:?}"
+    );
+    assert_eq!(c.cmd(&["PING"]).await, Value::SimpleString("PONG".into()));
 }
 
 /// The first change comes from another connection and the EXEC arrives in a
@@ -126,19 +116,24 @@ async fn an_overflow_from_another_writer_before_exec_never_commits() {
         let req = frames(&[&["MULTI"], &["SET", &marker, "1"], &["EXEC"]]);
         // The socket may already be closed by the overflow arm.
         let _ = c.stream.write_all(&req).await;
-        let (replies, closed) = replies_until_close(&mut c, 10).await;
+        let (replies, closed) = replies_until_close_or(&mut c, 10, 3).await;
         assert_not_committed(&replies, &server.store, &marker, &format!("round {round}"));
-        assert!(closed, "round {round}: disconnected");
+        assert!(!closed, "round {round}: not disconnected");
+        assert_eq!(
+            replies.last(),
+            Some(&Value::Array(None)),
+            "round {round}: {replies:?}"
+        );
     }
 }
 
-/// Policy, not WATCH safety: WATCH and UNWATCH within one batch with the
-/// overflow between them, then a transaction. Nothing is watched at EXEC, so
-/// Redis would run it; here the overflow condemns the connection, which is
-/// disconnected and its transaction not run — the outcome whenever the
-/// overflow arm wins `select!`, now the only one.
+/// WATCH and UNWATCH within one batch with a large change between them, then
+/// a transaction. Nothing is watched at EXEC, so it commits, as in Redis
+/// (`UNWATCH` clears `CLIENT_DIRTY_CAS`). Before 6O-E3 the change overflowed
+/// the TCP watcher's budget and condemned the connection, which was
+/// disconnected instead.
 #[tokio::test]
-async fn watch_unwatch_in_one_batch_then_exec_is_disconnected_without_committing() {
+async fn watch_unwatch_in_one_batch_then_exec_commits_as_in_redis() {
     let server = spawn_server().await;
     let mut setup = RespClient::connect(server.tcp_addr).await;
     store_big(&mut setup, "k").await;
@@ -152,9 +147,13 @@ async fn watch_unwatch_in_one_batch_then_exec_is_disconnected_without_committing
         &["EXEC"],
     ]);
     c.stream.write_all(&req).await.unwrap();
-    let (replies, closed) = replies_until_close(&mut c, 10).await;
-    assert_not_committed(&replies, &server.store, "marker", "watch/unwatch");
-    assert!(closed);
+    let (replies, closed) = replies_until_close_or(&mut c, 10, 6).await;
+    assert!(!closed);
+    assert!(replies.last().is_some_and(is_committed_exec), "{replies:?}");
+    assert_eq!(
+        server.store.get_current("marker"),
+        Value::BulkString(Some(b"1".to_vec()))
+    );
 }
 
 /// Several watched keys, one of which overflows: the transaction does not
@@ -173,9 +172,10 @@ async fn one_overflowed_key_among_several_watched_never_commits() {
         &["EXEC"],
     ]);
     c.stream.write_all(&req).await.unwrap();
-    let (replies, closed) = replies_until_close(&mut c, 10).await;
+    let (replies, closed) = replies_until_close_or(&mut c, 10, 5).await;
     assert_not_committed(&replies, &server.store, "marker", "several keys");
-    assert!(closed);
+    assert!(!closed);
+    assert_eq!(replies.last(), Some(&Value::Array(None)), "{replies:?}");
 }
 
 /// Unchanged: an ordinary conflict (a small change, queued) aborts with a
@@ -349,12 +349,15 @@ async fn an_overflowing_write_in_flight_while_exec_waits_never_commits() {
     .await;
     assert_eq!(reply, Value::SimpleString("OK".into()));
     drop(guards);
-    let (replies, closed) = replies_until_close(&mut c, 10).await;
+    let (replies, closed) = replies_until_close_or(&mut c, 10, 1).await;
     assert_not_committed(&replies, &server.store, "marker", "in flight");
-    assert!(closed, "disconnected");
+    assert!(!closed, "not disconnected");
+    assert_eq!(replies, vec![Value::Array(None)]);
 }
 
-/// Like [`replies_until_close`], but also stops once `want` replies arrived.
+/// Read replies from `c` until the server closes the connection, `want`
+/// replies have arrived, or `secs` pass; returns every reply read, and
+/// whether it closed.
 async fn replies_until_close_or(c: &mut RespClient, secs: u64, want: usize) -> (Vec<Value>, bool) {
     let mut raw = Vec::new();
     let mut buf = vec![0u8; 64 * 1024];
@@ -571,11 +574,12 @@ async fn ws_pipelined_messages_after_an_overflow_never_commit() {
     );
 }
 
-/// Commands that ran earlier in the batch of a condemned EXEC still get their
-/// replies (review): `SET a`, `WATCH`, the overflowing `APPEND`, `MULTI` and
-/// the queued `SET` are answered in order, and EXEC is not.
+/// Commands earlier in the batch of an aborted EXEC get their replies in
+/// order: `SET a`, `WATCH`, the large `APPEND`, `MULTI` and the queued `SET`,
+/// then EXEC's nil. (Before 6O-E3 the APPEND overflowed the TCP watcher and
+/// EXEC was answered with a disconnect instead.)
 #[tokio::test]
-async fn the_replies_before_a_condemned_exec_in_its_batch_still_arrive() {
+async fn the_replies_before_an_aborted_exec_in_its_batch_all_arrive() {
     let server = spawn_server().await;
     let mut setup = RespClient::connect(server.tcp_addr).await;
     store_big(&mut setup, "k").await;
@@ -589,9 +593,9 @@ async fn the_replies_before_a_condemned_exec_in_its_batch_still_arrive() {
         &["EXEC"],
     ]);
     c.stream.write_all(&req).await.unwrap();
-    let (replies, closed) = replies_until_close(&mut c, 10).await;
+    let (replies, closed) = replies_until_close_or(&mut c, 10, 6).await;
     assert_not_committed(&replies, &server.store, "marker", "earlier replies");
-    assert!(closed);
+    assert!(!closed);
     assert_eq!(
         replies,
         vec![
@@ -600,8 +604,9 @@ async fn the_replies_before_a_condemned_exec_in_its_batch_still_arrive() {
             Value::Integer((BIG + 1) as i64),
             Value::SimpleString("OK".into()),
             Value::SimpleString("QUEUED".into()),
+            Value::Array(None),
         ],
-        "every reply but EXEC's"
+        "every reply, EXEC's nil last"
     );
     assert_eq!(
         server.store.get_current("a"),

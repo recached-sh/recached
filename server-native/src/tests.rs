@@ -6835,6 +6835,7 @@ mod request_path;
 mod security_v06_regressions;
 mod sync_routing;
 mod tcp_owned_split;
+mod watch_cas;
 mod watch_expiry;
 mod watch_overflow_exec;
 mod write_gate;

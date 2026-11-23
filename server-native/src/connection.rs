@@ -597,16 +597,13 @@ async fn handle_tcp_halves<R, W>(
     let (overflow_tx, mut overflow_rx) = mpsc::channel(1);
     let (ps_tx, mut ps_rx) = pubsub_channel(overflow_tx.clone());
     // WATCH state for optimistic-lock transactions over TCP. Unlike the WS
-    // handler, TCP clients are not sent keychange pushes — WATCH is pure CAS.
+    // handler, TCP clients are not sent keychange pushes — WATCH is pure CAS,
+    // so a change only sets `watch_subscriber`'s invalidated flag: nothing
+    // is queued, charged or able to overflow (6O-E3). `watch_rx` never
+    // carries anything; holding it keeps the registrations alive.
     let mut watched_keys: HashSet<String> = HashSet::new();
     let mut watch_dirty = false;
-    // TCP clients are never sent keychange pushes, so the payload form is
-    // moot here; a constant `false` keeps them on whole values.
-    let (watch_subscriber, mut watch_rx) = notification_channel(
-        conn_id,
-        overflow_tx.clone(),
-        Arc::new(AtomicBool::new(false)),
-    );
+    let (watch_subscriber, mut watch_rx) = cas_watch_channel(conn_id, overflow_tx.clone());
 
     // Nothing can arrive on `overflow_rx` until this connection hands one of
     // its senders to a registry: `ps_tx` on SUBSCRIBE or PSUBSCRIBE,
@@ -823,6 +820,7 @@ async fn handle_tcp_halves<R, W>(
                                                 unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
                                                 while watch_rx.try_recv().is_ok() {}
                                                 watch_dirty = false;
+                                                watch_subscriber.clear_invalidated();
                                                 multi_dirty = false;
                                                 b"+OK\r\n".to_vec()
                                             } else {
@@ -843,6 +841,7 @@ async fn handle_tcp_halves<R, W>(
                                                     unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
                                                     while watch_rx.try_recv().is_ok() {}
                                                     watch_dirty = false;
+                                                    watch_subscriber.clear_invalidated();
                                                     if writer.write_all(EXECABORT).await.is_err() { break 'outer; }
                                                 }
                                                 Some(queue) => {
@@ -857,6 +856,7 @@ async fn handle_tcp_halves<R, W>(
                                                         .await;
                                                         while watch_rx.try_recv().is_ok() {}
                                                         watch_dirty = false;
+                                                        watch_subscriber.clear_invalidated();
                                                         if writer
                                                             .write_all(b"-READONLY You can't write against a read only replica.\r\n")
                                                             .await
@@ -877,6 +877,7 @@ async fn handle_tcp_halves<R, W>(
                                                         .await;
                                                         while watch_rx.try_recv().is_ok() {}
                                                         watch_dirty = false;
+                                                        watch_subscriber.clear_invalidated();
                                                         let error = Value::Error(
                                                             "MISCONF persistence is unhealthy; writes are disabled until SAVE succeeds"
                                                                 .to_string(),
@@ -929,6 +930,7 @@ async fn handle_tcp_halves<R, W>(
                                                     while let Ok(notif) = watch_rx.try_recv() {
                                                         watch_dirty |= notif.invalidates;
                                                     }
+                                                    watch_dirty |= watch_subscriber.invalidated();
                                                     // A watched key that was live at WATCH
                                                     // and has expired since: nothing told
                                                     // the connection (6O-E).
@@ -942,6 +944,7 @@ async fn handle_tcp_halves<R, W>(
                                                         unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
                                                         while watch_rx.try_recv().is_ok() {}
                                                         watch_dirty = false;
+                                                        watch_subscriber.clear_invalidated();
                                                         // Released before the reply is written: every queued write has
                                                         // been appended to the AOF and replicated in order already, and its
                                                         // durability still holds the reply back (the TCP `AofGatedWriter`;
@@ -964,6 +967,7 @@ async fn handle_tcp_halves<R, W>(
                                                         unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
                                                         while watch_rx.try_recv().is_ok() {}
                                                         watch_dirty = false;
+                                                        watch_subscriber.clear_invalidated();
                                                         let out = Value::Array(Some(results)).serialize();
                                                         // Released before the reply is written: every queued write has
                                                         // been appended to the AOF and replicated in order already, and its
@@ -1109,7 +1113,8 @@ async fn handle_tcp_halves<R, W>(
                                                     // takes effect or sees the watch and notifies.
                                                     let _closed = state.replicas.unordered.close().await;
                                                     let mut reg = watch_registry.map.lock().await;
-                                                    overflow_armed = true;
+                                                    // No `overflow_armed`: a CAS watcher
+                                                    // never signals overflow (6O-E3).
                                                     register_watches(&watch_registry, &mut reg, &watch_subscriber, &keys, &mut watched_keys, &store);
                                                 }
                                                 if writer.write_all(b"+OK\r\n").await.is_err() { break 'outer; }
@@ -1134,6 +1139,7 @@ async fn handle_tcp_halves<R, W>(
                                             if watched_keys.is_empty() {
                                                 while watch_rx.try_recv().is_ok() {}
                                                 watch_dirty = false;
+                                                watch_subscriber.clear_invalidated();
                                             }
                                             if writer.write_all(b"+OK\r\n").await.is_err() { break 'outer; }
                                         }
@@ -1348,14 +1354,6 @@ async fn handle_tcp_halves<R, W>(
                         }
                     }
                     None => break,
-                }
-            }
-
-            // A watched key changed: mark the transaction dirty so a following
-            // EXEC aborts. TCP clients get no keychange push (WATCH is pure CAS).
-            notif = watch_rx.recv(), if !watched_keys.is_empty() => {
-                if notif.is_some_and(|notif| notif.invalidates) {
-                    watch_dirty = true;
                 }
             }
 
@@ -2001,6 +1999,7 @@ pub(crate) async fn handle_ws<S>(
                                     unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
                                     while watch_rx.try_recv().is_ok() {} // drop stale notifications
                                     watch_dirty = false;
+                                    watch_subscriber.clear_invalidated();
                                     multi_dirty = false;
                                     b"+OK\r\n".to_vec()
                                 } else {
@@ -2021,6 +2020,7 @@ pub(crate) async fn handle_ws<S>(
                                         unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
                                         while watch_rx.try_recv().is_ok() {}
                                         watch_dirty = false;
+                                        watch_subscriber.clear_invalidated();
                                         ws_send!(EXECABORT);
                                     }
                                     Some(queue) => {
@@ -2035,6 +2035,7 @@ pub(crate) async fn handle_ws<S>(
                                             .await;
                                             while watch_rx.try_recv().is_ok() {}
                                             watch_dirty = false;
+                                            watch_subscriber.clear_invalidated();
                                             ws_send!(b"-READONLY You can't write against a read only replica.\r\n");
                                             continue;
                                         }
@@ -2049,6 +2050,7 @@ pub(crate) async fn handle_ws<S>(
                                             .await;
                                             while watch_rx.try_recv().is_ok() {}
                                             watch_dirty = false;
+                                            watch_subscriber.clear_invalidated();
                                             ws_send!(
                                                 &Value::Error(
                                                     "MISCONF persistence is unhealthy; writes are disabled until SAVE succeeds"
@@ -2075,6 +2077,7 @@ pub(crate) async fn handle_ws<S>(
                                             unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
                                             while watch_rx.try_recv().is_ok() {}
                                             watch_dirty = false;
+                                            watch_subscriber.clear_invalidated();
                                             record_scope_denial("exec_rechecked");
                                             ws_send!(b"-EXECABORT Transaction discarded because a queued command is outside this connection's current sync scopes.\r\n");
                                             continue;
@@ -2105,6 +2108,9 @@ pub(crate) async fn handle_ws<S>(
                                         while let Ok(notif) = watch_rx.try_recv() {
                                             watch_dirty |= notif.invalidates;
                                         }
+                                        // The flag too: set even when the change's push
+                                        // could not be queued (6O-E3).
+                                        watch_dirty |= watch_subscriber.invalidated();
                                         // As on TCP: a watched key that expired since WATCH.
                                         if !watch_dirty
                                             && watched_key_expired(&watch_registry, conn_id, &watched_keys, &store, now).await
@@ -2117,6 +2123,7 @@ pub(crate) async fn handle_ws<S>(
                                             unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
                                             while watch_rx.try_recv().is_ok() {} // drop stale notifications
                                             watch_dirty = false;
+                                            watch_subscriber.clear_invalidated();
                                             // Released before the reply is written: every queued write has
                                             // been appended to the AOF and replicated in order already, and its
                                             // durability still holds the reply back (the TCP `AofGatedWriter`;
@@ -2142,6 +2149,7 @@ pub(crate) async fn handle_ws<S>(
                                             unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
                                             while watch_rx.try_recv().is_ok() {}
                                             watch_dirty = false;
+                                            watch_subscriber.clear_invalidated();
                                             let out = Value::Array(Some(results)).serialize();
                                             // Released before the reply is written: every queued write has
                                             // been appended to the AOF and replicated in order already, and its
@@ -2303,6 +2311,7 @@ pub(crate) async fn handle_ws<S>(
                                 if watched_keys.is_empty() {
                                     while watch_rx.try_recv().is_ok() {}
                                     watch_dirty = false;
+                                    watch_subscriber.clear_invalidated();
                                 }
                                 ws_send!(b"+OK\r\n");
                             }
