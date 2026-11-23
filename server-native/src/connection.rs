@@ -926,7 +926,15 @@ async fn handle_tcp_halves<R, W>(
                                                         let _ = writer.flush().await;
                                                         break 'outer;
                                                     }
-                                                    while watch_rx.try_recv().is_ok() {
+                                                    while let Ok(notif) = watch_rx.try_recv() {
+                                                        watch_dirty |= notif.invalidates;
+                                                    }
+                                                    // A watched key that was live at WATCH
+                                                    // and has expired since: nothing told
+                                                    // the connection (6O-E).
+                                                    if !watch_dirty
+                                                        && watched_key_expired(&watch_registry, conn_id, &watched_keys, &store, now).await
+                                                    {
                                                         watch_dirty = true;
                                                     }
                                                     if watch_dirty {
@@ -1104,7 +1112,11 @@ async fn handle_tcp_halves<R, W>(
                                                     overflow_armed = true;
                                                     for key in &keys {
                                                         if watched_keys.insert(key.clone()) {
-                                                            reg.entry(key.clone()).or_default().push(watch_subscriber.clone());
+                                                            // Read under the registry lock, so no
+                                                            // notification for the key slips
+                                                            // between this and the registration.
+                                                            let live = key_is_live(&store, key);
+                                                            reg.entry(key.clone()).or_default().push(watch_subscriber.watching(live));
                                                         }
                                                     }
                                                     watch_registry.sync_len(&reg);
@@ -1351,7 +1363,7 @@ async fn handle_tcp_halves<R, W>(
             // A watched key changed: mark the transaction dirty so a following
             // EXEC aborts. TCP clients get no keychange push (WATCH is pure CAS).
             notif = watch_rx.recv(), if !watched_keys.is_empty() => {
-                if notif.is_some() {
+                if notif.is_some_and(|notif| notif.invalidates) {
                     watch_dirty = true;
                 }
             }
@@ -2099,7 +2111,13 @@ pub(crate) async fn handle_ws<S>(
                                             warn!("WS conn {} notification queue overflowed before EXEC; disconnecting", conn_id);
                                             break 'outer;
                                         }
-                                        while watch_rx.try_recv().is_ok() {
+                                        while let Ok(notif) = watch_rx.try_recv() {
+                                            watch_dirty |= notif.invalidates;
+                                        }
+                                        // As on TCP: a watched key that expired since WATCH.
+                                        if !watch_dirty
+                                            && watched_key_expired(&watch_registry, conn_id, &watched_keys, &store, now).await
+                                        {
                                             watch_dirty = true;
                                         }
                                         if watch_dirty {
@@ -2261,9 +2279,11 @@ pub(crate) async fn handle_ws<S>(
                                         let mut reg = watch_registry.map.lock().await;
                                         for key in &keys {
                                             if watched_keys.insert(key.clone()) {
+                                                // As on TCP: read under the registry lock.
+                                                let live = key_is_live(&store, key);
                                                 reg.entry(key.clone())
                                                     .or_default()
-                                                    .push(watch_subscriber.clone());
+                                                    .push(watch_subscriber.watching(live));
                                             }
                                         }
                                         watch_registry.sync_len(&reg);
@@ -2683,8 +2703,12 @@ pub(crate) async fn handle_ws<S>(
                 if let Some(notif) = notif {
                     // A watched key changed: mark the transaction dirty (so a
                     // following EXEC aborts) and still push the keychange to the
-                    // client for the observable-keys feature.
-                    watch_dirty = true;
+                    // client for the observable-keys feature. The removal of a
+                    // key that was not live at WATCH is pushed but changes
+                    // nothing (6O-E).
+                    if notif.invalidates {
+                        watch_dirty = true;
+                    }
                     let bytes = as_push_if(
                         encode_notification(&notif, client_meta.expiry),
                         client_meta.push_frames,

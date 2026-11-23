@@ -29,6 +29,10 @@ pub(crate) enum NotifPayload {
 pub(crate) struct WatchNotif {
     pub(crate) key: String,
     pub(crate) payload: NotifPayload,
+    /// Whether this change invalidates a WATCH of the key (6O-E): false only
+    /// for the removal of a key that was not live when it was watched, which
+    /// Redis treats as no change. A WebSocket watcher is still pushed it.
+    pub(crate) invalidates: bool,
     charged_bytes: usize,
     budget: Arc<NotificationBudget>,
 }
@@ -67,6 +71,14 @@ pub(crate) struct WatchSubscriber {
     /// Mirrors this connection's `CLIENT DELTA` setting. Shared rather than
     /// copied because the toggle can flip while subscriptions are live.
     deltas: Arc<AtomicBool>,
+    /// For a WATCH registration: whether the key was live (present and not
+    /// expired) when it was watched (6O-E). Redis 7.2 does not count the
+    /// removal of a key that was absent or already expired at `WATCH` as a
+    /// change (`touchWatchedKey`'s `expired` flag, `touchAllWatchedKeysInDb`),
+    /// and does abort when a key that was live has since expired
+    /// (`isWatchedKeyExpired`). True for every other registration, so live
+    /// queries are unaffected.
+    live_at_watch: bool,
 }
 
 impl WatchSubscriber {
@@ -78,6 +90,7 @@ impl WatchSubscriber {
     /// which is materialised on first need. The charge is measured and
     /// reserved before anything is cloned.
     pub(crate) fn notify(&self, change: &KeyChange<'_>) -> bool {
+        let invalidates = self.live_at_watch || !change.leaves_key_absent();
         let delta = change
             .delta
             .as_ref()
@@ -106,6 +119,7 @@ impl WatchSubscriber {
         let notification = WatchNotif {
             key: change.key.clone(),
             payload,
+            invalidates,
             charged_bytes,
             budget: Arc::clone(&self.budget),
         };
@@ -115,6 +129,15 @@ impl WatchSubscriber {
             return false;
         }
         true
+    }
+
+    /// This subscriber, registered for a key that was (`live`) or was not
+    /// live when watched.
+    pub(crate) fn watching(&self, live: bool) -> WatchSubscriber {
+        WatchSubscriber {
+            live_at_watch: live,
+            ..self.clone()
+        }
     }
 
     fn signal_overflow(&self) {
@@ -138,6 +161,7 @@ pub(crate) fn notification_channel(
                 pending_bytes: AtomicUsize::new(0),
             }),
             deltas,
+            live_at_watch: true,
         },
         rx,
     )
@@ -217,6 +241,17 @@ impl<'a> KeyChange<'a> {
             delta: None,
             source: None,
             full: OnceLock::new(),
+        }
+    }
+
+    /// Whether the key is absent once this change is applied: a removal, or a
+    /// write that left nothing (`DEL` of a key that was not there). Read only
+    /// for a WATCH of a key that was not live when watched; the caller holds
+    /// the key's ordering guard, so the read sees this change.
+    fn leaves_key_absent(&self) -> bool {
+        match self.source {
+            None => true,
+            Some(store) => !key_is_live(store, &self.key),
         }
     }
 
@@ -577,6 +612,44 @@ pub(crate) async fn unregister_all_qsubs(
         pats.remove_conn(&p, conn_id);
     }
     registry.sync_patterns_len(&pats);
+}
+
+/// Whether `key` is present and not expired now (at the store's clock, so
+/// inside [`core_engine::store::at_instant`], at that instant).
+pub(crate) fn key_is_live(store: &KeyValueStore, key: &str) -> bool {
+    matches!(
+        store.execute(Command::Exists(vec![key.to_string()])),
+        Value::Integer(1)
+    )
+}
+
+/// Whether a key `conn_id` watched while it was live is no longer live at
+/// `now`, the instant its transaction runs at: Redis 7.2 aborts `EXEC` then
+/// (`isWatchedKeyExpired`), though no command touched the key. A key that
+/// expires lazily changes nothing in the store, so no notification ever told
+/// the connection.
+///
+/// Called by `EXEC` under its guards, which include every watched key's
+/// stripe, so no write to those keys runs meanwhile. A key whose
+/// registration is gone was dropped for overflow, and `EXEC` checks that
+/// first.
+pub(crate) async fn watched_key_expired(
+    registry: &WatchRegistry,
+    conn_id: u64,
+    watched_keys: &HashSet<String>,
+    store: &KeyValueStore,
+    now: u64,
+) -> bool {
+    if watched_keys.is_empty() {
+        return false;
+    }
+    let reg = registry.map.lock().await;
+    watched_keys.iter().any(|key| {
+        reg.get(key)
+            .and_then(|subs| subs.iter().find(|sub| sub.conn_id == conn_id))
+            .is_some_and(|sub| sub.live_at_watch)
+            && !core_engine::store::at_instant(now, || key_is_live(store, key))
+    })
 }
 
 /// Drop all of `conn_id`'s WATCH registrations and clear `watched_keys`.

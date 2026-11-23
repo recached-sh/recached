@@ -1,0 +1,13 @@
+test tests::watch_expiry::a_key_not_yet_expired_at_exec_commits ... ok
+test tests::watch_expiry::flushdb_aborts_only_watches_of_keys_that_existed ... FAILED
+test tests::watch_expiry::deletion_recreation_and_ttl_changes ... FAILED
+test tests::watch_expiry::repeated_watch_cycles_leak_nothing ... FAILED
+test tests::watch_expiry::a_watched_key_that_expires_lazily_aborts_exec ... FAILED
+test tests::watch_expiry::several_watched_keys_abort_if_any_one_expired ... FAILED
+test tests::watch_expiry::tenant_watches_are_isolated ... FAILED
+test tests::watch_expiry::watching_a_key_already_expired_commits ... ok
+test tests::watch_expiry::sweeper_removals_follow_the_same_rules ... FAILED
+test tests::watch_expiry::websocket_watch_follows_the_expiry_rules ... FAILED
+test tests::watch_expiry::unwatch_and_discard_clear_an_expired_watch ... ok
+test tests::watch_expiry::expiry_during_exec_is_judged_at_the_transactions_instant ... ok
+test result: FAILED. 4 passed; 8 failed; 0 ignored; 0 measured; 673 filtered out; finished in 0.08s

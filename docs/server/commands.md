@@ -554,7 +554,7 @@ EXEC
 # 3) 2
 ```
 
-Optimistic locking: `WATCH key [key ...]` before `MULTI` marks those keys. If any watched key is modified by **any** client before `EXEC`, the transaction is aborted and `EXEC` returns a nil array (Redis `WATCH`/`MULTI`/`EXEC` CAS semantics). This works over both the TCP (6379) and WebSocket (6380) ports. `EXEC` and `DISCARD` both clear all watches. Over WebSocket, `WATCH` *additionally* pushes live keychange notifications — see [Observable Keys](#observable-keys) below.
+Optimistic locking: `WATCH key [key ...]` before `MULTI` marks those keys. If any watched key is modified by **any** client before `EXEC`, the transaction is aborted and `EXEC` returns a nil array (Redis `WATCH`/`MULTI`/`EXEC` CAS semantics). As in Redis 7.2, a watched key that was live at `WATCH` and has expired by `EXEC` aborts it too, even if nothing touched the key *(0.6)*. Removing a key that was absent or already expired at `WATCH` is not a change: a `DEL` or `FLUSHDB` of it, or its deletion by expiry, does not abort. This works over both the TCP (6379) and WebSocket (6380) ports. `EXEC` and `DISCARD` both clear all watches. Over WebSocket, `WATCH` *additionally* pushes live keychange notifications — see [Observable Keys](#observable-keys) below.
 
 ---
 

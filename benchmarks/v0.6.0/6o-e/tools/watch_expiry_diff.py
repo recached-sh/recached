@@ -158,6 +158,31 @@ def case_live_flushdb(s, o, k):
     return run_exec(s, k)
 
 
+# No-op writes: Redis signals a WATCH only when a command modifies the key.
+def case_live_setnx_noop(s, o, k):
+    s("SET", k, "v"); s("WATCH", k); o("SETNX", k, "x")
+    return run_exec(s, k)
+
+def case_live_persist_noop(s, o, k):
+    s("SET", k, "v"); s("WATCH", k); o("PERSIST", k)
+    return run_exec(s, k)
+
+def case_live_hdel_missing_field(s, o, k):
+    s("HSET", k, "f", "v"); s("WATCH", k); o("HDEL", k, "g")
+    return run_exec(s, k)
+
+def case_live_srem_missing_member(s, o, k):
+    s("SADD", k, "m"); s("WATCH", k); o("SREM", k, "n")
+    return run_exec(s, k)
+
+def case_absent_lpushx_noop(s, o, k):
+    s("WATCH", k); o("LPUSHX", k, "v")
+    return run_exec(s, k)
+
+def case_live_renamed_onto(s, o, k):
+    s("SET", k, "v"); s("SET", k + ":src", "w"); s("WATCH", k); o("RENAME", k + ":src", k)
+    return run_exec(s, k)
+
 CASES = [(n[len("case_"):], f) for n, f in list(globals().items()) if n.startswith("case_")]
 
 
