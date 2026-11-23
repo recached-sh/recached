@@ -1,0 +1,80 @@
+test tests::exec_isolation::transactions_answer_sequentially_without_a_concurrent_writer ... ok
+test tests::exec_isolation::two_queued_reads_never_straddle_an_ordered_mset ... FAILED
+test tests::exec_isolation::a_mixed_transaction_sees_its_own_writes_and_no_one_elses ... FAILED
+test tests::exec_isolation::a_watched_transaction_is_isolated_while_it_runs ... ok
+test tests::exec_isolation::two_queued_reads_never_straddle_an_unordered_mset ... FAILED
+test tests::exec_isolation::two_queued_reads_see_a_state_two_sets_passed_through ... FAILED
+test tests::exec_isolation::every_queued_command_sees_the_clock_at_one_instant ... FAILED
+test result: FAILED. 2 passed; 5 failed; 0 ignored; 0 measured; 653 filtered out; finished in 0.25s
+test tests::exec_isolation::a_mixed_transaction_sees_its_own_writes_and_no_one_elses ... FAILED
+test tests::exec_isolation::two_queued_reads_never_straddle_an_unordered_mset ... FAILED
+test tests::exec_isolation::transactions_answer_sequentially_without_a_concurrent_writer ... ok
+test tests::exec_isolation::two_queued_reads_never_straddle_an_ordered_mset ... FAILED
+test tests::exec_isolation::a_watched_transaction_is_isolated_while_it_runs ... ok
+test tests::exec_isolation::two_queued_reads_see_a_state_two_sets_passed_through ... FAILED
+test tests::exec_isolation::every_queued_command_sees_the_clock_at_one_instant ... FAILED
+test result: FAILED. 2 passed; 5 failed; 0 ignored; 0 measured; 653 filtered out; finished in 0.25s
+test tests::exec_isolation::two_queued_reads_never_straddle_an_ordered_mset ... FAILED
+test tests::exec_isolation::transactions_answer_sequentially_without_a_concurrent_writer ... ok
+test tests::exec_isolation::two_queued_reads_never_straddle_an_unordered_mset ... FAILED
+test tests::exec_isolation::a_mixed_transaction_sees_its_own_writes_and_no_one_elses ... FAILED
+test tests::exec_isolation::a_watched_transaction_is_isolated_while_it_runs ... ok
+test tests::exec_isolation::two_queued_reads_see_a_state_two_sets_passed_through ... FAILED
+test tests::exec_isolation::every_queued_command_sees_the_clock_at_one_instant ... FAILED
+test result: FAILED. 2 passed; 5 failed; 0 ignored; 0 measured; 653 filtered out; finished in 0.25s
+test tests::exec_isolation::a_mixed_transaction_sees_its_own_writes_and_no_one_elses ... FAILED
+test tests::exec_isolation::two_queued_reads_never_straddle_an_ordered_mset ... FAILED
+test tests::exec_isolation::two_queued_reads_never_straddle_an_unordered_mset ... FAILED
+test tests::exec_isolation::transactions_answer_sequentially_without_a_concurrent_writer ... ok
+test tests::exec_isolation::a_watched_transaction_is_isolated_while_it_runs ... ok
+test tests::exec_isolation::two_queued_reads_see_a_state_two_sets_passed_through ... FAILED
+test tests::exec_isolation::every_queued_command_sees_the_clock_at_one_instant ... FAILED
+test result: FAILED. 2 passed; 5 failed; 0 ignored; 0 measured; 653 filtered out; finished in 0.25s
+test tests::exec_isolation::two_queued_reads_never_straddle_an_ordered_mset ... FAILED
+test tests::exec_isolation::a_mixed_transaction_sees_its_own_writes_and_no_one_elses ... FAILED
+test tests::exec_isolation::two_queued_reads_never_straddle_an_unordered_mset ... FAILED
+test tests::exec_isolation::transactions_answer_sequentially_without_a_concurrent_writer ... ok
+test tests::exec_isolation::two_queued_reads_see_a_state_two_sets_passed_through ... FAILED
+test tests::exec_isolation::a_watched_transaction_is_isolated_while_it_runs ... ok
+test tests::exec_isolation::every_queued_command_sees_the_clock_at_one_instant ... FAILED
+test result: FAILED. 2 passed; 5 failed; 0 ignored; 0 measured; 653 filtered out; finished in 0.25s
+test tests::exec_isolation::two_queued_reads_never_straddle_an_ordered_mset ... FAILED
+test tests::exec_isolation::two_queued_reads_never_straddle_an_unordered_mset ... FAILED
+test tests::exec_isolation::a_mixed_transaction_sees_its_own_writes_and_no_one_elses ... FAILED
+test tests::exec_isolation::a_watched_transaction_is_isolated_while_it_runs ... ok
+test tests::exec_isolation::transactions_answer_sequentially_without_a_concurrent_writer ... ok
+test tests::exec_isolation::two_queued_reads_see_a_state_two_sets_passed_through ... FAILED
+test tests::exec_isolation::every_queued_command_sees_the_clock_at_one_instant ... FAILED
+test result: FAILED. 2 passed; 5 failed; 0 ignored; 0 measured; 653 filtered out; finished in 0.26s
+test tests::exec_isolation::two_queued_reads_never_straddle_an_unordered_mset ... FAILED
+test tests::exec_isolation::a_mixed_transaction_sees_its_own_writes_and_no_one_elses ... FAILED
+test tests::exec_isolation::two_queued_reads_never_straddle_an_ordered_mset ... FAILED
+test tests::exec_isolation::transactions_answer_sequentially_without_a_concurrent_writer ... ok
+test tests::exec_isolation::a_watched_transaction_is_isolated_while_it_runs ... ok
+test tests::exec_isolation::two_queued_reads_see_a_state_two_sets_passed_through ... FAILED
+test tests::exec_isolation::every_queued_command_sees_the_clock_at_one_instant ... FAILED
+test result: FAILED. 2 passed; 5 failed; 0 ignored; 0 measured; 653 filtered out; finished in 0.25s
+test tests::exec_isolation::two_queued_reads_never_straddle_an_unordered_mset ... FAILED
+test tests::exec_isolation::a_mixed_transaction_sees_its_own_writes_and_no_one_elses ... FAILED
+test tests::exec_isolation::two_queued_reads_never_straddle_an_ordered_mset ... FAILED
+test tests::exec_isolation::transactions_answer_sequentially_without_a_concurrent_writer ... ok
+test tests::exec_isolation::a_watched_transaction_is_isolated_while_it_runs ... ok
+test tests::exec_isolation::two_queued_reads_see_a_state_two_sets_passed_through ... FAILED
+test tests::exec_isolation::every_queued_command_sees_the_clock_at_one_instant ... FAILED
+test result: FAILED. 2 passed; 5 failed; 0 ignored; 0 measured; 653 filtered out; finished in 0.25s
+test tests::exec_isolation::a_mixed_transaction_sees_its_own_writes_and_no_one_elses ... FAILED
+test tests::exec_isolation::two_queued_reads_never_straddle_an_unordered_mset ... FAILED
+test tests::exec_isolation::two_queued_reads_never_straddle_an_ordered_mset ... FAILED
+test tests::exec_isolation::transactions_answer_sequentially_without_a_concurrent_writer ... ok
+test tests::exec_isolation::two_queued_reads_see_a_state_two_sets_passed_through ... FAILED
+test tests::exec_isolation::a_watched_transaction_is_isolated_while_it_runs ... ok
+test tests::exec_isolation::every_queued_command_sees_the_clock_at_one_instant ... FAILED
+test result: FAILED. 2 passed; 5 failed; 0 ignored; 0 measured; 653 filtered out; finished in 0.26s
+test tests::exec_isolation::a_watched_transaction_is_isolated_while_it_runs ... ok
+test tests::exec_isolation::two_queued_reads_never_straddle_an_unordered_mset ... FAILED
+test tests::exec_isolation::a_mixed_transaction_sees_its_own_writes_and_no_one_elses ... FAILED
+test tests::exec_isolation::two_queued_reads_never_straddle_an_ordered_mset ... FAILED
+test tests::exec_isolation::transactions_answer_sequentially_without_a_concurrent_writer ... ok
+test tests::exec_isolation::two_queued_reads_see_a_state_two_sets_passed_through ... FAILED
+test tests::exec_isolation::every_queued_command_sees_the_clock_at_one_instant ... FAILED
+test result: FAILED. 2 passed; 5 failed; 0 ignored; 0 measured; 653 filtered out; finished in 0.25s

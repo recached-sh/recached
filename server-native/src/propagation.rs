@@ -705,6 +705,95 @@ pub(crate) mod unordered_pause {
     }
 }
 
+/// Test-only stop inside EXEC (6O-E): an EXEC that has just run a queued
+/// command naming an armed key waits there, with every guard it holds still
+/// held, until the test releases it. Used to place a concurrent write
+/// *between* two of a transaction's queued commands, deterministically.
+#[cfg(test)]
+pub(crate) mod exec_pause {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    struct Inner {
+        key: String,
+        taken: AtomicBool,
+        reached: AtomicBool,
+        release: tokio::sync::Semaphore,
+    }
+
+    static ARMED: Mutex<Vec<Arc<Inner>>> = Mutex::new(Vec::new());
+    /// Checked before the mutex, so an unarmed hook costs one load.
+    static COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    /// Released (and disarmed) on drop.
+    pub(crate) struct Pause {
+        inner: Arc<Inner>,
+    }
+
+    /// Stop the first EXEC that runs a queued command naming `key`, right
+    /// after that command. Keys are unique per test, so parallel tests do
+    /// not stop each other's transactions.
+    pub(crate) fn after_command_naming(key: &str) -> Pause {
+        let inner = Arc::new(Inner {
+            key: key.to_string(),
+            taken: AtomicBool::new(false),
+            reached: AtomicBool::new(false),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        ARMED
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(Arc::clone(&inner));
+        COUNT.fetch_add(1, Ordering::SeqCst);
+        Pause { inner }
+    }
+
+    impl Pause {
+        /// Wait (polling, bounded) until an EXEC has stopped here.
+        pub(crate) async fn reached(&self, within: Duration) -> bool {
+            let deadline = Instant::now() + within;
+            while Instant::now() < deadline {
+                if self.inner.reached.load(Ordering::SeqCst) {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            false
+        }
+    }
+
+    impl Drop for Pause {
+        fn drop(&mut self) {
+            ARMED
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retain(|i| !Arc::ptr_eq(i, &self.inner));
+            COUNT.fetch_sub(1, Ordering::SeqCst);
+            self.inner.release.close();
+        }
+    }
+
+    /// Called by EXEC after each queued command.
+    pub(crate) async fn after(cmd: &core_engine::cmd::Command) {
+        if COUNT.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+        let text = format!("{cmd:?}");
+        let hit = ARMED
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .find(|i| text.contains(i.key.as_str()) && !i.taken.swap(true, Ordering::SeqCst))
+            .cloned();
+        if let Some(inner) = hit {
+            inner.reached.store(true, Ordering::SeqCst);
+            // Closed by `Pause::drop`.
+            let _ = inner.release.acquire().await;
+        }
+    }
+}
+
 /// The reply to a DEDUP write seen before.
 pub(crate) fn dedup_replay_reply(replay: DedupReplay) -> Value {
     match replay {

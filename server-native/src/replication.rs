@@ -101,6 +101,11 @@ pub(crate) struct ReplHub {
     /// Lets a write nothing observes skip `write_order`; closed by every
     /// other taker of those stripes. See [`UnorderedGate`].
     pub(crate) unordered: UnorderedGate,
+    /// Test-only: how many times a taker found a stripe held and had to wait
+    /// for it (6O-E). Lets a test see that a writer is blocked behind a
+    /// transaction, rather than inferring it from a timeout.
+    #[cfg(test)]
+    stripe_waits: AtomicUsize,
     /// Stream DEDUP identities with the writes they belong to
     /// (`RECACHED_REPL_DEDUP`, on by default). Fixed at startup: every
     /// replica of this primary must then accept them, see [`REPL_CAP_DEDUP`].
@@ -519,6 +524,8 @@ impl ReplHub {
                 .map(|_| tokio::sync::Mutex::new(()))
                 .collect(),
             unordered: UnorderedGate::new(),
+            #[cfg(test)]
+            stripe_waits: AtomicUsize::new(0),
             dedup: AtomicBool::new(true),
             upstream_dedup: AtomicBool::new(false),
             send_flushes: AtomicU64::new(0),
@@ -792,12 +799,25 @@ impl ReplHub {
 
         let mut guards = SmallVec::with_capacity(stripes.len());
         for stripe in stripes {
+            #[cfg(test)]
+            if let Ok(guard) = self.write_order[stripe].try_lock() {
+                guards.push(guard);
+                continue;
+            } else {
+                self.stripe_waits.fetch_add(1, Ordering::SeqCst);
+            }
             guards.push(self.write_order[stripe].lock().await);
         }
         OrderGuards {
             _stripes: guards,
             _closed: closed,
         }
+    }
+
+    /// Times a stripe taker found its stripe held and waited (test builds).
+    #[cfg(test)]
+    pub(crate) fn stripe_waits(&self) -> usize {
+        self.stripe_waits.load(Ordering::SeqCst)
     }
 
     /// The one stripe of a DEDUP client identity, for recording a DEDUP

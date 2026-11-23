@@ -14,15 +14,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
-const WITHIN: Duration = Duration::from_secs(20);
+pub(super) const WITHIN: Duration = Duration::from_secs(20);
 
-struct Pipe {
+pub(super) struct Pipe {
     io: DuplexStream,
     buf: Vec<u8>,
 }
 
 impl Pipe {
-    fn tcp(shared: &Shared) -> Pipe {
+    pub(super) fn tcp(shared: &Shared) -> Pipe {
         let (client, server) = tokio::io::duplex(64 * 1024);
         tokio::spawn(shared.serve(server));
         Pipe {
@@ -31,7 +31,7 @@ impl Pipe {
         }
     }
 
-    async fn send(&mut self, args: &[&str]) {
+    pub(super) async fn send(&mut self, args: &[&str]) {
         let mut req = format!("*{}\r\n", args.len());
         for a in args {
             req.push_str(&format!("${}\r\n{a}\r\n", a.len()));
@@ -40,7 +40,7 @@ impl Pipe {
     }
 
     /// The next reply. Cancel-safe: bytes read so far stay in `buf`.
-    async fn reply(&mut self) -> Value {
+    pub(super) async fn reply(&mut self) -> Value {
         loop {
             if let Ok((v, n)) = Value::parse(&self.buf) {
                 self.buf.drain(..n);
@@ -53,7 +53,7 @@ impl Pipe {
         }
     }
 
-    async fn cmd(&mut self, args: &[&str]) -> Value {
+    pub(super) async fn cmd(&mut self, args: &[&str]) -> Value {
         self.send(args).await;
         tokio::time::timeout(WITHIN, self.reply())
             .await
@@ -76,7 +76,7 @@ impl Pipe {
     }
 }
 
-fn bulk(s: &str) -> Value {
+pub(super) fn bulk(s: &str) -> Value {
     Value::BulkString(Some(s.as_bytes().to_vec()))
 }
 
