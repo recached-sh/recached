@@ -11,6 +11,7 @@
 use super::mset_atomicity::{Pipe, WITHIN};
 use super::request_path::Shared;
 use core_engine::resp::Value;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const BIG: usize = 9 * 1024 * 1024;
@@ -197,4 +198,86 @@ async fn websocket_watchers_are_still_pushed_their_changes() {
     assert_eq!(s.cmd(&["MULTI"]).await, ok());
     s.cmd(&["SET", "6oe:cas:ws:m", "1"]).await;
     assert_eq!(s.cmd(&["EXEC"]).await, Value::Array(None));
+}
+
+// ── Review follow-ups: the shared invalidated flag ───────────────────────────
+
+/// A change keeps the connection dirty through a later WATCH of another key
+/// (Redis keeps `CLIENT_DIRTY_CAS` until EXEC, DISCARD or UNWATCH).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_change_stays_a_conflict_through_a_later_watch() {
+    let shared = Shared::new(false);
+    let (mut s, mut o) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
+    let (a, b) = ("6oe:cas:later:a", "6oe:cas:later:b");
+    assert_eq!(s.cmd(&["WATCH", a]).await, ok());
+    assert_eq!(o.cmd(&["SET", a, "x"]).await, ok());
+    assert_eq!(s.cmd(&["WATCH", b]).await, ok());
+    assert_eq!(
+        exec_once(&mut s, "6oe:cas:later:m").await,
+        Value::Array(None)
+    );
+}
+
+/// Recached's `UNWATCH key …` (an extension: Redis's UNWATCH takes no key)
+/// of a key other than the changed one leaves the transaction dirty.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_partial_unwatch_keeps_another_keys_conflict() {
+    let shared = Shared::new(false);
+    let (mut s, mut o) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
+    let (a, b) = ("6oe:cas:part:a", "6oe:cas:part:b");
+    assert_eq!(s.cmd(&["WATCH", a, b]).await, ok());
+    assert_eq!(o.cmd(&["SET", a, "x"]).await, ok());
+    assert_eq!(s.cmd(&["UNWATCH", b]).await, ok());
+    assert_eq!(
+        exec_once(&mut s, "6oe:cas:part:m").await,
+        Value::Array(None)
+    );
+}
+
+/// Every EXEC exit clears the flag with the watches: after `EXECABORT`,
+/// `MISCONF` and `READONLY`, a fresh WATCH with no change commits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_exec_exit_forgets_the_conflict() {
+    let shared = Shared::new(false);
+    let (mut s, mut o) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
+    let k = "6oe:cas:exits";
+    for exit in ["EXECABORT", "MISCONF", "READONLY"] {
+        assert_eq!(s.cmd(&["WATCH", k]).await, ok());
+        assert_eq!(o.cmd(&["SET", k, exit]).await, ok());
+        assert_eq!(s.cmd(&["MULTI"]).await, ok());
+        match exit {
+            "EXECABORT" => {
+                assert!(matches!(s.cmd(&["NOSUCHCOMMAND"]).await, Value::Error(_)));
+            }
+            "MISCONF" => {
+                s.cmd(&["SET", "6oe:cas:exits:m", "1"]).await;
+                shared
+                    .state
+                    .persistence_healthy
+                    .store(false, Ordering::SeqCst);
+            }
+            _ => {
+                s.cmd(&["SET", "6oe:cas:exits:m", "1"]).await;
+                shared.state.is_replica.store(true, Ordering::SeqCst);
+            }
+        }
+        let reply = s.cmd(&["EXEC"]).await;
+        assert!(
+            matches!(&reply, Value::Error(e) if e.starts_with(exit)),
+            "{exit}: {reply:?}"
+        );
+        shared
+            .state
+            .persistence_healthy
+            .store(true, Ordering::SeqCst);
+        shared.state.is_replica.store(false, Ordering::SeqCst);
+        assert_eq!(s.cmd(&["WATCH", k]).await, ok());
+        assert!(
+            matches!(
+                exec_once(&mut s, "6oe:cas:exits:m").await,
+                Value::Array(Some(_))
+            ),
+            "after {exit}: an earlier change leaked into this transaction"
+        );
+    }
 }

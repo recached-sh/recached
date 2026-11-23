@@ -303,7 +303,9 @@ async fn a_pattern_subscriber_whose_queue_overflows_is_disconnected() {
 /// disconnected the connection although the UNWATCH left no watch behind. A
 /// TCP `WATCH` now queues nothing for a change, so nothing overflows: the
 /// connection stays, answers the three commands, and serves the next one.
-/// Overflow arming for subscriptions is covered by the tests above.
+/// The overflow arm's other handouts (SUBSCRIBE, PSUBSCRIBE) are covered by
+/// the tests above for an overflow across batches; arming within a single
+/// SUBSCRIBE/UNSUBSCRIBE batch has no deterministic test (review, Low).
 #[tokio::test]
 async fn a_large_change_within_one_watch_batch_keeps_the_connection() {
     let server = spawn_server().await;
