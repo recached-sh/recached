@@ -325,14 +325,41 @@ pub(crate) async fn execute_locked_write(
     watch_registry: &WatchRegistry,
     store: &KeyValueStore,
 ) -> Value {
-    execute_locked_write_identified(cmd, None, tx, origin, state, watch_registry, store).await
+    execute_locked_write_identified(cmd, None, None, tx, origin, state, watch_registry, store).await
+}
+
+/// [`execute_locked_write`] for a write queued in a transaction: the store
+/// runs it with its clock fixed at `now`, the instant the transaction runs at
+/// (see [`core_engine::store::at_instant`]).
+pub(crate) async fn execute_locked_write_at(
+    cmd: &Command,
+    now: u64,
+    tx: &SyncTx,
+    origin: u64,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+) -> Value {
+    execute_locked_write_identified(
+        cmd,
+        None,
+        Some(now),
+        tx,
+        origin,
+        state,
+        watch_registry,
+        store,
+    )
+    .await
 }
 
 /// [`execute_locked_write`] for the write inside a DEDUP envelope, whose
 /// identity the AOF records with it.
+#[allow(clippy::too_many_arguments)]
 async fn execute_locked_write_identified(
     cmd: &Command,
     dedup: Option<(&str, u64)>,
+    clock: Option<u64>,
     tx: &SyncTx,
     origin: u64,
     state: &ServerState,
@@ -342,7 +369,10 @@ async fn execute_locked_write_identified(
     let claimable_members = claimable_eadd_members(cmd, state, store);
     // By reference: the command is needed again below, and cloning it so the
     // store could consume the copy cost a key and a value per write.
-    let (response, evicted) = execute_and_record_ref(store, cmd);
+    let (response, evicted) = match clock {
+        Some(now) => core_engine::store::at_instant(now, || execute_and_record_ref(store, cmd)),
+        None => execute_and_record_ref(store, cmd),
+    };
     apply_write_effects_identified(
         cmd,
         &response,
@@ -440,9 +470,17 @@ pub(crate) async fn execute_ordered_write(
     } else {
         state.replicas.lock_write(effective).await
     };
-    let response =
-        execute_locked_write_identified(effective, dedup, tx, origin, state, watch_registry, store)
-            .await;
+    let response = execute_locked_write_identified(
+        effective,
+        dedup,
+        None,
+        tx,
+        origin,
+        state,
+        watch_registry,
+        store,
+    )
+    .await;
     commit_dedup_outcome(state, dedup, &response).await;
     response
 }

@@ -638,7 +638,7 @@ impl ReplHub {
         }
     }
 
-    fn stripe_for(key: &str) -> usize {
+    pub(crate) fn stripe_for(key: &str) -> usize {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         key.hash(&mut hasher);
         hasher.finish() as usize % WRITE_ORDER_STRIPES
@@ -760,6 +760,35 @@ impl ReplHub {
         self.lock_stripes(commands, extra_keys, Some(closed)).await
     }
 
+    /// EXEC's guards (6O-E): the unordered gate closed and drained, then the
+    /// stripes of every key any queued command reads or writes, and of the
+    /// watched keys, in ascending order — or every stripe when a queued
+    /// command touches the whole keyspace (`FLUSHDB`, `KEYS`, `SCAN`,
+    /// `DBSIZE`).
+    ///
+    /// With the gate closed no write runs unordered, and every ordered write
+    /// takes its own keys' stripes; so while these are held no other write
+    /// commits to a key the transaction reads, writes or watches. Writes to
+    /// other keys go on. Each command contributes both its write keys
+    /// ([`ordering_key_refs`], with the sources `*STORE` and `COPY` read) and
+    /// its read keys ([`read_keys`]) whatever [`is_write_command`] says of it,
+    /// so a command classified differently by the server and the store is
+    /// still covered.
+    pub(crate) async fn lock_transaction<'a, 'k, I>(
+        &'a self,
+        queue: &[Command],
+        watched: I,
+    ) -> OrderGuards<'a>
+    where
+        I: IntoIterator<Item = &'k str>,
+    {
+        let closed = self.unordered.close().await;
+        match transaction_stripes(queue, watched) {
+            None => self.lock_every_stripe(closed).await,
+            Some(stripes) => self.lock_stripe_list(stripes, Some(closed)).await,
+        }
+    }
+
     async fn lock_stripes<'a, 'k, I>(
         &'a self,
         commands: &[Command],
@@ -794,6 +823,15 @@ impl ReplHub {
             return self.lock_every_stripe(closed).await;
         }
         stripes.extend(extra_keys.into_iter().map(Self::stripe_for));
+        self.lock_stripe_list(stripes, closed).await
+    }
+
+    /// Take `stripes` (any order, duplicates allowed) in ascending order.
+    async fn lock_stripe_list<'a>(
+        &'a self,
+        mut stripes: SmallVec<[usize; 4]>,
+        closed: Option<GateClosed<'a>>,
+    ) -> OrderGuards<'a> {
         stripes.sort_unstable();
         stripes.dedup();
 
@@ -898,6 +936,31 @@ impl ReplHub {
                 .collect(),
         )
     }
+}
+
+/// The replication-order stripes a transaction holds while it runs (see
+/// [`ReplHub::lock_transaction`]); `None` for every stripe.
+pub(crate) fn transaction_stripes<'k, I>(
+    queue: &[Command],
+    watched: I,
+) -> Option<SmallVec<[usize; 4]>>
+where
+    I: IntoIterator<Item = &'k str>,
+{
+    let mut stripes: SmallVec<[usize; 4]> = SmallVec::new();
+    for command in queue {
+        // `None`: a command conflicting with every key (FLUSHDB).
+        let keys = ordering_key_refs(command)?;
+        stripes.extend(keys.iter().map(|key| ReplHub::stripe_for(key)));
+        match read_keys(command) {
+            ReadKeys::None => {}
+            ReadKeys::One(key) => stripes.push(ReplHub::stripe_for(key)),
+            ReadKeys::Many(keys) => stripes.extend(keys.iter().map(|key| ReplHub::stripe_for(key))),
+            ReadKeys::Keyspace => return None,
+        }
+    }
+    stripes.extend(watched.into_iter().map(ReplHub::stripe_for));
+    Some(stripes)
 }
 
 pub(crate) type ReplRegistry = Arc<ReplHub>;

@@ -70,6 +70,46 @@ pub(crate) fn queue_time_rejection(cmd: &Command) -> Option<Vec<u8>> {
     }
 }
 
+/// Run a transaction's queued commands in order, under the guards `EXEC`
+/// holds ([`ReplHub::lock_transaction`]), each with the store's clock at
+/// `now`, the instant the transaction runs at. Shared by the TCP and
+/// WebSocket `EXEC`, so the two cannot drift apart.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_transaction_queue(
+    queue: Vec<Command>,
+    now: u64,
+    tx: &SyncTx,
+    conn_id: u64,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+    pubsub: &SharedPubSub,
+) -> Vec<Value> {
+    let mut results = Vec::with_capacity(queue.len());
+    for qcmd in queue {
+        #[cfg(test)]
+        let hook_cmd = qcmd.clone();
+        let resp = match qcmd {
+            // Delivery lives in the connection loop, not the store —
+            // `store.execute(Publish)` is a stub that answers 0 and sends
+            // nothing. Queuing PUBLISH without this arm would silently swallow
+            // the message, which is worse than refusing it.
+            Command::Publish(ref channel, ref message) => {
+                let count = pubsub.lock().await.publish(channel, message);
+                Value::Integer(count)
+            }
+            _ if is_write_command(&qcmd) => {
+                execute_locked_write_at(&qcmd, now, tx, conn_id, state, watch_registry, store).await
+            }
+            _ => core_engine::store::at_instant(now, || execute_and_record(store, qcmd)),
+        };
+        #[cfg(test)]
+        crate::propagation::exec_pause::after(&hook_cmd).await;
+        results.push(resp);
+    }
+    results
+}
+
 /// Whether a fan-out push goes to this connection.
 ///
 /// Its own writes never do. With scopes set, only matching keys are forwarded;
@@ -857,12 +897,15 @@ async fn handle_tcp_halves<R, W>(
                                                     } else {
                                                         state
                                                             .replicas
-                                                            .lock_commands_and_keys(
+                                                            .lock_transaction(
                                                                 &queue,
                                                                 watched_keys.iter().map(String::as_str),
                                                             )
                                                             .await
                                                     };
+                                                    // Every queued command runs at this one
+                                                    // instant, as in Redis (6O-E).
+                                                    let now = core_engine::store::clock_ms();
                                                     // A notification for this connection overflowed: the
                                                     // connection is being disconnected for it (the overflow
                                                     // arm), and a watched key may have changed with nothing
@@ -892,36 +935,17 @@ async fn handle_tcp_halves<R, W>(
                                                         watch_dirty = false;
                                                         if writer.write_all(&Value::Array(None).serialize()).await.is_err() { break 'outer; }
                                                     } else {
-                                                        let mut results = Vec::with_capacity(queue.len());
-                                                        for qcmd in queue {
-                                                            #[cfg(test)]
-                                                            let hook_cmd = qcmd.clone();
-                                                            let resp = match qcmd {
-                                                                // Delivery lives in the connection loop, not the
-                                                                // store — `store.execute(Publish)` is a stub that
-                                                                // answers 0 and sends nothing. Queuing PUBLISH
-                                                                // without this arm would silently swallow the
-                                                                // message, which is worse than refusing it.
-                                                                Command::Publish(ref channel, ref message) => {
-                                                                    let count = pubsub.lock().await.publish(channel, message);
-                                                                    Value::Integer(count)
-                                                                }
-                                                                _ if is_write_command(&qcmd) => {
-                                                                    execute_locked_write(
-                                                                        &qcmd,
-                                                                        &tx,
-                                                                        conn_id,
-                                                                        &state,
-                                                                        &watch_registry,
-                                                                        &store,
-                                                                    ).await
-                                                                }
-                                                                _ => execute_and_record(&store, qcmd),
-                                                            };
-                                                            #[cfg(test)]
-                                                            crate::propagation::exec_pause::after(&hook_cmd).await;
-                                                            results.push(resp);
-                                                        }
+                                                        let results = run_transaction_queue(
+                                                            queue,
+                                                            now,
+                                                            &tx,
+                                                            conn_id,
+                                                            &state,
+                                                            &watch_registry,
+                                                            &store,
+                                                            &pubsub,
+                                                        )
+                                                        .await;
                                                         unregister_all_watches(&watch_registry, conn_id, &mut watched_keys).await;
                                                         while watch_rx.try_recv().is_ok() {}
                                                         watch_dirty = false;
@@ -2047,12 +2071,14 @@ pub(crate) async fn handle_ws<S>(
                                         } else {
                                             state
                                                 .replicas
-                                                .lock_commands_and_keys(
+                                                .lock_transaction(
                                                     &queue,
                                                     watched_keys.iter().map(String::as_str),
                                                 )
                                                 .await
                                         };
+                                        // As on TCP: one instant for every queued command.
+                                        let now = core_engine::store::clock_ms();
                                         // As on TCP: after an overflow the connection is being
                                         // disconnected, and a watched key may have changed with
                                         // nothing queued. EXEC must not commit first.
@@ -2071,33 +2097,17 @@ pub(crate) async fn handle_ws<S>(
                                             watch_dirty = false;
                                             ws_send!(&Value::Array(None).serialize());
                                         } else {
-                                            let mut results = Vec::with_capacity(queue.len());
-                                            for qcmd in queue {
-                                                #[cfg(test)]
-                                                let hook_cmd = qcmd.clone();
-                                                let resp = match qcmd {
-                                                    // See the TCP path: delivery lives here,
-                                                    // not in the store.
-                                                    Command::Publish(ref channel, ref message) => {
-                                                        let count = pubsub.lock().await.publish(channel, message);
-                                                        Value::Integer(count)
-                                                    }
-                                                    _ if is_write_command(&qcmd) => {
-                                                        execute_locked_write(
-                                                            &qcmd,
-                                                            &tx,
-                                                            conn_id,
-                                                            &state,
-                                                            &watch_registry,
-                                                            &store,
-                                                        ).await
-                                                    }
-                                                    _ => execute_and_record(&store, qcmd),
-                                                };
-                                                #[cfg(test)]
-                                                crate::propagation::exec_pause::after(&hook_cmd).await;
-                                                results.push(resp);
-                                            }
+                                            let results = run_transaction_queue(
+                                                queue,
+                                                now,
+                                                &tx,
+                                                conn_id,
+                                                &state,
+                                                &watch_registry,
+                                                &store,
+                                                &pubsub,
+                                            )
+                                            .await;
                                             // EXEC always flushes WATCH state. Drain any
                                             // self-notifications the queued writes produced so
                                             // they can't dirty a later transaction.
