@@ -535,6 +535,18 @@ fn watch_cases() -> Vec<(&'static str, Vec<Vec<&'static str>>)> {
         case("absent-flushdb", vec![c("WATCH k"), c("o FLUSHDB")]),
         case("absent-created", vec![c("WATCH k"), c("o SET k v")]),
         case(
+            "absent-created-past-deadline",
+            vec![c("WATCH k"), c("o SET k v PXAT 1")],
+        ),
+        case(
+            "absent-created-short-ttl",
+            vec![c("WATCH k"), c("o SET k v PX 1"), c("SLEEP 20")],
+        ),
+        case(
+            "absent-del-with-another-key",
+            vec![c("SET other v"), c("WATCH k"), c("o DEL other k")],
+        ),
+        case(
             "live-deleted",
             vec![c("SET k v"), c("WATCH k"), c("o DEL k")],
         ),

@@ -30,8 +30,10 @@ pub(crate) struct WatchNotif {
     pub(crate) key: String,
     pub(crate) payload: NotifPayload,
     /// Whether this change invalidates a WATCH of the key (6O-E): false only
-    /// for the removal of a key that was not live when it was watched, which
-    /// Redis treats as no change. A WebSocket watcher is still pushed it.
+    /// for a removal (`DEL`, `UNLINK`, `FLUSHDB`, expiry, eviction) of a key
+    /// that was not live when it was watched, which Redis treats as no
+    /// change. Every write that sets the key invalidates, whatever its TTL.
+    /// A WebSocket watcher is still pushed it.
     pub(crate) invalidates: bool,
     charged_bytes: usize,
     budget: Arc<NotificationBudget>,
@@ -90,7 +92,7 @@ impl WatchSubscriber {
     /// which is materialised on first need. The charge is measured and
     /// reserved before anything is cloned.
     pub(crate) fn notify(&self, change: &KeyChange<'_>) -> bool {
-        let invalidates = self.live_at_watch || !change.leaves_key_absent();
+        let invalidates = self.live_at_watch || !change.is_removal();
         let delta = change
             .delta
             .as_ref()
@@ -244,15 +246,13 @@ impl<'a> KeyChange<'a> {
         }
     }
 
-    /// Whether the key is absent once this change is applied: a removal, or a
-    /// write that left nothing (`DEL` of a key that was not there). Read only
-    /// for a WATCH of a key that was not live when watched; the caller holds
-    /// the key's ordering guard, so the read sees this change.
-    fn leaves_key_absent(&self) -> bool {
-        match self.source {
-            None => true,
-            Some(store) => !key_is_live(store, &self.key),
-        }
+    /// Whether this change removes the key rather than setting it. Decided
+    /// by the command, never by reading the store afterwards: a write that
+    /// creates a key with a deadline already past by the time it is
+    /// announced (`SET k v PX 1`, `PXAT` in the past) is still a change, as
+    /// in Redis (6O-E review).
+    fn is_removal(&self) -> bool {
+        self.source.is_none()
     }
 
     fn full(&self) -> &FullValue {

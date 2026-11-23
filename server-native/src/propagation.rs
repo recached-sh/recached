@@ -1295,9 +1295,16 @@ pub(crate) async fn notify_watchers(
     // registry lock; it cannot deadlock, because no DashMap guard is ever held
     // across an await, and it cannot see a later write to this key, because
     // the caller holds the key's ordering guard until this returns.
+    // `DEL` and `UNLINK` announce removals: a WATCH of a key that was not
+    // live at WATCH sees no change in one, as in Redis, whether or not the
+    // key was there to delete (the store's reply counts keys, not which).
+    let removes = removes_named_keys(cmd);
     let changes: Vec<KeyChange<'_>> = keys
         .into_iter()
         .map(|k| {
+            if removes {
+                return KeyChange::removed(k);
+            }
             let delta = delta
                 .as_ref()
                 .filter(|(delta_key, _)| *delta_key == k)
@@ -1306,6 +1313,15 @@ pub(crate) async fn notify_watchers(
         })
         .collect();
     fan_out(registry, &changes).await;
+}
+
+/// Whether `cmd` only removes the keys it names (`DEL`, `UNLINK`).
+fn removes_named_keys(cmd: &Command) -> bool {
+    match cmd {
+        Command::Dedup(_, _, inner) => removes_named_keys(inner),
+        Command::Del(_) | Command::Unlink(_) => true,
+        _ => false,
+    }
 }
 
 /// Announce keys the store removed on its own initiative rather than on a
@@ -1445,7 +1461,16 @@ pub(crate) async fn notify_keyspace_replaced(registry: &WatchRegistry, store: &K
     };
     let changes: Vec<KeyChange<'_>> = watched
         .into_iter()
-        .map(|key| KeyChange::current(key, None, store))
+        // A key the resynchronised keyspace does not have is announced as
+        // removed: a WATCH of a key absent before and after sees no change,
+        // as in Redis (`touchAllWatchedKeysInDb`).
+        .map(|key| {
+            if key_is_live(store, &key) {
+                KeyChange::current(key, None, store)
+            } else {
+                KeyChange::removed(key)
+            }
+        })
         .collect();
     fan_out(registry, &changes).await;
 }

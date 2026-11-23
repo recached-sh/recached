@@ -340,3 +340,84 @@ async fn tenant_watches_are_isolated() {
     a.cmd(&["SET", "tenant:a:other", "2"]).await;
     assert!(matches!(a.cmd(&["EXEC"]).await, Value::Array(Some(_))));
 }
+
+// ── Review follow-ups ────────────────────────────────────────────────────────
+//
+// A key absent at WATCH and then created must abort EXEC however short its
+// TTL, as in Redis (`SET` signals the key; the WATCH entry is not
+// `expired`). The first version decided "no change" by reading the key when
+// the notification was delivered, after the write's AOF stage, and a key
+// created with a short TTL had already expired by then (review, High).
+
+/// Review probe P1, deterministic: the creation runs inside another
+/// connection's transaction, which is stopped for 30 ms after its first
+/// command, so the key it creates with `PX 5` has expired by the time its
+/// notification is delivered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_creation_announced_after_its_deadline_still_aborts() {
+    let shared = Shared::new(false);
+    let (mut w, mut o) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
+    let (k, first) = ("6oe:wx:p1:k", "6oe:wx:p1:first");
+    assert_eq!(w.cmd(&["WATCH", k]).await, ok());
+    assert_eq!(o.cmd(&["MULTI"]).await, ok());
+    o.cmd(&["SET", first, "1"]).await;
+    o.cmd(&["SET", k, "v", "PX", "5"]).await;
+    let pause = exec_pause::after_command_naming(first);
+    o.send(&["EXEC"]).await;
+    assert!(pause.reached(WITHIN).await);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    drop(pause);
+    assert!(matches!(
+        tokio::time::timeout(WITHIN, o.reply()).await.expect("EXEC"),
+        Value::Array(Some(_))
+    ));
+    assert!(
+        !commits(&mut w, k).await,
+        "a key created after WATCH is a change"
+    );
+}
+
+/// Review probe P2: creating the key with a deadline already past is a
+/// change too (Redis 7.2.5 aborts).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn creating_an_absent_key_already_expired_still_aborts() {
+    let shared = Shared::new(false);
+    let (mut w, mut o) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
+    let k = "6oe:wx:p2";
+    assert_eq!(w.cmd(&["WATCH", k]).await, ok());
+    assert_eq!(o.cmd(&["SET", k, "v", "PXAT", "1"]).await, ok());
+    assert!(!commits(&mut w, k).await);
+}
+
+/// Review probes P3/P4: short TTLs from another connection and from the
+/// watcher itself, many times. Every one aborts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn creations_with_short_ttls_always_abort() {
+    let shared = Shared::new(false);
+    let (mut w, mut o) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
+    for i in 0..100 {
+        let k = format!("6oe:wx:p3:{i}");
+        assert_eq!(w.cmd(&["WATCH", &k]).await, ok());
+        if i % 2 == 0 {
+            o.cmd(&["SET", &k, "v", "PX", "1"]).await;
+        } else {
+            w.cmd(&["PSETEX", &k, "1", "v"]).await;
+        }
+        tokio::time::sleep(Duration::from_millis(3)).await;
+        assert!(!commits(&mut w, &k).await, "round {i}");
+    }
+}
+
+/// `DEL` of several keys, one of them the watched key that was absent at
+/// WATCH: nothing changed for the watcher (Redis signals only keys it
+/// deleted); the other key was really deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_multi_key_del_that_misses_the_watched_key_commits() {
+    let shared = Shared::new(false);
+    let (mut w, mut o) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
+    let (k, other) = ("6oe:wx:pdel:k", "6oe:wx:pdel:other");
+    o.cmd(&["SET", other, "v"]).await;
+    assert_eq!(w.cmd(&["WATCH", k]).await, ok());
+    assert_eq!(o.cmd(&["DEL", other, k]).await, Value::Integer(1));
+    assert!(commits(&mut w, k).await);
+}
