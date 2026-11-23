@@ -543,6 +543,14 @@ fn watch_cases() -> Vec<(&'static str, Vec<Vec<&'static str>>)> {
             vec![c("WATCH k"), c("o SET k v PX 1"), c("SLEEP 20")],
         ),
         case(
+            "absent-empty-sinterstore",
+            vec![c("SADD a x"), c("WATCH k"), c("o SINTERSTORE k a missing")],
+        ),
+        case(
+            "live-empty-sunionstore",
+            vec![c("SET k v"), c("WATCH k"), c("o SUNIONSTORE k missing")],
+        ),
+        case(
             "absent-del-with-another-key",
             vec![c("SET other v"), c("WATCH k"), c("o DEL other k")],
         ),

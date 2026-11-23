@@ -1110,16 +1110,7 @@ async fn handle_tcp_halves<R, W>(
                                                     let _closed = state.replicas.unordered.close().await;
                                                     let mut reg = watch_registry.map.lock().await;
                                                     overflow_armed = true;
-                                                    for key in &keys {
-                                                        if watched_keys.insert(key.clone()) {
-                                                            // Read under the registry lock, so no
-                                                            // notification for the key slips
-                                                            // between this and the registration.
-                                                            let live = key_is_live(&store, key);
-                                                            reg.entry(key.clone()).or_default().push(watch_subscriber.watching(live));
-                                                        }
-                                                    }
-                                                    watch_registry.sync_len(&reg);
+                                                    register_watches(&watch_registry, &mut reg, &watch_subscriber, &keys, &mut watched_keys, &store);
                                                 }
                                                 if writer.write_all(b"+OK\r\n").await.is_err() { break 'outer; }
                                             }
@@ -2277,16 +2268,14 @@ pub(crate) async fn handle_ws<S>(
                                 } else {
                                     {
                                         let mut reg = watch_registry.map.lock().await;
-                                        for key in &keys {
-                                            if watched_keys.insert(key.clone()) {
-                                                // As on TCP: read under the registry lock.
-                                                let live = key_is_live(&store, key);
-                                                reg.entry(key.clone())
-                                                    .or_default()
-                                                    .push(watch_subscriber.watching(live));
-                                            }
-                                        }
-                                        watch_registry.sync_len(&reg);
+                                        register_watches(
+                                            &watch_registry,
+                                            &mut reg,
+                                            &watch_subscriber,
+                                            &keys,
+                                            &mut watched_keys,
+                                            &store,
+                                        );
                                     } // reg dropped before await
                                     ws_send!(b"+OK\r\n");
                                 }

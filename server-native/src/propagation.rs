@@ -1258,7 +1258,7 @@ pub(crate) fn encode_keychange(key: &str, value: &Value) -> Vec<u8> {
 /// sentinel per live-query pattern. Shared by client writes on a primary and
 /// replicated writes on a replica, so the two cannot drift apart.
 pub(crate) async fn notify_write(registry: &WatchRegistry, cmd: &Command, store: &KeyValueStore) {
-    if registry.is_empty() {
+    if !registry.watched_after_write() {
         return;
     }
     if matches!(cmd, Command::FlushDb) {
@@ -1298,7 +1298,11 @@ pub(crate) async fn notify_watchers(
     // `DEL` and `UNLINK` announce removals: a WATCH of a key that was not
     // live at WATCH sees no change in one, as in Redis, whether or not the
     // key was there to delete (the store's reply counts keys, not which).
-    let removes = removes_named_keys(cmd);
+    // So does a `*STORE` whose result was empty: it deleted (or never
+    // created) its destination, which Redis signals only if it existed. Read
+    // under the writer's guard; a STORE's result carries no TTL, so absent
+    // now means empty, not expired since (review round 2, Low).
+    let removes = removes_named_keys(cmd) || stored_nothing(cmd, store);
     let changes: Vec<KeyChange<'_>> = keys
         .into_iter()
         .map(|k| {
@@ -1313,6 +1317,17 @@ pub(crate) async fn notify_watchers(
         })
         .collect();
     fan_out(registry, &changes).await;
+}
+
+/// Whether `cmd` is a `*STORE` that left its destination absent.
+fn stored_nothing(cmd: &Command, store: &KeyValueStore) -> bool {
+    match cmd {
+        Command::Dedup(_, _, inner) => stored_nothing(inner, store),
+        Command::SInterStore(dst, _)
+        | Command::SUnionStore(dst, _)
+        | Command::SDiffStore(dst, _) => !key_is_live(store, dst),
+        _ => false,
+    }
 }
 
 /// Whether `cmd` only removes the keys it names (`DEL`, `UNLINK`).
@@ -1515,7 +1530,7 @@ async fn apply_write_effects_identified(
     store: &KeyValueStore,
 ) {
     let needs_log = state.needs_write_log();
-    let has_watch = !watch_registry.is_empty();
+    let has_watch = watch_registry.watched_after_write();
     // Only when some connection is a candidate for this write's push (see
     // `SyncRouter`): a write to keys no browser may see builds no push, and
     // with nothing else to do builds no frame either. Checked after the

@@ -421,3 +421,105 @@ async fn a_multi_key_del_that_misses_the_watched_key_commits() {
     assert_eq!(o.cmd(&["DEL", other, k]).await, Value::Integer(1));
     assert!(commits(&mut w, k).await);
 }
+
+// ── Review round 2 ───────────────────────────────────────────────────────────
+
+/// A write that lands while WATCH registers (after the registration is
+/// published, before the key is read) is seen one way or the other: the
+/// writer notifies the new registration, or the read sees the key live. A
+/// later DEL then aborts EXEC, as in Redis under either order. Reading the
+/// key before publishing left a window in which the write was announced to
+/// nobody and the key recorded absent, so the DEL committed (review round 2,
+/// R1).
+async fn a_write_during_registration(expire: bool) {
+    let shared = Shared::new(false);
+    let k = if expire {
+        "6oe:wx:reg:expire"
+    } else {
+        "6oe:wx:reg:del"
+    };
+    let (mut w, mut o) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
+    let pause = crate::watch::register_pause::when_registering(k);
+    w.send(&["WATCH", k]).await;
+    let deadline = Instant::now() + WITHIN;
+    while !pause.reached() {
+        assert!(Instant::now() < deadline, "WATCH never registered");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    if expire {
+        o.send(&["SET", k, "v", "PX", "60"]).await;
+    } else {
+        o.send(&["SET", k, "v"]).await;
+    }
+    while !live(&shared.store, k) {
+        assert!(Instant::now() < deadline, "the SET never reached the store");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    drop(pause);
+    assert_eq!(
+        tokio::time::timeout(WITHIN, w.reply())
+            .await
+            .expect("WATCH"),
+        ok()
+    );
+    assert_eq!(
+        tokio::time::timeout(WITHIN, o.reply()).await.expect("SET"),
+        ok()
+    );
+    if expire {
+        expired(&shared.store, k).await;
+    } else {
+        assert_eq!(o.cmd(&["DEL", k]).await, Value::Integer(1));
+    }
+    assert!(
+        !commits(&mut w, k).await,
+        "a write during WATCH's registration was lost"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_during_registration_then_a_del_aborts() {
+    a_write_during_registration(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_during_registration_then_expiry_aborts() {
+    a_write_during_registration(true).await;
+}
+
+/// An `*STORE` with an empty result into a key absent at WATCH stores
+/// nothing: no change, as in Redis (review round 2, R2). Into a key live at
+/// WATCH it deletes the key: a change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_empty_store_is_a_removal() {
+    let shared = Shared::new(false);
+    let (mut w, mut o) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
+    let (absent, live_key) = ("6oe:wx:store:absent", "6oe:wx:store:live");
+    o.cmd(&["SADD", "6oe:wx:store:a", "x"]).await;
+    o.cmd(&["SET", live_key, "v"]).await;
+    assert_eq!(w.cmd(&["WATCH", absent]).await, ok());
+    assert_eq!(
+        o.cmd(&[
+            "SINTERSTORE",
+            absent,
+            "6oe:wx:store:a",
+            "6oe:wx:store:missing"
+        ])
+        .await,
+        Value::Integer(0)
+    );
+    assert!(
+        commits(&mut w, absent).await,
+        "an empty STORE into an absent key"
+    );
+    assert_eq!(w.cmd(&["WATCH", live_key]).await, ok());
+    assert_eq!(
+        o.cmd(&["SUNIONSTORE", live_key, "6oe:wx:store:missing"])
+            .await,
+        Value::Integer(0)
+    );
+    assert!(
+        !commits(&mut w, live_key).await,
+        "an empty STORE deleted a live key"
+    );
+}

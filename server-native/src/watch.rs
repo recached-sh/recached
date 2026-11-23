@@ -561,7 +561,20 @@ impl WatchHub {
 
     /// Call after mutating the key map, while still holding the lock.
     pub(crate) fn sync_len(&self, map: &WatchMap) {
-        self.watched_keys.store(map.len(), Ordering::Relaxed);
+        self.watched_keys.store(map.len(), Ordering::SeqCst);
+    }
+
+    /// Whether anything watches keys or patterns, as seen by a writer that has
+    /// just changed the store (6O-E review): the writer's half of the
+    /// store-buffer handshake with [`register_watches`]. The fence orders the
+    /// writer's mutation before this load; registration publishes the count
+    /// and fences before it reads the key. So either the writer sees the
+    /// registration (and notifies it, under the registry lock it waits for),
+    /// or the registration's read sees the write.
+    pub(crate) fn watched_after_write(&self) -> bool {
+        std::sync::atomic::fence(Ordering::SeqCst);
+        self.watched_keys.load(Ordering::SeqCst) != 0
+            || self.watched_patterns.load(Ordering::SeqCst) != 0
     }
 
     /// Call after mutating the live-query registry, while still holding the
@@ -612,6 +625,120 @@ pub(crate) async fn unregister_all_qsubs(
         pats.remove_conn(&p, conn_id);
     }
     registry.sync_patterns_len(&pats);
+}
+
+/// Register `subscriber` for each of `keys` that `watched` does not hold
+/// yet, recording whether the key was live (6O-E). Called with the registry
+/// lock held (`reg`).
+///
+/// The registrations are published, the count stored and a fence passed
+/// *before* any key is read: the other half of
+/// [`WatchHub::watched_after_write`]. A write that lands meanwhile and saw
+/// no watcher is then seen by the read, so the key counts as live and a later
+/// removal or expiry still aborts; one that saw the watcher notifies it once
+/// this lock is released, which invalidates. Reading first left a window in
+/// which a write was announced to nobody and the key was recorded absent, so
+/// a later `DEL` committed where Redis aborts (review round 2).
+pub(crate) fn register_watches(
+    registry: &WatchHub,
+    reg: &mut WatchMap,
+    subscriber: &WatchSubscriber,
+    keys: &[String],
+    watched: &mut HashSet<String>,
+    store: &KeyValueStore,
+) {
+    let mut fresh: Vec<&String> = Vec::new();
+    for key in keys {
+        if watched.insert(key.clone()) {
+            reg.entry(key.clone())
+                .or_default()
+                .push(subscriber.watching(false));
+            fresh.push(key);
+        }
+    }
+    // A test stops here, with the registrations pushed but not yet counted:
+    // a write landing now sees no watcher, so the read below must see it.
+    #[cfg(test)]
+    register_pause::between(&fresh);
+    registry.sync_len(reg);
+    std::sync::atomic::fence(Ordering::SeqCst);
+    for key in fresh {
+        if key_is_live(store, key)
+            && let Some(sub) = reg.get_mut(key).and_then(|subs| {
+                subs.iter_mut()
+                    .rev()
+                    .find(|s| s.conn_id == subscriber.conn_id)
+            })
+        {
+            sub.live_at_watch = true;
+        }
+    }
+}
+
+/// Test-only stop inside [`register_watches`], after the registrations are
+/// pushed and before they are counted (6O-E review): a write a test lands
+/// there sees no watcher and notifies nobody, so only the key read that
+/// follows can catch it. Blocks the registering thread; armed per key.
+#[cfg(test)]
+pub(crate) mod register_pause {
+    use std::sync::{Arc, Condvar, Mutex};
+
+    #[derive(Default)]
+    struct State {
+        reached: bool,
+        released: bool,
+    }
+
+    struct Inner {
+        key: String,
+        state: Mutex<State>,
+        cv: Condvar,
+    }
+
+    static ARMED: Mutex<Vec<Arc<Inner>>> = Mutex::new(Vec::new());
+
+    /// Released on drop.
+    pub(crate) struct Pause(Arc<Inner>);
+
+    pub(crate) fn when_registering(key: &str) -> Pause {
+        let inner = Arc::new(Inner {
+            key: key.to_string(),
+            state: Mutex::new(State::default()),
+            cv: Condvar::new(),
+        });
+        ARMED.lock().unwrap().push(Arc::clone(&inner));
+        Pause(inner)
+    }
+
+    impl Pause {
+        pub(crate) fn reached(&self) -> bool {
+            self.0.state.lock().unwrap().reached
+        }
+    }
+
+    impl Drop for Pause {
+        fn drop(&mut self) {
+            ARMED.lock().unwrap().retain(|i| !Arc::ptr_eq(i, &self.0));
+            self.0.state.lock().unwrap().released = true;
+            self.0.cv.notify_all();
+        }
+    }
+
+    pub(super) fn between(keys: &[&String]) {
+        let hit = ARMED
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|i| keys.iter().any(|k| **k == i.key))
+            .cloned();
+        if let Some(inner) = hit {
+            let mut st = inner.state.lock().unwrap();
+            st.reached = true;
+            let _ = inner
+                .cv
+                .wait_timeout_while(st, std::time::Duration::from_secs(20), |st| !st.released);
+        }
+    }
 }
 
 /// Whether `key` is present and not expired now (at the store's clock, so
