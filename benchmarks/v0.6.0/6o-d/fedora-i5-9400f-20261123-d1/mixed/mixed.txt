@@ -1,0 +1,6 @@
+label=base rep=1 wall_s=46327e-3 server_cpu_s=52.85 get_rps=129525.28 get_p99=0.215 mget_rps=108059.44 mget_p99=0.255 mset_rps=109021.53 mset_p99=0.255 sha256=a0ff616fcd11e6f8
+label=fix rep=1 wall_s=46980e-3 server_cpu_s=53.06 get_rps=127722.07 get_p99=0.223 mget_rps=106175.90 mget_p99=0.263 mset_rps=107411.38 mset_p99=0.263 sha256=6c12deb97bcf8a79
+label=fix rep=2 wall_s=47357e-3 server_cpu_s=53.33 get_rps=126707.91 get_p99=0.223 mget_rps=107449.85 mget_p99=0.263 mset_rps=106213.48 mset_p99=0.263 sha256=6c12deb97bcf8a79
+label=base rep=2 wall_s=46526e-3 server_cpu_s=52.24 get_rps=128971.24 get_p99=0.215 mget_rps=108902.80 mget_p99=0.247 mset_rps=110476.89 mset_p99=0.255 sha256=a0ff616fcd11e6f8
+label=base rep=3 wall_s=46535e-3 server_cpu_s=52.06 get_rps=128946.30 get_p99=0.223 mget_rps=108616.94 mget_p99=0.255 mset_rps=110162.49 mset_p99=0.255 sha256=a0ff616fcd11e6f8
+label=fix rep=3 wall_s=47109e-3 server_cpu_s=53.63 get_rps=127375.02 get_p99=0.223 mget_rps=106110.18 mget_p99=0.263 mset_rps=107056.84 mset_p99=0.263 sha256=6c12deb97bcf8a79

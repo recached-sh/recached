@@ -1,0 +1,12 @@
+2026-11-23T00:10:54Z d1-primary start: load 0.99
+2026-11-23T00:13:29Z d1 run 1 STOPPED by hand after review findings (binary superseded)
+2026-11-23T00:58:24Z d1-primary start: load 0.75
+2026-11-23T01:36:12Z d1-primary exit 0
+2026-11-23T01:37:12Z d1-p16 start: load 0.84
+2026-11-23T01:49:46Z d1-p16 exit 0
+2026-11-23T01:50:06Z d1-3w start: load 0.98
+2026-11-23T02:01:00Z d1-3w exit 0
+2026-11-23T02:02:40Z d1-aof start: load 0.86
+2026-11-23T02:10:34Z d1-aof exit 0
+2026-11-23T02:10:34Z d1 driver (all) done
+2026-11-23T02:19:58Z mixed done
