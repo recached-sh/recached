@@ -58,8 +58,10 @@ pub enum ReaderPoint {
     /// After it loaded its stripes' words, found no write in progress, and
     /// before it reads anything. Single-key reads stop here too.
     AfterLoad,
-    /// After an MGET read its first key, before the others.
+    /// After an MGET or EXISTS read its first key, before the others.
     AfterFirstKey,
+    /// After a single-key read read, before it validates.
+    AfterRead,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -169,6 +171,12 @@ impl Pause {
     /// Wait until a reader is stopped by [`stop_next_reader`](Self::stop_next_reader).
     pub fn wait_reader_stopped(&self, within: Duration) -> bool {
         wait_until(within, |state| state.reader_stop == ReaderStop::Stopped)
+    }
+
+    /// Let the stopped reader continue, to stop again at `point`.
+    pub fn release_reader_to(&self, point: ReaderPoint) {
+        state().reader_stop = ReaderStop::Armed(point);
+        CHANGED.notify_all();
     }
 
     /// Let the stopped reader continue.

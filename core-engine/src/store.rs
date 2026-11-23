@@ -2756,9 +2756,11 @@ fn lock_stripe(stripe: &std::sync::Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
 ///   knows no writer held the stripe in between.
 /// - A **single-key read** is atomic for its own key already (one shard
 ///   guard). What it must not do is see a key a multi-key write has not yet
-///   reached after another reader saw one it has. So it waits — by taking the
-///   lock, which the writer holds to its end — only while [`SEQ_MULTI`] is set
-///   ([`KeyValueStore::read_one`]).
+///   reached after another reader saw one it has, or a one-key write between
+///   its steps. So it checks [`Stripe::multi`] before and after reading, and
+///   waits — spinning on it, then by the lock the writer holds to its end —
+///   while a write visible in several steps holds the stripe
+///   ([`KeyValueStore::read_one_at`]).
 /// - A **multi-key read** validates the words of its keys around the read
 ///   and retries, falling back to taking the locks after
 ///   [`OPTIMISTIC_READS`] attempts ([`KeyValueStore::read_many`]).
@@ -5048,6 +5050,12 @@ impl KeyValueStore {
                 &[stripe],
             );
             let out = f();
+            #[cfg(any(test, feature = "test-hooks"))]
+            write_pause::reader_at(
+                self.hook_id(),
+                write_pause::ReaderPoint::AfterRead,
+                &[stripe],
+            );
             if held.multi.load(Ordering::Acquire) == before {
                 return out;
             }
@@ -5195,10 +5203,21 @@ impl KeyValueStore {
         let now = now_ms();
         let count = keys
             .iter()
-            .filter(|k| {
-                self.data
+            .enumerate()
+            .filter(|(_i, k)| {
+                let live = self
+                    .data
                     .get(k.as_str())
-                    .is_some_and(|e| !e.is_expired(now))
+                    .is_some_and(|e| !e.is_expired(now));
+                #[cfg(any(test, feature = "test-hooks"))]
+                if *_i == 0 {
+                    write_pause::reader_at(
+                        self.hook_id(),
+                        write_pause::ReaderPoint::AfterFirstKey,
+                        &[write_order_stripe(k)],
+                    );
+                }
+                live
             })
             .count();
         Value::Integer(count as i64)
@@ -6252,7 +6271,17 @@ impl KeyValueStore {
                 }
             }
 
-            other => self.execute_inner(other.clone()),
+            other => {
+                // Only reads `execute_inner` does not delegate here may
+                // fall through: a delegated one without an arm here would
+                // recurse (6O-D review).
+                debug_assert!(
+                    matches!(other, Command::GetEx(_, None))
+                        || matches!(read_scope(other), ReadScope::Unkeyed),
+                    "read {other:?} has no arm in execute_read_inner"
+                );
+                self.execute_inner(other.clone())
+            }
         }
     }
 

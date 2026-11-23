@@ -1416,3 +1416,66 @@ fn refused_writes_never_create_an_empty_collection() {
     );
     assert_eq!(store.key_count(), 0);
 }
+
+// ── Review follow-ups (6O-D1 round 3) ──────────────────────────────────────
+
+/// A single-key read that saw a one-key multi-step write's in-between state
+/// must notice even when that whole write finishes before it validates: the
+/// write's release advances the word's epoch, so it is not back where the
+/// read found it. (Kills a release that clears the mark without advancing.)
+#[test]
+fn a_read_of_an_in_between_state_validates_after_the_write_finished() {
+    let store = KeyValueStore::new();
+    let k = "atom:r3:self";
+    store.execute(mset(&[(k, "v")]));
+    let pause = write_pause::after_mutation_of(&store, k, &[k]);
+    pause.stop_next_reader(write_pause::ReaderPoint::AfterLoad);
+    let answer = OnceLock::new();
+    std::thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            let _ = answer.set(store.execute(Command::Get(k.into())));
+        });
+        assert!(pause.wait_reader_stopped(WITHIN), "the read never loaded");
+        let writer = scope.spawn(|| store.execute(Command::Rename(k.into(), k.into())));
+        assert!(pause.wait_reached(WITHIN), "RENAME never reached its stop");
+        // The read sees the key missing, then stops before validating...
+        pause.release_reader_to(write_pause::ReaderPoint::AfterRead);
+        assert!(pause.wait_reader_stopped(WITHIN), "the read never read");
+        // ...while the whole RENAME finishes.
+        pause.release_write();
+        writer.join().unwrap();
+        pause.release_reader();
+        reader.join().unwrap();
+        drop(pause);
+    });
+    assert_eq!(answer.into_inner().unwrap(), bulk("v"));
+}
+
+/// A multi-key EXISTS observes one instant across all its keys: with `a`
+/// present and `b` absent, `DEL a` then `SET b` landing between its reads of
+/// `a` and `b` must not make it count 2 — both keys never existed together.
+/// (Kills an EXISTS that validates only its first key's stripe.)
+#[test]
+fn a_multi_key_exists_never_counts_keys_from_two_instants() {
+    let store = KeyValueStore::new();
+    let (a, b) = ("atom:r3:ex:a", "atom:r3:ex:b");
+    distinct_stripes(&[a, b]);
+    store.execute(mset(&[(a, "1")]));
+    let pause = write_pause::after_mutation_of(&store, "atom:r3:ex:never", &[a, b]);
+    pause.stop_next_reader(write_pause::ReaderPoint::AfterFirstKey);
+    let answer = OnceLock::new();
+    std::thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            let _ = answer.set(store.execute(Command::Exists(vec![a.into(), b.into()])));
+        });
+        assert!(
+            pause.wait_reader_stopped(WITHIN),
+            "EXISTS never read its first key"
+        );
+        store.execute(Command::Del(vec![a.into()]));
+        store.execute(Command::Set(b.into(), b"1".to_vec(), SetOptions::default()));
+        pause.release_reader();
+        reader.join().unwrap();
+    });
+    assert_eq!(answer.into_inner().unwrap(), Value::Integer(1));
+}
