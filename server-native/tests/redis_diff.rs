@@ -472,3 +472,243 @@ fn new_commands_match_redis() {
         mismatches.join("\n")
     );
 }
+
+/// 6O-E: WATCH, expiry and transactions, which need a second connection and
+/// time passing. A step is a command on the transaction's connection, `o …`
+/// on the other connection, or `SLEEP <ms>`. Deadlines are 100 ms and the
+/// sleeps well past them; one case sleeps 1.5 s so an active expiry cycle
+/// runs on both servers.
+fn watch_cases() -> Vec<(&'static str, Vec<Vec<&'static str>>)> {
+    let c = |s: &'static str| s.split(' ').collect::<Vec<_>>();
+    let exec = || vec![c("MULTI"), c("SET o 1"), c("EXEC")];
+    let case = |name, mut steps: Vec<Vec<&'static str>>| {
+        steps.extend(exec());
+        (name, steps)
+    };
+    vec![
+        case(
+            "live-then-expires",
+            vec![c("SET k v PX 100"), c("WATCH k"), c("SLEEP 250")],
+        ),
+        case(
+            "expired-before-watch",
+            vec![c("SET k v PX 50"), c("SLEEP 150"), c("WATCH k")],
+        ),
+        case(
+            "expired-before-watch-then-swept",
+            vec![
+                c("SET k v PX 50"),
+                c("SLEEP 150"),
+                c("WATCH k"),
+                c("SLEEP 1500"),
+            ],
+        ),
+        case(
+            "expired-before-watch-then-read",
+            vec![
+                c("SET k v PX 50"),
+                c("SLEEP 150"),
+                c("WATCH k"),
+                c("o GET k"),
+            ],
+        ),
+        case(
+            "expired-before-watch-then-recreated",
+            vec![
+                c("SET k v PX 50"),
+                c("SLEEP 150"),
+                c("WATCH k"),
+                c("o SET k w"),
+            ],
+        ),
+        case(
+            "live-expires-then-read",
+            vec![
+                c("SET k v PX 100"),
+                c("WATCH k"),
+                c("SLEEP 250"),
+                c("o GET k"),
+            ],
+        ),
+        case("absent-stable", vec![c("WATCH k")]),
+        case("absent-deleted", vec![c("WATCH k"), c("o DEL k")]),
+        case("absent-flushdb", vec![c("WATCH k"), c("o FLUSHDB")]),
+        case("absent-created", vec![c("WATCH k"), c("o SET k v")]),
+        case(
+            "absent-created-past-deadline",
+            vec![c("WATCH k"), c("o SET k v PXAT 1")],
+        ),
+        case(
+            "absent-created-short-ttl",
+            vec![c("WATCH k"), c("o SET k v PX 1"), c("SLEEP 20")],
+        ),
+        case(
+            "absent-empty-sinterstore",
+            vec![c("SADD a x"), c("WATCH k"), c("o SINTERSTORE k a missing")],
+        ),
+        case(
+            "live-empty-sunionstore",
+            vec![c("SET k v"), c("WATCH k"), c("o SUNIONSTORE k missing")],
+        ),
+        case(
+            "absent-del-with-another-key",
+            vec![c("SET other v"), c("WATCH k"), c("o DEL other k")],
+        ),
+        case(
+            "live-deleted",
+            vec![c("SET k v"), c("WATCH k"), c("o DEL k")],
+        ),
+        case(
+            "live-flushdb",
+            vec![c("SET k v"), c("WATCH k"), c("o FLUSHDB")],
+        ),
+        case(
+            "live-ttl-changed",
+            vec![c("SET k v PX 10000"), c("WATCH k"), c("o PEXPIRE k 20000")],
+        ),
+        case(
+            "live-persisted",
+            vec![c("SET k v PX 10000"), c("WATCH k"), c("o PERSIST k")],
+        ),
+        case(
+            "live-setnx-noop",
+            vec![c("SET k v"), c("WATCH k"), c("o SETNX k x")],
+        ),
+        case(
+            "several-one-expires",
+            vec![
+                c("SET k1 v PX 100"),
+                c("SET k2 v"),
+                c("WATCH k1 k2 k3"),
+                c("SLEEP 250"),
+            ],
+        ),
+        case(
+            "duplicate-and-missing",
+            vec![c("SET k v"), c("WATCH k k missing"), c("WATCH k")],
+        ),
+        case(
+            "unwatch-before-expiry",
+            vec![
+                c("SET k v PX 100"),
+                c("WATCH k"),
+                c("UNWATCH"),
+                c("SLEEP 250"),
+            ],
+        ),
+        case(
+            "discard-after-expiry",
+            vec![
+                c("SET k v PX 100"),
+                c("WATCH k"),
+                c("SLEEP 250"),
+                c("MULTI"),
+                c("DISCARD"),
+            ],
+        ),
+        case(
+            "repeated-watch-unwatch",
+            vec![
+                c("SET k v PX 100"),
+                c("WATCH k"),
+                c("UNWATCH"),
+                c("WATCH k"),
+                c("UNWATCH"),
+                c("WATCH k"),
+                c("SLEEP 250"),
+            ],
+        ),
+        (
+            "expires-between-multi-and-exec",
+            vec![
+                c("SET k v PX 100"),
+                c("WATCH k"),
+                c("MULTI"),
+                c("GET k"),
+                c("SLEEP 250"),
+                c("EXEC"),
+            ],
+        ),
+        (
+            "read-only-and-mixed-exec",
+            vec![
+                c("MSET a 1 b 2"),
+                c("MULTI"),
+                c("GET a"),
+                c("MGET a b missing"),
+                c("EXISTS a b missing a"),
+                c("TTL a"),
+                c("TYPE b"),
+                c("EXEC"),
+                c("MULTI"),
+                c("GET a"),
+                c("SET b new"),
+                c("GET b"),
+                c("INCR a"),
+                c("MGET a b"),
+                c("EXEC"),
+                c("MULTI"),
+                c("SET t v PX 100000"),
+                c("PTTL t"),
+                c("EXEC"),
+            ],
+        ),
+    ]
+}
+
+// Named after `new_commands_match_redis` on purpose: CI's coverage and Load &
+// Chaos steps run ignored tests with `--skip new_commands_match_redis` (a
+// substring filter), and only the redis-compat job, which has a Redis, runs it.
+#[test]
+#[ignore = "needs a Redis: set RECACHED_DIFF_REDIS=host:port and pass --ignored"]
+fn new_commands_match_redis_for_watch_and_transactions() {
+    let redis = std::env::var("RECACHED_DIFF_REDIS")
+        .expect("RECACHED_DIFF_REDIS=host:port of a Redis 7.2.x to compare against");
+    let (_server, ours) = start_recached();
+    let (mut r, mut ro) = (Conn::open(&redis), Conn::open(&redis));
+    let (mut o, mut oo) = (Conn::open(&ours), Conn::open(&ours));
+    let mut mismatches = Vec::new();
+    for (case, script) in watch_cases() {
+        for conn in [&mut r, &mut o] {
+            assert_eq!(conn.cmd(&["UNWATCH"]), Value::SimpleString("OK".into()));
+            assert_eq!(conn.cmd(&["FLUSHDB"]), Value::SimpleString("OK".into()));
+        }
+        for step in &script {
+            match step.as_slice() {
+                ["SLEEP", ms] => std::thread::sleep(Duration::from_millis(ms.parse().unwrap())),
+                ["o", cmd @ ..] => {
+                    let (theirs, ours) = (ro.cmd(cmd), oo.cmd(cmd));
+                    if !same(cmd, &ours, &theirs) {
+                        mismatches.push(format!(
+                            "[{case}] (other) {}\n    redis:    {theirs:?}\n    recached: {ours:?}",
+                            cmd.join(" ")
+                        ));
+                    }
+                }
+                cmd => {
+                    let (theirs, ours) = (r.cmd(cmd), o.cmd(cmd));
+                    let equal = match (&ours, &theirs) {
+                        // PTTL inside EXEC: compare as a TTL.
+                        (Value::Array(Some(a)), Value::Array(Some(b))) if a.len() == b.len() => a
+                            .iter()
+                            .zip(b)
+                            .all(|(x, y)| same(&["PTTL"], x, y) || x == y),
+                        _ => same(cmd, &ours, &theirs),
+                    };
+                    if !equal {
+                        mismatches.push(format!(
+                            "[{case}] {}\n    redis:    {theirs:?}\n    recached: {ours:?}",
+                            cmd.join(" ")
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "{} reply/replies differ from Redis:\n{}",
+        mismatches.len(),
+        mismatches.join("\n")
+    );
+}

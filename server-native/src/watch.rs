@@ -29,6 +29,12 @@ pub(crate) enum NotifPayload {
 pub(crate) struct WatchNotif {
     pub(crate) key: String,
     pub(crate) payload: NotifPayload,
+    /// Whether this change invalidates a WATCH of the key (6O-E): false only
+    /// for a removal (`DEL`, `UNLINK`, `FLUSHDB`, expiry, eviction) of a key
+    /// that was not live when it was watched, which Redis treats as no
+    /// change. Every write that sets the key invalidates, whatever its TTL.
+    /// A WebSocket watcher is still pushed it.
+    pub(crate) invalidates: bool,
     charged_bytes: usize,
     budget: Arc<NotificationBudget>,
 }
@@ -67,6 +73,14 @@ pub(crate) struct WatchSubscriber {
     /// Mirrors this connection's `CLIENT DELTA` setting. Shared rather than
     /// copied because the toggle can flip while subscriptions are live.
     deltas: Arc<AtomicBool>,
+    /// For a WATCH registration: whether the key was live (present and not
+    /// expired) when it was watched (6O-E). Redis 7.2 does not count the
+    /// removal of a key that was absent or already expired at `WATCH` as a
+    /// change (`touchWatchedKey`'s `expired` flag, `touchAllWatchedKeysInDb`),
+    /// and does abort when a key that was live has since expired
+    /// (`isWatchedKeyExpired`). True for every other registration, so live
+    /// queries are unaffected.
+    live_at_watch: bool,
 }
 
 impl WatchSubscriber {
@@ -78,6 +92,7 @@ impl WatchSubscriber {
     /// which is materialised on first need. The charge is measured and
     /// reserved before anything is cloned.
     pub(crate) fn notify(&self, change: &KeyChange<'_>) -> bool {
+        let invalidates = self.live_at_watch || !change.is_removal();
         let delta = change
             .delta
             .as_ref()
@@ -106,6 +121,7 @@ impl WatchSubscriber {
         let notification = WatchNotif {
             key: change.key.clone(),
             payload,
+            invalidates,
             charged_bytes,
             budget: Arc::clone(&self.budget),
         };
@@ -115,6 +131,15 @@ impl WatchSubscriber {
             return false;
         }
         true
+    }
+
+    /// This subscriber, registered for a key that was (`live`) or was not
+    /// live when watched.
+    pub(crate) fn watching(&self, live: bool) -> WatchSubscriber {
+        WatchSubscriber {
+            live_at_watch: live,
+            ..self.clone()
+        }
     }
 
     fn signal_overflow(&self) {
@@ -138,6 +163,7 @@ pub(crate) fn notification_channel(
                 pending_bytes: AtomicUsize::new(0),
             }),
             deltas,
+            live_at_watch: true,
         },
         rx,
     )
@@ -218,6 +244,15 @@ impl<'a> KeyChange<'a> {
             source: None,
             full: OnceLock::new(),
         }
+    }
+
+    /// Whether this change removes the key rather than setting it. Decided
+    /// by the command, never by reading the store afterwards: a write that
+    /// creates a key with a deadline already past by the time it is
+    /// announced (`SET k v PX 1`, `PXAT` in the past) is still a change, as
+    /// in Redis (6O-E review).
+    fn is_removal(&self) -> bool {
+        self.source.is_none()
     }
 
     fn full(&self) -> &FullValue {
@@ -526,7 +561,20 @@ impl WatchHub {
 
     /// Call after mutating the key map, while still holding the lock.
     pub(crate) fn sync_len(&self, map: &WatchMap) {
-        self.watched_keys.store(map.len(), Ordering::Relaxed);
+        self.watched_keys.store(map.len(), Ordering::SeqCst);
+    }
+
+    /// Whether anything watches keys or patterns, as seen by a writer that has
+    /// just changed the store (6O-E review): the writer's half of the
+    /// store-buffer handshake with [`register_watches`]. The fence orders the
+    /// writer's mutation before this load; registration publishes the count
+    /// and fences before it reads the key. So either the writer sees the
+    /// registration (and notifies it, under the registry lock it waits for),
+    /// or the registration's read sees the write.
+    pub(crate) fn watched_after_write(&self) -> bool {
+        std::sync::atomic::fence(Ordering::SeqCst);
+        self.watched_keys.load(Ordering::SeqCst) != 0
+            || self.watched_patterns.load(Ordering::SeqCst) != 0
     }
 
     /// Call after mutating the live-query registry, while still holding the
@@ -577,6 +625,158 @@ pub(crate) async fn unregister_all_qsubs(
         pats.remove_conn(&p, conn_id);
     }
     registry.sync_patterns_len(&pats);
+}
+
+/// Register `subscriber` for each of `keys` that `watched` does not hold
+/// yet, recording whether the key was live (6O-E). Called with the registry
+/// lock held (`reg`).
+///
+/// The registrations are published, the count stored and a fence passed
+/// *before* any key is read: the other half of
+/// [`WatchHub::watched_after_write`]. A write that lands meanwhile and saw
+/// no watcher is then seen by the read, so the key counts as live and a later
+/// removal or expiry still aborts; one that saw the watcher notifies it once
+/// this lock is released, which invalidates. Reading first left a window in
+/// which a write was announced to nobody and the key was recorded absent, so
+/// a later `DEL` committed where Redis aborts (review round 2).
+pub(crate) fn register_watches(
+    registry: &WatchHub,
+    reg: &mut WatchMap,
+    subscriber: &WatchSubscriber,
+    keys: &[String],
+    watched: &mut HashSet<String>,
+    store: &KeyValueStore,
+) {
+    let mut fresh: Vec<&String> = Vec::new();
+    for key in keys {
+        if watched.insert(key.clone()) {
+            reg.entry(key.clone())
+                .or_default()
+                .push(subscriber.watching(false));
+            fresh.push(key);
+        }
+    }
+    // A test stops here, with the registrations pushed but not yet counted:
+    // a write landing now sees no watcher, so the read below must see it.
+    #[cfg(test)]
+    register_pause::between(&fresh);
+    registry.sync_len(reg);
+    std::sync::atomic::fence(Ordering::SeqCst);
+    for key in fresh {
+        if key_is_live(store, key)
+            && let Some(sub) = reg.get_mut(key).and_then(|subs| {
+                subs.iter_mut()
+                    .rev()
+                    .find(|s| s.conn_id == subscriber.conn_id)
+            })
+        {
+            sub.live_at_watch = true;
+        }
+    }
+}
+
+/// Test-only stop inside [`register_watches`], after the registrations are
+/// pushed and before they are counted (6O-E review): a write a test lands
+/// there sees no watcher and notifies nobody, so only the key read that
+/// follows can catch it. Blocks the registering thread; armed per key.
+#[cfg(test)]
+pub(crate) mod register_pause {
+    use std::sync::{Arc, Condvar, Mutex};
+
+    #[derive(Default)]
+    struct State {
+        reached: bool,
+        released: bool,
+    }
+
+    struct Inner {
+        key: String,
+        state: Mutex<State>,
+        cv: Condvar,
+    }
+
+    static ARMED: Mutex<Vec<Arc<Inner>>> = Mutex::new(Vec::new());
+
+    /// Released on drop.
+    pub(crate) struct Pause(Arc<Inner>);
+
+    pub(crate) fn when_registering(key: &str) -> Pause {
+        let inner = Arc::new(Inner {
+            key: key.to_string(),
+            state: Mutex::new(State::default()),
+            cv: Condvar::new(),
+        });
+        ARMED.lock().unwrap().push(Arc::clone(&inner));
+        Pause(inner)
+    }
+
+    impl Pause {
+        pub(crate) fn reached(&self) -> bool {
+            self.0.state.lock().unwrap().reached
+        }
+    }
+
+    impl Drop for Pause {
+        fn drop(&mut self) {
+            ARMED.lock().unwrap().retain(|i| !Arc::ptr_eq(i, &self.0));
+            self.0.state.lock().unwrap().released = true;
+            self.0.cv.notify_all();
+        }
+    }
+
+    pub(super) fn between(keys: &[&String]) {
+        let hit = ARMED
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|i| keys.iter().any(|k| **k == i.key))
+            .cloned();
+        if let Some(inner) = hit {
+            let mut st = inner.state.lock().unwrap();
+            st.reached = true;
+            let _ = inner
+                .cv
+                .wait_timeout_while(st, std::time::Duration::from_secs(20), |st| !st.released);
+        }
+    }
+}
+
+/// Whether `key` is present and not expired now (at the store's clock, so
+/// inside [`core_engine::store::at_instant`], at that instant).
+pub(crate) fn key_is_live(store: &KeyValueStore, key: &str) -> bool {
+    matches!(
+        store.execute(Command::Exists(vec![key.to_string()])),
+        Value::Integer(1)
+    )
+}
+
+/// Whether a key `conn_id` watched while it was live is no longer live at
+/// `now`, the instant its transaction runs at: Redis 7.2 aborts `EXEC` then
+/// (`isWatchedKeyExpired`), though no command touched the key. A key that
+/// expires lazily changes nothing in the store, so no notification ever told
+/// the connection.
+///
+/// Called by `EXEC` under its guards, which include every watched key's
+/// stripe, so no write to those keys runs meanwhile. A key whose
+/// registration is gone was dropped for overflow, and `EXEC` checks that
+/// first.
+pub(crate) async fn watched_key_expired(
+    registry: &WatchRegistry,
+    conn_id: u64,
+    watched_keys: &HashSet<String>,
+    store: &KeyValueStore,
+    now: u64,
+) -> bool {
+    if watched_keys.is_empty() {
+        return false;
+    }
+    let reg = registry.map.lock().await;
+    watched_keys.iter().any(|key| {
+        reg.get(key)
+            .and_then(|subs| subs.iter().find(|sub| sub.conn_id == conn_id))
+            .is_some_and(|sub| sub.live_at_watch)
+            && !core_engine::store::at_instant(now, || key_is_live(store, key))
+    })
 }
 
 /// Drop all of `conn_id`'s WATCH registrations and clear `watched_keys`.

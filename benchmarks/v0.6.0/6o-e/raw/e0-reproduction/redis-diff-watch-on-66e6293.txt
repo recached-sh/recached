@@ -1,0 +1,10 @@
+8 reply/replies differ from Redis:
+[live-then-expires] EXEC
+[expired-before-watch-then-swept] EXEC
+[live-expires-then-read] EXEC
+[absent-deleted] EXEC
+[absent-flushdb] EXEC
+[several-one-expires] EXEC
+[repeated-watch-unwatch] EXEC
+[expires-between-multi-and-exec] EXEC
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.91s
