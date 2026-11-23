@@ -178,7 +178,7 @@ tier.
 explicitly out of scope; see [Commands](/server/commands). RESP3 exists only for protocol
 negotiation and pub/sub framing (`HELLO 3`), not the full type surface.
 
-**You need several keys to change together, atomically → Redis.** Because Recached executes on every core, a command that spans keys (`MSET`, `SMOVE`) is not isolated from concurrent readers. `MULTI`/`EXEC` reserves its write keys against other writers, but a reader can still observe intermediate command results. Single-key commands are atomic, and `WATCH`-based compare-and-swap works. Use Redis when readers must observe a multi-key transaction as one indivisible state change.
+**You need a multi-command transaction to change several keys together, atomically → Redis.** A single command that spans keys (`MSET`, `SMOVE`, `RENAME`) is atomic, readers included, and `WATCH`-based compare-and-swap works. `MULTI`/`EXEC` reserves its write keys against other writers. However, a reader can still observe results between its queued commands, and its own queued reads are not isolated from other writers. Use Redis when readers must observe a multi-command transaction as one indivisible state change.
 See [Concurrency model](/server/commands#concurrency-model).
 
 ## Compared directly

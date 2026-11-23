@@ -64,7 +64,7 @@ If MySQL or PostgreSQL owns your business records, use Recached to synchronize a
 
 A backend write can update browser tabs and native apps through the same sync protocol. Clients register the patterns they need to hydrate and reconcile after reconnecting. Sync scopes control which keys each connection may read, write, and receive; a watch pattern is not an access boundary.
 
-The server executes commands across worker threads over a sharded `DashMap` store. `DashMap` uses locks per shard. Scaling depends on the workload and key distribution, and multi-key writes do not isolate concurrent readers. See [benchmarks](/guide/benchmarks#thread-scaling) and [the concurrency model](/server/commands#concurrency-model).
+The server executes commands across worker threads over a sharded `DashMap` store. `DashMap` uses locks per shard. Scaling depends on the workload and key distribution, and transactions do not isolate the reads they queue. See [benchmarks](/guide/benchmarks#thread-scaling) and [the concurrency model](/server/commands#concurrency-model).
 
 ## Architecture
 

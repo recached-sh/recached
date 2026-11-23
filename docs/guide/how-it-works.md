@@ -23,7 +23,7 @@ The workspace contains six crates:
 
 The platform wrappers live in [recached-kotlin](https://github.com/recached-sh/recached-kotlin) and [recached-swift](https://github.com/recached-sh/recached-swift). Kotlin owns an OkHttp WebSocket and routes changes to `Flow` observers. Swift owns a `URLSessionWebSocketTask` and routes changes to `AsyncStream` and SwiftUI models.
 
-`DashMap` uses shard locks; it is not lock-free. Server workers execute commands concurrently, but a single hot key still contends on its shard. Single-key commands are atomic; multi-key commands and transactions do not isolate concurrent readers from intermediate results. See [the concurrency model](/server/commands#concurrency-model).
+`DashMap` uses shard locks; it is not lock-free. Server workers execute commands concurrently, but a single hot key still contends on its shard. Single-key and multi-key commands are atomic to readers. Transactions are writer-isolated, but not reader-isolated. See [the concurrency model](/server/commands#concurrency-model).
 
 ## Connect and hydrate
 
