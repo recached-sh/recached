@@ -258,7 +258,7 @@ fn read_during_stopped_mset<T: Send + Sync>(
     readers_of: &[&str],
     read: impl FnOnce() -> T + Send,
 ) -> Observed<T> {
-    let pause = write_pause::after_mutation_of(stop_after, readers_of);
+    let pause = write_pause::after_mutation_of(store, stop_after, readers_of);
     let answer: OnceLock<T> = OnceLock::new();
     let mut during_stop = false;
     let mut reader_waited = false;
@@ -507,7 +507,7 @@ fn sequential_single_key_reads_are_linearizable_with_an_mset() {
             (keys[2], Some("new")),
         ];
         let model = |key: usize| ["a", "b", "c"][key].to_string();
-        let pause = write_pause::after_mutation_of(keys[0], &keys);
+        let pause = write_pause::after_mutation_of(&store, keys[0], &keys);
         let reader_done = AtomicBool::new(false);
         std::thread::scope(|scope| {
             let (store, recorder) = (&store, &recorder);
@@ -645,8 +645,8 @@ fn an_mget_that_began_before_an_mset_validates_what_it_read() {
     let store = KeyValueStore::new();
     let keys = ["atom:val:a", "atom:val:b"];
     store.execute(mset(&[(keys[0], "old"), (keys[1], "old")]));
-    let pause = write_pause::after_mutation_of(keys[0], &keys);
-    pause.stop_next_reader_after_load();
+    let pause = write_pause::after_mutation_of(&store, keys[0], &keys);
+    pause.stop_next_reader(write_pause::ReaderPoint::AfterLoad);
     let answer = OnceLock::new();
     std::thread::scope(|scope| {
         let reader = scope.spawn(|| {
@@ -744,7 +744,9 @@ const LOAD_KEYS: [&str; 8] = [
 fn mgets_racing_msets_in_any_key_order_see_one_generation() {
     let store = Arc::new(KeyValueStore::new());
     store.execute(mset(&LOAD_KEYS.map(|k| (k, "g0"))));
-    let locked_before = write_pause::LOCKED_READS.load(Ordering::Relaxed);
+    // Armed on a key no write names: nothing stops, but this store's locked
+    // reads of these keys are counted.
+    let pause = write_pause::after_mutation_of(&store, "load:never-written", &LOAD_KEYS);
     race_or_deadlock(&store, 6, 3_000, |store, t, r| {
         if t < 3 {
             let tag = format!("t{t}r{r}");
@@ -786,7 +788,7 @@ fn mgets_racing_msets_in_any_key_order_see_one_generation() {
     );
     // The contention made some reads take the locks: that path ran too.
     assert!(
-        write_pause::LOCKED_READS.load(Ordering::Relaxed) > locked_before,
+        pause.locked_reads() > 0,
         "no read fell back to the locks; the test did not exercise them"
     );
 }
@@ -1011,4 +1013,259 @@ fn eviction_racing_msets_and_mgets_never_mixes_generations() {
             );
         }
     });
+}
+
+// ── Review follow-ups (6O-D1 round 1) ──────────────────────────────────────
+
+/// Run `read` on another thread while `write` is stopped after mutating
+/// `stop_after`, release the write as soon as the reader has answered or is
+/// waiting, and return what the reader answered.
+fn read_during_stop<T: Send + Sync>(
+    store: &KeyValueStore,
+    write: Command,
+    stop_after: &str,
+    readers_of: &[&str],
+    read: impl FnOnce() -> T + Send,
+) -> T {
+    read_during_stopped_write(store, write, stop_after, readers_of, read).answer
+}
+
+/// `read_during_stopped_mset` for any write (the writer's reply is not
+/// checked).
+fn read_during_stopped_write<T: Send + Sync>(
+    store: &KeyValueStore,
+    write: Command,
+    stop_after: &str,
+    readers_of: &[&str],
+    read: impl FnOnce() -> T + Send,
+) -> Observed<T> {
+    let pause = write_pause::after_mutation_of(store, stop_after, readers_of);
+    let answer: OnceLock<T> = OnceLock::new();
+    let (mut during_stop, mut reader_waited) = (false, false);
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| store.execute(write));
+        assert!(
+            pause.wait_reached(WITHIN),
+            "the write never reached its stop"
+        );
+        let answer = &answer;
+        let reader = scope.spawn(move || {
+            let _ = answer.set(read());
+        });
+        reader_waited = pause.wait_reader_blocked_or(WITHIN, || answer.get().is_some());
+        during_stop = answer.get().is_some();
+        drop(pause);
+        writer.join().unwrap();
+        reader.join().unwrap();
+    });
+    Observed {
+        answer: answer.into_inner().expect("the reader answered"),
+        during_stop,
+        reader_waited,
+    }
+}
+
+/// A one-key write that changes its key twice is visible in two steps:
+/// `MSET k 1 k 2` stopped after its first pair must not let a reader see
+/// `1`, a value that is never the key's state before or after the command.
+#[test]
+fn an_mset_naming_one_key_twice_never_shows_the_first_value() {
+    let store = KeyValueStore::new();
+    let k = "atom:dup:k";
+    store.execute(mset(&[(k, "old")]));
+    let seen = read_during_stop(&store, mset(&[(k, "1"), (k, "2")]), k, &[k], || {
+        store.execute(Command::Get(k.into()))
+    });
+    assert!(seen == bulk("old") || seen == bulk("2"), "GET saw {seen:?}");
+}
+
+/// `RENAME k k` removes and reinserts the value: no reader may see the key
+/// missing (Redis treats it as a no-op).
+#[test]
+fn rename_onto_itself_never_shows_the_key_missing() {
+    let store = KeyValueStore::new();
+    let k = "atom:self:k";
+    store.execute(mset(&[(k, "v")]));
+    let seen = read_during_stop(&store, Command::Rename(k.into(), k.into()), k, &[k], || {
+        store.execute(Command::Get(k.into()))
+    });
+    assert_eq!(seen, bulk("v"));
+}
+
+/// A capped write that is refused and rolled back must not be seen: a value
+/// no state of the key ever held. (NoEviction store at its memory cap; the
+/// write is stopped after it ran and before the rollback.)
+#[test]
+fn a_rolled_back_write_is_never_seen() {
+    let store = KeyValueStore::with_config(None, Some(8 * 1024), EvictionPolicy::NoEviction);
+    let k = "atom:oom:k";
+    store.execute(mset(&[(k, "base")]));
+    for i in 0..40 {
+        store.execute(Command::Set(
+            format!("fill:{i}"),
+            vec![b'f'; 150],
+            SetOptions::default(),
+        ));
+    }
+    let seen = read_during_stopped_write(
+        &store,
+        Command::Append(k.into(), vec![b'x'; 16 * 1024]),
+        k,
+        &[k],
+        || store.execute(Command::Strlen(k.into())),
+    );
+    assert_eq!(
+        seen.answer,
+        Value::Integer(4),
+        "a reader saw the refused APPEND"
+    );
+    assert_eq!(store.execute(Command::Strlen(k.into())), Value::Integer(4));
+}
+
+/// A pop that empties a list leaves it empty for a moment before the general
+/// write path removes the key. `LLEN 0` (gone) followed by `TYPE list`
+/// (still there) is a history no single point in time explains.
+#[test]
+fn a_pop_that_empties_a_list_is_one_step_to_readers() {
+    let store = KeyValueStore::new();
+    let k = "atom:pop:k";
+    store.execute(Command::RPush(k.into(), vec![b"x".to_vec()]));
+    let (len, kind) = read_during_stop(&store, Command::LPop(k.into(), None), k, &[k], || {
+        (
+            store.execute(Command::LLen(k.into())),
+            store.execute(Command::Type(k.into())),
+        )
+    });
+    assert!(
+        !(len == Value::Integer(0) && kind == Value::SimpleString("list".into())),
+        "LLEN answered 0 and then TYPE answered list"
+    );
+    assert_eq!(
+        store.execute(Command::Type(k.into())),
+        Value::SimpleString("none".into())
+    );
+}
+
+/// The set operations and a multi-key EXISTS observe one instant too: with
+/// `DEL a b` stopped after removing `a`, `SDIFF b a` must not answer `b`'s
+/// member (that needs `b` present and `a` gone), nor `EXISTS a b` answer 1.
+#[test]
+fn set_operations_and_exists_never_see_part_of_a_del() {
+    let (a, b) = ("atom:sets:a", "atom:sets:b");
+    distinct_stripes(&[a, b]);
+    let fresh = || {
+        let store = KeyValueStore::new();
+        store.execute(Command::SAdd(a.into(), vec!["m".into()]));
+        store.execute(Command::SAdd(b.into(), vec!["m".into()]));
+        store
+    };
+    let del = || Command::Del(vec![a.into(), b.into()]);
+    let empty = Value::Array(Some(Vec::new()));
+    let store = fresh();
+    let diff = read_during_stop(&store, del(), a, &[a, b], || {
+        store.execute(Command::SDiff(vec![b.into(), a.into()]))
+    });
+    assert_eq!(diff, empty, "SDIFF saw b present and a deleted");
+    let store = fresh();
+    let inter = read_during_stop(&store, del(), a, &[a, b], || {
+        store.execute(Command::SInter(vec![a.into(), b.into()]))
+    });
+    assert!(
+        inter == empty || inter == Value::Array(Some(vec![bulk("m")])),
+        "SINTER saw {inter:?}"
+    );
+    let store = fresh();
+    let union = read_during_stop(&store, del(), a, &[a, b], || {
+        store.execute(Command::SUnion(vec![b.into(), a.into()]))
+    });
+    assert!(
+        union == empty || union == Value::Array(Some(vec![bulk("m")])),
+        "SUNION saw {union:?}"
+    );
+    let store = fresh();
+    let exists = read_during_stop(&store, del(), a, &[a, b], || {
+        store.execute(Command::Exists(vec![a.into(), b.into()]))
+    });
+    assert_ne!(
+        exists,
+        Value::Integer(1),
+        "EXISTS saw b present and a deleted"
+    );
+}
+
+/// An MGET that has read its first key when a whole MSET of its keys runs
+/// and completes, then reads the rest, must notice: the words came back to
+/// "not in progress", but their versions moved. (Kills a release that
+/// clears the flags without advancing the version.)
+#[test]
+fn an_mget_overtaken_by_a_whole_mset_between_its_keys_reads_again() {
+    let store = KeyValueStore::new();
+    let keys = ["atom:mid:a", "atom:mid:b"];
+    distinct_stripes(&keys);
+    store.execute(mset(&[(keys[0], "old"), (keys[1], "old")]));
+    // Armed on a key no write names: only the reader stops.
+    let pause = write_pause::after_mutation_of(&store, "atom:mid:never", &keys);
+    pause.stop_next_reader(write_pause::ReaderPoint::AfterFirstKey);
+    let answer = OnceLock::new();
+    std::thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            let _ = answer.set(store.execute(mget(&keys)));
+        });
+        assert!(
+            pause.wait_reader_stopped(WITHIN),
+            "the MGET never read its first key"
+        );
+        store.execute(mset(&[(keys[0], "new"), (keys[1], "new")]));
+        pause.release_reader();
+        reader.join().unwrap();
+    });
+    let answer = answer.into_inner().unwrap();
+    assert!(
+        answer == Value::Array(Some(vec![bulk("old"), bulk("old")]))
+            || answer == Value::Array(Some(vec![bulk("new"), bulk("new")])),
+        "MGET answered keys from both sides of an MSET: {answer:?}"
+    );
+}
+
+/// The borrowed HGET waits like GET: with an MSET replacing two hashes by
+/// strings stopped after the first, `HGET a f` answering WRONGTYPE (new) and
+/// then `HGET b f` answering the old field is not linearizable.
+#[test]
+fn borrowed_hgets_are_linearizable_with_an_mset() {
+    let store = KeyValueStore::new();
+    let (a, b) = ("atom:hget:a", "atom:hget:b");
+    distinct_stripes(&[a, b]);
+    for key in [a, b] {
+        store.execute(Command::HSet(
+            key.into(),
+            vec![("f".into(), b"old".to_vec())],
+        ));
+    }
+    let hget = |key: &str| {
+        let mut out = Vec::new();
+        store
+            .execute_ref_into(&CommandRef::HGet(key, "f"), &mut out)
+            .expect("a read runs borrowed");
+        out
+    };
+    let (first, second) =
+        read_during_stop(&store, mset(&[(a, "new"), (b, "new")]), a, &[a, b], || {
+            (hget(a), hget(b))
+        });
+    assert!(
+        !(first.starts_with(b"-WRONGTYPE") && second == b"$3\r\nold\r\n"),
+        "HGET a saw the MSET and HGET b, after it, did not"
+    );
+}
+
+/// A DEDUP envelope is the WebSocket port's: the store refuses it whatever
+/// it wraps, a multi-key read included.
+#[test]
+fn a_dedup_wrapped_read_is_refused_by_the_store_whatever_it_reads() {
+    let store = KeyValueStore::new();
+    let wrap = |inner: Command| Command::Dedup("c".into(), 1, Box::new(inner));
+    let one = store.execute(wrap(Command::Get("k".into())));
+    let many = store.execute(wrap(mget(&["k", "x"])));
+    assert!(matches!(one, Value::Error(_)), "{one:?}");
+    assert_eq!(many, one);
 }

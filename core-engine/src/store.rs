@@ -2762,9 +2762,21 @@ fn lock_stripe(stripe: &std::sync::Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
 /// Memory ordering: a writer's flag store precedes its mutations, which it
 /// publishes by releasing a shard guard; a reader that sees a mutation took
 /// that guard after, so its later loads of `seq` see the flag or a later value.
-/// The version is published with `Release` after the last mutation and loaded
-/// with `Acquire`. Correctness does not rest on `seq` alone: every mutation and
-/// read stays under its shard guard, as before.
+/// Every store to `seq` is `Release` and every load `Acquire` (plain moves on
+/// x86-64): a later holder's flag store is made after it took the lock the
+/// earlier holder released, so a reader that loads it also sees everything
+/// the earlier holder wrote. Correctness does not rest on `seq` alone: every
+/// mutation and read stays under its shard guard, as before.
+///
+/// "Multi-key" means "visible in more than one step": a write naming several
+/// keys, and also a one-key write that changes its key more than once —
+/// `MSET k 1 k 2`, `RENAME k k`, a write that empties a collection and then
+/// removes it, a capped write that may be rolled back
+/// ([`KeyValueStore::run_write_gated`]).
+///
+/// One cache line per stripe: readers now load the word, and a write to a
+/// neighbouring stripe's word or lock would otherwise invalidate it.
+#[repr(align(64))]
 struct Stripe {
     lock: std::sync::Mutex<()>,
     seq: AtomicU64,
@@ -2783,6 +2795,12 @@ const SEQ_STEP: u64 = 4;
 /// of writes to its keys.
 const OPTIMISTIC_READS: u32 = 4;
 
+/// Distinct stripes above which a multi-key read that a write overlapped
+/// takes the locks at once instead of reading again: a read across this many
+/// stripes, overlapped once, will very likely be overlapped again, and each
+/// attempt costs a whole read.
+const LARGE_READ_STRIPES: usize = 16;
+
 /// A write-order stripe held by a write, marked in progress until dropped.
 struct StripeHold<'a> {
     stripe: &'a Stripe,
@@ -2790,18 +2808,21 @@ struct StripeHold<'a> {
 }
 
 impl<'a> StripeHold<'a> {
-    /// Take `stripe` and mark a write in progress (`flags`: [`SEQ_ACTIVE`],
-    /// with [`SEQ_MULTI`] for a multi-key write) before the caller mutates
-    /// anything under it.
-    fn take(stripe: &'a Stripe, flags: u64) -> Self {
-        let guard = lock_stripe(&stripe.lock);
-        // Only the holder writes `seq`: load and store, no read-modify-write.
-        let seq = stripe.seq.load(Ordering::Relaxed);
-        stripe.seq.store(seq | flags, Ordering::Relaxed);
+    /// Take `stripe`. Not yet marked: see [`mark`](Self::mark).
+    fn take(stripe: &'a Stripe) -> Self {
         StripeHold {
             stripe,
-            _guard: guard,
+            _guard: lock_stripe(&stripe.lock),
         }
+    }
+
+    /// Mark a write in progress (`flags`: [`SEQ_ACTIVE`], with [`SEQ_MULTI`]
+    /// for one visible in several steps). The caller marks before it mutates
+    /// anything under the stripe.
+    fn mark(&self, flags: u64) {
+        // Only the holder writes `seq`: load and store, no read-modify-write.
+        let seq = self.stripe.seq.load(Ordering::Relaxed);
+        self.stripe.seq.store(seq | flags, Ordering::Release);
     }
 }
 
@@ -2819,8 +2840,18 @@ impl Drop for StripeHold<'_> {
 
 /// Write-order stripes held by one write; released on drop.
 enum WriteOrder<'a> {
-    One(#[allow(dead_code)] StripeHold<'a>),
-    Many(#[allow(dead_code)] SmallVec<[StripeHold<'a>; 4]>),
+    One(StripeHold<'a>),
+    Many(SmallVec<[StripeHold<'a>; 4]>),
+}
+
+impl WriteOrder<'_> {
+    /// Mark every held stripe with `flags`.
+    fn mark(&self, flags: u64) {
+        match self {
+            WriteOrder::One(hold) => hold.mark(flags),
+            WriteOrder::Many(holds) => holds.iter().for_each(|hold| hold.mark(flags)),
+        }
+    }
 }
 
 fn write_order_stripes() -> Arc<[Stripe]> {
@@ -3091,28 +3122,39 @@ impl KeyValueStore {
     /// Stripes are taken in ascending order, and always after the capacity
     /// gate, so two multi-key writers cannot deadlock.
     ///
-    /// Each stripe is marked in progress while held, and multi-key for a
-    /// write naming several keys (`keys` holds distinct keys), so readers do
-    /// not see the write part-done ([`Stripe`]). Every stripe is marked as it
-    /// is taken, so all are marked before the caller's first mutation.
-    fn order_keys<K: AsRef<str>>(&self, keys: &[K]) -> WriteOrder<'_> {
+    /// Each stripe is marked in progress while held, and multi-key when the
+    /// write is visible in several steps: `keys` (distinct) names several, or
+    /// the caller says so (`several_steps`), so readers do not see the write
+    /// part-done ([`Stripe`]). The stripes are marked once all are held —
+    /// still before the caller's first mutation — so a writer queued for a
+    /// later stripe does not make readers of an earlier one wait meanwhile.
+    fn order_keys<K: AsRef<str>>(&self, keys: &[K], several_steps: bool) -> WriteOrder<'_> {
+        let flags = if several_steps || keys.len() > 1 {
+            SEQ_ACTIVE | SEQ_MULTI
+        } else {
+            SEQ_ACTIVE
+        };
         // Nearly every write names one key: skip the sort and the guard list.
-        if let [key] = keys {
-            return WriteOrder::One(StripeHold::take(
+        let order = if let [key] = keys {
+            WriteOrder::One(StripeHold::take(
                 &self.write_order[write_order_stripe(key.as_ref())],
-                SEQ_ACTIVE,
-            ));
-        }
-        // Two keys on one stripe still need the multi-key mark.
-        let lock =
-            |stripe: usize| StripeHold::take(&self.write_order[stripe], SEQ_ACTIVE | SEQ_MULTI);
-        let mut stripes: SmallVec<[usize; 4]> = keys
-            .iter()
-            .map(|key| write_order_stripe(key.as_ref()))
-            .collect();
-        stripes.sort_unstable();
-        stripes.dedup();
-        WriteOrder::Many(stripes.into_iter().map(lock).collect())
+            ))
+        } else {
+            let mut stripes: SmallVec<[usize; 4]> = keys
+                .iter()
+                .map(|key| write_order_stripe(key.as_ref()))
+                .collect();
+            stripes.sort_unstable();
+            stripes.dedup();
+            WriteOrder::Many(
+                stripes
+                    .into_iter()
+                    .map(|stripe| StripeHold::take(&self.write_order[stripe]))
+                    .collect(),
+            )
+        };
+        order.mark(flags);
+        order
     }
 
     /// Hold every write-order stripe: for whole-keyspace rewrites (`FLUSHDB`,
@@ -3748,7 +3790,7 @@ impl KeyValueStore {
         let now = now_ms();
         let mut removed = Vec::new();
         for key in keys {
-            let _order = self.order_keys(std::slice::from_ref(&key));
+            let _order = self.order_keys(std::slice::from_ref(&key), false);
             if let Some((removed_key, entry)) = self
                 .data
                 .remove_if(key.as_str(), |_, entry| entry.is_expired(now))
@@ -4351,9 +4393,14 @@ impl KeyValueStore {
                 out
             }
             WriteScope::Keys(mut keys) => {
+                // A write that names one key twice (`MSET k 1 k 2`,
+                // `RENAME k k`) or may empty a collection and then remove it
+                // changes its key in more than one step: readers must not
+                // see the steps in between ([`Stripe`]).
+                let several_steps = keys.len() > 1 || leaves_steps_visible(cmd.borrow());
                 keys.sort_unstable();
                 keys.dedup();
-                let _order = self.order_keys(&keys);
+                let order = self.order_keys(&keys, several_steps);
                 if let Some(max) = self.max_keys.filter(|_| enforce) {
                     // Capped stores only: victim selection compares owned keys.
                     let touched: Vec<String> =
@@ -4394,6 +4441,11 @@ impl KeyValueStore {
                         })
                         .collect::<Vec<_>>()
                 });
+                // A write that may be rolled back is visible in two steps: no
+                // reader may see the value it then takes back.
+                if rollback.is_some() {
+                    order.mark(SEQ_ACTIVE | SEQ_MULTI);
+                }
                 // Size and index state in the one lookup accounting already
                 // paid for: whether the key was present, and with a TTL.
                 let before_states: SmallVec<[(usize, Option<bool>); 4]> = keys
@@ -4402,6 +4454,14 @@ impl KeyValueStore {
                     .collect();
                 let before = before_states.iter().map(|(size, _)| size).sum();
                 let out = exec(self, cmd, None);
+                // Test hook: stop after the command's own work, before the
+                // emptied-collection removal and any rollback below.
+                #[cfg(any(test, feature = "test-hooks"))]
+                if write_pause::armed() {
+                    for key in &keys {
+                        write_pause::mutated(self.hook_id(), key.as_ref());
+                    }
+                }
                 // One lookup per key, not two. Reading the post-write size and
                 // reading the key's TTL state both need the same entry, and
                 // hash lookups are the largest single cost on the write path
@@ -4544,7 +4604,7 @@ impl KeyValueStore {
         cmd: C,
         exec: impl FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
     ) -> Value {
-        let _order = self.order_keys(std::slice::from_ref(&key));
+        let _order = self.order_keys(std::slice::from_ref(&key), false);
         self.run_probed_write_ordered(key, cmd, exec)
     }
 
@@ -4620,7 +4680,7 @@ impl KeyValueStore {
             .capacity_gate
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let order = self.order_keys(std::slice::from_ref(&key));
+        let order = self.order_keys(std::slice::from_ref(&key), false);
         let creates =
             !creating_keys(cmd.borrow()).is_empty() && !self.data.contains_key(key.as_str());
         let Some(reservation) = Reservation::try_new(self, bound, usize::from(creates)) else {
@@ -4914,21 +4974,29 @@ impl KeyValueStore {
     /// must not do is see a key an MSET has not reached yet after some read —
     /// this one's predecessor on the connection, or anyone's — saw a key the
     /// MSET has written. While [`SEQ_MULTI`] is set the read waits for the
-    /// write by taking the stripe's lock, which the writer holds to its end.
-    /// Otherwise it runs as before: one load, no write to shared state.
+    /// write by taking the stripe's lock, which the writer holds to its end,
+    /// and releasing it at once. Otherwise it runs as before: one load, no
+    /// write to shared state.
     ///
-    /// A multi-key write that begins after the load is fine: whatever this
-    /// read sees of it, the write had marked every stripe before that, so any
-    /// later read of another of its keys waits for it.
+    /// The read itself never holds the lock: after the wait it is in the
+    /// fast path's position. A multi-key write that begins after the load (or
+    /// the wait) is fine: whatever this read sees of it, the write had marked
+    /// every stripe before that, so any later read of another of its keys
+    /// waits for it.
     fn read_one_at<R>(&self, stripe: usize, f: impl FnOnce() -> R) -> R {
         let held = &self.write_order[stripe];
-        if held.seq.load(Ordering::Acquire) & SEQ_MULTI == 0 {
-            return f();
+        if held.seq.load(Ordering::Acquire) & SEQ_MULTI != 0 {
+            #[cfg(any(test, feature = "test-hooks"))]
+            write_pause::reader_blocked(self.hook_id(), &[stripe], false);
+            drop(lock_stripe(&held.lock));
         }
-        #[cfg(any(test, feature = "test-hooks"))]
-        write_pause::reader_blocked([stripe]);
-        let _held = lock_stripe(&held.lock);
         f()
+    }
+
+    /// This store's identity for the test hooks, which are process-wide.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn hook_id(&self) -> usize {
+        Arc::as_ptr(&self.write_order).cast::<()>() as usize
     }
 
     /// [`read_one_at`](Self::read_one_at) for `key`'s stripe.
@@ -4958,44 +5026,51 @@ impl KeyValueStore {
             [key] => return self.read_one(key.as_ref(), f),
             _ => {}
         }
-        let seq = |key: &K| {
-            self.write_order[write_order_stripe(key.as_ref())]
-                .seq
-                .load(Ordering::Acquire)
-        };
-        for _ in 0..OPTIMISTIC_READS {
-            let mut before = 0u64;
-            let mut busy = false;
-            for key in keys {
-                let word = seq(key);
-                busy |= word & SEQ_ACTIVE != 0;
-                before = before.wrapping_add(word);
-            }
-            if !busy {
-                #[cfg(any(test, feature = "test-hooks"))]
-                write_pause::reader_loaded();
-                let out = f();
-                let after = keys
-                    .iter()
-                    .fold(0u64, |sum, key| sum.wrapping_add(seq(key)));
-                if after == before {
-                    return out;
-                }
-            }
-            std::hint::spin_loop();
-        }
-        let mut stripes: SmallVec<[usize; 8]> = keys
+        // The distinct stripes, ascending: validated once each, and the order
+        // the fallback takes them in.
+        let mut stripes: SmallVec<[usize; 16]> = keys
             .iter()
             .map(|key| write_order_stripe(key.as_ref()))
             .collect();
         stripes.sort_unstable();
         stripes.dedup();
-        #[cfg(any(test, feature = "test-hooks"))]
-        {
-            write_pause::LOCKED_READS.fetch_add(1, Ordering::Relaxed);
-            write_pause::reader_blocked(stripes.iter().copied());
+        // The words' sum, and whether a write holding one is in progress.
+        let load = || {
+            stripes.iter().fold((0u64, false), |(sum, busy), &stripe| {
+                let word = self.write_order[stripe].seq.load(Ordering::Acquire);
+                (sum.wrapping_add(word), busy || word & SEQ_ACTIVE != 0)
+            })
+        };
+        for _ in 0..OPTIMISTIC_READS {
+            // A write holds its stripes for a few hundred nanoseconds: wait a
+            // little for one in progress rather than spend the attempt.
+            let (mut before, mut busy) = load();
+            let mut spins = 0;
+            while busy && spins < STRIPE_SPINS {
+                std::hint::spin_loop();
+                (before, busy) = load();
+                spins += 1;
+            }
+            if busy {
+                continue;
+            }
+            #[cfg(any(test, feature = "test-hooks"))]
+            write_pause::reader_at(
+                self.hook_id(),
+                write_pause::ReaderPoint::AfterLoad,
+                &stripes,
+            );
+            let out = f();
+            if load().0 == before {
+                return out;
+            }
+            if stripes.len() > LARGE_READ_STRIPES {
+                break;
+            }
         }
-        let _held: SmallVec<[std::sync::MutexGuard<'_, ()>; 8]> = stripes
+        #[cfg(any(test, feature = "test-hooks"))]
+        write_pause::reader_blocked(self.hook_id(), &stripes, true);
+        let _held: SmallVec<[std::sync::MutexGuard<'_, ()>; 16]> = stripes
             .iter()
             .map(|&stripe| lock_stripe(&self.write_order[stripe].lock))
             .collect();
@@ -5028,7 +5103,6 @@ impl KeyValueStore {
     /// run one more than once.
     fn execute_multi_read(&self, cmd: &Command) -> Value {
         match cmd {
-            Command::Dedup(_, _, inner) => self.execute_multi_read(inner),
             Command::MGet(keys) => self.mget(keys),
             Command::Exists(keys) => self.exists(keys),
             Command::SInter(keys) => set_op_reply(set_inter(&self.data, keys, now_ms())),
@@ -5043,11 +5117,21 @@ impl KeyValueStore {
         let now = now_ms();
         Value::Array(Some(
             keys.iter()
-                .map(|k| {
+                .enumerate()
+                .map(|(_i, k)| {
                     // MGET answers nil for a key of another type.
-                    self.read_str(k, now, |read| {
+                    let value = self.read_str(k, now, |read| {
                         Value::BulkString(read.ok().flatten().map(<[u8]>::to_vec))
-                    })
+                    });
+                    #[cfg(any(test, feature = "test-hooks"))]
+                    if _i == 0 {
+                        write_pause::reader_at(
+                            self.hook_id(),
+                            write_pause::ReaderPoint::AfterFirstKey,
+                            &[write_order_stripe(k)],
+                        );
+                    }
+                    value
                 })
                 .collect(),
         ))
@@ -5409,7 +5493,7 @@ impl KeyValueStore {
             }
             #[cfg(any(test, feature = "test-hooks"))]
             if let Some(key) = hooked {
-                write_pause::mutated(&key);
+                write_pause::mutated(self.hook_id(), &key);
             }
         }
         Value::SimpleString("OK".to_string())
@@ -5480,9 +5564,13 @@ impl KeyValueStore {
                 let count = keys
                     .into_iter()
                     .filter(|k| {
-                        self.data
+                        let removed = self
+                            .data
                             .remove_if(k.as_str(), |_, e| !e.is_expired(now))
-                            .is_some()
+                            .is_some();
+                        #[cfg(any(test, feature = "test-hooks"))]
+                        write_pause::mutated(self.hook_id(), k);
+                        removed
                     })
                     .count();
                 Value::Integer(count as i64)
@@ -5807,6 +5895,8 @@ impl KeyValueStore {
                         Value::Error("ERR no such key".to_string())
                     }
                     Some((_, entry)) => {
+                        #[cfg(any(test, feature = "test-hooks"))]
+                        write_pause::mutated(self.hook_id(), &src);
                         self.data.insert(Key::from(dst), entry);
                         Value::SimpleString("OK".to_string())
                     }
@@ -5815,9 +5905,9 @@ impl KeyValueStore {
 
             // Two keys: atomic against other writes to either, because every
             // write takes the store's per-key ordering for the keys
-            // `mutation_scope` names — and RENAMENX names both. A reader can
-            // still observe the instant between removal and insertion, as with
-            // RENAME; see the concurrency model in the command reference.
+            // `mutation_scope` names — and RENAMENX names both. Readers do not
+            // see the instant between removal and insertion either: the write
+            // is marked multi-key on its stripes (6O-D, `Stripe`).
             Command::RenameNx(src, dst) => {
                 let now = now_ms();
                 let source_live = self
@@ -7248,7 +7338,9 @@ fn read_scope(cmd: &Command) -> ReadScope<'_> {
         }
     }
     match cmd {
-        Command::Dedup(_, _, inner) => read_scope(inner),
+        // The store answers a DEDUP envelope with an error, whatever it wraps
+        // (`execute_inner`); the server strips DEDUP before the store.
+        Command::Dedup(..) => ReadScope::Unkeyed,
         Command::MGet(k)
         | Command::Exists(k)
         | Command::SInter(k)
@@ -7390,6 +7482,29 @@ fn set_op_reply(result: Result<IndexSet<String>, Value>) -> Value {
     match result {
         Err(e) => e,
         Ok(result) => set_to_value(result),
+    }
+}
+
+/// Whether a one-key write may change its key in more than one visible step:
+/// the commands that can empty a collection, which the general write path
+/// then removes (`run_write_gated`), so a reader could see the empty key in
+/// between. Probe-eligible writes never leave one (each adds at least one
+/// element), nor do the writes that only replace, extend or remove a key.
+fn leaves_steps_visible(cmd: &Command) -> bool {
+    match cmd {
+        Command::Dedup(_, _, inner) => leaves_steps_visible(inner),
+        Command::LPop(..)
+        | Command::RPop(..)
+        | Command::LRem(..)
+        | Command::LTrim(..)
+        | Command::SRem(..)
+        | Command::SPop(..)
+        | Command::HDel(..)
+        | Command::ZRem(..)
+        | Command::ZPopMin(..)
+        | Command::ZPopMax(..)
+        | Command::ZAdd(..) => true,
+        _ => false,
     }
 }
 

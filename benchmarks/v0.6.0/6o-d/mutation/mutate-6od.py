@@ -33,33 +33,30 @@ UNCHECKED_FNS = """    fn read_one_unchecked<R>(&self, _key: &str, f: impl FnOnc
 
 MUTANTS = [
     ("M1 single-key read never waits for a multi-key write",
-     [("if held.seq.load(Ordering::Acquire) & SEQ_MULTI == 0 {", "if true {")]),
+     [("if held.seq.load(Ordering::Acquire) & SEQ_MULTI != 0 {", "if false {")]),
     ("M2 multi-key read ignores writes in progress (validates only)",
-     [("busy |= word & SEQ_ACTIVE != 0;", "busy |= word & 0 != 0;")]),
+     [("busy || word & SEQ_ACTIVE != 0", "busy || word & 0 != 0")]),
     ("M3 multi-key read skips its after-validation",
-     [("""                if after == before {
-                    return out;""", """                if true || after == before {
-                    return out;""")]),
+     [("""            if load().0 == before {
+                return out;""", """            if true {
+                return out;""")]),
     ("M4 locked fallback takes stripes in descending order",
-     [("""        stripes.sort_unstable();
-        stripes.dedup();
-        #[cfg(any(test, feature = "test-hooks"))]
-        {
-            write_pause::LOCKED_READS""", """        stripes.sort_unstable_by(|x, y| y.cmp(x));
-        stripes.dedup();
-        #[cfg(any(test, feature = "test-hooks"))]
-        {
-            write_pause::LOCKED_READS""")]),
+     [("""let _held: SmallVec<[std::sync::MutexGuard<'_, ()>; 16]> = stripes
+            .iter()""", """let _held: SmallVec<[std::sync::MutexGuard<'_, ()>; 16]> = stripes
+            .iter()
+            .rev()""")]),
     ("M5 multi-key write marks only its first stripe",
-     [("WriteOrder::Many(stripes.into_iter().map(lock).collect())",
-       "WriteOrder::Many(stripes.into_iter().enumerate().map(|(i, s)| if i == 0 { lock(s) } "
-       "else { StripeHold::take(&self.write_order[s], 0) }).collect())")]),
+     [("""        order.mark(flags);
+        order""", """        match &order {
+            WriteOrder::One(hold) => hold.mark(flags),
+            WriteOrder::Many(holds) => holds[0].mark(flags),
+        }
+        order""")]),
     ("M6 multi-key write not marked multi-key",
-     [("StripeHold::take(&self.write_order[stripe], SEQ_ACTIVE | SEQ_MULTI)",
-       "StripeHold::take(&self.write_order[stripe], SEQ_ACTIVE)")]),
+     [("let flags = if several_steps || keys.len() > 1 {", "let flags = if false {")]),
     ("M7 writers never mark a write in progress",
-     [("stripe.seq.store(seq | flags, Ordering::Relaxed);",
-       "stripe.seq.store(seq | (flags & 0), Ordering::Relaxed);")]),
+     [("self.stripe.seq.store(seq | flags, Ordering::Release);",
+       "self.stripe.seq.store(seq | (flags & 0), Ordering::Release);")]),
     ("M8 release clears the flags without advancing the version",
      [(".store((seq | (SEQ_STEP - 1)) + 1, Ordering::Release);",
        ".store(seq & !(SEQ_STEP - 1), Ordering::Release);")]),
@@ -87,6 +84,32 @@ MUTANTS = [
     ("M15 owned multi-key reads bypass the protocol",
      [("ReadScope::Many(keys) => self.read_many(keys, || self.execute_multi_read(&cmd)),",
        "ReadScope::Many(keys) => { let _ = keys; self.execute_multi_read(&cmd) }")]),
+    ("M16 a one-key write naming its key twice is not marked multi-key",
+     [("let several_steps = keys.len() > 1 || leaves_steps_visible(cmd.borrow());",
+       "let several_steps = leaves_steps_visible(cmd.borrow());")]),
+    ("M17 a write that may be rolled back is not marked multi-key",
+     [("""                if rollback.is_some() {
+                    order.mark(SEQ_ACTIVE | SEQ_MULTI);""", """                if false {
+                    order.mark(SEQ_ACTIVE | SEQ_MULTI);""")]),
+    ("M18 SINTER/SUNION/SDIFF bypass the protocol",
+     [("""        | Command::SInter(k)
+        | Command::SUnion(k)
+        | Command::SDiff(k) => keys(k),""", """        => keys(k),
+        Command::SInter(_) | Command::SUnion(_) | Command::SDiff(_) => ReadScope::Unkeyed,""")]),
+    ("M19 a DEDUP-wrapped multi-key read runs (as before review round 1)",
+     [("Command::Dedup(..) => ReadScope::Unkeyed,", "Command::Dedup(_, _, inner) => read_scope(inner),"),
+      ("            Command::MGet(keys) => self.mget(keys),\n            Command::Exists(keys) => self.exists(keys),",
+       "            Command::Dedup(_, _, inner) => self.execute_multi_read(inner),\n            Command::MGet(keys) => self.mget(keys),\n            Command::Exists(keys) => self.exists(keys),")]),
+    ("M20 borrowed HGET bypasses the protocol",
+     [(UNCHECKED, UNCHECKED_FNS),
+      ("CommandRef::HGet(key, field) => self.read_one(key, || {",
+       "CommandRef::HGet(key, field) => self.read_one_unchecked(key, || {")]),
+    ("M21 a pop that may empty a collection is not marked multi-key",
+     [("        | Command::ZAdd(..) => true,", "        | Command::ZAdd(..) => false,")]),
+    ("M22 a multi-key EXISTS is read as its first key only",
+     [("""        Command::MGet(k)
+        | Command::Exists(k)""", """        Command::Exists(k) => ReadScope::One(k[0].as_str()),
+        Command::MGet(k)""")]),
 ]
 
 STORE_GUARD = ["cargo", "test", "-q", "-p", "core-engine", "--lib", "atomicity_tests"]

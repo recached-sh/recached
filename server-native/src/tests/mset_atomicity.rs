@@ -101,7 +101,7 @@ async fn a_tcp_mget_never_sees_part_of_an_mset() {
         writer.cmd(&["MSET", a, "old", b, "old"]).await,
         Value::SimpleString("OK".into())
     );
-    let pause = write_pause::after_mutation_of(a, &[a, b]);
+    let pause = write_pause::after_mutation_of(&shared.store, a, &[a, b]);
     writer.send(&["MSET", a, "new", b, "new"]).await;
     reached(&pause);
     reader.send(&["MGET", a, b]).await;
@@ -136,7 +136,7 @@ async fn tcp_gets_after_seeing_an_mset_key_see_the_rest() {
     let (mut writer, mut reader) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
     let (a, b) = ("tcpatom:seq:a", "tcpatom:seq:b");
     writer.cmd(&["MSET", a, "old", b, "old"]).await;
-    let pause = write_pause::after_mutation_of(a, &[a, b]);
+    let pause = write_pause::after_mutation_of(&shared.store, a, &[a, b]);
     writer.send(&["MSET", a, "new", b, "new"]).await;
     reached(&pause);
     reader.send(&["GET", a]).await;
@@ -198,7 +198,7 @@ async fn an_mset_inside_exec_is_atomic_to_readers() {
         writer.cmd(&["MSET", a, "new", b, "new"]).await,
         Value::SimpleString("QUEUED".into())
     );
-    let pause = write_pause::after_mutation_of(a, &[a, b]);
+    let pause = write_pause::after_mutation_of(&shared.store, a, &[a, b]);
     writer.send(&["EXEC"]).await;
     reached(&pause);
     reader.send(&["MGET", a, b]).await;
@@ -244,7 +244,7 @@ async fn a_snapshot_cut_during_an_mset_has_all_of_it() {
     let mut writer = Pipe::tcp(&shared);
     let (a, b) = ("tcpatom:snap:a", "tcpatom:snap:b");
     writer.cmd(&["MSET", a, "old", b, "old"]).await;
-    let pause = write_pause::after_mutation_of(a, &[a, b]);
+    let pause = write_pause::after_mutation_of(&shared.store, a, &[a, b]);
     writer.send(&["MSET", a, "new", b, "new"]).await;
     reached(&pause);
     let (state, store) = (Arc::clone(&shared.state), Arc::clone(&shared.store));
@@ -260,8 +260,16 @@ async fn a_snapshot_cut_during_an_mset_has_all_of_it() {
             })
             .collect::<std::collections::BTreeMap<_, _>>()
     });
-    // The barrier cannot complete while the write is stopped inside the gate.
-    tokio::task::yield_now().await;
+    // Release the write only once the cut is waiting at the gate for it.
+    let deadline = Instant::now() + WITHIN;
+    while !shared.state.replicas.unordered.is_closed() {
+        assert!(Instant::now() < deadline, "the cut never reached the gate");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert!(
+        !cut.is_finished(),
+        "the cut completed while the MSET was stopped"
+    );
     drop(pause);
     writer.reply().await;
     let snapshot = tokio::time::timeout(WITHIN, cut)
@@ -284,7 +292,7 @@ async fn a_reader_disconnecting_while_it_waits_releases_everything() {
     let (mut writer, mut reader) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
     let (a, b) = ("tcpatom:cancel:a", "tcpatom:cancel:b");
     writer.cmd(&["MSET", a, "old", b, "old"]).await;
-    let pause = write_pause::after_mutation_of(a, &[a, b]);
+    let pause = write_pause::after_mutation_of(&shared.store, a, &[a, b]);
     writer.send(&["MSET", a, "new", b, "new"]).await;
     reached(&pause);
     reader.send(&["MGET", a, b]).await;

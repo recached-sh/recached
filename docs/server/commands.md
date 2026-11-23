@@ -12,13 +12,15 @@ Recached schedules independent commands across worker threads over a sharded key
 - **Conflicting writers are ordered.** A multi-key write or `MULTI`/`EXEC` reserves all of its write keys against other server writes until persistence, replication, and notifications have recorded the result.
 - **`WATCH` compare-and-swap is sound.** `EXEC` reserves both its write keys and watched keys before checking invalidation, so a writer cannot land between the check and execution.
 - **Values are not torn.** A reader sees a value before or after an individual mutation, never a partial value.
+- **Multi-key commands are atomic to readers too** *(0.6)*. A reader sees all of an `MSET`, `DEL k1 k2`, `RENAME`, `RENAMENX`, `COPY`, `SMOVE` or `*STORE`, or none of it. That includes a one-key write that changes its key in more than one step, such as `MSET k 1 k 2` or a pop that empties a list. A multi-key read (`MGET`, `EXISTS k1 k2`, `SINTER`, `SUNION`, `SDIFF`) observes all its keys at one instant, and evaluates their expiry at one time. Once a read has seen part of a multi-key write, every read that starts afterwards sees all of it.
 
 On a server with nothing that records write order — no AOF, no replication, no WebSocket client, no `WATCH` or live query, no `ESET`/`EADD` presence and no memory or key cap — an ordinary write skips the propagation barrier, because there is nothing to propagate; the keyspace's own per-key ordering still applies, and the guarantees above are unchanged. The first such consumer to appear (or a snapshot, `EXEC`, or replica attach) waits for writes already in flight and switches every later write back to the barrier.
 
 **What it does not guarantee**
 
-- **Readers do not join the writer barriers.** Commands such as `MSET` and `SMOVE` update their keys one at a time. A concurrent reader can observe an intermediate cross-key state even though another writer cannot interleave on those keys.
-- **`MULTI`/`EXEC` is writer-isolated, not fully isolated.** Another connection cannot write a key reserved by the transaction, but reads may observe results between queued commands.
+- **`MULTI`/`EXEC` is writer-isolated, not fully isolated.** Another connection cannot write a key reserved by the transaction, but reads may observe results between queued commands. Conversely, the reads a transaction queues are not isolated from other connections' writes: another command can land between two of them.
+- **Whole-keyspace operations are not snapshots.** A reader can see a `FLUSHDB` or a replica's full-sync restore part-done. `KEYS`, `SCAN` and `DBSIZE` walk the keyspace while writes continue.
+- **Eviction removes victims one at a time.** On a store with a memory or key cap, a write that evicts several keys removes them in turn, so a reader can see one gone before another.
 
 If correctness depends on values read before a transaction, `WATCH` those keys and retry when `EXEC` returns nil. Use a database or another system with fully isolated multi-key transactions when readers must observe several keys changing as one indivisible state transition.
 
@@ -34,11 +36,10 @@ If correctness depends on values read before a transaction, `WATCH` those keys a
 - **RESP3 score replies** (`ZPOPMIN`/`ZPOPMAX`, like `ZRANGE … WITHSCORES`) keep the RESP2 shape —
   a flat array of member and score strings — where Redis 7 returns doubles and, with a count,
   nested pairs.
-- **Cross-key atomicity**: `RENAMENX` and `COPY` are atomic against writes to the keys they touch,
-  but not against readers of both keys, as described under [Concurrency model](#concurrency-model).
+- **Cross-key atomicity**: `RENAMENX` and `COPY` are atomic against writes to the keys they touch
+  and, since 6O-D, against readers of both keys too (see [Concurrency model](#concurrency-model)).
 
-`LMOVE` and `RPOPLPUSH` were considered and deferred: an atomic move between two lists needs the
-cross-key atomicity the multi-threaded store does not provide (`SMOVE` documents the same gap).
+`LMOVE` and `RPOPLPUSH` were considered and deferred.
 
 ## Core
 
@@ -189,7 +190,7 @@ The most common data type. Values are always stored as byte strings; numeric ope
 | `GETDEL key` | Returns the string value and deletes the key, under one lock: concurrent callers never both receive the value. Nil if the key does not exist; `WRONGTYPE` (key kept) if it is not a string. Propagated as `DEL`. *(0.6)* |
 | `GETEX key [EX s \| PX ms \| EXAT ts \| PXAT ms \| PERSIST]` | Returns the string value and, with an option, changes the key's expiry. A deadline already in the past deletes the key after reading it. Classified as a write even without an option, as in Redis: replicas refuse it and sync scopes require write — use `GET` to read. Propagated as `PEXPIREAT` (absolute), `PERSIST` or `DEL`. *(0.6)* |
 | `MGET key [key ...]` | Returns the values of multiple keys. Keys that do not exist return nil. |
-| `MSET key value [key value ...]` | Sets multiple keys to their respective values in one command. Applied key by key — see [Concurrency model](#concurrency-model): a concurrent reader can observe some keys updated and others not. |
+| `MSET key value [key value ...]` | Sets multiple keys to their respective values in one command. Atomic, as in Redis: no reader observes some keys updated and others not (see [Concurrency model](#concurrency-model)). |
 | `ESET key value` | **Ephemeral set.** Stores a string like `SET`, but the key's lifetime is bound to the connection that wrote it. Every connection that writes the key *holds* it, and the key is deleted — and the deletion pushed to live queries — when the **last** holder closes, so a second browser tab keeps presence alive when the first closes, whichever order they close in. Intended for presence, cursors, and "who is online"; use `SET` for anything that should outlive a connection. |
 | `EADD key member [member ...]` | **Ephemeral add.** Adds set members like `SADD`, with each membership bound to the connection that added it. When the last connection holding a member closes, that member is removed and the removal is pushed to live queries; once the set empties, the key is deleted. Read it with the ordinary set commands — `SMEMBERS`, `SCARD`, `SISMEMBER` — and follow it with `QSUB`. This is the "who is in this room" primitive: membership that cleans itself up. |
 | `SETNX key value` | Set a key only if it does not exist. Returns 1 if set, 0 if the key already existed. |
@@ -230,7 +231,7 @@ The most common data type. Values are always stored as byte strings; numeric ope
 | `EXISTS key [key ...]` | Returns the number of keys that exist among the provided arguments. A key listed multiple times counts multiple times. |
 | `TYPE key` | Returns the type of the value stored at key: `string`, `hash`, `list`, `set`, `zset`, `ratelimit`, or `none` if the key does not exist. |
 | `RENAME key newkey` | Renames a key. Returns an error if the source key does not exist. Overwrites `newkey` if it already exists. |
-| `RENAMENX key newkey` | Renames only if `newkey` does not exist: `1` renamed, `0` not. Errors if `key` does not exist. The value keeps its expiry. Atomic against other writes to either key; like `RENAME`, a concurrent *reader* can observe the instant the value is under neither name (see [Concurrency model](#concurrency-model)). *(0.6)* |
+| `RENAMENX key newkey` | Renames only if `newkey` does not exist: `1` renamed, `0` not. Errors if `key` does not exist. The value keeps its expiry. Atomic against other writes to either key and to readers of both: no reader sees the value under neither name (see [Concurrency model](#concurrency-model)). *(0.6)* |
 | `COPY source destination [DB 0] [REPLACE]` | Copies a value of any type, with its expiry, to `destination`: `1` copied, `0` if `source` is missing or `destination` exists without `REPLACE`. `DB` is accepted only as `0` — Recached has one database, and any other index is refused with `ERR DB index is out of range` rather than reported as copied. Counts against `RECACHED_MAX_KEYS`/`RECACHED_MAX_MEMORY`. Sync scopes need read on `source`, write on `destination`. Propagated verbatim, like the `*STORE` commands. *(0.6)* |
 | `KEYS pattern` | Returns all keys matching the glob pattern. `*` matches any sequence of bytes, `?` matches exactly one byte. **Character classes (`[abc]`) are not supported** — brackets match literally. Patterns are capped at 1,024 bytes. Warning: `KEYS *` on a large store is slow — prefer `SCAN`. |
 | `SCAN cursor [MATCH pattern] [COUNT count]` | Iterates a maintained ordered key index. Each call checks at most `COUNT` keys (default 10) against the keyspace and `MATCH`, and reads at most 32 × (`COUNT` + 16) index entries (about one per key returned, amortized), so work and reply size are bounded independently of total key count. `MATCH` may make a page shorter than `COUNT`. Start with `0` and continue until the returned cursor is `0`. Abandoned cursors are capped at 4,096 sessions, and at 256 MiB of key bytes held across all sessions (a session holds up to a few dozen upcoming keys per index shard; the byte cap binds only with very large keys). Past either, the session that has gone longest without a call is dropped, and its next call is answered as a finished iteration (`0`), so a scan that pauses while 4,096 others start can end early. Concurrent changes may be missed or returned twice. |
@@ -335,7 +336,7 @@ An unordered collection of unique string members. Supports set operations (inter
 | `SDIFFSTORE destination key [key ...]` | Stores the difference into `destination` and returns its size. |
 | `SPOP key [count]` | Removes and returns one or more random members from the set. |
 | `SRANDMEMBER key [count]` | Returns one or more random members without removing them. Positive `count`: unique members. Negative `count`: may repeat. |
-| `SMOVE source destination member` | Moves a member from one set to another. Returns 1 on success, 0 if the member did not exist in source. Removal and insertion are separate steps, so a concurrent reader can briefly see the member in neither set — see [Concurrency model](#concurrency-model). |
+| `SMOVE source destination member` | Moves a member from one set to another. Returns 1 on success, 0 if the member did not exist in source. Atomic to readers: no reader sees the member in neither set or in both (see [Concurrency model](#concurrency-model)). |
 | `SSCAN key cursor [MATCH pattern] [COUNT count]` | Iterates a set incrementally: returns the next cursor plus at most `COUNT` members (default 10). The bounded counterpart of `SMEMBERS`. |
 
 ---
