@@ -1,0 +1,35 @@
+[
+ {
+  "id": "E3-M7",
+  "what": "partial UNWATCH clears the shared flag",
+  "edits": [
+   {
+    "file": "server-native/src/connection.rs",
+    "old": "                                            if watched_keys.is_empty() {\n",
+    "new": "                                            watch_subscriber.clear_invalidated();\n                                            if watched_keys.is_empty() {\n"
+   }
+  ]
+ },
+ {
+  "id": "E3-M8",
+  "what": "the EXECABORT exit leaves the flag set",
+  "edits": [
+   {
+    "file": "server-native/src/connection.rs",
+    "old": "                                                    watch_dirty = false;\n                                                    watch_subscriber.clear_invalidated();\n",
+    "new": "                                                    watch_dirty = false;\n"
+   }
+  ]
+ },
+ {
+  "id": "E3-M6",
+  "what": "clear the flag at a later WATCH",
+  "edits": [
+   {
+    "file": "server-native/src/connection.rs",
+    "old": "                                                            reg.entry(key.clone()).or_default().push(watch_subscriber.watching(live));\n",
+    "new": "                                                            reg.entry(key.clone()).or_default().push(watch_subscriber.watching(live));\n                                                            watch_subscriber.clear_invalidated();\n"
+   }
+  ]
+ }
+]
