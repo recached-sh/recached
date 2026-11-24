@@ -6591,12 +6591,14 @@ impl KeyValueStore {
                 if occupied.get().is_expired(now) {
                     return Value::BulkString(None);
                 }
-                let Some(checked) = checked else {
-                    return invalid_expire_time("getex");
-                };
+                // The type first, then the deadline: Redis answers WRONGTYPE
+                // for a list whatever the option (6O-F review F2).
                 let value = match &occupied.get().value {
                     EntryValue::Str(v) => Value::BulkString(Some(v.clone().into_bytes())),
                     _ => return Value::Error(WRONGTYPE.to_string()),
+                };
+                let Some(checked) = checked else {
+                    return invalid_expire_time("getex");
                 };
                 occupied.get().touch(now);
                 match option {

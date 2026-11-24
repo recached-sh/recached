@@ -2132,6 +2132,7 @@ pub(crate) async fn replay_aof_recovering(
     recovered.refusals = refusals.into_iter().flatten().collect();
 
     let mut replayed = 0usize;
+    let mut clamped = 0usize;
     let mut ephemeral = ReplayEphemeral::default();
     let mut offset = replay_start;
     while offset < bytes.len() {
@@ -2154,7 +2155,9 @@ pub(crate) async fn replay_aof_recovering(
                     Value::Push(inner) => Value::Array(Some(inner)),
                     other => other,
                 };
-                clamp_overflowing_deadline(&mut normalised);
+                if clamp_overflowing_deadline(&mut normalised) {
+                    clamped += 1;
+                }
                 let cmd = match Command::from_value(normalised) {
                     // The write inside its envelope; the mark was taken above.
                     Ok(Command::Dedup(_, _, inner)) => *inner,
@@ -2193,6 +2196,11 @@ pub(crate) async fn replay_aof_recovering(
         }
     }
     ephemeral.discard_abandoned(store)?;
+    if clamped > 0 {
+        warn!(
+            "AOF replay clamped {clamped} deadline(s) past i64::MAX, written before 6O-F, to i64::MAX"
+        );
+    }
     if replayed > 0 {
         info!("AOF replayed: {} commands ← {:?}", replayed, path);
     }
@@ -2226,9 +2234,10 @@ pub(crate) async fn replay_aof_recovering(
 /// `i64::MAX`, about 292 million years from now, which is what
 /// `PEXPIRETIME` reported for the key. Only these two record shapes are
 /// touched, and only when their value is all digits and past `i64::MAX`.
-pub(crate) fn clamp_overflowing_deadline(record: &mut Value) {
-    let Value::Array(Some(items)) = record else {
-        return;
+/// Returns whether it clamped; the caller reports it.
+pub(crate) fn clamp_overflowing_deadline(record: &mut Value) -> bool {
+    let (Value::Array(Some(items)) | Value::Push(items)) = record else {
+        return false;
     };
     let word = |i: usize| match items.get(i) {
         Some(Value::BulkString(Some(b))) => Some(b.as_slice()),
@@ -2247,10 +2256,10 @@ pub(crate) fn clamp_overflowing_deadline(record: &mut Value) {
     } else if is(0, b"SET") && len == 5 && is(3, b"PXAT") {
         base + 4
     } else {
-        return;
+        return false;
     };
     let Some(Value::BulkString(Some(digits))) = items.get_mut(at) else {
-        return;
+        return false;
     };
     let overflows = !digits.is_empty()
         && digits.iter().all(u8::is_ascii_digit)
@@ -2259,12 +2268,9 @@ pub(crate) fn clamp_overflowing_deadline(record: &mut Value) {
             .and_then(|d| d.parse::<i64>().ok())
             .is_none();
     if overflows {
-        warn!(
-            "Clamping a deadline past i64::MAX ({}) in a record written before 6O-F",
-            String::from_utf8_lossy(digits)
-        );
         *digits = i64::MAX.to_string().into_bytes();
     }
+    overflows
 }
 
 /// The dedup information an AOF record carries.

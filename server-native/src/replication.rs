@@ -2314,8 +2314,14 @@ async fn apply_repl_frame(
     watches: &WatchRegistry,
     bytes: &[u8],
 ) -> std::io::Result<()> {
-    let (value, consumed) = Value::parse(bytes)
+    let (mut value, consumed) = Value::parse(bytes)
         .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
+    // A primary before 6O-F could stream a deadline past `i64::MAX`, bare or
+    // inside a DEDUP envelope: clamped before either is parsed. The bytes
+    // forwarded downstream stay the primary's (offsets); every applier clamps.
+    if clamp_overflowing_deadline(&mut value) {
+        warn!("replicated frame carried a deadline past i64::MAX (pre-6O-F primary); clamped");
+    }
     if consumed != bytes.len() {
         return Err(std::io::Error::new(
             ErrorKind::InvalidData,
@@ -2364,12 +2370,10 @@ async fn apply_repl_frame(
         }
         None => {}
     }
-    let mut normalised = match value {
+    let normalised = match value {
         Value::Push(inner) => Value::Array(Some(inner)),
         other => other,
     };
-    // A primary before 6O-F could stream a deadline past `i64::MAX`.
-    clamp_overflowing_deadline(&mut normalised);
     let cmd = Command::from_value(normalised)
         .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
     let _order = state
@@ -2979,5 +2983,78 @@ mod dedup_order_tests {
         .unwrap()
         .unwrap();
         assert!(knows(&r.state, "striped-0d", 2));
+    }
+}
+
+/// 6O-F: a primary before 6O-F could stream a deadline past `i64::MAX`
+/// (`SET … EXAT`, `EXPIREAT`), bare or inside a DEDUP envelope. The replica
+/// must clamp it, not break the link over a frame it cannot parse.
+#[cfg(test)]
+mod legacy_deadline_6of_tests {
+    use super::*;
+
+    fn replica() -> (KeyValueStore, Arc<ServerState>, SyncTx, WatchRegistry) {
+        let hub = ReplHub::new();
+        hub.configure_dedup(true);
+        let state = ServerState::for_tests(
+            Arc::new(SnapshotConfig {
+                path: std::env::temp_dir().join("recached_6of_legacy_unused.rdb"),
+                last_save: std::sync::atomic::AtomicI64::new(0),
+                checkpoint_id: AtomicU64::new(0),
+            }),
+            hub,
+            true,
+        );
+        let store = KeyValueStore::new();
+        store.set_follower(true);
+        (store, state, SyncRouter::new(16), WatchHub::new())
+    }
+
+    async fn apply_all(frames: &[&[&str]]) -> Value {
+        let (store, state, tx, watches) = replica();
+        for words in frames {
+            let frame = crate::propagation::resp_push(
+                &words.iter().map(|w| w.as_bytes()).collect::<Vec<_>>(),
+            );
+            apply_repl_frame(&store, &state, &tx, &watches, &frame)
+                .await
+                .unwrap_or_else(|e| panic!("{words:?}: {e}"));
+        }
+        store.execute(Command::PExpireTime("k".into()))
+    }
+
+    #[tokio::test]
+    async fn a_bare_legacy_deadline_is_clamped() {
+        let at = apply_all(&[&["SET", "k", "v", "PXAT", "18446744073709551615"]]).await;
+        assert_eq!(at, Value::Integer(i64::MAX));
+    }
+
+    #[tokio::test]
+    async fn a_legacy_deadline_inside_a_dedup_envelope_is_clamped() {
+        let at = apply_all(&[&[
+            "DEDUP",
+            "client-a",
+            "7",
+            "SET",
+            "k",
+            "v",
+            "PXAT",
+            "18446744073709551615",
+        ]])
+        .await;
+        assert_eq!(at, Value::Integer(i64::MAX));
+        let at = apply_all(&[
+            &["SET", "k", "v"],
+            &[
+                "DEDUP",
+                "client-b",
+                "1",
+                "PEXPIREAT",
+                "k",
+                "9223372036854776000",
+            ],
+        ])
+        .await;
+        assert_eq!(at, Value::Integer(i64::MAX));
     }
 }

@@ -66,20 +66,38 @@ fn reproducing() -> bool {
 }
 
 /// A primary with an AOF under `policy`, written by the real TCP path.
-async fn aof_primary(policy: AofSync, name: &str) -> (Shared, Arc<AofWriter>, PathBuf) {
-    let path = scratch(name).join("append.aof");
-    let aof = Arc::new(AofWriter::open(path.clone(), policy).await.unwrap());
+async fn aof_primary(policy: AofSync, name: &str) -> (Shared, Arc<AofWriter>, Scratch) {
+    let path = scratch(name, "append.aof");
+    let aof = Arc::new(AofWriter::open(path.to_path_buf(), policy).await.unwrap());
     (Shared::with_aof(false, Some(Arc::clone(&aof))), aof, path)
 }
 
-fn scratch(name: &str) -> PathBuf {
+/// A file in a fresh directory, removed (with the directory) when dropped.
+struct Scratch(PathBuf);
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+fn scratch(name: &str, file: &str) -> Scratch {
     let dir = std::env::temp_dir().join(format!(
         "recached_6of_{name}_{}_{}",
         std::process::id(),
         next_conn_id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    Scratch(dir.join(file))
 }
 
 /// Replay `path` into a fresh store on a thread whose store clock reads
@@ -574,6 +592,40 @@ async fn deadlines_past_i64_max_are_refused_as_redis_refuses_them() {
         assert_eq!(c.cmd(&["SET", "k", "v"]).await, ok());
         assert_eq!(c.cmd(args).await, want, "{args:?}");
     }
+    // Order against Redis 7.2.5 (6O-F review): an absent or expired key
+    // answers GETEX with nil, a list answers WRONGTYPE before any deadline
+    // check, and EXPIRE/PEXPIRE on an absent key still refuse a deadline
+    // that overflows once the clock is added.
+    assert_eq!(
+        c.cmd(&["GETEX", "absent", "PX", "9223372036854775000"])
+            .await,
+        nil()
+    );
+    assert_eq!(c.cmd(&["SET", "gone", "v", "PX", "1"]).await, ok());
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    assert_eq!(
+        c.cmd(&["GETEX", "gone", "PX", "9223372036854775000"]).await,
+        nil()
+    );
+    assert_eq!(c.cmd(&["RPUSH", "list", "v"]).await, int(1));
+    let wrongtype =
+        Value::Error("WRONGTYPE Operation against a key holding the wrong kind of value".into());
+    assert_eq!(
+        c.cmd(&["GETEX", "list", "PX", "9223372036854775000"]).await,
+        wrongtype
+    );
+    assert_eq!(
+        c.cmd(&["GETEX", "list", "EX", "9223372036854775"]).await,
+        wrongtype
+    );
+    assert_eq!(
+        c.cmd(&["EXPIRE", "absent", "9223372036854775"]).await,
+        invalid("expire")
+    );
+    assert_eq!(
+        c.cmd(&["PEXPIRE", "absent", "9223372036854775000"]).await,
+        invalid("pexpire")
+    );
     // SET and EXPIRE check before the key is looked at, as Redis does.
     assert_eq!(c.cmd(&["SET", "k", "v"]).await, ok());
     assert_eq!(
@@ -636,7 +688,7 @@ fn push(words: &[&str]) -> Vec<u8> {
 /// refused them, and the server could not restart. Clamped to `i64::MAX`.
 #[test]
 fn records_with_a_deadline_past_i64_max_written_before_6of_replay() {
-    let path = scratch("o_legacy").join("append.aof");
+    let path = scratch("o_legacy", "append.aof");
     let records = [
         push(&["SET", "6of:l:1", "v", "PXAT", "18446744073709551615"]),
         push(&["SET", "6of:l:2", "v"]),
@@ -652,7 +704,7 @@ fn records_with_a_deadline_past_i64_max_written_before_6of_replay() {
             "18446744073709551615",
         ]),
     ];
-    std::fs::write(&path, records.concat()).unwrap();
+    std::fs::write(&*path, records.concat()).unwrap();
     let store = replay_at(&path, now_unix_ms());
     for key in ["6of:l:1", "6of:l:2", "6of:l:3"] {
         assert_eq!(
