@@ -4904,19 +4904,25 @@ impl KeyValueStore {
     {
         let now = now_ms();
 
+        // Validated before the key is looked at, as Redis does: `SET k v NX
+        // EX <overflow>` on an existing key is an error, not a nil.
+        let fixed = match &opts.expiry {
+            None | Some(SetExpiry::KeepTtl) => None,
+            Some(SetExpiry::Ex(seconds)) => Some(deadline_after(now, *seconds, 1000)),
+            Some(SetExpiry::Px(ms)) => Some(deadline_after(now, *ms, 1)),
+            Some(SetExpiry::Exat(seconds)) => Some(deadline_after(0, *seconds, 1000)),
+            Some(SetExpiry::Pxat(ms)) => Some(deadline_after(0, *ms, 1)),
+        };
+        let fixed = match fixed {
+            Some(None) => return invalid_expire_time("set"),
+            Some(Some(at)) => Some(at),
+            None => None,
+        };
         let expiry = |existing_ttl: Option<u64>| -> Result<Option<u64>, Value> {
             match &opts.expiry {
                 None => Ok(None),
-                Some(SetExpiry::Ex(seconds)) => {
-                    if *seconds > u64::MAX / 1000 {
-                        return Err(Value::Error("ERR TTL overflow".to_string()));
-                    }
-                    Ok(Some(now.saturating_add(seconds * 1000)))
-                }
-                Some(SetExpiry::Px(ms)) => Ok(Some(now.saturating_add(*ms))),
-                Some(SetExpiry::Exat(seconds)) => Ok(Some(seconds.saturating_mul(1000))),
-                Some(SetExpiry::Pxat(ms)) => Ok(Some(*ms)),
                 Some(SetExpiry::KeepTtl) => Ok(existing_ttl),
+                Some(_) => Ok(fixed),
             }
         };
 
@@ -6500,16 +6506,18 @@ impl KeyValueStore {
             }
 
             Command::SetEx(key, secs, val) => {
-                let now = now_ms();
-                let exp = now.saturating_add(secs.saturating_mul(1000));
+                let Some(exp) = deadline_after(now_ms(), secs, 1000) else {
+                    return invalid_expire_time("setex");
+                };
                 self.data
                     .insert(Key::from(key), Box::new(Entry::new_str_ex(val, exp)));
                 Value::SimpleString("OK".to_string())
             }
 
             Command::PSetEx(key, ms, val) => {
-                let now = now_ms();
-                let exp = now.saturating_add(ms);
+                let Some(exp) = deadline_after(now_ms(), ms, 1) else {
+                    return invalid_expire_time("psetex");
+                };
                 self.data
                     .insert(Key::from(key), Box::new(Entry::new_str_ex(val, exp)));
                 Value::SimpleString("OK".to_string())
@@ -6524,14 +6532,22 @@ impl KeyValueStore {
             },
 
             // ── Expiry ────────────────────────────────────────────────────────
-            Command::Expire(key, secs) => set_expiry(
-                &self.data,
-                key,
-                now_ms().saturating_add(secs.saturating_mul(1000)),
-            ),
-            Command::PExpire(key, ms) => set_expiry(&self.data, key, now_ms().saturating_add(ms)),
-            Command::ExpireAt(key, ts) => set_expiry(&self.data, key, ts.saturating_mul(1000)),
-            Command::PExpireAt(key, ts) => set_expiry(&self.data, key, ts),
+            Command::Expire(key, secs) => match deadline_after(now_ms(), secs, 1000) {
+                Some(at) => set_expiry(&self.data, key, at),
+                None => invalid_expire_time("expire"),
+            },
+            Command::PExpire(key, ms) => match deadline_after(now_ms(), ms, 1) {
+                Some(at) => set_expiry(&self.data, key, at),
+                None => invalid_expire_time("pexpire"),
+            },
+            Command::ExpireAt(key, ts) => match deadline_after(0, ts, 1000) {
+                Some(at) => set_expiry(&self.data, key, at),
+                None => invalid_expire_time("expireat"),
+            },
+            Command::PExpireAt(key, ts) => match deadline_after(0, ts, 1) {
+                Some(at) => set_expiry(&self.data, key, at),
+                None => invalid_expire_time("pexpireat"),
+            },
 
             Command::GetDel(key) => {
                 let now = now_ms();
@@ -6557,6 +6573,17 @@ impl KeyValueStore {
 
             Command::GetEx(key, option) => {
                 let now = now_ms();
+                // Validated before the key is looked at, as Redis does.
+                let checked = match option {
+                    None | Some(GetExOption::Persist) => Some(0),
+                    Some(GetExOption::Ex(secs)) => deadline_after(now, secs, 1000),
+                    Some(GetExOption::Px(ms)) => deadline_after(now, ms, 1),
+                    Some(GetExOption::ExAt(secs)) => deadline_after(0, secs, 1000),
+                    Some(GetExOption::PxAt(ms)) => deadline_after(0, ms, 1),
+                };
+                let Some(checked) = checked else {
+                    return invalid_expire_time("getex");
+                };
                 let DashEntry::Occupied(mut occupied) = self.data.entry(Key::from(key)) else {
                     return Value::BulkString(None);
                 };
@@ -6568,27 +6595,15 @@ impl KeyValueStore {
                     _ => return Value::Error(WRONGTYPE.to_string()),
                 };
                 occupied.get().touch(now);
-                let deadline = match option {
+                match option {
                     None => return value,
-                    Some(GetExOption::Persist) => None,
-                    Some(GetExOption::Ex(secs)) => Some(secs.saturating_mul(1000).checked_add(now)),
-                    Some(GetExOption::Px(ms)) => Some(ms.checked_add(now)),
-                    Some(GetExOption::ExAt(secs)) => Some(secs.checked_mul(1000)),
-                    Some(GetExOption::PxAt(ms)) => Some(Some(ms)),
-                };
-                match deadline {
-                    None => occupied.get_mut().deadline = Deadline::NONE,
-                    Some(None) => {
-                        return Value::Error(
-                            "ERR invalid expire time in 'getex' command".to_string(),
-                        );
-                    }
+                    Some(GetExOption::Persist) => occupied.get_mut().deadline = Deadline::NONE,
                     // A deadline already past deletes the key, as Redis does;
                     // the value read before it is still the reply.
-                    Some(Some(at)) if at <= now => {
+                    Some(_) if checked <= now => {
                         occupied.remove();
                     }
-                    Some(Some(at)) => occupied.get_mut().deadline = Deadline::at(at),
+                    Some(_) => occupied.get_mut().deadline = Deadline::at(checked),
                 }
                 value
             }
@@ -8181,6 +8196,27 @@ fn incr_by<K: AsRef<str> + Into<Key>>(
             }
         },
     }
+}
+
+/// `base + amount * unit_ms`, the absolute deadline of an expiry option, or
+/// `None` when it does not fit a signed 64-bit count of milliseconds.
+///
+/// Redis 7.2.5's rule (`getExpireMillisecondsOrReply`, `expireGenericCommand`):
+/// a seconds value is multiplied by 1000 and a relative one added to the
+/// clock, and any overflow of `long long` is `invalid expire time`. Recached
+/// used to saturate in `u64` instead. A deadline past `i64::MAX` was then
+/// propagated (`SET … EXAT`, `EXPIREAT`) as a `PXAT`/`PEXPIREAT` value that
+/// no parser accepts, so the AOF replay refused the file and the server could
+/// not restart (6O-F review).
+pub fn deadline_after(base: u64, amount: u64, unit_ms: u64) -> Option<u64> {
+    amount
+        .checked_mul(unit_ms)
+        .and_then(|ms| base.checked_add(ms))
+        .filter(|&at| at <= i64::MAX as u64)
+}
+
+fn invalid_expire_time(command: &str) -> Value {
+    Value::Error(format!("ERR invalid expire time in '{command}' command"))
 }
 
 fn set_expiry(data: &Keyspace, key: String, ts_ms: u64) -> Value {

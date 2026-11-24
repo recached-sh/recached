@@ -2364,10 +2364,12 @@ async fn apply_repl_frame(
         }
         None => {}
     }
-    let normalised = match value {
+    let mut normalised = match value {
         Value::Push(inner) => Value::Array(Some(inner)),
         other => other,
     };
+    // A primary before 6O-F could stream a deadline past `i64::MAX`.
+    clamp_overflowing_deadline(&mut normalised);
     let cmd = Command::from_value(normalised)
         .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e))?;
     let _order = state
