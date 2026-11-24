@@ -393,6 +393,34 @@ fn cases() -> Vec<(&'static str, Vec<Vec<&'static str>>)> {
                 c("ZPOPMIN"),
             ],
         ),
+        // 6O-F: a deadline must fit a signed 64-bit count of milliseconds.
+        // Recached saturated it instead, and SET EXAT / EXPIREAT then wrote
+        // an AOF record the replay could not parse.
+        (
+            "expire-overflow",
+            vec![
+                c("SET k v EXAT 9223372036854775807"),
+                c("SET k v EXAT 9223372036854775"),
+                c("SET k v EXAT 9223372036854776"),
+                c("SET k v EX 9223372036854775"),
+                c("SET k v PX 9223372036854775807"),
+                c("SET k v PXAT 9223372036854775807"),
+                c("SET k w NX EX 9223372036854776"),
+                c("SETEX k 9223372036854775 v"),
+                c("PSETEX k 9223372036854775807 v"),
+                c("SET k v"),
+                c("EXPIRE k 9223372036854775"),
+                c("PEXPIRE k 9223372036854775807"),
+                c("EXPIREAT k 9223372036854775807"),
+                c("EXPIRE absent 9223372036854776"),
+                c("EXPIREAT k 9223372036854775"),
+                c("PEXPIREAT k 9223372036854775807"),
+                c("GETEX k EXAT 9223372036854775807"),
+                c("GETEX k EX 9223372036854775"),
+                c("GETEX k PX 9223372036854775807"),
+                c("GET k"),
+            ],
+        ),
     ]
 }
 

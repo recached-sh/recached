@@ -574,16 +574,12 @@ async fn deadlines_past_i64_max_are_refused_as_redis_refuses_them() {
         assert_eq!(c.cmd(&["SET", "k", "v"]).await, ok());
         assert_eq!(c.cmd(args).await, want, "{args:?}");
     }
-    // Checked before the key is looked at, as in Redis.
+    // SET and EXPIRE check before the key is looked at, as Redis does.
     assert_eq!(c.cmd(&["SET", "k", "v"]).await, ok());
     assert_eq!(
         c.cmd(&["SET", "k", "w", "NX", "EX", "9223372036854776"])
             .await,
         invalid("set")
-    );
-    assert_eq!(
-        c.cmd(&["GETEX", "absent", "EX", "9223372036854776"]).await,
-        invalid("getex")
     );
     assert_eq!(
         c.cmd(&["EXPIRE", "absent", "9223372036854776"]).await,

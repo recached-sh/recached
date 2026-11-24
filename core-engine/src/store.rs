@@ -6573,7 +6573,11 @@ impl KeyValueStore {
 
             Command::GetEx(key, option) => {
                 let now = now_ms();
-                // Validated before the key is looked at, as Redis does.
+                // Checked once the key is found live, as in Redis: there an
+                // absent key answers nil whatever the option. (The parser
+                // already refuses some values outright, a pre-existing
+                // difference for absent keys recorded in 6O-F.) A relative
+                // deadline can still overflow once the clock is added.
                 let checked = match option {
                     None | Some(GetExOption::Persist) => Some(0),
                     Some(GetExOption::Ex(secs)) => deadline_after(now, secs, 1000),
@@ -6581,15 +6585,15 @@ impl KeyValueStore {
                     Some(GetExOption::ExAt(secs)) => deadline_after(0, secs, 1000),
                     Some(GetExOption::PxAt(ms)) => deadline_after(0, ms, 1),
                 };
-                let Some(checked) = checked else {
-                    return invalid_expire_time("getex");
-                };
                 let DashEntry::Occupied(mut occupied) = self.data.entry(Key::from(key)) else {
                     return Value::BulkString(None);
                 };
                 if occupied.get().is_expired(now) {
                     return Value::BulkString(None);
                 }
+                let Some(checked) = checked else {
+                    return invalid_expire_time("getex");
+                };
                 let value = match &occupied.get().value {
                     EntryValue::Str(v) => Value::BulkString(Some(v.clone().into_bytes())),
                     _ => return Value::Error(WRONGTYPE.to_string()),
