@@ -6817,6 +6817,7 @@ mod coalesced_fanout;
 mod commands_v06;
 mod dedup_ack_order;
 mod exec_isolation;
+mod expiry_replay_6of;
 mod frame_encoding_6oa;
 mod integration_6nc;
 mod live_query_6k;

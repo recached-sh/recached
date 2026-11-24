@@ -2132,6 +2132,7 @@ pub(crate) async fn replay_aof_recovering(
     recovered.refusals = refusals.into_iter().flatten().collect();
 
     let mut replayed = 0usize;
+    let mut clamped = 0usize;
     let mut ephemeral = ReplayEphemeral::default();
     let mut offset = replay_start;
     while offset < bytes.len() {
@@ -2150,10 +2151,13 @@ pub(crate) async fn replay_aof_recovering(
                 }
                 // Writes are recorded via `on_write` in RESP3 Push form (`>N`);
                 // normalise to Array so Command::from_value can parse them.
-                let normalised = match value {
+                let mut normalised = match value {
                     Value::Push(inner) => Value::Array(Some(inner)),
                     other => other,
                 };
+                if clamp_overflowing_deadline(&mut normalised) {
+                    clamped += 1;
+                }
                 let cmd = match Command::from_value(normalised) {
                     // The write inside its envelope; the mark was taken above.
                     Ok(Command::Dedup(_, _, inner)) => *inner,
@@ -2192,6 +2196,11 @@ pub(crate) async fn replay_aof_recovering(
         }
     }
     ephemeral.discard_abandoned(store)?;
+    if clamped > 0 {
+        warn!(
+            "AOF replay clamped {clamped} deadline(s) past i64::MAX, written before 6O-F, to i64::MAX"
+        );
+    }
     if replayed > 0 {
         info!("AOF replayed: {} commands ← {:?}", replayed, path);
     }
@@ -2210,6 +2219,58 @@ pub(crate) async fn replay_aof_recovering(
         );
     }
     Ok((replayed, recovered))
+}
+
+/// Clamp a deadline past `i64::MAX` in a record written before 6O-F to
+/// `i64::MAX`, so that it parses.
+///
+/// Until 6O-F, `SET … EXAT` and `EXPIREAT` accepted any second count and
+/// saturated it in `u64`, and their frames carried that value: `SET k v PXAT
+/// <n>` or `PEXPIREAT k <n>`, with `n` past `i64::MAX`. `PXAT` and
+/// `PEXPIREAT` parse as `i64`, so such a record failed to parse, and the
+/// AOF replay (or the replica) treated it as corruption: the server could not
+/// restart. Commands now refuse such deadlines, as Redis does, so new files
+/// never hold one. For files already written, the deadline is clamped to
+/// `i64::MAX`, about 292 million years from now, which is what
+/// `PEXPIRETIME` reported for the key. Only these two record shapes are
+/// touched, and only when their value is all digits and past `i64::MAX`.
+/// Returns whether it clamped; the caller reports it.
+pub(crate) fn clamp_overflowing_deadline(record: &mut Value) -> bool {
+    let (Value::Array(Some(items)) | Value::Push(items)) = record else {
+        return false;
+    };
+    let word = |i: usize| match items.get(i) {
+        Some(Value::BulkString(Some(b))) => Some(b.as_slice()),
+        _ => None,
+    };
+    // The write itself, or the one inside `DEDUP <client> <id> <write…>`.
+    let base = if word(0).is_some_and(|w| w.eq_ignore_ascii_case(b"DEDUP")) {
+        3
+    } else {
+        0
+    };
+    let len = items.len() - base.min(items.len());
+    let is = |i: usize, name: &[u8]| word(base + i).is_some_and(|w| w.eq_ignore_ascii_case(name));
+    let at = if is(0, b"PEXPIREAT") && len == 3 {
+        base + 2
+    } else if is(0, b"SET") && len == 5 && is(3, b"PXAT") {
+        base + 4
+    } else {
+        return false;
+    };
+    let Some(Value::BulkString(Some(digits))) = items.get_mut(at) else {
+        return false;
+    };
+    let overflows = !digits.is_empty()
+        && digits.iter().all(u8::is_ascii_digit)
+        && std::str::from_utf8(digits)
+            .ok()
+            .and_then(|d| d.parse::<i64>().ok())
+            .is_none();
+    if overflows {
+        *digits = i64::MAX.to_string().into_bytes();
+    }
+    overflows
 }
 
 /// The dedup information an AOF record carries.
