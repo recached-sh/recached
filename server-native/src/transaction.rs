@@ -240,9 +240,32 @@ struct Eviction {
 /// The reply of a queued command that did not run because an earlier one
 /// failed internally (6O-G panic containment).
 const NOT_RUN: &str = "ERR command not executed: an earlier command of the transaction failed";
-/// The reply of the queued command that failed internally.
+/// The reply of the queued write that failed internally.
 const FAILED: &str =
     "ERR internal error executing the command; writes are disabled until SAVE succeeds";
+/// The reply of a queued read that failed internally: nothing changed, so
+/// nothing fails closed (review N-1).
+const FAILED_READ: &str = "ERR internal error executing the command";
+
+/// What a transaction's run asks of the connection that ran it.
+pub(crate) struct TransactionRun {
+    /// `EXEC`'s reply, one item per queued command.
+    pub(crate) replies: Vec<Value>,
+    /// A queued write panicked part-way: close every WebSocket sync client
+    /// with the sync-gap code ([`resynchronise_clients`]) — right away,
+    /// whether or not `EXEC`'s reply can be written (reviews C-1, C-2), but
+    /// after the guards are released. A WebSocket connection running the
+    /// transaction still sends its reply first: the gap closes a connection
+    /// at its next poll of its stream.
+    pub(crate) resynchronise_clients: bool,
+}
+
+/// Close every WebSocket sync client with the sync-gap code, so each
+/// rebuilds its copy from the keyspace as it now is (6O-G convergence).
+pub(crate) fn resynchronise_clients(tx: &SyncTx) {
+    let clients = tx.invalidate_all();
+    warn!("after a part-applied write: closed {clients} WebSocket connection(s) to resynchronise");
+}
 
 /// Run a transaction's queued commands under the guards `EXEC` holds
 /// ([`ReplHub::lock_transaction`]), every one at `now`, the instant the
@@ -258,7 +281,7 @@ pub(crate) async fn run_transaction_queue(
     watch_registry: &WatchRegistry,
     store: &KeyValueStore,
     pubsub: &SharedPubSub,
-) -> Vec<Value> {
+) -> TransactionRun {
     // Whether anything observed writes as the transaction began: then the
     // frames are built inside phase 1 with the rest of each write's work.
     // Something registered since builds the rest in phase 2.
@@ -290,9 +313,16 @@ pub(crate) async fn run_transaction_queue(
         // it has no reply and no frame. The rest never ran.
         replies.truncate(failed);
         writes.retain(|write| write.index < failed);
-        replies.push(Value::Error(FAILED.to_string()));
+        replies.push(Value::Error(
+            if applied.diverged {
+                FAILED
+            } else {
+                FAILED_READ
+            }
+            .to_string(),
+        ));
         replies.extend((failed + 1..queue.len()).map(|_| Value::Error(NOT_RUN.to_string())));
-        contain_transaction_panic(state, &queue[failed], applied.repaired);
+        fail_closed(state, &queue[failed], applied);
     }
 
     // ── Phase 2: effects, in command order ──────────────────────────────
@@ -413,7 +443,17 @@ pub(crate) async fn run_transaction_queue(
         #[cfg(test)]
         crate::propagation::exec_pause::after(cmd).await;
     }
-    replies
+    if let Some(failed) = applied.panicked
+        && applied.diverged
+    {
+        // After the applied prefix's effects: it reaches replicas and
+        // clients before they are made to resynchronise.
+        converge(&queue[failed], state, watch_registry, store).await;
+    }
+    TransactionRun {
+        replies,
+        resynchronise_clients: applied.diverged,
+    }
 }
 
 /// A queued command panicked inside phase 1 (design R3/N2/P2). The store
@@ -421,11 +461,23 @@ pub(crate) async fn run_transaction_queue(
 /// (`repaired`), and released its stripes; phase 2 still logs, replicates
 /// and notifies that prefix. A write may have been applied part-way and has
 /// no frame, so the AOF no longer describes the keyspace: writes are
-/// refused (`MISCONF`) until a `SAVE` snapshots the actual state.
-fn contain_transaction_panic(state: &ServerState, cmd: &Command, repaired: bool) {
+/// refused (`MISCONF`) until a `SAVE` snapshots the actual state, which
+/// also truncates the AOF ([`converge`] handles the other copies).
+///
+/// Known limit (review C-6): what the failing command itself would have
+/// done to ephemeral ownership is lost with the unwind — an `ESET` that
+/// panicked after its mutation leaves its key unclaimed (not removed on
+/// disconnect), and its eviction victims' claims are not forgotten (a later
+/// disconnect deletes an absent key). The keyspace stays consistent with
+/// what the primary shows; only connection-scoped ownership is affected.
+fn fail_closed(
+    state: &ServerState,
+    cmd: &Command,
+    applied: core_engine::store::TransactionApplied,
+) {
     let name = command_name(cmd);
     counter!("recached_transaction_panics_total", "command" => name).increment(1);
-    if !repaired {
+    if !applied.diverged {
         error!(
             command = name,
             "a read queued in a transaction panicked; the transaction stopped there"
@@ -434,9 +486,48 @@ fn contain_transaction_panic(state: &ServerState, cmd: &Command, repaired: bool)
     }
     error!(
         command = name,
+        metadata_rebuilt = applied.repaired,
         "a write queued in a transaction panicked and may be applied part-way; its \
          effect is not logged or replicated. Client writes are disabled until SAVE \
          writes a snapshot of the actual state"
     );
     state.record_internal_failure("transaction_panic");
+}
+
+/// Bring every other copy of the keyspace back to the primary's actual state
+/// after a write panicked part-way inside a transaction (design P2, Q2). Its
+/// partial effect has no frame, so no stream can carry it:
+///
+/// - replicas: [`ReplHub::reset_stream`] rotates the run id and closes every
+///   link, so each reconnects and takes a **full** resynchronisation (and,
+///   being a replica that took one, resets its own sub-replicas the same
+///   way). Closing the links alone would let a replica resume partially
+///   past the missing change;
+/// - WebSocket sync clients: closed with the sync-gap code once `EXEC`'s
+///   reply is written ([`TransactionRun::resynchronise_clients`]);
+/// - watchers and live queries: the command's keys announced as their full
+///   values now (or, for a `FLUSHDB`, every watched key).
+///
+/// Runs with the transaction's guards still held, after the applied prefix's
+/// effects, so a replica attach (all-write barrier) waits for it.
+async fn converge(
+    cmd: &Command,
+    state: &ServerState,
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+) {
+    let replicas = state.replicas.reset_stream();
+    if matches!(cmd, Command::FlushDb) {
+        notify_keyspace_replaced(watch_registry, store).await;
+    } else if watch_registry.watched_after_write() {
+        let changes: Vec<KeyChange<'_>> = primary_keys(cmd)
+            .into_iter()
+            .map(|key| KeyChange::current(key, None, store))
+            .collect();
+        fan_out(watch_registry, &changes).await;
+    }
+    error!(
+        command = command_name(cmd),
+        replicas, "after a part-applied write: replicas made to resynchronise in full"
+    );
 }

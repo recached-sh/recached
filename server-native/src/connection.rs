@@ -913,7 +913,7 @@ async fn handle_tcp_halves<R, W>(
                                                         drop(_write_guards);
                                                         if writer.write_all(&Value::Array(None).serialize()).await.is_err() { break 'outer; }
                                                     } else {
-                                                        let results = run_transaction_queue(
+                                                        let TransactionRun { replies: results, resynchronise_clients: resync } = run_transaction_queue(
                                                             queue,
                                                             now,
                                                             &tx,
@@ -935,6 +935,12 @@ async fn handle_tcp_halves<R, W>(
                                                         // the WebSocket write awaits it). A client that does not read its
                                                         // reply must not hold back writers of these keys (6O-E review).
                                                         drop(_write_guards);
+                                                        // Not after the reply: a client that
+                                                        // does not read must not hold back
+                                                        // every sync client's resync (C-2).
+                                                        if resync {
+                                                            resynchronise_clients(&tx);
+                                                        }
                                                         if writer.write_all(&out).await.is_err() { break 'outer; }
                                                     }
                                                 }
@@ -2092,7 +2098,7 @@ pub(crate) async fn handle_ws<S>(
                                             drop(_write_guards);
                                             ws_send!(&Value::Array(None).serialize());
                                         } else {
-                                            let results = run_transaction_queue(
+                                            let TransactionRun { replies: results, resynchronise_clients: resync } = run_transaction_queue(
                                                 queue,
                                                 now,
                                                 &tx,
@@ -2117,6 +2123,12 @@ pub(crate) async fn handle_ws<S>(
                                             // the WebSocket write awaits it). A client that does not read its
                                             // reply must not hold back writers of these keys (6O-E review).
                                             drop(_write_guards);
+                                            // Before the reply, which may fail (C-1):
+                                            // this connection's own copy too, closed at
+                                            // its next poll, so after its reply.
+                                            if resync {
+                                                resynchronise_clients(&tx);
+                                            }
                                             ws_send!(&out);
                                         }
                                     }

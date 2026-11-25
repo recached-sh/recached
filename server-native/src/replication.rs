@@ -90,7 +90,10 @@ pub(crate) struct ReplHub {
     /// Backlog and replica queues; see [`ReplStream`].
     stream: std::sync::Mutex<ReplStream>,
     pub(crate) count: AtomicUsize,
-    run_id: String,
+    /// This stream's identity, which a replica names to resume partially.
+    /// Replaced by [`reset_stream`](Self::reset_stream) when the stream no
+    /// longer describes this node's keyspace (6O-G).
+    run_id: std::sync::RwLock<String>,
     offset: AtomicU64,
     backlog_bytes: AtomicUsize,
     queue_bytes: AtomicUsize,
@@ -516,7 +519,7 @@ impl ReplHub {
         Arc::new(ReplHub {
             stream: std::sync::Mutex::new(ReplStream::default()),
             count: AtomicUsize::new(0),
-            run_id: generate_run_id(),
+            run_id: std::sync::RwLock::new(generate_run_id()),
             offset: AtomicU64::new(0),
             backlog_bytes: AtomicUsize::new(0),
             queue_bytes: AtomicUsize::new(DEFAULT_REPL_QUEUE_BYTES),
@@ -631,11 +634,52 @@ impl ReplHub {
 
     /// The run id string this primary advertises.
     fn advertised_id(&self) -> String {
+        let run_id = self.run_id();
         if self.streams_dedup() {
-            format!("{};caps={REPL_CAP_DEDUP}", self.run_id)
+            format!("{run_id};caps={REPL_CAP_DEDUP}")
         } else {
-            self.run_id.clone()
+            run_id
         }
+    }
+
+    /// The run id replicas resume against now.
+    pub(crate) fn run_id(&self) -> String {
+        self.run_id
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Make every replica of this node take a **full** resynchronisation
+    /// (6O-G): a new run id — so none can resume partially, whatever offset
+    /// it holds — an emptied backlog, and every replica link closed. They
+    /// reconnect and are sent a snapshot of the keyspace as it now is.
+    ///
+    /// For when the stream stops describing the keyspace: a write that
+    /// panicked part-way inside a transaction (it has no frame), and on a
+    /// replica, a full resynchronisation from its own primary (its
+    /// sub-replicas hold the old keyspace and would otherwise resume onto
+    /// the new one). Closing the links alone is not enough: a replica would
+    /// reconnect with the old run id and an offset still in the backlog.
+    ///
+    /// The caller excludes attaches meanwhile: an attach takes the all-write
+    /// barrier, which waits for the caller's stripes. Returns how many
+    /// replica links were closed.
+    pub(crate) fn reset_stream(&self) -> usize {
+        let mut stream = self.stream();
+        *self
+            .run_id
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = generate_run_id();
+        stream.backlog = ReplBacklog::default();
+        let closed = stream.senders.len();
+        // Dropping a handle closes its replica's connection (`_link`).
+        stream.senders.clear();
+        self.count.store(0, Ordering::Relaxed);
+        drop(stream);
+        gauge!("recached_replication_backlog_bytes").set(0.0);
+        counter!("recached_replication_stream_resets_total").increment(1);
+        closed
     }
 
     pub(crate) fn stripe_for(key: &str) -> usize {
@@ -910,7 +954,7 @@ impl ReplHub {
         requested_run_id: &str,
         requested_offset: u64,
     ) -> Option<Vec<ReplFrame>> {
-        if requested_run_id != self.run_id {
+        if requested_run_id != self.run_id() {
             return None;
         }
         let current = self.offset.load(Ordering::Acquire);
@@ -2149,6 +2193,17 @@ where
             // rebuild from the new keyspace, and abort `WATCH`ed `EXEC`s.
             // Still behind the barrier, so no write or QSUB snapshot falls
             // between the replacement and the gap.
+            // This node's own replicas hold the keyspace just replaced, and
+            // would resume partially onto the new one from this node's
+            // backlog: make them resynchronise in full too, and so on down
+            // the chain (6O-G).
+            let sub_replicas = state.replicas.reset_stream();
+            if sub_replicas > 0 {
+                info!(
+                    "Replica: full resynchronisation closed {sub_replicas} sub-replica link(s) \
+                     so they resynchronise in full"
+                );
+            }
             let invalidated = tx.invalidate_all();
             notify_keyspace_replaced(watches, store).await;
             if invalidated > 0 {
@@ -2561,11 +2616,11 @@ mod write_order_tests {
         hub.fan_out(vec![4, 5, 6]).await;
 
         assert!(
-            hub.resume_frames(&hub.run_id, 0).await.is_none(),
+            hub.resume_frames(&hub.run_id(), 0).await.is_none(),
             "offset one was evicted, so offset zero cannot resume"
         );
         let frames = hub
-            .resume_frames(&hub.run_id, 1)
+            .resume_frames(&hub.run_id(), 1)
             .await
             .expect("offset one should resume from retained offset two");
         assert_eq!(frames.len(), 1);

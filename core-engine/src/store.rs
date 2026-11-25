@@ -3024,10 +3024,16 @@ pub struct TransactionApplied {
     /// was applied; it may be applied part-way; none after it ran.
     pub panicked: Option<usize>,
     /// Whether the panicking command was a write, so the store may hold a
-    /// part-applied mutation: its metadata (size, key count, TTL and
-    /// eviction indexes) was rebuilt from the keyspace before this returned.
-    /// Conservative: set for any write that panicked, even before it
-    /// changed anything, since the store cannot tell.
+    /// part-applied mutation that no log describes. Conservative: set for
+    /// any write that panicked, even before it changed anything, since the
+    /// store cannot tell. The caller must fail closed and resynchronise
+    /// every copy.
+    pub diverged: bool,
+    /// Whether, after such a panic, the metadata (size, key count, TTL and
+    /// eviction indexes) was rebuilt from the keyspace. False if the rebuild
+    /// itself panicked (it reads the same values the first panic may have
+    /// come from): the counters may then be wrong until a restart, and the
+    /// caller is told rather than unwound out of (review C-4).
     pub repaired: bool,
 }
 
@@ -3082,33 +3088,45 @@ pub mod transaction_fault {
         }
     }
 
-    type Observer = (usize, Box<dyn Fn(bool) + Send>);
-    static REPAIR: Mutex<Option<Observer>> = Mutex::new(None);
+    type Observer = (usize, std::sync::Arc<dyn Fn(bool) + Send + Sync>);
+    static REPAIR: Mutex<Vec<Observer>> = Mutex::new(Vec::new());
 
     /// Call `observe(in_place)` inside every later repair of `store`, before
     /// the rebuild, on the repairing thread — while what it holds is held —
-    /// until the returned guard drops. One observer at a time.
+    /// until the returned guard drops. One observer per store.
     pub fn observe_repair(
         store: &super::KeyValueStore,
-        observe: impl Fn(bool) + Send + 'static,
+        observe: impl Fn(bool) + Send + Sync + 'static,
     ) -> ObservingRepair {
-        *REPAIR.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some((store.hook_id(), Box::new(observe)));
-        ObservingRepair
+        let id = store.hook_id();
+        REPAIR
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((id, std::sync::Arc::new(observe)));
+        ObservingRepair(id)
     }
 
-    pub struct ObservingRepair;
+    pub struct ObservingRepair(usize);
 
     impl Drop for ObservingRepair {
         fn drop(&mut self) {
-            *REPAIR.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            REPAIR
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retain(|(store, _)| *store != self.0);
         }
     }
 
     pub(super) fn repairing(store: usize, in_place: bool) {
-        if let Some((observed, observe)) = REPAIR.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
-            && *observed == store
-        {
+        // Called outside the lock: an observer may panic (a test of a
+        // second panic inside the repair).
+        let observer = REPAIR
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .find(|(observed, _)| *observed == store)
+            .map(|(_, observe)| std::sync::Arc::clone(observe));
+        if let Some(observe) = observer {
             observe(in_place);
         }
     }
@@ -3469,8 +3487,15 @@ impl KeyValueStore {
             if ran.is_err() {
                 applied.panicked = Some(i);
                 if !matches!(mutation_scope(cmd), MutationScope::ReadOnly) {
-                    applied.repaired = true;
-                    self.repair_after_panic(hold.take());
+                    applied.diverged = true;
+                    let hold = hold.take();
+                    // Contained too: a second panic here must not unwind
+                    // out of the transaction before its caller fails closed.
+                    applied.repaired =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            self.repair_after_panic(hold)
+                        }))
+                        .is_ok();
                 }
                 break;
             }
