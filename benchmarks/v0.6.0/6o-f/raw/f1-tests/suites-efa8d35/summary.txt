@@ -1,0 +1,10 @@
+fmt exit=0
+  passed= failed= ignored=
+clippy exit=0
+  passed= failed= ignored=
+workspace exit=0
+  passed=1521 failed=0 ignored=18
+server-inline-ignored exit=0
+  passed=731 failed=0 ignored=0
+server-coalesced-ignored exit=0
+  passed=731 failed=0 ignored=0

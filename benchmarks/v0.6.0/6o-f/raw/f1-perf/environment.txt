@@ -1,0 +1,34 @@
+date_utc: 2026-11-25T05:36:15Z
+rc_bin[pr1]: /home/dennispaler/recached-6of-bench/bin/rc-pr1 sha256=9fa02bfcb2deee0243532ec8ab8333e7fa58f997b1bfcf1632647d7233b7db4c source=6c394d4070a1bc556170468b00bb638a86bb463c version=recached-server 0.6.0
+rc_bin[base]: /home/dennispaler/recached-6of-bench/bin/rc-base sha256=d8d7781067b13ee1fa20b3c17d1fc750835a8f6724c31fca683affec4d7d8e0b source=410235b11634ff9ef1fe48736332d31c71caf74c version=recached-server 0.6.0
+kit_sha: unknown run-6oc.sh sha256=e1faa607a960f877d05e5d61553a83f6835bea6323f7ecfa03757d9d6765a8ac
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 0.78 2.28 2.04 2/1378 331506
+pressure_at_start: load=0.78 io_psi10=0.04/0.04 mem_psi10=0.00/0.00 swap_used_mib=3608 dirty_wb_kib=416
+memory: total=15918 used=8489 available=7429 swap_total=8191 swap_used=3608
+aof_fs: /dev/sda3 btrfs rotational=1
+perf: absent perf_event_paranoid=2 uprof=/home/dennispaler/recached-6of-bench/bin/uprof sha256=93aa43d37198729ef1c4b7c1d9e30084454ccb37b94ec72f0ce30391b6467afa
+cpus: server=0 bench=3-5 reps=5 req_c1_p1=500000 req_c1_p16=2000000 req_c50_p1=6000000 req_c50_p16=25000000 always_requests=50000 bench_threads=2 keyspace=100000
+req_scale: 
+order: alternate=1 settle_io=8 settle_max_s=90 server_pin=0
+cells: base/rc-noaof-incr-c50-P1 pr1/rc-noaof-incr-c50-P1 base/rc-noaof-set-c50-P1 pr1/rc-noaof-set-c50-P1 base/rc-noaof-hset-c50-P1 pr1/rc-noaof-hset-c50-P1 base/rc-noaof-incr-c50-P16 pr1/rc-noaof-incr-c50-P16 base/rc-everysec-incr-c50-P1 pr1/rc-everysec-incr-c50-P1
+record_cells: none freq=2999
+sysc: off cells=none
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: unknown
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+   2651 dennisp+  39  19  964560  57196  12136 S 102.3   0.4  14:18.54 localse+
+ 324249 root      20   0       0      0      0 I  24.3   0.0   0:06.81 kworker+
+   2605 dennisp+   9 -11  413144  15488   7620 S   4.9   0.1   0:20.16 pipewir+
+ 317902 dennisp+  20   0 4573988 593416 272808 S   4.9   3.6   2:18.38 firefox
+ 318073 dennisp+  20   0  653556  90148  73436 S   4.9   0.6   1:20.93 RDD Pro+
+ 318191 dennisp+  20   0  570608  54500  40020 S   4.9   0.3   0:14.56 Utility+
+      1 root      20   0   37116  14484  10256 S   0.0   0.1   0:02.31 systemd
+loadavg_at_end: 4.07 3.70 3.33 3/1376 343281
+pressure_at_end: load=4.07 io_psi10=6.42/0.46 mem_psi10=0.00/0.00 swap_used_mib=3612 dirty_wb_kib=2624
