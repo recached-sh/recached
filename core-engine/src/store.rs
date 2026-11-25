@@ -2951,6 +2951,169 @@ fn write_order_stripes() -> Arc<[Stripe]> {
         .collect()
 }
 
+// ── Transaction scope (6O-G) ─────────────────────────────────────────────────
+
+/// Words in a set of write-order stripes, one bit per stripe.
+const STRIPE_WORDS: usize = WRITE_ORDER_STRIPES / 64;
+const _: () = assert!(WRITE_ORDER_STRIPES.is_multiple_of(64));
+
+/// The transaction this thread is applying ([`KeyValueStore::apply_transaction`]),
+/// while it holds and marks its store stripes.
+#[derive(Clone, Copy)]
+struct ScopeState {
+    /// The store's identity ([`KeyValueStore::scope_id`]); 0 when none.
+    store: usize,
+    /// Whether the scope holds the capacity gate (a capped store): caps are
+    /// enforced under it, and nothing in the scope takes the gate again.
+    capped: bool,
+    /// The stripes it holds and marks. Checked by `debug_assert!` only: the
+    /// set comes from [`mutation_scope`], so a write outside it cannot occur.
+    held: [u64; STRIPE_WORDS],
+}
+
+const NO_SCOPE: ScopeState = ScopeState {
+    store: 0,
+    capped: false,
+    held: [0; STRIPE_WORDS],
+};
+
+thread_local! {
+    /// Per thread, like [`FROZEN_NOW`]: set only for the synchronous span of
+    /// a transaction's writes, so it cannot cross an `.await` or reach
+    /// another task.
+    static TX_SCOPE: std::cell::Cell<ScopeState> = const { std::cell::Cell::new(NO_SCOPE) };
+    /// [`TX_SCOPE`]'s store alone: what the write path checks, one word.
+    static TX_SCOPE_STORE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Set this thread's scope (and its one-word copy); returns the previous.
+fn set_scope(scope: ScopeState) -> ScopeState {
+    TX_SCOPE_STORE.with(|store| store.set(scope.store));
+    TX_SCOPE.with(|cell| cell.replace(scope))
+}
+
+fn stripe_set_has(held: &[u64; STRIPE_WORDS], stripe: usize) -> bool {
+    held.get(stripe / 64)
+        .is_some_and(|word| word & (1u64 << (stripe % 64)) != 0)
+}
+
+/// A transaction's hold on its store stripes and (capped) the capacity gate,
+/// with this thread's scope set. Dropping it clears the scope, then releases
+/// the stripes — clearing their marks and advancing their versions — and
+/// then the gate: on every exit path, an unwinding panic included.
+struct TransactionHold<'a> {
+    previous: ScopeState,
+    /// Ascending: the order they were taken in. Held for their drop.
+    _stripes: Vec<StripeHold<'a>>,
+    _gate: Option<std::sync::RwLockWriteGuard<'a, ()>>,
+}
+
+impl Drop for TransactionHold<'_> {
+    fn drop(&mut self) {
+        // The scope first: nothing that runs once the stripes are released
+        // may still bypass them.
+        set_scope(self.previous);
+        // Then the stripes (the fields drop after this), then the gate.
+    }
+}
+
+/// What [`KeyValueStore::apply_transaction`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TransactionApplied {
+    /// The queued command that panicked, if one did. Every command before it
+    /// was applied; it may be applied part-way; none after it ran.
+    pub panicked: Option<usize>,
+    /// Whether the panicking command was a write, so the store may hold a
+    /// part-applied mutation: its metadata (size, key count, TTL and
+    /// eviction indexes) was rebuilt from the keyspace before this returned.
+    /// Conservative: set for any write that panicked, even before it
+    /// changed anything, since the store cannot tell.
+    pub repaired: bool,
+}
+
+/// Test-only fault injection inside [`KeyValueStore::apply_transaction`]
+/// (6O-G): a panic in the store call of the next queued write naming a key,
+/// after the command's own work and before its accounting.
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub mod transaction_fault {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// How many keys are armed, checked before the lock.
+    static ARMED: AtomicUsize = AtomicUsize::new(0);
+    /// The armed keys: each panics once. Keys are unique per test, so tests
+    /// arming different keys run in parallel.
+    static KEYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// Armed until dropped, or until the panic fires once.
+    pub struct Armed(String);
+
+    impl Drop for Armed {
+        fn drop(&mut self) {
+            let mut keys = KEYS.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(at) = keys.iter().position(|key| *key == self.0) {
+                keys.remove(at);
+                ARMED.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Panic inside the store call of the next write to `key` made inside a
+    /// transaction, after its mutation.
+    pub fn panic_during_mutation_of(key: &str) -> Armed {
+        KEYS.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(key.to_string());
+        ARMED.fetch_add(1, Ordering::SeqCst);
+        Armed(key.to_string())
+    }
+
+    pub(super) fn mutated(key: &str) {
+        if ARMED.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        let mut keys = KEYS.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(at) = keys.iter().position(|armed| armed == key) {
+            keys.remove(at);
+            ARMED.fetch_sub(1, Ordering::SeqCst);
+            drop(keys);
+            panic!("test-injected panic during the transaction's mutation of {key}");
+        }
+    }
+
+    type Observer = (usize, Box<dyn Fn(bool) + Send>);
+    static REPAIR: Mutex<Option<Observer>> = Mutex::new(None);
+
+    /// Call `observe(in_place)` inside every later repair of `store`, before
+    /// the rebuild, on the repairing thread — while what it holds is held —
+    /// until the returned guard drops. One observer at a time.
+    pub fn observe_repair(
+        store: &super::KeyValueStore,
+        observe: impl Fn(bool) + Send + 'static,
+    ) -> ObservingRepair {
+        *REPAIR.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((store.hook_id(), Box::new(observe)));
+        ObservingRepair
+    }
+
+    pub struct ObservingRepair;
+
+    impl Drop for ObservingRepair {
+        fn drop(&mut self) {
+            *REPAIR.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        }
+    }
+
+    pub(super) fn repairing(store: usize, in_place: bool) {
+        if let Some((observed, observe)) = REPAIR.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
+            && *observed == store
+        {
+            observe(in_place);
+        }
+    }
+}
+
 /// Fraction of `max_memory_bytes` eviction drops to once the cap is hit,
 /// expressed as the divisor of the overshoot to shed (`limit - limit/16` ≈ 94%).
 ///
@@ -3196,6 +3359,219 @@ impl KeyValueStore {
         }
     }
 
+    /// This store's identity for [`TX_SCOPE`]: never 0, which means none.
+    fn scope_id(&self) -> usize {
+        Arc::as_ptr(&self.write_order).cast::<()>() as usize
+    }
+
+    /// The transaction scope this thread is in on this store, if any (6O-G).
+    #[inline]
+    fn scope(&self) -> Option<ScopeState> {
+        if TX_SCOPE_STORE.with(std::cell::Cell::get) != self.scope_id() {
+            return None;
+        }
+        Some(TX_SCOPE.with(std::cell::Cell::get))
+    }
+
+    /// Apply a `MULTI`/`EXEC` queue so that readers outside it see its writes
+    /// all at once or not at all (6O-G, design `V0.6O-F-TRANSACTION-
+    /// ATOMICITY-DESIGN.md` Option E, revision 5).
+    ///
+    /// `each(i, cmd)` runs queued command `i` — its store call and whatever
+    /// synchronous work the caller attaches to it (the server's reply,
+    /// frame, deadline read-back and ephemeral bookkeeping) — in queue
+    /// order, every one with the store's clock at `now` ([`at_instant`]).
+    /// It must not block on I/O: from before the first queued write to after
+    /// the last (the **write span**) this thread holds:
+    ///
+    /// - on a capped store, the capacity gate, exclusively;
+    /// - every write-order stripe the queue's writes take — the union of
+    ///   [`mutation_scope`] over them, or every stripe for a whole-keyspace
+    ///   write or a capped store — taken in ascending order before the first
+    ///   write and **marked** multi-step, as one MSET marks its keys (6O-D).
+    ///
+    /// So a single-key reader of a written key waits for the span, and a
+    /// multi-key reader validates across it or waits; a reader that finished
+    /// before the marks saw the old state. Inside the span (the thread's
+    /// scope) the queue's own writes take no stripe and no gate again, and
+    /// its reads never wait for or lock one: they see the queue's earlier
+    /// writes (read-your-writes). That is sound because the caller excludes
+    /// every other writer of the keys the queue reads or writes (the
+    /// server's `lock_transaction` and its closed unordered gate); the only
+    /// other writers in flight write unrelated keys, and an unrelated writer
+    /// that shares a stripe waits for the span.
+    ///
+    /// A read-only queue takes nothing. Reads before the first write and
+    /// after the last run as ordinary reads.
+    ///
+    /// **A panic in `each` is contained** (design R3/N2/P2): it is caught
+    /// inside the span, so nothing is released while it unwinds; no later
+    /// command runs; and, if the command was a write, which may be applied
+    /// part-way, the store's metadata is rebuilt from the keyspace (and any
+    /// emptied collection removed) — before anything is released, unless
+    /// another holder has a stripe outside the queue's set, when it is
+    /// rebuilt just after (see `repair_after_panic`). The applied
+    /// prefix, and the part-applied command, stay. The caller must treat the
+    /// store as diverged from whatever it logged ([`TransactionApplied`]).
+    pub fn apply_transaction<'q>(
+        &self,
+        queue: &'q [Command],
+        now: u64,
+        mut each: impl FnMut(usize, &'q Command),
+    ) -> TransactionApplied {
+        // A nested transaction would deadlock on the stripes this thread
+        // holds: panic instead (contained by an enclosing one).
+        assert!(
+            TX_SCOPE_STORE.with(std::cell::Cell::get) == 0,
+            "transactions do not nest"
+        );
+        // The write span and its stripes, from `mutation_scope` alone: the
+        // set every queued write's own `run_write` would take.
+        let capped = self.enforces_caps();
+        let mut held = [0u64; STRIPE_WORDS];
+        let mut span: Option<(usize, usize)> = None;
+        for (i, cmd) in queue.iter().enumerate() {
+            let all = match mutation_scope(cmd) {
+                MutationScope::ReadOnly => continue,
+                MutationScope::All => true,
+                MutationScope::Keys(keys) => {
+                    for key in keys {
+                        let stripe = write_order_stripe(key);
+                        if let Some(word) = held.get_mut(stripe / 64) {
+                            *word |= 1u64 << (stripe % 64);
+                        }
+                    }
+                    false
+                }
+            };
+            if all || capped {
+                held = [u64::MAX; STRIPE_WORDS];
+            }
+            span = Some((span.map_or(i, |(first, _)| first), i));
+        }
+        let mut applied = TransactionApplied::default();
+        let mut hold: Option<TransactionHold<'_>> = None;
+        for (i, cmd) in queue.iter().enumerate() {
+            if span.is_some_and(|(first, _)| i == first) {
+                hold = Some(self.hold_transaction(held, capped));
+            }
+            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                at_instant(now, || each(i, cmd));
+                #[cfg(any(test, feature = "test-hooks"))]
+                if hold.is_some() && write_pause::armed() {
+                    let keys = match mutation_scope(cmd) {
+                        MutationScope::Keys(keys) => keys,
+                        _ => SmallVec::new(),
+                    };
+                    write_pause::transaction_step(self.hook_id(), &keys);
+                }
+            }));
+            if ran.is_err() {
+                applied.panicked = Some(i);
+                if !matches!(mutation_scope(cmd), MutationScope::ReadOnly) {
+                    applied.repaired = true;
+                    self.repair_after_panic(hold.take());
+                }
+                break;
+            }
+            if span.is_some_and(|(_, last)| i == last) {
+                // Released right after the last write: the queue's writes
+                // become visible together, here.
+                hold = None;
+            }
+        }
+        drop(hold);
+        applied
+    }
+
+    /// Take the capacity gate (capped stores), then the stripes in `held`
+    /// in ascending order, mark them, and enter this thread's scope.
+    fn hold_transaction(&self, held: [u64; STRIPE_WORDS], capped: bool) -> TransactionHold<'_> {
+        let gate = capped.then(|| {
+            self.capacity_gate
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        });
+        let stripes: Vec<StripeHold<'_>> = (0..WRITE_ORDER_STRIPES)
+            .filter(|&stripe| stripe_set_has(&held, stripe))
+            .map(|stripe| StripeHold::take(&self.write_order[stripe]))
+            .collect();
+        // Marked once all are held, before the first write, as `order_keys`
+        // marks a multi-key write's stripes.
+        for stripe in &stripes {
+            stripe.mark(SEQ_ACTIVE | SEQ_MULTI);
+        }
+        let previous = set_scope(ScopeState {
+            store: self.scope_id(),
+            capped,
+            held,
+        });
+        TransactionHold {
+            previous,
+            _stripes: stripes,
+            _gate: gate,
+        }
+    }
+
+    /// After a write panicked inside a transaction (design P2): rebuild the
+    /// size estimate, key count and TTL/eviction indexes from the keyspace,
+    /// which the part-applied write's accounting may have skipped, and
+    /// remove a collection it left empty.
+    ///
+    /// The rebuild needs every write-order stripe. A transaction holding all
+    /// of them (every capped store, a whole-keyspace write) rebuilds in
+    /// place, before releasing anything. One holding a subset (an uncapped
+    /// store, so no gate) must not take the rest out of order, so it leaves
+    /// the scope and releases its stripes, then takes them all in ascending
+    /// order. Readers may see the part-applied write either way:
+    /// `catch_unwind` cannot undo it.
+    fn repair_after_panic(&self, hold: Option<TransactionHold<'_>>) {
+        let held = self.scope().map_or([0; STRIPE_WORDS], |scope| scope.held);
+        // The stripes the scope lacks, taken without waiting: `try_lock`
+        // never blocks, so holding some while trying others cannot deadlock.
+        let mut rest: Vec<std::sync::MutexGuard<'_, ()>> = Vec::new();
+        let in_place = (0..WRITE_ORDER_STRIPES)
+            .filter(|&stripe| !stripe_set_has(&held, stripe))
+            .all(|stripe| match self.write_order[stripe].lock.try_lock() {
+                Ok(guard) => {
+                    rest.push(guard);
+                    true
+                }
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                    rest.push(poisoned.into_inner());
+                    true
+                }
+                Err(std::sync::TryLockError::WouldBlock) => false,
+            });
+        let _all = if in_place {
+            // Every stripe held, the queue's still marked: repaired before
+            // anything is released. The scope is kept for the rebuild's own
+            // stripe-taking (`order_all` takes nothing inside it), with its
+            // set widened to every stripe now held.
+            TX_SCOPE.with(|scope| {
+                let mut widened = scope.get();
+                widened.held = [u64::MAX; STRIPE_WORDS];
+                scope.set(widened);
+            });
+            (hold, Vec::new())
+        } else {
+            // Another holder has one of the rest (rare: a writer of an
+            // unrelated key, a locked multi-key read). Release, then take
+            // them all in order: readers may see the part-applied command
+            // unrepaired in between, which the caller already treats as
+            // diverged (design P2).
+            rest.clear();
+            drop(hold);
+            (None, self.order_all())
+        };
+        #[cfg(any(test, feature = "test-hooks"))]
+        transaction_fault::repairing(self.hook_id(), in_place);
+        self.data
+            .retain(|_, entry| !entry.value.is_empty_collection());
+        self.rebuild_metadata();
+        drop(rest);
+    }
+
     /// Hold the write-order stripes of `keys` for the guard's lifetime.
     ///
     /// Size accounting reads a key's size before a write and again after it,
@@ -3217,6 +3593,20 @@ impl KeyValueStore {
     /// still before the caller's first mutation — so a writer queued for a
     /// later stripe does not make readers of an earlier one wait meanwhile.
     fn order_keys<K: AsRef<str>>(&self, keys: &[K], several_steps: bool) -> WriteOrder<'_> {
+        // Inside a transaction's write span the transaction already holds
+        // and marks every stripe its writes take (6O-G): taking one again
+        // would deadlock on a lock this thread holds.
+        if let Some(scope) = self.scope() {
+            // Checked in release builds too, and only here, in the scope: a
+            // write outside the set would race outside writers unordered.
+            // A panic is contained by the transaction; a race is not seen.
+            assert!(
+                keys.iter()
+                    .all(|key| stripe_set_has(&scope.held, write_order_stripe(key.as_ref()))),
+                "a write inside a transaction outside its stripe set"
+            );
+            return WriteOrder::Many(SmallVec::new());
+        }
         let flags = if several_steps || keys.len() > 1 {
             SEQ_ACTIVE | SEQ_MULTI
         } else {
@@ -3253,6 +3643,14 @@ impl KeyValueStore {
     /// every worker blocking for a restore's whole length. So a reader can
     /// still see a `FLUSHDB` or restore part-done (recorded as a follow-up).
     fn order_all(&self) -> Vec<std::sync::MutexGuard<'_, ()>> {
+        // A transaction applying a whole-keyspace write holds them all (6O-G).
+        if let Some(scope) = self.scope() {
+            assert!(
+                scope.held.iter().all(|word| *word == u64::MAX),
+                "a whole-keyspace write inside a transaction holding a subset"
+            );
+            return Vec::new();
+        }
         self.write_order
             .iter()
             .map(|stripe| {
@@ -3379,6 +3777,12 @@ impl KeyValueStore {
                 .is_none_or(|limit| self.approximate_memory_bytes() <= limit);
             return (within, Vec::new());
         }
+        // Inside a capped transaction's scope this would deadlock on the
+        // gate the scope holds: panic instead, which the scope contains.
+        assert!(
+            self.scope().is_none(),
+            "eviction entered inside a transaction's scope"
+        );
         let _capacity_guard = self
             .capacity_gate
             .write()
@@ -3870,6 +4274,10 @@ impl KeyValueStore {
         // index left the count one high for that moment, so a write could be
         // refused at the cap, or evict a live key, for room an expired one had
         // already given back. Gate before stripes: the order capped writes use.
+        assert!(
+            self.scope().is_none(),
+            "an expiry sweep entered inside a transaction's scope"
+        );
         let _capacity_guard = self.has_capacity_limits().then(|| {
             self.capacity_gate
                 .write()
@@ -4346,6 +4754,19 @@ impl KeyValueStore {
         &self,
         cmd: &Command,
     ) -> Option<(Value, Vec<String>)> {
+        if let Some(scope) = self.scope() {
+            // Inside a transaction (6O-G) the scope decided whether caps
+            // apply and holds the gate if they do: check under that hold,
+            // and take neither the reserved path nor the gate again.
+            if !scope.capped {
+                return Some(self.execute_reporting_ref(cmd));
+            }
+            if !self.fits_without_eviction(cmd) || matches!(mutation_scope(cmd), MutationScope::All)
+            {
+                return None;
+            }
+            return Some(self.execute_reporting_ref(cmd));
+        }
         if !self.enforces_caps() {
             return Some(self.execute_reporting_ref(cmd));
         }
@@ -4437,8 +4858,15 @@ impl KeyValueStore {
         // Whether caps apply to this write, decided once: a promotion
         // (`set_follower(false)`) landing mid-write must not let one write skip
         // the capacity gate and then evict without it. A caller that brings
-        // the gate has already decided they do.
-        let enforce = gate.is_some() || self.enforces_caps();
+        // the gate has already decided they do. Inside a transaction the
+        // scope decided, and holds the gate exclusively if they do (6O-G):
+        // neither the reserved path's shared hold nor the gate below may be
+        // taken again — a std `RwLock` is not re-entrant.
+        let in_tx = self.scope();
+        let enforce = match in_tx {
+            Some(tx) => tx.capped,
+            None => gate.is_some() || self.enforces_caps(),
+        };
         // The common write — one key, an uncapped store, a command that
         // takes exactly one slot — is accounted from what the command saw
         // under its own shard guard, with no lookups of its own.
@@ -4463,7 +4891,7 @@ impl KeyValueStore {
         // one short synchronous gate. Uncapped stores retain DashMap's normal
         // per-shard concurrency.
         let _capacity_guard = gate.or_else(|| {
-            enforce.then(|| {
+            (enforce && in_tx.is_none()).then(|| {
                 self.capacity_gate
                     .write()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -4548,6 +4976,13 @@ impl KeyValueStore {
                 if write_pause::armed() {
                     for key in &keys {
                         write_pause::mutated(self.hook_id(), key.as_ref());
+                    }
+                }
+                // Test hook: a panic at the same point, inside a transaction.
+                #[cfg(any(test, feature = "test-hooks"))]
+                if in_tx.is_some() {
+                    for key in &keys {
+                        transaction_fault::mutated(key.as_ref());
                     }
                 }
                 // One lookup per key, not two. Reading the post-write size and
@@ -4706,6 +5141,12 @@ impl KeyValueStore {
     ) -> Value {
         let probe = KeyProbe::default();
         let out = exec(self, cmd, Some(&probe));
+        // Test hook: a panic after the mutation, before its accounting,
+        // inside a transaction (6O-G).
+        #[cfg(any(test, feature = "test-hooks"))]
+        if self.scope().is_some() {
+            transaction_fault::mutated(key);
+        }
         let Some((before, was)) = probe.before.get() else {
             return out;
         };
@@ -4751,7 +5192,12 @@ impl KeyValueStore {
         C: std::borrow::Borrow<Command>,
         F: FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
     {
-        if !self.reserved_writes.load(Ordering::Acquire) || !probe_eligible(cmd.borrow()) {
+        // Not inside a transaction (6O-G): its scope holds the gate
+        // exclusively, and this would take it shared on the same thread.
+        if !self.reserved_writes.load(Ordering::Acquire)
+            || !probe_eligible(cmd.borrow())
+            || self.scope().is_some()
+        {
             return Err((cmd, exec));
         }
         let Some(bound) = growth_bound(cmd.borrow()) else {
@@ -5084,6 +5530,15 @@ impl KeyValueStore {
         for _ in 0..OPTIMISTIC_READS {
             let mut before = held.multi.load(Ordering::Acquire);
             if before & MULTI_ACTIVE != 0 {
+                // A transaction's own read (6O-G): it holds this stripe's
+                // mark, or the mark is an outside writer's of other keys —
+                // the server keeps every writer of the keys a transaction
+                // reads out. Waiting would deadlock on its own lock, and
+                // locking an unheld stripe would take it out of order. Only
+                // here, on the slow path: an unmarked read costs nothing.
+                if self.scope().is_some() {
+                    return f();
+                }
                 #[cfg(any(test, feature = "test-hooks"))]
                 write_pause::reader_blocked(self.hook_id(), &[stripe], false);
                 before = wait_for_multi(held);
@@ -5104,7 +5559,7 @@ impl KeyValueStore {
                 write_pause::ReaderPoint::AfterRead,
                 &[stripe],
             );
-            if held.multi.load(Ordering::Acquire) == before {
+            if held.multi.load(Ordering::Acquire) == before || self.scope().is_some() {
                 return out;
             }
         }
@@ -5164,6 +5619,11 @@ impl KeyValueStore {
             // A write holds its stripes for a few hundred nanoseconds: wait a
             // little for one in progress rather than spend the attempt.
             let (mut before, mut busy) = load();
+            // A transaction's own read (6O-G), as in `read_one_at`: never
+            // wait for, or lock, a stripe. Checked only when one is busy.
+            if busy && self.scope().is_some() {
+                return f();
+            }
             // Not for a large read: rescanning every stripe would cost more
             // than the attempt (6O-D review).
             let mut spins = if stripes.len() > LARGE_READ_STRIPES {
@@ -5186,7 +5646,7 @@ impl KeyValueStore {
                 &stripes,
             );
             let out = f();
-            if load().0 == before {
+            if load().0 == before || self.scope().is_some() {
                 return out;
             }
             if stripes.len() > LARGE_READ_STRIPES {
@@ -14911,6 +15371,9 @@ pub mod write_pause;
 
 #[cfg(test)]
 mod atomicity_tests;
+
+#[cfg(test)]
+mod transaction_tests;
 
 #[cfg(test)]
 mod transaction_clock_tests {
