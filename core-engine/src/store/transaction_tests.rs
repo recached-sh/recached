@@ -703,8 +703,10 @@ fn a_panic_in_a_read_stops_the_queue_without_a_repair() {
 
 // ── Review A follow-ups ────────────────────────────────────────────────────
 
-/// A capped transaction marks every stripe: an eviction victim on a stripe
-/// apart from its keys is not seen gone before the transaction is (M9).
+/// A capped transaction whose queue might evict marks every stripe: an
+/// eviction victim on a stripe apart from its keys is not seen gone before
+/// the transaction is (M9). (This store is at its key cap, so the queue does
+/// not fit; one that fits holds only its own stripes.)
 #[test]
 fn a_capped_eviction_victim_is_not_seen_gone_inside_the_span() {
     let store = KeyValueStore::with_config(Some(2), None, EvictionPolicy::AllKeysLru);
@@ -923,4 +925,48 @@ fn a_panic_inside_the_repair_is_contained_too() {
         finishes("after", move || probe.execute(set("rr:d", "4"))),
         ok()
     );
+}
+
+/// A capped store whose queue certainly fits marks only the queue's stripes:
+/// a reader of an unrelated key does not wait. One whose queue might evict
+/// marks them all (6O-G perf).
+#[test]
+fn a_capped_queue_that_fits_marks_only_its_own_stripes() {
+    let roomy = KeyValueStore::with_config(Some(1_000), Some(1 << 24), EvictionPolicy::AllKeysLru);
+    let unrelated = apart_from(&["fit:a", "fit:b"], "fit:o");
+    roomy.execute(set(&unrelated, "old"));
+    let probe = unrelated.clone();
+    let (waited, seen) = during_the_span(
+        &roomy,
+        vec![set("fit:a", "1"), set("fit:b", "2")],
+        "fit:a",
+        &[&unrelated],
+        move |store| store.execute(get(&probe)),
+    );
+    assert!(
+        !waited,
+        "a reader of an unrelated key waited for a queue that fits"
+    );
+    assert_eq!(seen, bulk("old"));
+    // At the key cap, the same queue would evict: every stripe is marked.
+    let full = KeyValueStore::with_config(Some(2), None, EvictionPolicy::AllKeysLru);
+    let unrelated = apart_from(&["fit2:a", "fit2:b"], "fit2:o");
+    full.execute(set(&unrelated, "old"));
+    full.execute(set("fit2:x", "x"));
+    let probe = unrelated.clone();
+    let (waited, _) = during_the_span(
+        &full,
+        vec![set("fit2:a", "1"), set("fit2:b", "2")],
+        "fit2:a",
+        &[&unrelated],
+        move |store| store.execute(get(&probe)),
+    );
+    assert!(waited, "a queue that evicts did not mark every stripe");
+    // A write with no growth bound (a STORE) does not fit either.
+    assert!(!roomy.queue_fits_without_eviction(&[Command::SUnionStore(
+        "fit:d".into(),
+        vec!["fit:s".into()],
+    )]));
+    assert!(roomy.queue_fits_without_eviction(&[set("fit:a", "1"), get("fit:a")]));
+    assert!(!roomy.queue_fits_without_eviction(&[Command::FlushDb]));
 }
