@@ -1,0 +1,9 @@
+host 7.3.4-300.fc45.x86_64 6 cpus; load 0.93 2.06 2.06; governors       6 performance 
+base d8d7781067b13ee1fa20b3c17d1fc750835a8f6724c31fca683affec4d7d8e0b size=10360288
+x256 bc2e909da0c2be49143c381b42d0a8a3605724e66fe963c999661aa41105150c size=10362816
+x512 eb9db9209fd426dfd1c56ff6c610daa3fa16756585e9453252189fafc63a0740 size=10362752
+x1024 bbf56f39e45b0a031a9e742611a2cccd979d252bce2708232cb1b9c49492737a size=10362944
+x1024s 3ea25a5b0b5259f774f4434b3351bdf80cae9e60c3570c29d81252f47e5506f5 size=10362944
+txbench 48610d0cc46b60d7146dc807f7a6091644cdd3b3566d747574bff776cf4b1f58
+uprof 93aa43d37198729ef1c4b7c1d9e30084454ccb37b94ec72f0ce30391b6467afa
+reps=5 secs=30 cells=3:get-get:unrelated:50:0 3:mget-get:unrelated:50:0 3:get-set:unrelated:50:0 3:get-get:same:50:4 3:get-get:overlap:50:4 3:get-get:unrelated:50:4 3:get-set:unrelated:50:4 3:get-get:unrelated:0:4 3:dbsize-get:unrelated:50:4
