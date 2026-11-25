@@ -1,0 +1,197 @@
+diff --git a/core-engine/src/store.rs b/core-engine/src/store.rs
+index f016be7..68c52af 100644
+--- a/core-engine/src/store.rs
++++ b/core-engine/src/store.rs
+@@ -2733,9 +2733,20 @@ const EMPTY_COLLECTION_WRITE: &str = "ERR wrong number of arguments for command"
+ 
+ /// Stripes in [`KeyValueStore::write_order`]. Unrelated keys share a stripe
+ /// one time in this many, which serializes those two writes and nothing more.
+-const WRITE_ORDER_STRIPES: usize = 256;
++const WRITE_ORDER_STRIPES: usize = match option_env!("RC6OF_STORE_STRIPES") {
++    // 6O-F3 EXPERIMENT ONLY (never merged).
++    Some(s) if s.len() == 4 && s.as_bytes()[0] == b'1' => 1024,
++    Some(s) if s.len() == 3 && s.as_bytes()[0] == b'5' => 512,
++    Some(s) if s.len() == 4 && s.as_bytes()[0] == b'2' => 2048,
++    _ => 256,
++};
+ const _: () = assert!(WRITE_ORDER_STRIPES.is_power_of_two());
+ 
++/// 6O-F3 EXPERIMENT ONLY: the store's stripe count, for `INFO exp6of`.
++pub fn write_order_stripe_count() -> usize {
++    WRITE_ORDER_STRIPES
++}
++
+ /// The stripe guarding `key`.
+ ///
+ /// A multiplicative hash rather than the map's keyed SipHash, which cost more
+diff --git a/server-native/src/info.rs b/server-native/src/info.rs
+index 554250a..9a9349b 100644
+--- a/server-native/src/info.rs
++++ b/server-native/src/info.rs
+@@ -692,6 +692,8 @@ pub(crate) fn render_info(
+ 
+     for section in wanted {
+         let body = match section {
++            // 6O-F3 EXPERIMENT ONLY.
++            "exp6of" => crate::replication::exp6of::render(),
+             "server" => {
+                 format!(
+                     "redis_version:{}\r\n\
+diff --git a/server-native/src/replication.rs b/server-native/src/replication.rs
+index 9054a3b..6e20612 100644
+--- a/server-native/src/replication.rs
++++ b/server-native/src/replication.rs
+@@ -145,7 +145,62 @@ pub(crate) struct ReplHub {
+     syncs_full: AtomicU64,
+ }
+ 
+-const WRITE_ORDER_STRIPES: usize = 256;
++/// 6O-F3 EXPERIMENT ONLY (never merged): the stripe count is set at build
++/// time by `RC6OF_SERVER_STRIPES` (default 256), so one source tree builds
++/// every candidate.
++const WRITE_ORDER_STRIPES: usize = exp6of::parse_or(option_env!("RC6OF_SERVER_STRIPES"), 256);
++const _: () = assert!(WRITE_ORDER_STRIPES.is_multiple_of(64));
++
++/// 6O-F3 EXPERIMENT ONLY: contention counters, read by `INFO exp6of`.
++/// Relaxed adds, and only on the contended or barrier paths, except for
++/// `STRIPE_TAKES` and `TX_*`, one add per lock call.
++pub(crate) mod exp6of {
++    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
++    pub(crate) const fn parse_or(v: Option<&str>, d: usize) -> usize {
++        match v {
++            None => d,
++            Some(s) => {
++                let b = s.as_bytes();
++                let mut i = 0;
++                let mut n = 0usize;
++                while i < b.len() {
++                    n = n * 10 + (b[i] - b'0') as usize;
++                    i += 1;
++                }
++                n
++            }
++        }
++    }
++    pub(crate) static STRIPE_CALLS: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static STRIPE_TAKES: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static STRIPE_CONTENDED: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static STRIPE_WAIT_NS: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static TX_CALLS: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static TX_STRIPES: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static TX_ALL: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static TX_LOCK_NS: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static GATE_CLOSES: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static GATE_DRAIN_NS: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static GATE_REFUSED: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static ALL_CALLS: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static ALL_NS: AtomicU64 = AtomicU64::new(0);
++    pub(crate) static ALL_MAX_NS: AtomicU64 = AtomicU64::new(0);
++    pub(crate) fn add(c: &AtomicU64, n: u64) {
++        c.fetch_add(n, Relaxed);
++    }
++    pub(crate) fn render() -> String {
++        let g = |c: &AtomicU64| c.load(Relaxed);
++        format!(
++            "exp6of_server_stripes:{}\r\nexp6of_store_stripes:{}\r\nstripe_calls:{}\r\nstripe_takes:{}\r\nstripe_contended:{}\r\nstripe_wait_ns:{}\r\ntx_calls:{}\r\ntx_stripes:{}\r\ntx_all:{}\r\ntx_lock_ns:{}\r\ngate_closes:{}\r\ngate_drain_ns:{}\r\ngate_refused:{}\r\nall_calls:{}\r\nall_ns:{}\r\nall_max_ns:{}\r\n",
++            super::WRITE_ORDER_STRIPES,
++            core_engine::store::write_order_stripe_count(),
++            g(&STRIPE_CALLS), g(&STRIPE_TAKES), g(&STRIPE_CONTENDED), g(&STRIPE_WAIT_NS),
++            g(&TX_CALLS), g(&TX_STRIPES), g(&TX_ALL), g(&TX_LOCK_NS),
++            g(&GATE_CLOSES), g(&GATE_DRAIN_NS), g(&GATE_REFUSED),
++            g(&ALL_CALLS), g(&ALL_NS), g(&ALL_MAX_NS),
++        )
++    }
++}
+ 
+ /// Most replication frames a primary writes before one flush.
+ pub(crate) const REPL_SEND_BATCH_FRAMES: usize = 512;
+@@ -280,6 +335,7 @@ impl UnorderedGate {
+         count.fetch_add(1, Ordering::SeqCst);
+         if self.closed.load(Ordering::SeqCst) != 0 {
+             count.fetch_sub(1, Ordering::Release);
++            exp6of::add(&exp6of::GATE_REFUSED, 1);
+             return None;
+         }
+         Some(UnorderedPass { count })
+@@ -290,6 +346,7 @@ impl UnorderedGate {
+     /// Those writes are synchronous and hold nothing a closer holds, so the
+     /// wait is bounded by one command's execution.
+     pub(crate) async fn close(&self) -> GateClosed<'_> {
++        let t = std::time::Instant::now();
+         self.closed.fetch_add(1, Ordering::SeqCst);
+         let closed = GateClosed { gate: self };
+         for slot in &self.in_flight {
+@@ -297,6 +354,8 @@ impl UnorderedGate {
+                 tokio::task::yield_now().await;
+             }
+         }
++        exp6of::add(&exp6of::GATE_CLOSES, 1);
++        exp6of::add(&exp6of::GATE_DRAIN_NS, t.elapsed().as_nanos() as u64);
+         closed
+     }
+ 
+@@ -781,11 +840,21 @@ impl ReplHub {
+     where
+         I: IntoIterator<Item = &'k str>,
+     {
++        let t = std::time::Instant::now();
+         let closed = self.unordered.close().await;
+-        match transaction_stripes(queue, watched) {
+-            None => self.lock_every_stripe(closed).await,
+-            Some(stripes) => self.lock_stripe_list(stripes, Some(closed)).await,
+-        }
++        let guards = match transaction_stripes(queue, watched) {
++            None => {
++                exp6of::add(&exp6of::TX_ALL, 1);
++                self.lock_every_stripe(closed).await
++            }
++            Some(stripes) => {
++                exp6of::add(&exp6of::TX_STRIPES, stripes.len() as u64);
++                self.lock_stripe_list(stripes, Some(closed)).await
++            }
++        };
++        exp6of::add(&exp6of::TX_CALLS, 1);
++        exp6of::add(&exp6of::TX_LOCK_NS, t.elapsed().as_nanos() as u64);
++        guards
+     }
+ 
+     async fn lock_stripes<'a, 'k, I>(
+@@ -835,15 +904,19 @@ impl ReplHub {
+         stripes.dedup();
+ 
+         let mut guards = SmallVec::with_capacity(stripes.len());
++        exp6of::add(&exp6of::STRIPE_CALLS, 1);
++        exp6of::add(&exp6of::STRIPE_TAKES, stripes.len() as u64);
+         for stripe in stripes {
+-            #[cfg(test)]
+             if let Ok(guard) = self.write_order[stripe].try_lock() {
+                 guards.push(guard);
+                 continue;
+-            } else {
+-                self.stripe_waits.fetch_add(1, Ordering::SeqCst);
+             }
++            #[cfg(test)]
++            self.stripe_waits.fetch_add(1, Ordering::SeqCst);
++            exp6of::add(&exp6of::STRIPE_CONTENDED, 1);
++            let t = std::time::Instant::now();
+             guards.push(self.write_order[stripe].lock().await);
++            exp6of::add(&exp6of::STRIPE_WAIT_NS, t.elapsed().as_nanos() as u64);
+         }
+         OrderGuards {
+             _stripes: guards,
+@@ -883,10 +956,15 @@ impl ReplHub {
+     }
+ 
+     async fn lock_every_stripe<'a>(&'a self, closed: GateClosed<'a>) -> OrderGuards<'a> {
++        let t = std::time::Instant::now();
+         let mut guards = SmallVec::with_capacity(WRITE_ORDER_STRIPES);
+         for lock in &self.write_order {
+             guards.push(lock.lock().await);
+         }
++        let ns = t.elapsed().as_nanos() as u64;
++        exp6of::add(&exp6of::ALL_CALLS, 1);
++        exp6of::add(&exp6of::ALL_NS, ns);
++        exp6of::ALL_MAX_NS.fetch_max(ns, std::sync::atomic::Ordering::Relaxed);
+         OrderGuards {
+             _stripes: guards,
+             _closed: Some(closed),
