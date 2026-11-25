@@ -52,6 +52,7 @@ mod server_state;
 mod sync_router;
 mod sync_scopes;
 mod tls;
+mod transaction;
 mod watch;
 
 #[cfg(test)]
@@ -70,6 +71,7 @@ use server_state::*;
 use sync_router::*;
 use sync_scopes::*;
 use tls::*;
+use transaction::*;
 use watch::*;
 
 use core_engine::catalog;

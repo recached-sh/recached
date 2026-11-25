@@ -204,7 +204,7 @@ pub(crate) fn push_key_refs(cmd: &Command) -> KeyRefs<'_> {
     ordering_key_refs(cmd).unwrap_or_default()
 }
 
-fn claimable_eadd_members(
+pub(crate) fn claimable_eadd_members(
     cmd: &Command,
     state: &ServerState,
     store: &KeyValueStore,
@@ -225,7 +225,7 @@ fn claimable_eadd_members(
         .collect()
 }
 
-fn reconcile_ephemeral_state(
+pub(crate) fn reconcile_ephemeral_state(
     cmd: &Command,
     response: &Value,
     claimable_members: &[String],
@@ -326,31 +326,6 @@ pub(crate) async fn execute_locked_write(
     store: &KeyValueStore,
 ) -> Value {
     execute_locked_write_identified(cmd, None, None, tx, origin, state, watch_registry, store).await
-}
-
-/// [`execute_locked_write`] for a write queued in a transaction: the store
-/// runs it with its clock fixed at `now`, the instant the transaction runs at
-/// (see [`core_engine::store::at_instant`]).
-pub(crate) async fn execute_locked_write_at(
-    cmd: &Command,
-    now: u64,
-    tx: &SyncTx,
-    origin: u64,
-    state: &ServerState,
-    watch_registry: &WatchRegistry,
-    store: &KeyValueStore,
-) -> Value {
-    execute_locked_write_identified(
-        cmd,
-        None,
-        Some(now),
-        tx,
-        origin,
-        state,
-        watch_registry,
-        store,
-    )
-    .await
 }
 
 /// [`execute_locked_write`] for the write inside a DEDUP envelope, whose
@@ -1320,7 +1295,7 @@ pub(crate) async fn notify_watchers(
 }
 
 /// Whether `cmd` is a `*STORE` that left its destination absent.
-fn stored_nothing(cmd: &Command, store: &KeyValueStore) -> bool {
+pub(crate) fn stored_nothing(cmd: &Command, store: &KeyValueStore) -> bool {
     match cmd {
         Command::Dedup(_, _, inner) => stored_nothing(inner, store),
         Command::SInterStore(dst, _)
@@ -1331,7 +1306,7 @@ fn stored_nothing(cmd: &Command, store: &KeyValueStore) -> bool {
 }
 
 /// Whether `cmd` only removes the keys it names (`DEL`, `UNLINK`).
-fn removes_named_keys(cmd: &Command) -> bool {
+pub(crate) fn removes_named_keys(cmd: &Command) -> bool {
     match cmd {
         Command::Dedup(_, _, inner) => removes_named_keys(inner),
         Command::Del(_) | Command::Unlink(_) => true,
@@ -1357,7 +1332,7 @@ pub(crate) async fn notify_removed(registry: &WatchRegistry, keys: &[String]) {
 
 /// Deliver one batch of changed keys to exact-key watchers and to every live
 /// query whose pattern matches.
-async fn fan_out(registry: &WatchRegistry, changes: &[KeyChange<'_>]) {
+pub(crate) async fn fan_out(registry: &WatchRegistry, changes: &[KeyChange<'_>]) {
     // A connection may WATCH a key and QSUB one or more overlapping patterns.
     // Deliver each changed key once per connection: deltas such as APPEND and
     // INCR are not idempotent when clients apply them to a local replica.
@@ -1436,11 +1411,26 @@ async fn fan_out(registry: &WatchRegistry, changes: &[KeyChange<'_>]) {
 /// Explicitly `WATCH`ed keys are notified individually — that set is bounded by
 /// the connection limit and callers expect per-key precision there.
 pub(crate) async fn notify_flushdb(registry: &WatchRegistry, watched_before: Vec<String>) {
+    notify_flushdb_after(registry, watched_before, &HashSet::new()).await;
+}
+
+/// [`notify_flushdb`] inside a transaction (6O-G): a watched key in
+/// `set_earlier`, set by the transaction before its `FLUSHDB`, is announced
+/// removed but invalidates as that set would have (design P1).
+pub(crate) async fn notify_flushdb_after(
+    registry: &WatchRegistry,
+    watched_before: Vec<String>,
+    set_earlier: &HashSet<String>,
+) {
     if registry.watched_keys.load(Ordering::Relaxed) > 0 && !watched_before.is_empty() {
         let mut reg = registry.map.lock().await;
         for key in watched_before {
             if let Some(subs) = reg.get_mut(&key) {
-                let change = KeyChange::removed(key);
+                let change = if set_earlier.contains(&key) {
+                    KeyChange::removed_after_set(key)
+                } else {
+                    KeyChange::removed(key)
+                };
                 subs.retain(|sub| sub.notify(&change));
             }
         }
@@ -1550,17 +1540,7 @@ async fn apply_write_effects_identified(
     // (`clock`): its deadline is read back at that instant too, and the
     // fallback counts from it, so a deadline that has passed by now still
     // propagates as the one the store set (6O-E review).
-    let exact_deadline = relative_expiry_key(cmd).and_then(|key| {
-        let read = || store.execute(Command::PExpireTime(key.to_string()));
-        let at = match clock {
-            Some(now) => core_engine::store::at_instant(now, read),
-            None => read(),
-        };
-        match at {
-            Value::Integer(at) if at > 0 => u64::try_from(at).ok(),
-            _ => None,
-        }
-    });
+    let exact_deadline = exact_deadline_of(cmd, store, clock);
     let now = clock.unwrap_or_else(now_unix_ms);
     let Some(msg) = broadcast_for_at(cmd, response, now, exact_deadline) else {
         // A DEDUP write that changed nothing still has an outcome to keep, or
@@ -1589,6 +1569,27 @@ async fn apply_write_effects_identified(
             msg,
         )));
     }
+}
+
+/// The deadline a write with a relative expiry set, read back from the store
+/// while the write's key is still held, at the instant it ran at (`clock`,
+/// a transaction's): see [`broadcast_for_at`]. `None` for every other write.
+pub(crate) fn exact_deadline_of(
+    cmd: &Command,
+    store: &KeyValueStore,
+    clock: Option<u64>,
+) -> Option<u64> {
+    relative_expiry_key(cmd).and_then(|key| {
+        let read = || store.execute(Command::PExpireTime(key.to_string()));
+        let at = match clock {
+            Some(now) => core_engine::store::at_instant(now, read),
+            None => read(),
+        };
+        match at {
+            Value::Integer(at) if at > 0 => u64::try_from(at).ok(),
+            _ => None,
+        }
+    })
 }
 
 /// Encodes a list of string parts as a RESP3 Push frame for WebSocket fan-out.

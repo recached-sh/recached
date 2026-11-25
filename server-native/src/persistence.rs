@@ -729,6 +729,13 @@ impl AofDone {
     }
 }
 
+/// Queue `frames` onto `batch` in order (one queue-lock hold).
+fn push_frames(batch: &mut AofBatch, frames: &[&[u8]]) {
+    for frame in frames {
+        batch.push_frame(frame);
+    }
+}
+
 impl AofBatch {
     fn new() -> Self {
         AofBatch {
@@ -1789,6 +1796,21 @@ impl AofWriter {
             .await
     }
 
+    /// [`append`](Self::append) for a transaction's frames (6O-G): queued in
+    /// one step under the queue lock, so they land in one batch, contiguous
+    /// and in order — one `write(2)`, and under `always` one `fdatasync`.
+    ///
+    /// The bytes are exactly the frames' own, back to back, as separate
+    /// appends would have written them: no record marks the transaction.
+    /// So this is not crash atomicity: a torn tail, or a power loss under
+    /// `everysec`/`no` that persists part of the batch, can replay a prefix
+    /// of the transaction (transaction framing is a separate design).
+    pub(crate) async fn append_frames(&self, frames: &[&[u8]]) -> std::io::Result<()> {
+        self.enqueue(false, |batch| push_frames(batch, frames))
+            .wait()
+            .await
+    }
+
     /// [`append`](Self::append), giving other ready writers one chance to
     /// join the batch before this one leads it ([`AofFanout::Coalesced`]).
     ///
@@ -1815,10 +1837,18 @@ impl AofWriter {
     /// performer holds the writer role (`busy`) it does not yield either: that
     /// performer sweeps the batch (6N-C5, counted in `fanout_busy_skips`).
     pub(crate) async fn append_coalesced(&self, resp: &[u8]) -> std::io::Result<()> {
-        // This frame's position in its batch: 1 if it opened the batch.
+        self.append_coalesced_frames(&[resp]).await
+    }
+
+    /// [`append_coalesced`](Self::append_coalesced) for a transaction's
+    /// frames, queued together into one batch as by
+    /// [`append_frames`](Self::append_frames).
+    pub(crate) async fn append_coalesced_frames(&self, frames: &[&[u8]]) -> std::io::Result<()> {
+        // The last frame's position in its batch: 1 if it opened the batch
+        // alone.
         let mut position = 0;
         let (done, busy) = self.queue_only_busy(false, |batch| {
-            batch.push_frame(resp);
+            push_frames(batch, frames);
             position = batch.frames;
         });
         let shared = &self.shared;
@@ -1877,14 +1907,21 @@ impl AofWriter {
     /// unhealthy for later writes. Under `always` the process stops before
     /// the reply is sent (see [`FailStop`]).
     pub(crate) async fn append_client_write(&self, resp: &[u8]) -> std::io::Result<()> {
+        self.append_client_writes(&[resp]).await
+    }
+
+    /// [`append_client_write`](Self::append_client_write) for a
+    /// transaction's frames, queued together into one batch as by
+    /// [`append_frames`](Self::append_frames): one deferred wait.
+    pub(crate) async fn append_client_writes(&self, frames: &[&[u8]]) -> std::io::Result<()> {
         let deferred = AOF_DEFERRED.try_with(Arc::clone).ok();
         match deferred {
             Some(deferred) => {
-                let done = self.queue_only(false, |batch| batch.push_frame(resp));
+                let done = self.queue_only(false, |batch| push_frames(batch, frames));
                 deferred.push(&self.shared, done);
                 Ok(())
             }
-            None => self.append(resp).await,
+            None => self.append_frames(frames).await,
         }
     }
 

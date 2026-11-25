@@ -284,6 +284,10 @@ pub(crate) struct KeyChange<'a> {
     /// Where the current value comes from; `None` for a removal, whose value
     /// is nil.
     source: Option<&'a KeyValueStore>,
+    /// A removal that ends a transaction which set the key earlier (6O-G):
+    /// it invalidates a WATCH as the earlier set did, though it is delivered
+    /// as a removal (design P1: the OR over the key's effective writes).
+    set_earlier: bool,
     full: OnceLock<FullValue>,
 }
 
@@ -304,6 +308,7 @@ impl<'a> KeyChange<'a> {
             key,
             delta,
             source: Some(store),
+            set_earlier: false,
             full: OnceLock::new(),
         }
     }
@@ -314,17 +319,30 @@ impl<'a> KeyChange<'a> {
             key,
             delta: None,
             source: None,
+            set_earlier: false,
             full: OnceLock::new(),
         }
     }
 
-    /// Whether this change removes the key rather than setting it. Decided
-    /// by the command, never by reading the store afterwards: a write that
-    /// creates a key with a deadline already past by the time it is
-    /// announced (`SET k v PX 1`, `PXAT` in the past) is still a change, as
-    /// in Redis (6O-E review).
+    /// A transaction's last write of `key`, a removal, after an earlier
+    /// write of the transaction set it (6O-G): delivered as a removal, and
+    /// invalidating a WATCH as that set would have (`SET k a; DEL k` aborts
+    /// the `EXEC` of a watcher of absent `k`, as in Redis).
+    pub(crate) fn removed_after_set(key: String) -> Self {
+        Self {
+            set_earlier: true,
+            ..Self::removed(key)
+        }
+    }
+
+    /// Whether this change counts as a removal for WATCH: it removes the key
+    /// rather than setting it, and nothing earlier in its transaction set
+    /// it. Decided by the commands, never by reading the store afterwards: a
+    /// write that creates a key with a deadline already past by the time it
+    /// is announced (`SET k v PX 1`, `PXAT` in the past) is still a change,
+    /// as in Redis (6O-E review).
     fn is_removal(&self) -> bool {
-        self.source.is_none()
+        self.source.is_none() && !self.set_earlier
     }
 
     fn full(&self) -> &FullValue {

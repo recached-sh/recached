@@ -45,6 +45,26 @@ impl Pipe {
         }
     }
 
+    /// [`tcp`](Self::tcp), with the connection served on a thread of its
+    /// own (a current-thread runtime): a test that stops it synchronously
+    /// (6O-G's transaction stop) then blocks no worker the other
+    /// connections' tasks may be queued on.
+    pub(super) fn tcp_on_own_thread(shared: &Shared) -> Pipe {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let serve = shared.serve(server);
+        std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(serve);
+        });
+        Pipe {
+            io: client,
+            buf: Vec::new(),
+        }
+    }
+
     pub(super) async fn send(&mut self, args: &[&str]) {
         let mut req = format!("*{}\r\n", args.len());
         for a in args {
