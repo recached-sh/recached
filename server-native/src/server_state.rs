@@ -59,6 +59,26 @@ pub(crate) struct ServerState {
 /// Set key → member → connections holding that membership.
 pub(crate) type EphemeralMembers = HashMap<String, HashMap<String, HashSet<u64>>>;
 
+/// A connection-scoped claim map's lock, recovered if a panic poisoned it
+/// (6O-G). It used to be skipped on poison — `if let Ok(..) = lock()` —
+/// so one panic while it was held ended ephemeral tracking for good: keys
+/// were never deleted on disconnect again. The maps hold plain claims,
+/// consistent after any single insert or remove, so the data is usable.
+/// Always `Ok`, so the call sites keep their shape.
+#[allow(clippy::result_unit_err)]
+fn ephemeral_lock<T>(map: &std::sync::Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, ()> {
+    Ok(ephemeral_guard(map))
+}
+
+/// [`ephemeral_lock`]'s guard itself; clears the poison too, so a recovered
+/// map reads as healthy (review C-3: snapshots `.expect`ed it unpoisoned).
+fn ephemeral_guard<T>(map: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    map.lock().unwrap_or_else(|poisoned| {
+        map.clear_poison();
+        poisoned.into_inner()
+    })
+}
+
 impl ServerState {
     /// Record `conn_id` as a holder of an ephemeral key. Repeating an `ESET`
     /// from the same connection is idempotent.
@@ -66,7 +86,7 @@ impl ServerState {
         // Before the claim exists, so any forget ordered after it sees the
         // flag (see `forget_ephemeral_keys`).
         self.ephemeral_in_use.store(true, Ordering::Release);
-        if let Ok(mut map) = self.ephemeral.lock() {
+        if let Ok(mut map) = ephemeral_lock(&self.ephemeral) {
             map.entry(key.to_string()).or_default().insert(conn_id);
         }
     }
@@ -74,7 +94,7 @@ impl ServerState {
     /// Record `conn_id` as a holder of each ephemeral set membership.
     pub(crate) fn claim_ephemeral_members(&self, key: &str, members: &[String], conn_id: u64) {
         self.ephemeral_in_use.store(true, Ordering::Release);
-        if let Ok(mut map) = self.ephemeral_members.lock() {
+        if let Ok(mut map) = ephemeral_lock(&self.ephemeral_members) {
             let held = map.entry(key.to_string()).or_default();
             for member in members {
                 held.entry(member.clone()).or_default().insert(conn_id);
@@ -86,8 +106,7 @@ impl ServerState {
     /// second holder to such a membership, but must never adopt a member that
     /// was created by ordinary `SADD`.
     pub(crate) fn is_ephemeral_member(&self, key: &str, member: &str) -> bool {
-        self.ephemeral_members
-            .lock()
+        ephemeral_lock(&self.ephemeral_members)
             .is_ok_and(|map| map.get(key).is_some_and(|held| held.contains_key(member)))
     }
 
@@ -98,9 +117,7 @@ impl ServerState {
         &self,
         conn_id: u64,
     ) -> (Vec<String>, Vec<(String, Vec<String>)>) {
-        let keys = self
-            .ephemeral
-            .lock()
+        let keys = ephemeral_lock(&self.ephemeral)
             .map(|map| {
                 map.iter()
                     .filter(|(_, holders)| holders.contains(&conn_id))
@@ -109,7 +126,7 @@ impl ServerState {
             })
             .unwrap_or_default();
         let mut members: Vec<(String, Vec<String>)> = Vec::new();
-        if let Ok(map) = self.ephemeral_members.lock() {
+        if let Ok(map) = ephemeral_lock(&self.ephemeral_members) {
             for (key, held) in map.iter() {
                 let mine: Vec<String> = held
                     .iter()
@@ -125,22 +142,22 @@ impl ServerState {
     }
 
     pub(crate) fn forget_ephemeral_key(&self, key: &str) {
-        if let Ok(mut map) = self.ephemeral.lock() {
+        if let Ok(mut map) = ephemeral_lock(&self.ephemeral) {
             map.remove(key);
         }
     }
 
     pub(crate) fn forget_ephemeral_members_for_key(&self, key: &str) {
-        if let Ok(mut map) = self.ephemeral_members.lock() {
+        if let Ok(mut map) = ephemeral_lock(&self.ephemeral_members) {
             map.remove(key);
         }
     }
 
     pub(crate) fn forget_all_ephemeral(&self) {
-        if let Ok(mut map) = self.ephemeral.lock() {
+        if let Ok(mut map) = ephemeral_lock(&self.ephemeral) {
             map.clear();
         }
-        if let Ok(mut map) = self.ephemeral_members.lock() {
+        if let Ok(mut map) = ephemeral_lock(&self.ephemeral_members) {
             map.clear();
         }
     }
@@ -158,7 +175,7 @@ impl ServerState {
             return;
         }
         let keys: Vec<&str> = keys.into_iter().collect();
-        if let Ok(mut map) = self.ephemeral.lock()
+        if let Ok(mut map) = ephemeral_lock(&self.ephemeral)
             && !map.is_empty()
         {
             // By key, not a scan of every claim: O(keys written).
@@ -166,7 +183,7 @@ impl ServerState {
                 map.remove(*key);
             }
         }
-        if let Ok(mut map) = self.ephemeral_members.lock()
+        if let Ok(mut map) = ephemeral_lock(&self.ephemeral_members)
             && !map.is_empty()
         {
             for key in &keys {
@@ -176,7 +193,7 @@ impl ServerState {
     }
 
     pub(crate) fn forget_ephemeral_members(&self, key: &str, members: &[String]) {
-        if let Ok(mut map) = self.ephemeral_members.lock()
+        if let Ok(mut map) = ephemeral_lock(&self.ephemeral_members)
             && let Some(held) = map.get_mut(key)
         {
             for member in members {
@@ -191,7 +208,7 @@ impl ServerState {
     /// Ephemeral set memberships `conn_id` was the last holder of, grouped by
     /// set key. Called once when a connection closes.
     pub(crate) fn take_ephemeral_members_for(&self, conn_id: u64) -> Vec<(String, Vec<String>)> {
-        let Ok(mut map) = self.ephemeral_members.lock() else {
+        let Ok(mut map) = ephemeral_lock(&self.ephemeral_members) else {
             return Vec::new();
         };
         let mut released: Vec<(String, Vec<String>)> = Vec::new();
@@ -215,20 +232,13 @@ impl ServerState {
     /// Snapshot only durable state. Ephemeral keys and memberships are live
     /// connection state and must not be resurrected after a clean restart.
     fn durable_snapshot(&self, store: &KeyValueStore) -> Vec<SnapshotEntry> {
-        let ephemeral_keys: HashSet<String> = self
-            .ephemeral
-            .lock()
-            .expect("ephemeral mutex poisoned")
-            .keys()
-            .cloned()
-            .collect();
-        let ephemeral_members: HashMap<String, HashSet<String>> = self
-            .ephemeral_members
-            .lock()
-            .expect("ephemeral member mutex poisoned")
-            .iter()
-            .map(|(key, held)| (key.clone(), held.keys().cloned().collect()))
-            .collect();
+        let ephemeral_keys: HashSet<String> =
+            ephemeral_guard(&self.ephemeral).keys().cloned().collect();
+        let ephemeral_members: HashMap<String, HashSet<String>> =
+            ephemeral_guard(&self.ephemeral_members)
+                .iter()
+                .map(|(key, held)| (key.clone(), held.keys().cloned().collect()))
+                .collect();
         store
             .snapshot()
             .into_iter()
@@ -254,13 +264,7 @@ impl ServerState {
     /// (notably APPEND) still need replay to know that their key must be
     /// discarded after a crash.
     fn ephemeral_aof_seed(&self, store: &KeyValueStore) -> Vec<Vec<u8>> {
-        let mut keys: Vec<String> = self
-            .ephemeral
-            .lock()
-            .expect("ephemeral mutex poisoned")
-            .keys()
-            .cloned()
-            .collect();
+        let mut keys: Vec<String> = ephemeral_guard(&self.ephemeral).keys().cloned().collect();
         keys.sort_unstable();
         let mut frames = Vec::new();
         for key in keys {
@@ -270,10 +274,7 @@ impl ServerState {
         }
 
         let mut by_key: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let held: Vec<(String, String)> = self
-            .ephemeral_members
-            .lock()
-            .expect("ephemeral member mutex poisoned")
+        let held: Vec<(String, String)> = ephemeral_guard(&self.ephemeral_members)
             .iter()
             .flat_map(|(key, held)| held.keys().map(move |member| (key.clone(), member.clone())))
             .collect();
@@ -298,7 +299,7 @@ impl ServerState {
     /// Called once when a connection closes. A key another connection still
     /// holds is left alone, which is what keeps a second tab online.
     pub(crate) fn take_ephemeral_for(&self, conn_id: u64) -> Vec<String> {
-        let Ok(mut map) = self.ephemeral.lock() else {
+        let Ok(mut map) = ephemeral_lock(&self.ephemeral) else {
             return Vec::new();
         };
         let mut released = Vec::new();

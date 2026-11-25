@@ -6837,6 +6837,7 @@ mod security_v06_regressions;
 mod sync_routing;
 mod tcp_owned_split;
 mod transaction_atomicity_6og;
+mod transaction_recovery_6og;
 mod transaction_streams_6og;
 mod watch_cas;
 mod watch_expiry;

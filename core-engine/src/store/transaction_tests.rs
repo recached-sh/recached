@@ -102,10 +102,14 @@ fn no_stripe_marked(store: &KeyValueStore) -> bool {
 }
 
 fn no_stripe_held(store: &KeyValueStore) -> bool {
-    store
-        .write_order
-        .iter()
-        .all(|stripe| stripe.lock.try_lock().is_ok())
+    // Poisoned (by a panic inside a repair) is not held: every taker
+    // recovers it.
+    store.write_order.iter().all(|stripe| {
+        !matches!(
+            stripe.lock.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        )
+    })
 }
 
 /// The stores the scope must work on: uncapped, capped with eviction, and
@@ -625,6 +629,7 @@ fn a_panic_in_the_span_stops_the_queue_repairs_and_releases_everything() {
                 applied,
                 TransactionApplied {
                     panicked: Some(1),
+                    diverged: true,
                     repaired: true
                 },
                 "{p}"
@@ -688,6 +693,7 @@ fn a_panic_in_a_read_stops_the_queue_without_a_repair() {
         applied,
         TransactionApplied {
             panicked: Some(1),
+            diverged: false,
             repaired: false
         }
     );
@@ -873,6 +879,7 @@ fn a_panic_in_a_probed_write_is_contained_too() {
         applied,
         TransactionApplied {
             panicked: Some(1),
+            diverged: true,
             repaired: true
         }
     );
@@ -880,4 +887,40 @@ fn a_panic_in_a_probed_write_is_contained_too() {
     assert_eq!(store.execute(get("pw:c")), Value::BulkString(None));
     assert!(metadata_is_consistent(&store));
     assert!(no_stripe_marked(&store) && no_stripe_held(&store));
+}
+
+/// A second panic inside the repair is contained as well: the caller is told
+/// the store diverged and the repair did not finish, and nothing is left
+/// held (review C-4).
+#[test]
+fn a_panic_inside_the_repair_is_contained_too() {
+    let store = KeyValueStore::new();
+    let _observer = transaction_fault::observe_repair(&store, |_| {
+        panic!("test-injected second panic inside the repair")
+    });
+    let probe = store.clone();
+    let (_, applied) = finishes("second panic", move || {
+        panics_at(
+            Fault::During,
+            &probe,
+            &[set("rr:a", "1"), set("rr:b", "2"), set("rr:c", "3")],
+            1,
+            "rr:b",
+        )
+    });
+    assert_eq!(
+        applied,
+        TransactionApplied {
+            panicked: Some(1),
+            diverged: true,
+            repaired: false
+        }
+    );
+    assert!(no_stripe_marked(&store) && no_stripe_held(&store));
+    assert_eq!(TX_SCOPE.with(std::cell::Cell::get).store, 0);
+    let probe = store.clone();
+    assert_eq!(
+        finishes("after", move || probe.execute(set("rr:d", "4"))),
+        ok()
+    );
 }

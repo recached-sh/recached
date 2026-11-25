@@ -838,7 +838,7 @@ fn many_appends_to_a_large_value_copy_it_once() {
         let queue: Vec<Command> = (0..APPENDS)
             .map(|_| Command::Append("6og:mem:k".into(), b"x".to_vec()))
             .collect();
-        let (replies, bytes) = super::request_path::bytes_allocated_in(|| {
+        let (run, bytes) = super::request_path::bytes_allocated_in(|| {
             runtime.block_on(run_transaction_queue(
                 queue,
                 core_engine::store::clock_ms(),
@@ -850,7 +850,7 @@ fn many_appends_to_a_large_value_copy_it_once() {
                 &shared.pubsub,
             ))
         });
-        assert_eq!(replies.len(), APPENDS);
+        assert_eq!(run.replies.len(), APPENDS);
         drop(viewer);
         bytes
     };

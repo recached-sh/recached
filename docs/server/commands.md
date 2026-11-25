@@ -533,7 +533,7 @@ A conflicting server write cannot interleave between queued commands, the transa
 - **All or nothing on a queue error.** If any command fails to queue, `EXEC` runs none of them and returns `EXECABORT`.
 - **`WATCH` closes the check-to-write race.** `EXEC` reserves watched keys before checking invalidation. If one changed after `WATCH`, it runs nothing and returns a nil array.
 
-Use `WATCH` for compare-and-swap. If a queued write fails internally (a server bug), `EXEC` stops there: the commands before it stay applied, it and the rest answer errors, and writes are refused with `MISCONF` until `SAVE`.
+Use `WATCH` for compare-and-swap. If a queued write fails internally (a server bug), `EXEC` stops there: the commands before it stay applied, it and the rest answer errors, writes are refused with `MISCONF` until `SAVE`, and replicas (with their sub-replicas) and WebSocket clients resynchronise in full.
 :::
 
 | Command | Description |
