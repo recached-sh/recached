@@ -587,8 +587,8 @@ fn panics_at(
     at: usize,
     key: &str,
 ) -> (Vec<Value>, TransactionApplied) {
-    let _armed = matches!(fault, Fault::During)
-        .then(|| transaction_fault::panic_during_mutation_of(key));
+    let _armed =
+        matches!(fault, Fault::During).then(|| transaction_fault::panic_during_mutation_of(key));
     let mut replies = Vec::new();
     let applied = store.apply_transaction(queue, clock_ms(), |i, cmd| {
         if i == at && matches!(fault, Fault::Before) {
@@ -605,11 +605,7 @@ fn panics_at(
 #[test]
 fn a_panic_in_the_span_stops_the_queue_repairs_and_releases_everything() {
     for (label, store) in stores() {
-        for fault in [
-            Fault::Before,
-            Fault::During,
-            Fault::After,
-        ] {
+        for fault in [Fault::Before, Fault::During, Fault::After] {
             let p = format!("pn:{label}:{fault:?}:");
             let key = |s: &str| format!("{p}{s}");
             store.execute(Command::RPush(key("list"), vec![b"only".to_vec()]));
@@ -696,5 +692,192 @@ fn a_panic_in_a_read_stops_the_queue_without_a_repair() {
         }
     );
     assert_eq!(ran, vec![0]);
+    assert!(no_stripe_marked(&store) && no_stripe_held(&store));
+}
+
+// ── Review A follow-ups ────────────────────────────────────────────────────
+
+/// A capped transaction marks every stripe: an eviction victim on a stripe
+/// apart from its keys is not seen gone before the transaction is (M9).
+#[test]
+fn a_capped_eviction_victim_is_not_seen_gone_inside_the_span() {
+    let store = KeyValueStore::with_config(Some(2), None, EvictionPolicy::AllKeysLru);
+    let v1 = apart_from(&["ev:a", "ev:b"], "ev:v1-");
+    let v2 = apart_from(&["ev:a", "ev:b", &v1], "ev:v2-");
+    store.execute(set(&v1, "old"));
+    store.execute(set(&v2, "old"));
+    let (v1c, v2c) = (v1.clone(), v2.clone());
+    let (waited, seen) = during_the_span(
+        &store,
+        vec![set("ev:a", "new"), set("ev:b", "new")],
+        "ev:a",
+        &[&v1, &v2],
+        move |store| store.execute(Command::Exists(vec![v1c, v2c])),
+    );
+    assert!(waited, "a reader saw an eviction inside the span: {seen:?}");
+    assert_eq!(seen, Value::Integer(0));
+}
+
+/// A capped transaction holds the capacity gate: the eviction tick and a
+/// capped expiry sweep wait for its span (M8).
+#[test]
+fn the_eviction_tick_and_a_capped_sweep_wait_for_a_capped_span() {
+    let store = KeyValueStore::with_config(Some(1_000), Some(1 << 20), EvictionPolicy::AllKeysLru);
+    let (waited, _) = during_the_span(
+        &store,
+        vec![set("et:a", "new"), set("et:b", "new")],
+        "et:a",
+        &[],
+        |store| store.try_evict_for_memory_reporting(),
+    );
+    assert!(waited, "the eviction tick ran inside a capped span");
+    store.execute(Command::Set(
+        "et:ttl".into(),
+        b"x".to_vec(),
+        SetOptions {
+            expiry: Some(SetExpiry::Px(1)),
+            ..SetOptions::default()
+        },
+    ));
+    std::thread::sleep(Duration::from_millis(5));
+    let (waited, _) = during_the_span(
+        &store,
+        vec![set("et:c", "new"), set("et:d", "new")],
+        "et:c",
+        &[],
+        |store| store.sweep_expired_reporting_budget(16),
+    );
+    assert!(waited, "a capped sweep ran inside a capped span");
+}
+
+/// Stopped at its **last** write, the transaction still holds and marks
+/// everything: readers of its first key still wait (M2).
+#[test]
+fn readers_wait_until_after_the_last_write() {
+    let store = KeyValueStore::new();
+    store.execute(set("lw:a", "old"));
+    let (waited, seen) = during_the_span(
+        &store,
+        vec![set("lw:a", "new"), get("lw:a"), set("lw:b", "new")],
+        "lw:b",
+        &["lw:a"],
+        |store| store.execute(get("lw:a")),
+    );
+    assert!(
+        waited,
+        "a reader of the first key answered before the last write"
+    );
+    assert_eq!(seen, bulk("new"));
+}
+
+/// The repair after a panic runs with every stripe held and the queue's
+/// still marked — in place — whenever the rest are free; and still repairs,
+/// after releasing, when another holder has one (A1, A3).
+#[test]
+fn a_repair_runs_under_the_held_marks_or_after_a_contended_release() {
+    for (label, store) in [
+        ("uncapped", KeyValueStore::new()),
+        (
+            "capped",
+            KeyValueStore::with_config(Some(1_000), None, EvictionPolicy::AllKeysLru),
+        ),
+    ] {
+        let seen = Arc::new(std::sync::Mutex::new(None));
+        let observer = {
+            let (seen, probe) = (Arc::clone(&seen), store.clone());
+            transaction_fault::observe_repair(&store, move |in_place| {
+                let held = probe
+                    .write_order
+                    .iter()
+                    .all(|stripe| stripe.lock.try_lock().is_err());
+                *seen.lock().unwrap() = Some((in_place, held, multi_active(&probe, "rp:a")));
+            })
+        };
+        store.execute(Command::RPush("rp:l".into(), vec![b"x".to_vec()]));
+        let (_, applied) = panics_at(
+            Fault::During,
+            &store,
+            &[set("rp:a", "1"), Command::LPop("rp:l".into(), None)],
+            1,
+            "rp:l",
+        );
+        drop(observer);
+        assert!(applied.repaired, "{label}");
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some((true, true, true)),
+            "{label}: repaired in place, every stripe held, marks kept"
+        );
+        assert!(metadata_is_consistent(&store), "{label}");
+        assert_eq!(
+            store.execute(Command::Exists(vec!["rp:l".into()])),
+            Value::Integer(0)
+        );
+    }
+    // Contended: an outside holder of a stripe outside the queue's set.
+    let store = KeyValueStore::new();
+    let outside = apart_from(&["rc:a", "rc:l"], "rc:o");
+    let stripe = write_pause::stripe_of(&outside);
+    let held = store.write_order[stripe].lock.lock().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let observer = {
+        let seen = Arc::clone(&seen);
+        transaction_fault::observe_repair(&store, move |in_place| {
+            *seen.lock().unwrap() = Some(in_place);
+        })
+    };
+    store.execute(Command::RPush("rc:l".into(), vec![b"x".to_vec()]));
+    let probe = store.clone();
+    let tx = std::thread::spawn(move || {
+        panics_at(
+            Fault::During,
+            &probe,
+            &[set("rc:a", "1"), Command::LPop("rc:l".into(), None)],
+            1,
+            "rc:l",
+        )
+    });
+    // The repair needs the held stripe: it waits for it, having released.
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!tx.is_finished());
+    drop(held);
+    let (_, applied) = tx.join().unwrap();
+    drop(observer);
+    assert!(applied.repaired);
+    assert_eq!(*seen.lock().unwrap(), Some(false));
+    assert!(metadata_is_consistent(&store));
+    assert!(no_stripe_marked(&store) && no_stripe_held(&store));
+}
+
+/// The fault in a probed write (`SET` on an uncapped store, which does not
+/// take the general path) is contained and repaired the same way (A7).
+#[test]
+fn a_panic_in_a_probed_write_is_contained_too() {
+    let store = KeyValueStore::new();
+    store.execute(set("pw:b", "old"));
+    let probe = store.clone();
+    let (_, applied) = finishes("probed", move || {
+        panics_at(
+            Fault::During,
+            &probe,
+            &[
+                set("pw:a", "1"),
+                set("pw:b", "a-longer-value"),
+                set("pw:c", "1"),
+            ],
+            1,
+            "pw:b",
+        )
+    });
+    assert_eq!(
+        applied,
+        TransactionApplied {
+            panicked: Some(1),
+            repaired: true
+        }
+    );
+    assert_eq!(store.execute(get("pw:b")), bulk("a-longer-value"));
+    assert_eq!(store.execute(get("pw:c")), Value::BulkString(None));
+    assert!(metadata_is_consistent(&store));
     assert!(no_stripe_marked(&store) && no_stripe_held(&store));
 }

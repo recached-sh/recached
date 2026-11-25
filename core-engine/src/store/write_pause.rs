@@ -92,6 +92,10 @@ pub struct Pause {
 /// until the returned [`Pause`] is dropped. Readers of any of `readers_of`
 /// that wait for a write are counted ([`Pause::readers_blocked`]).
 pub fn after_mutation_of(store: &KeyValueStore, key: &str, readers_of: &[&str]) -> Pause {
+    arm(store, key, readers_of, false)
+}
+
+fn arm(store: &KeyValueStore, key: &str, readers_of: &[&str], transaction: bool) -> Pause {
     let exclusive = EXCLUSIVE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -99,7 +103,7 @@ pub fn after_mutation_of(store: &KeyValueStore, key: &str, readers_of: &[&str]) 
         let mut state = state();
         state.store = store.hook_id();
         state.key = Some(key.to_string());
-        state.transaction = false;
+        state.transaction = transaction;
         state.readers_of = readers_of
             .iter()
             .map(|key| super::write_order_stripe(key))
@@ -126,9 +130,13 @@ pub fn after_mutation_of(store: &KeyValueStore, key: &str, readers_of: &[&str]) 
 /// The asynchronous `exec_pause` of the server stops between queued commands
 /// at an `.await`; it cannot stop inside the synchronous write span.
 pub fn after_transaction_write_of(store: &KeyValueStore, key: &str, readers_of: &[&str]) -> Pause {
-    let pause = after_mutation_of(store, key, readers_of);
-    state().transaction = true;
-    pause
+    arm(store, key, readers_of, true)
+}
+
+/// The write-order stripe of `key`, so a test can choose keys that share a
+/// stripe with, or stay apart from, a transaction's.
+pub fn stripe_of(key: &str) -> usize {
+    super::write_order_stripe(key)
 }
 
 fn wait_until(within: Duration, mut done: impl FnMut(&State) -> bool) -> bool {

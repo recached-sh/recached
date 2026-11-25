@@ -2982,6 +2982,14 @@ thread_local! {
     /// a transaction's writes, so it cannot cross an `.await` or reach
     /// another task.
     static TX_SCOPE: std::cell::Cell<ScopeState> = const { std::cell::Cell::new(NO_SCOPE) };
+    /// [`TX_SCOPE`]'s store alone: what the write path checks, one word.
+    static TX_SCOPE_STORE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Set this thread's scope (and its one-word copy); returns the previous.
+fn set_scope(scope: ScopeState) -> ScopeState {
+    TX_SCOPE_STORE.with(|store| store.set(scope.store));
+    TX_SCOPE.with(|cell| cell.replace(scope))
 }
 
 fn stripe_set_has(held: &[u64; STRIPE_WORDS], stripe: usize) -> bool {
@@ -3004,7 +3012,7 @@ impl Drop for TransactionHold<'_> {
     fn drop(&mut self) {
         // The scope first: nothing that runs once the stripes are released
         // may still bypass them.
-        TX_SCOPE.with(|scope| scope.set(self.previous));
+        set_scope(self.previous);
         // Then the stripes (the fields drop after this), then the gate.
     }
 }
@@ -3018,6 +3026,8 @@ pub struct TransactionApplied {
     /// Whether the panicking command was a write, so the store may hold a
     /// part-applied mutation: its metadata (size, key count, TTL and
     /// eviction indexes) was rebuilt from the keyspace before this returned.
+    /// Conservative: set for any write that panicked, even before it
+    /// changed anything, since the store cannot tell.
     pub repaired: bool,
 }
 
@@ -3028,39 +3038,78 @@ pub struct TransactionApplied {
 #[doc(hidden)]
 pub mod transaction_fault {
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static ARMED: AtomicBool = AtomicBool::new(false);
-    static KEY: Mutex<Option<String>> = Mutex::new(None);
+    /// How many keys are armed, checked before the lock.
+    static ARMED: AtomicUsize = AtomicUsize::new(0);
+    /// The armed keys: each panics once. Keys are unique per test, so tests
+    /// arming different keys run in parallel.
+    static KEYS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
     /// Armed until dropped, or until the panic fires once.
-    pub struct Armed;
+    pub struct Armed(String);
 
     impl Drop for Armed {
         fn drop(&mut self) {
-            ARMED.store(false, Ordering::SeqCst);
-            *KEY.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            let mut keys = KEYS.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(at) = keys.iter().position(|key| *key == self.0) {
+                keys.remove(at);
+                ARMED.fetch_sub(1, Ordering::SeqCst);
+            }
         }
     }
 
     /// Panic inside the store call of the next write to `key` made inside a
-    /// transaction, after its mutation. Keys are unique per test.
+    /// transaction, after its mutation.
     pub fn panic_during_mutation_of(key: &str) -> Armed {
-        *KEY.lock().unwrap_or_else(|p| p.into_inner()) = Some(key.to_string());
-        ARMED.store(true, Ordering::SeqCst);
-        Armed
+        KEYS.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(key.to_string());
+        ARMED.fetch_add(1, Ordering::SeqCst);
+        Armed(key.to_string())
     }
 
     pub(super) fn mutated(key: &str) {
-        if !ARMED.load(Ordering::Relaxed) {
+        if ARMED.load(Ordering::Relaxed) == 0 {
             return;
         }
-        let mut armed = KEY.lock().unwrap_or_else(|p| p.into_inner());
-        if armed.as_deref() == Some(key) {
-            *armed = None;
-            ARMED.store(false, Ordering::SeqCst);
-            drop(armed);
+        let mut keys = KEYS.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(at) = keys.iter().position(|armed| armed == key) {
+            keys.remove(at);
+            ARMED.fetch_sub(1, Ordering::SeqCst);
+            drop(keys);
             panic!("test-injected panic during the transaction's mutation of {key}");
+        }
+    }
+
+    type Observer = (usize, Box<dyn Fn(bool) + Send>);
+    static REPAIR: Mutex<Option<Observer>> = Mutex::new(None);
+
+    /// Call `observe(in_place)` inside every later repair of `store`, before
+    /// the rebuild, on the repairing thread — while what it holds is held —
+    /// until the returned guard drops. One observer at a time.
+    pub fn observe_repair(
+        store: &super::KeyValueStore,
+        observe: impl Fn(bool) + Send + 'static,
+    ) -> ObservingRepair {
+        *REPAIR.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some((store.hook_id(), Box::new(observe)));
+        ObservingRepair
+    }
+
+    pub struct ObservingRepair;
+
+    impl Drop for ObservingRepair {
+        fn drop(&mut self) {
+            *REPAIR.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        }
+    }
+
+    pub(super) fn repairing(store: usize, in_place: bool) {
+        if let Some((observed, observe)) = REPAIR.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
+            && *observed == store
+        {
+            observe(in_place);
         }
     }
 }
@@ -3318,8 +3367,10 @@ impl KeyValueStore {
     /// The transaction scope this thread is in on this store, if any (6O-G).
     #[inline]
     fn scope(&self) -> Option<ScopeState> {
-        let scope = TX_SCOPE.with(std::cell::Cell::get);
-        (scope.store == self.scope_id()).then_some(scope)
+        if TX_SCOPE_STORE.with(std::cell::Cell::get) != self.scope_id() {
+            return None;
+        }
+        Some(TX_SCOPE.with(std::cell::Cell::get))
     }
 
     /// Apply a `MULTI`/`EXEC` queue so that readers outside it see its writes
@@ -3357,7 +3408,9 @@ impl KeyValueStore {
     /// inside the span, so nothing is released while it unwinds; no later
     /// command runs; and, if the command was a write, which may be applied
     /// part-way, the store's metadata is rebuilt from the keyspace (and any
-    /// emptied collection removed) before anything is released. The applied
+    /// emptied collection removed) — before anything is released, unless
+    /// another holder has a stripe outside the queue's set, when it is
+    /// rebuilt just after (see `repair_after_panic`). The applied
     /// prefix, and the part-applied command, stay. The caller must treat the
     /// store as diverged from whatever it logged ([`TransactionApplied`]).
     pub fn apply_transaction<'q>(
@@ -3366,8 +3419,10 @@ impl KeyValueStore {
         now: u64,
         mut each: impl FnMut(usize, &'q Command),
     ) -> TransactionApplied {
-        debug_assert!(
-            TX_SCOPE.with(std::cell::Cell::get).store == 0,
+        // A nested transaction would deadlock on the stripes this thread
+        // holds: panic instead (contained by an enclosing one).
+        assert!(
+            TX_SCOPE_STORE.with(std::cell::Cell::get) == 0,
             "transactions do not nest"
         );
         // The write span and its stripes, from `mutation_scope` alone: the
@@ -3446,12 +3501,10 @@ impl KeyValueStore {
         for stripe in &stripes {
             stripe.mark(SEQ_ACTIVE | SEQ_MULTI);
         }
-        let previous = TX_SCOPE.with(|scope| {
-            scope.replace(ScopeState {
-                store: self.scope_id(),
-                capped,
-                held,
-            })
+        let previous = set_scope(ScopeState {
+            store: self.scope_id(),
+            capped,
+            held,
         });
         TransactionHold {
             previous,
@@ -3473,19 +3526,50 @@ impl KeyValueStore {
     /// order. Readers may see the part-applied write either way:
     /// `catch_unwind` cannot undo it.
     fn repair_after_panic(&self, hold: Option<TransactionHold<'_>>) {
-        let holds_all = self
-            .scope()
-            .is_some_and(|scope| scope.held.iter().all(|word| *word == u64::MAX));
-        let _all = if holds_all {
-            // Keep the scope: `order_all` takes nothing inside it.
+        let held = self.scope().map_or([0; STRIPE_WORDS], |scope| scope.held);
+        // The stripes the scope lacks, taken without waiting: `try_lock`
+        // never blocks, so holding some while trying others cannot deadlock.
+        let mut rest: Vec<std::sync::MutexGuard<'_, ()>> = Vec::new();
+        let in_place = (0..WRITE_ORDER_STRIPES)
+            .filter(|&stripe| !stripe_set_has(&held, stripe))
+            .all(|stripe| match self.write_order[stripe].lock.try_lock() {
+                Ok(guard) => {
+                    rest.push(guard);
+                    true
+                }
+                Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                    rest.push(poisoned.into_inner());
+                    true
+                }
+                Err(std::sync::TryLockError::WouldBlock) => false,
+            });
+        let _all = if in_place {
+            // Every stripe held, the queue's still marked: repaired before
+            // anything is released. The scope is kept for the rebuild's own
+            // stripe-taking (`order_all` takes nothing inside it), with its
+            // set widened to every stripe now held.
+            TX_SCOPE.with(|scope| {
+                let mut widened = scope.get();
+                widened.held = [u64::MAX; STRIPE_WORDS];
+                scope.set(widened);
+            });
             (hold, Vec::new())
         } else {
+            // Another holder has one of the rest (rare: a writer of an
+            // unrelated key, a locked multi-key read). Release, then take
+            // them all in order: readers may see the part-applied command
+            // unrepaired in between, which the caller already treats as
+            // diverged (design P2).
+            rest.clear();
             drop(hold);
             (None, self.order_all())
         };
+        #[cfg(any(test, feature = "test-hooks"))]
+        transaction_fault::repairing(self.hook_id(), in_place);
         self.data
             .retain(|_, entry| !entry.value.is_empty_collection());
         self.rebuild_metadata();
+        drop(rest);
     }
 
     /// Hold the write-order stripes of `keys` for the guard's lifetime.
@@ -3513,7 +3597,10 @@ impl KeyValueStore {
         // and marks every stripe its writes take (6O-G): taking one again
         // would deadlock on a lock this thread holds.
         if let Some(scope) = self.scope() {
-            debug_assert!(
+            // Checked in release builds too, and only here, in the scope: a
+            // write outside the set would race outside writers unordered.
+            // A panic is contained by the transaction; a race is not seen.
+            assert!(
                 keys.iter()
                     .all(|key| stripe_set_has(&scope.held, write_order_stripe(key.as_ref()))),
                 "a write inside a transaction outside its stripe set"
@@ -3558,7 +3645,7 @@ impl KeyValueStore {
     fn order_all(&self) -> Vec<std::sync::MutexGuard<'_, ()>> {
         // A transaction applying a whole-keyspace write holds them all (6O-G).
         if let Some(scope) = self.scope() {
-            debug_assert!(
+            assert!(
                 scope.held.iter().all(|word| *word == u64::MAX),
                 "a whole-keyspace write inside a transaction holding a subset"
             );
@@ -3690,7 +3777,9 @@ impl KeyValueStore {
                 .is_none_or(|limit| self.approximate_memory_bytes() <= limit);
             return (within, Vec::new());
         }
-        debug_assert!(
+        // Inside a capped transaction's scope this would deadlock on the
+        // gate the scope holds: panic instead, which the scope contains.
+        assert!(
             self.scope().is_none(),
             "eviction entered inside a transaction's scope"
         );
@@ -4185,7 +4274,7 @@ impl KeyValueStore {
         // index left the count one high for that moment, so a write could be
         // refused at the cap, or evict a live key, for room an expired one had
         // already given back. Gate before stripes: the order capped writes use.
-        debug_assert!(
+        assert!(
             self.scope().is_none(),
             "an expiry sweep entered inside a transaction's scope"
         );
