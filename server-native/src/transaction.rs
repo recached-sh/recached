@@ -324,13 +324,39 @@ pub(crate) async fn run_transaction_queue(
         replies.extend((failed + 1..queue.len()).map(|_| Value::Error(NOT_RUN.to_string())));
         fail_closed(state, &queue[failed], applied);
     }
-
     // ── Phase 2: effects, in command order ──────────────────────────────
     let needs_log = state.needs_write_log();
     // The writer's half of the WATCH registration handshake, after every
     // write of the transaction (6O-E `watched_after_write`). A queue with
     // no writes has nothing to announce (review B-4).
     let has_watch = !writes.is_empty() && watch_registry.watched_after_write();
+    // Nothing to log, notify, push or deliver — a read-only queue, or any
+    // queue on a server nothing observes — has no phase 2 at all: no route
+    // checks, no allocations. A consumer registering after these checks
+    // reads the store, as it would after any write (`UnorderedGate`).
+    if !needs_log
+        && !has_watch
+        && !tx.is_active()
+        && writes.iter().all(|write| write.evicted.is_empty())
+        && !queue
+            .iter()
+            .take(ran)
+            .any(|cmd| matches!(cmd, Command::Publish(..)))
+    {
+        #[cfg(test)]
+        for cmd in queue.iter().take(ran) {
+            crate::propagation::exec_pause::after(cmd).await;
+        }
+        if let Some(failed) = applied.panicked
+            && applied.diverged
+        {
+            converge(&queue[failed], state, watch_registry, store).await;
+        }
+        return TransactionRun {
+            replies,
+            resynchronise_clients: applied.diverged,
+        };
+    }
     let routed: Vec<bool> = writes
         .iter()
         .map(|write| tx.would_route(write.cmd))

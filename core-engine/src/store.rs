@@ -3517,10 +3517,18 @@ impl KeyValueStore {
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
         });
-        let stripes: Vec<StripeHold<'_>> = (0..WRITE_ORDER_STRIPES)
-            .filter(|&stripe| stripe_set_has(&held, stripe))
-            .map(|stripe| StripeHold::take(&self.write_order[stripe]))
-            .collect();
+        // The set's stripes in ascending order, visiting only its set bits:
+        // a scan of all 256 cost more than taking two stripes.
+        let count: usize = held.iter().map(|word| word.count_ones() as usize).sum();
+        let mut stripes: Vec<StripeHold<'_>> = Vec::with_capacity(count);
+        for (at, &word) in held.iter().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                let stripe = at * 64 + bits.trailing_zeros() as usize;
+                stripes.push(StripeHold::take(&self.write_order[stripe]));
+                bits &= bits - 1;
+            }
+        }
         // Marked once all are held, before the first write, as `order_keys`
         // marks a multi-key write's stripes.
         for stripe in &stripes {
