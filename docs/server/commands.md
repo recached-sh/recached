@@ -12,6 +12,7 @@ Recached schedules independent commands across worker threads over a sharded key
 - **Conflicting writers are ordered.** A multi-key write or `MULTI`/`EXEC` reserves all of its write keys against other server writes until persistence, replication, and notifications have recorded the result.
 - **`WATCH` compare-and-swap is sound.** `EXEC` reserves both its write keys and watched keys before checking invalidation, so a writer cannot land between the check and execution.
 - **A transaction's commands see one state** *(0.6)*. `EXEC` reserves every key its queued commands read or write, and every watched key, before it runs the first one. No other connection's write to those keys lands between two of them, so `MULTI GET a GET b EXEC` answers values `a` and `b` held at the same moment. A queued `KEYS`, `SCAN` or `DBSIZE` reserves the whole keyspace. As in Redis, every queued command evaluates expiry at the instant `EXEC` began, and relative deadlines (`SET k v PX 100`) count from it. Writes to keys the transaction does not name go on meanwhile.
+- **A transaction's writes are atomic to readers outside it** *(0.6)*. From before its first queued write to after its last, `EXEC` holds the keyspace's write-order stripes of every key it writes (every stripe on a capped store, or with a queued `FLUSHDB`) and marks them, as one `MSET` does. A reader on another connection, TCP or WebSocket, sees all of the transaction's writes or none: it waits for those queued writes, which run back to back without any I/O, never for the AOF or replication. On a capped store or with `FLUSHDB`, every reader waits for that span. This is runtime visibility on the primary: a replica applies the frames one at a time, and after a crash the AOF can replay part of a transaction (as in Redis without `MULTI` framing).
 - **Values are not torn.** A reader sees a value before or after an individual mutation, never a partial value.
 - **Multi-key commands are atomic to readers too** *(0.6)*. A reader sees all of an `MSET`, `DEL k1 k2`, `RENAME`, `RENAMENX`, `COPY`, `SMOVE` or `*STORE`, or none of it. That includes a one-key write that changes its key in more than one step, such as `MSET k 1 k 2` or a pop that empties a list. A multi-key read (`MGET`, `EXISTS k1 k2`, `SINTER`, `SUNION`, `SDIFF`) observes all its keys at one instant, and evaluates their expiry at one time. Once a read has seen part of a multi-key write, every read that starts afterwards sees all of it.
   The cost: a read waits for a multi-key write in progress on its keys. A multi-key read that writes keep overlapping takes its keys' write locks for its own duration, and writers to every key on those stripes wait for it. The keyspace has 256 write-order stripes, so a read of a few hundred keys or more (a large `MGET`, a `SUNION` of many sets) can briefly hold back nearly every writer, much as Redis runs every command alone.
@@ -20,11 +21,11 @@ On a server with nothing that records write order — no AOF, no replication, no
 
 **What it does not guarantee**
 
-- **A transaction's writes are not atomic to readers outside it.** Another connection cannot write a key reserved by the transaction, but a read from another connection may observe the result of one queued write before the next. A single multi-key command inside the transaction (an `MSET`) is still atomic to readers.
+- **A transaction is not atomic on replicas or across a crash.** A replica applies its frames one at a time, and an AOF cut short by a crash can end inside one.
 - **Whole-keyspace operations are not snapshots.** A reader can see a `FLUSHDB` or a replica's full-sync restore part-done. `KEYS`, `SCAN` and `DBSIZE` walk the keyspace while writes continue, except inside `MULTI`/`EXEC`, where they reserve the whole keyspace.
 - **Eviction removes victims one at a time.** On a store with a memory or key cap, a write that evicts several keys removes them in turn, so a reader can see one gone before another.
 
-If correctness depends on values read before a transaction, `WATCH` those keys and retry when `EXEC` returns nil. Use a database or another system with fully isolated multi-key transactions when readers must observe several keys changing as one indivisible state transition.
+If correctness depends on values read before a transaction, `WATCH` those keys and retry when `EXEC` returns nil.
 
 ---
 
@@ -525,14 +526,14 @@ client ignores the new shape.
 
 Transactions queue commands and run them as one batch at `EXEC`, with optimistic locking through `WATCH`. The server reserves the union of queued write keys until every command and its persistence, replication, and notification effects finish. After `EXEC`, the full result set is broadcast to WebSocket clients.
 
-::: warning Outside readers may see a transaction part-way
-A conflicting server write cannot interleave between queued commands, and the transaction's own reads all see one state, evaluated at one instant *(0.6)*. Reads from other connections do not acquire these ordering barriers, so another connection may observe the result of one queued write before the next.
+::: tip Atomic to readers on the primary *(0.6)*
+A conflicting server write cannot interleave between queued commands, the transaction's own reads all see one state, evaluated at one instant, and readers on other connections see all of its writes or none. Replicas apply a transaction's writes one at a time, and a crash can leave part of one in the AOF.
 
 - **Nothing runs before `EXEC`.** Queued commands are held until execution.
 - **All or nothing on a queue error.** If any command fails to queue, `EXEC` runs none of them and returns `EXECABORT`.
 - **`WATCH` closes the check-to-write race.** `EXEC` reserves watched keys before checking invalidation. If one changed after `WATCH`, it runs nothing and returns a nil array.
 
-Use `WATCH` for compare-and-swap. Do not use `MULTI`/`EXEC` when concurrent readers must observe several keys changing atomically.
+Use `WATCH` for compare-and-swap. If a queued write fails internally (a server bug), `EXEC` stops there: the commands before it stay applied, it and the rest answer errors, and writes are refused with `MISCONF` until `SAVE`.
 :::
 
 | Command | Description |
