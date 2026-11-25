@@ -321,35 +321,11 @@ async fn transactions_answer_sequentially_without_a_concurrent_writer() {
     );
 }
 
-/// Finding F1 (recorded, out of scope for 6O-E): a transaction's writes are
-/// visible part-way to a reader outside it. `MULTI SET a new SET b new EXEC`
-/// stopped between the two SETs; another connection's `MGET a b`. Redis
-/// answers `[old, old]` or `[new, new]`. Kept as the record of the gap: it
-/// fails on `dev` and after 6O-E, so it runs only with
-/// `RECACHED_PROBE_6OE_F1=1` (CI runs ignored tests too).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_outside_reader_never_sees_a_transaction_part_way() {
-    if std::env::var_os("RECACHED_PROBE_6OE_F1").is_none() {
-        eprintln!("F1 probe skipped: set RECACHED_PROBE_6OE_F1=1 to run it");
-        return;
-    }
-    let shared = Shared::new(false);
-    let (a, b) = ("6oe:f1:a", "6oe:f1:b");
-    let (mut txc, mut reader) = (Pipe::tcp(&shared), Pipe::tcp(&shared));
-    txc.cmd(&["MSET", a, "old", b, "old"]).await;
-    queue(&mut txc, &[&["SET", a, "new"], &["SET", b, "new"]]).await;
-    let pause = exec_pause::after_command_naming(a);
-    txc.send(&["EXEC"]).await;
-    assert!(pause.reached(WITHIN).await);
-    let seen = reader.cmd(&["MGET", a, b]).await;
-    drop(pause);
-    reply_within(&mut txc, "EXEC").await;
-    assert!(
-        seen == array(vec![bulk("old"), bulk("old")])
-            || seen == array(vec![bulk("new"), bulk("new")]),
-        "an outside MGET saw the transaction part-way: {seen:?}"
-    );
-}
+// Finding F1 (an outside reader seeing a transaction part-way), recorded here
+// in 6O-E behind `RECACHED_PROBE_6OE_F1=1`, is fixed by 6O-G's two-phase EXEC:
+// its regression test is `transaction_atomicity_6og::
+// an_outside_reader_never_sees_a_transaction_part_way`, which stops the
+// transaction inside its write span (`exec_pause` now stops after the writes).
 
 // ── Test D: histories under load ─────────────────────────────────────────────
 

@@ -612,6 +612,17 @@ impl ServerState {
         error!(operation, error = %error, "persistence failure; client writes are disabled");
     }
 
+    /// Latch persistence unhealthy for an internal failure that left the
+    /// keyspace different from what the AOF and replicas were sent (6O-G: a
+    /// write that panicked inside a transaction). Writes then fail closed
+    /// with `MISCONF` until a `SAVE` snapshots the actual state.
+    pub(crate) fn record_internal_failure(&self, operation: &'static str) {
+        self.persistence_healthy.store(false, Ordering::Release);
+        self.persistence_failures.fetch_add(1, Ordering::Relaxed);
+        gauge!("recached_persistence_healthy").set(0.0);
+        counter!("recached_persistence_errors_total", "operation" => operation).increment(1);
+    }
+
     /// Called after every successful in-memory write. A runtime AOF error
     /// latches the server unhealthy so later client writes fail closed.
     pub(crate) async fn on_write(&self, resp: &[u8]) {
@@ -682,6 +693,33 @@ impl ServerState {
                 _ => resp.to_vec(),
             };
             self.replicas.fan_out(frame).await;
+        }
+    }
+
+    /// [`on_write_logged`](Self::on_write_logged) for a transaction's
+    /// frames, in command order (6O-G): the AOF takes them as one batch
+    /// (never split by the coalescer: they are queued in one step), then
+    /// each is replicated in order. Transactions carry no DEDUP identity.
+    pub(crate) async fn on_transaction_logged(&self, frames: &[&[u8]], may_defer: bool) {
+        if frames.is_empty() {
+            return;
+        }
+        if let Some(aof) = &self.aof {
+            let result = if may_defer && !self.replicas.is_enabled() {
+                aof.append_client_writes(frames).await
+            } else if aof.fanout() == AofFanout::Coalesced {
+                aof.append_coalesced_frames(frames).await
+            } else {
+                aof.append_frames(frames).await
+            };
+            if let Err(e) = result {
+                self.record_persistence_failure("aof_append", &e);
+            }
+        }
+        if self.replicas.is_enabled() {
+            for frame in frames {
+                self.replicas.fan_out(frame.to_vec()).await;
+            }
         }
     }
 

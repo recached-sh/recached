@@ -101,6 +101,15 @@ pub(super) fn allocations_in<R>(f: impl FnOnce() -> R) -> (R, u64) {
     (result, ALLOCS.with(Cell::get) - before)
 }
 
+/// `f`'s result and the bytes it allocated on this thread (6O-G).
+pub(super) fn bytes_allocated_in<R>(f: impl FnOnce() -> R) -> (R, u64) {
+    let before = BYTES.with(Cell::get);
+    let was = TRACKING.with(|t| t.replace(true));
+    let result = f();
+    TRACKING.with(|t| t.set(was));
+    (result, BYTES.with(Cell::get) - before)
+}
+
 // ── harness ───────────────────────────────────────────────────────────────────
 
 const KEYS: usize = 100_000;

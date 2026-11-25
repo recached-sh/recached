@@ -70,46 +70,6 @@ pub(crate) fn queue_time_rejection(cmd: &Command) -> Option<Vec<u8>> {
     }
 }
 
-/// Run a transaction's queued commands in order, under the guards `EXEC`
-/// holds ([`ReplHub::lock_transaction`]), each with the store's clock at
-/// `now`, the instant the transaction runs at. Shared by the TCP and
-/// WebSocket `EXEC`, so the two cannot drift apart.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_transaction_queue(
-    queue: Vec<Command>,
-    now: u64,
-    tx: &SyncTx,
-    conn_id: u64,
-    state: &ServerState,
-    watch_registry: &WatchRegistry,
-    store: &KeyValueStore,
-    pubsub: &SharedPubSub,
-) -> Vec<Value> {
-    let mut results = Vec::with_capacity(queue.len());
-    for qcmd in queue {
-        #[cfg(test)]
-        let hook_cmd = qcmd.clone();
-        let resp = match qcmd {
-            // Delivery lives in the connection loop, not the store —
-            // `store.execute(Publish)` is a stub that answers 0 and sends
-            // nothing. Queuing PUBLISH without this arm would silently swallow
-            // the message, which is worse than refusing it.
-            Command::Publish(ref channel, ref message) => {
-                let count = pubsub.lock().await.publish(channel, message);
-                Value::Integer(count)
-            }
-            _ if is_write_command(&qcmd) => {
-                execute_locked_write_at(&qcmd, now, tx, conn_id, state, watch_registry, store).await
-            }
-            _ => core_engine::store::at_instant(now, || execute_and_record(store, qcmd)),
-        };
-        #[cfg(test)]
-        crate::propagation::exec_pause::after(&hook_cmd).await;
-        results.push(resp);
-    }
-    results
-}
-
 /// Whether a fan-out push goes to this connection.
 ///
 /// Its own writes never do. With scopes set, only matching keys are forwarded;
