@@ -22,6 +22,7 @@ static ARMED: AtomicBool = AtomicBool::new(false);
 static STATE: Mutex<State> = Mutex::new(State {
     store: 0,
     key: None,
+    transaction: false,
     readers_of: Vec::new(),
     reached: false,
     released: false,
@@ -37,6 +38,9 @@ struct State {
     store: usize,
     /// The key whose mutation stops the next write that makes it.
     key: Option<String>,
+    /// Stop a transaction after its queued write of `key` instead
+    /// ([`after_transaction_write_of`], 6O-G), not a write's own mutation.
+    transaction: bool,
     /// The write-order stripes of the keys whose readers are counted and
     /// stopped.
     readers_of: Vec<usize>,
@@ -95,6 +99,7 @@ pub fn after_mutation_of(store: &KeyValueStore, key: &str, readers_of: &[&str]) 
         let mut state = state();
         state.store = store.hook_id();
         state.key = Some(key.to_string());
+        state.transaction = false;
         state.readers_of = readers_of
             .iter()
             .map(|key| super::write_order_stripe(key))
@@ -109,6 +114,21 @@ pub fn after_mutation_of(store: &KeyValueStore, key: &str, readers_of: &[&str]) 
     Pause {
         _exclusive: exclusive,
     }
+}
+
+/// Arm the hook on `store` for a transaction (6O-G): the next transaction
+/// applied to it ([`KeyValueStore::apply_transaction`]) stops right after its
+/// queued write naming `key` — inside its write span, its store stripes held
+/// and marked, synchronously on its thread — until the returned [`Pause`] is
+/// dropped or [`Pause::release_write`]. Readers of `readers_of` that wait are
+/// counted as for [`after_mutation_of`].
+///
+/// The asynchronous `exec_pause` of the server stops between queued commands
+/// at an `.await`; it cannot stop inside the synchronous write span.
+pub fn after_transaction_write_of(store: &KeyValueStore, key: &str, readers_of: &[&str]) -> Pause {
+    let pause = after_mutation_of(store, key, readers_of);
+    state().transaction = true;
+    pause
 }
 
 fn wait_until(within: Duration, mut done: impl FnMut(&State) -> bool) -> bool {
@@ -219,10 +239,37 @@ pub(crate) fn mutated(store: usize, key: &str) {
     if !armed() {
         return;
     }
-    let mut state = state();
-    if state.reached || state.store != store || state.key.as_deref() != Some(key) {
+    let state = state();
+    if state.transaction
+        || state.reached
+        || state.store != store
+        || state.key.as_deref() != Some(key)
+    {
         return;
     }
+    stop(state);
+}
+
+/// Hook point: a transaction applying to `store` has just run a queued write
+/// whose keys are `keys`, inside its write span (6O-G). Stops it if the hook
+/// is armed for a transaction on that store and one of `keys`.
+pub(crate) fn transaction_step(store: usize, keys: &[&str]) {
+    if !armed() {
+        return;
+    }
+    let state = state();
+    if !state.transaction
+        || state.reached
+        || state.store != store
+        || !state.key.as_deref().is_some_and(|key| keys.contains(&key))
+    {
+        return;
+    }
+    stop(state);
+}
+
+/// Stop the calling thread until the test releases it.
+fn stop(mut state: MutexGuard<'static, State>) {
     state.reached = true;
     CHANGED.notify_all();
     while !state.released {
