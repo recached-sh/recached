@@ -1,0 +1,69 @@
+diff --git a/server-native/src/replication.rs b/server-native/src/replication.rs
+index e621fff..6ccc7bb 100644
+--- a/server-native/src/replication.rs
++++ b/server-native/src/replication.rs
+@@ -2981,3 +2981,64 @@ mod dedup_order_tests {
+         assert!(knows(&r.state, "striped-0d", 2));
+     }
+ }
++
++/// REVIEW PROBE (not for commit): legacy overflowing deadlines on a replica.
++#[cfg(test)]
++mod review_probe_6of {
++    use super::*;
++
++    fn replica() -> (KeyValueStore, Arc<ServerState>, SyncTx, WatchRegistry) {
++        let hub = ReplHub::new();
++        hub.configure_dedup(true);
++        let state = ServerState::for_tests(
++            Arc::new(SnapshotConfig {
++                path: std::env::temp_dir().join("recached_probe6of_unused.rdb"),
++                last_save: std::sync::atomic::AtomicI64::new(0),
++                checkpoint_id: AtomicU64::new(0),
++            }),
++            hub,
++            true,
++        );
++        let store = KeyValueStore::new();
++        store.set_follower(true);
++        (store, state, SyncRouter::new(16), WatchHub::new())
++    }
++
++    async fn apply(words: &[&str]) -> std::io::Result<Value> {
++        let (store, state, tx, watches) = replica();
++        let frame = crate::propagation::resp_push(
++            &words.iter().map(|w| w.as_bytes()).collect::<Vec<_>>(),
++        );
++        apply_repl_frame(&store, &state, &tx, &watches, &frame).await?;
++        Ok(store.execute(core_engine::cmd::Command::PExpireTime("k".into())))
++    }
++
++    #[tokio::test]
++    async fn probe_bare_legacy_frame_is_clamped_on_replica() {
++        let r = apply(&["SET", "k", "v", "PXAT", "18446744073709551615"]).await;
++        assert_eq!(r.unwrap(), Value::Integer(i64::MAX));
++    }
++
++    #[tokio::test]
++    async fn probe_dedup_legacy_frame_is_clamped_on_replica() {
++        let r = apply(&[
++            "DEDUP", "client-a", "7", "SET", "k", "v", "PXAT", "18446744073709551615",
++        ])
++        .await;
++        assert_eq!(r.unwrap(), Value::Integer(i64::MAX));
++    }
++
++    #[tokio::test]
++    async fn probe_dedup_legacy_pexpireat_is_clamped_on_replica() {
++        let (store, state, tx, watches) = replica();
++        for words in [
++            &["SET", "k", "v"][..],
++            &["DEDUP", "client-b", "1", "PEXPIREAT", "k", "9223372036854776000"],
++        ] {
++            let frame = crate::propagation::resp_push(
++                &words.iter().map(|w| w.as_bytes()).collect::<Vec<_>>(),
++            );
++            apply_repl_frame(&store, &state, &tx, &watches, &frame).await.unwrap();
++        }
++    }
++}

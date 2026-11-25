@@ -1,0 +1,276 @@
+FLUSHALL -> 'OK'
+DEL k -> 0
+SET k v -> 'OK'
+SET k v EX 9223372036854775 -> "ERR:ERR invalid expire time in 'set' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+SET k v EX 9223372036854776 -> "ERR:ERR invalid expire time in 'set' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+SET k v PX 9223370241229537017 -> 'OK'
+PEXPIRETIME k -> 'T(9223372036768384697)'
+DEL k -> 1
+SET k v -> 'OK'
+SET k v PX 9223370241402337017 -> "ERR:ERR invalid expire time in 'set' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+SET k v EXAT 9223372036854775 -> 'OK'
+PEXPIRETIME k -> 'T(9223372036854775000)'
+DEL k -> 1
+SET k v -> 'OK'
+SET k v EXAT 9223372036854776 -> "ERR:ERR invalid expire time in 'set' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+SET k v PXAT 9223372036854775807 -> 'OK'
+PEXPIRETIME k -> 'T(9223372036854775807)'
+DEL k -> 1
+SET k v -> 'OK'
+SET k v PXAT 9223372036854775808 -> 'ERR:ERR value is not an integer or out of range'
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+SET k v EX 0 -> "ERR:ERR invalid expire time in 'set' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+SET k v EX -1 -> "ERR:ERR invalid expire time in 'set' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+SET k v PXAT 1 -> 'OK'
+PEXPIRETIME k -> -2
+DEL k -> 0
+SET k v -> 'OK'
+SET k v EXAT 1 -> 'OK'
+PEXPIRETIME k -> -2
+DEL k -> 0
+SET k v -> 'OK'
+SET k v NX EX 9223372036854775 -> "ERR:ERR invalid expire time in 'set' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+DEL k -> 0
+SET k v XX EX 9223372036854775 -> "ERR:ERR invalid expire time in 'set' command"
+PEXPIRETIME k -> -2
+DEL k -> 0
+DEL k -> 0
+SET k v XX PXAT 9223372036854775807 -> None
+PEXPIRETIME k -> -2
+DEL k -> 0
+SET k v -> 'OK'
+SET k w GET EX 9223372036854775 -> "ERR:ERR invalid expire time in 'set' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+RPUSH k v -> 1
+SET k w GET EX 9223372036854775 -> "ERR:ERR invalid expire time in 'set' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+RPUSH k v -> 1
+SET k w GET PXAT 9223372036854775807 -> 'ERR:WRONGTYPE Operation against a key holding the wrong kind of value'
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+SET k w NX GET PX 9223370241402337017 -> "ERR:ERR invalid expire time in 'set' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+SETEX k 9223372036854775 v -> "ERR:ERR invalid expire time in 'setex' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+SETEX k 9223370241229537 v -> 'OK'
+PEXPIRETIME k -> 'T(9223372036768384683)'
+DEL k -> 1
+SET k v -> 'OK'
+PSETEX k 9223370241229537017 v -> 'OK'
+PEXPIRETIME k -> 'T(9223372036768384700)'
+DEL k -> 1
+SET k v -> 'OK'
+PSETEX k 9223370241402337017 v -> "ERR:ERR invalid expire time in 'psetex' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+PSETEX k 9223372036854775807 v -> "ERR:ERR invalid expire time in 'psetex' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+SETEX k 0 v -> "ERR:ERR invalid expire time in 'setex' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+EXPIRE k 9223372036854775807 -> "ERR:ERR invalid expire time in 'expire' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+EXPIRE k 9223372036854775 -> "ERR:ERR invalid expire time in 'expire' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+EXPIRE k 9223370241229537 -> 1
+PEXPIRETIME k -> 'T(9223372036768384684)'
+DEL k -> 1
+SET k v -> 'OK'
+PEXPIRE k 9223370241229537017 -> 1
+PEXPIRETIME k -> 'T(9223372036768384702)'
+DEL k -> 1
+SET k v -> 'OK'
+PEXPIRE k 9223370241402337017 -> "ERR:ERR invalid expire time in 'pexpire' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+PEXPIRE k 9223372036854775807 -> "ERR:ERR invalid expire time in 'pexpire' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+EXPIREAT k 9223372036854775 -> 1
+PEXPIRETIME k -> 'T(9223372036854775000)'
+DEL k -> 1
+SET k v -> 'OK'
+EXPIREAT k 9223372036854776 -> "ERR:ERR invalid expire time in 'expireat' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+EXPIREAT k 9223372036854775807 -> "ERR:ERR invalid expire time in 'expireat' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+PEXPIREAT k 9223372036854775807 -> 1
+PEXPIRETIME k -> 'T(9223372036854775807)'
+DEL k -> 1
+SET k v -> 'OK'
+PEXPIREAT k 9223372036854775808 -> 'ERR:ERR value is not an integer or out of range'
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+EXPIRE k 0 -> 1
+PEXPIRETIME k -> -2
+DEL k -> 0
+SET k v -> 'OK'
+EXPIRE k -1 -> 1
+PEXPIRETIME k -> -2
+DEL k -> 0
+SET k v -> 'OK'
+EXPIREAT k 0 -> 1
+PEXPIRETIME k -> -2
+DEL k -> 0
+SET k v -> 'OK'
+PEXPIREAT k 1 -> 1
+PEXPIRETIME k -> -2
+DEL k -> 0
+DEL k -> 0
+EXPIRE k 9223372036854775807 -> "ERR:ERR invalid expire time in 'expire' command"
+PEXPIRETIME k -> -2
+DEL k -> 0
+DEL k -> 0
+PEXPIRE k 9223370241402337017 -> "ERR:ERR invalid expire time in 'pexpire' command"
+PEXPIRETIME k -> -2
+DEL k -> 0
+DEL k -> 0
+EXPIREAT k 9223372036854775807 -> "ERR:ERR invalid expire time in 'expireat' command"
+PEXPIRETIME k -> -2
+DEL k -> 0
+RPUSH k v -> 1
+EXPIRE k 9223372036854775 -> "ERR:ERR invalid expire time in 'expire' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+GETEX k EX 9223372036854775 -> "ERR:ERR invalid expire time in 'getex' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+GETEX k EX 9223372036854776 -> "ERR:ERR invalid expire time in 'getex' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+GETEX k PX 9223370241402337017 -> "ERR:ERR invalid expire time in 'getex' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+GETEX k PX 9223370241229537017 -> 'v'
+PEXPIRETIME k -> 'T(9223372036768384705)'
+DEL k -> 1
+SET k v -> 'OK'
+GETEX k EXAT 9223372036854775 -> 'v'
+PEXPIRETIME k -> 'T(9223372036854775000)'
+DEL k -> 1
+SET k v -> 'OK'
+GETEX k EXAT 9223372036854776 -> "ERR:ERR invalid expire time in 'getex' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+GETEX k PXAT 9223372036854775807 -> 'v'
+PEXPIRETIME k -> 'T(9223372036854775807)'
+DEL k -> 1
+SET k v -> 'OK'
+GETEX k EX 0 -> "ERR:ERR invalid expire time in 'getex' command"
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v -> 'OK'
+GETEX k EXAT 1 -> 'v'
+PEXPIRETIME k -> -2
+DEL k -> 0
+DEL k -> 0
+GETEX k EX 9223372036854775 -> None
+PEXPIRETIME k -> -2
+DEL k -> 0
+DEL k -> 0
+GETEX k PX 9223370241402337017 -> None
+PEXPIRETIME k -> -2
+DEL k -> 0
+DEL k -> 0
+GETEX k EX 9223372036854776 -> None
+PEXPIRETIME k -> -2
+DEL k -> 0
+DEL k -> 0
+GETEX k EX 0 -> None
+PEXPIRETIME k -> -2
+DEL k -> 0
+DEL k -> 0
+GETEX k PX -5 -> None
+PEXPIRETIME k -> -2
+DEL k -> 0
+RPUSH k v -> 1
+GETEX k PX 9223370241402337017 -> 'ERR:WRONGTYPE Operation against a key holding the wrong kind of value'
+PEXPIRETIME k -> -1
+DEL k -> 1
+RPUSH k v -> 1
+GETEX k EX 9223372036854775 -> 'ERR:WRONGTYPE Operation against a key holding the wrong kind of value'
+PEXPIRETIME k -> -1
+DEL k -> 1
+RPUSH k v -> 1
+GETEX k EX 9223372036854776 -> 'ERR:WRONGTYPE Operation against a key holding the wrong kind of value'
+PEXPIRETIME k -> -1
+DEL k -> 1
+RPUSH k v -> 1
+GETEX k EX 0 -> 'ERR:WRONGTYPE Operation against a key holding the wrong kind of value'
+PEXPIRETIME k -> -1
+DEL k -> 1
+RPUSH k v -> 1
+GETEX k PXAT 9223372036854775807 -> 'ERR:WRONGTYPE Operation against a key holding the wrong kind of value'
+PEXPIRETIME k -> -1
+DEL k -> 1
+SET k v PX 1 -> 'OK'
+GETEX k PX 9223370241402337017 -> "ERR:ERR invalid expire time in 'getex' command"
+PEXPIRETIME k -> 'T(1795538847691)'
+DEL k -> 1
+SET k v -> 'OK'
+MULTI -> 'OK'
+SET k v EX 9223372036854775 -> 'QUEUED'
+SET k2 x -> 'QUEUED'
+EXPIRE k 9223372036854775 -> 'QUEUED'
+GETEX k PX 9223370241402337017 -> 'QUEUED'
+EXEC -> ["ERR:ERR invalid expire time in 'set' command", 'OK', "ERR:ERR invalid expire time in 'expire' command", "ERR:ERR invalid expire time in 'getex' command"]
+GET k2 -> 'x'
+MULTI -> 'OK'
+SET k3 x -> 'QUEUED'
+GETEX k EX 9223372036854776 -> 'QUEUED'
+EXEC -> ['OK', "ERR:ERR invalid expire time in 'getex' command"]
+GET k3 -> 'x'
+MULTI -> 'OK'
+SET k4 x -> 'QUEUED'
+SET k v EX 0 -> 'QUEUED'
+EXEC -> ['OK', "ERR:ERR invalid expire time in 'set' command"]
+GET k4 -> 'x'

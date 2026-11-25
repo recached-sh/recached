@@ -1,0 +1,6 @@
+fmt exit=0
+  passed= failed= ignored=
+clippy exit=0
+  passed= failed= ignored=
+workspace exit=0
+  passed=1519 failed=0 ignored=18
