@@ -678,67 +678,82 @@ pub(crate) async fn sweep_expired_tick(
         return 0;
     }
     let started = std::time::Instant::now();
-    let mut total = 0usize;
-    loop {
-        let examined = store.volatile_key_count().min(EXPIRY_CHUNK);
-        if examined == 0 {
-            return total;
-        }
-        let (removed, queued) = {
-            let _write_guards = state.replicas.lock_all_writes().await;
-            // Again under the barrier: a full synchronization or a promotion
-            // changes the mode only under it, and a tick that queued behind
-            // one must not sweep a keyspace now applied without evaluating
-            // expiry (6O-H review D, D1).
-            if state.is_replica() && state.replicas.upstream_expirylog.load(Ordering::Acquire) {
-                return total;
+    // Each chunk's `DEL`s are queued under the barrier and their write
+    // started once it is released; the tick waits for them all at its end,
+    // not chunk by chunk: under `always` one `fdatasync` (tens of ms on an
+    // HDD) per chunk outlasted the tick's budget, so a tick swept a single
+    // chunk (6O-H review E, F1, round 2).
+    let mut written = Vec::new();
+    let total = 'tick: {
+        let mut total = 0usize;
+        loop {
+            let examined = store.volatile_key_count().min(EXPIRY_CHUNK);
+            if examined == 0 {
+                break 'tick total;
             }
-            let expired = store.sweep_expired_reporting_budget(EXPIRY_CHUNK);
-            let mut queued = None;
-            state.forget_ephemeral_keys(expired.iter().map(String::as_str));
-            // A primary logs what its sweeper removed (6O-H, Expiry Option
-            // E2): the AOF replay and expiry-log replicas never expire on
-            // their own, so this is how the removal reaches them. Under the
-            // barrier, so no write to these keys can be logged between the
-            // removal and its `DEL`. A replica's own sweep stays silent: its
-            // primary's stream is what its AOF and sub-replicas follow.
-            // Queued here, written once the barrier is released (review E,
-            // F1).
-            if !expired.is_empty() && !state.is_replica() {
-                if state.needs_write_log() {
-                    let frames = expiry_del_frames(&expired);
-                    let frames: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
-                    queued = state.on_sweep_queued(&frames).await;
+            let (removed, queued) = {
+                let _write_guards = state.replicas.lock_all_writes().await;
+                // Again under the barrier: a full synchronization or a promotion
+                // changes the mode only under it, and a tick that queued behind
+                // one must not sweep a keyspace now applied without evaluating
+                // expiry (6O-H review D, D1).
+                if state.is_replica() && state.replicas.upstream_expirylog.load(Ordering::Acquire) {
+                    break 'tick total;
                 }
-                // One push per key: a frame naming several keys reaches only
-                // a socket allowed to read them all, which a tenant-scoped
-                // socket is not when a chunk spans tenants.
-                if tx.is_active() {
-                    for key in &expired {
-                        let del = Command::Del(vec![key.clone()]);
-                        if tx.would_route(&del) {
-                            let frame = resp_push(&[b"DEL", key.as_bytes()]);
-                            tx.send(Arc::new(SyncPush::for_command(
-                                0,
-                                &del,
-                                push_keys(&del),
-                                frame,
-                            )));
+                let expired = store.sweep_expired_reporting_budget(EXPIRY_CHUNK);
+                let mut queued = None;
+                state.forget_ephemeral_keys(expired.iter().map(String::as_str));
+                // A primary logs what its sweeper removed (6O-H, Expiry Option
+                // E2): the AOF replay and expiry-log replicas never expire on
+                // their own, so this is how the removal reaches them. Under the
+                // barrier, so no write to these keys can be logged between the
+                // removal and its `DEL`. A replica's own sweep stays silent: its
+                // primary's stream is what its AOF and sub-replicas follow.
+                // Queued here, written once the barrier is released (review E,
+                // F1).
+                if !expired.is_empty() && !state.is_replica() {
+                    if state.needs_write_log() {
+                        let frames = expiry_del_frames(&expired);
+                        let frames: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+                        queued = state.on_sweep_queued(&frames).await;
+                    }
+                    // One push per key: a frame naming several keys reaches only
+                    // a socket allowed to read them all, which a tenant-scoped
+                    // socket is not when a chunk spans tenants.
+                    if tx.is_active() {
+                        for key in &expired {
+                            let del = Command::Del(vec![key.clone()]);
+                            if tx.would_route(&del) {
+                                let frame = resp_push(&[b"DEL", key.as_bytes()]);
+                                tx.send(Arc::new(SyncPush::for_command(
+                                    0,
+                                    &del,
+                                    push_keys(&del),
+                                    frame,
+                                )));
+                            }
                         }
                     }
                 }
+                if !watch_registry.is_empty() {
+                    notify_removed(watch_registry, &expired).await;
+                }
+                (expired.len(), queued)
+            };
+            if let Some(queued) = queued {
+                queued.start();
+                written.push(queued);
             }
-            if !watch_registry.is_empty() {
-                notify_removed(watch_registry, &expired).await;
+            total = total.saturating_add(removed);
+            if removed.saturating_mul(4) < examined || started.elapsed() >= EXPIRY_TICK_BUDGET {
+                break 'tick total;
             }
-            (expired.len(), queued)
-        };
-        state.on_sweep_written(queued).await;
-        total = total.saturating_add(removed);
-        if removed.saturating_mul(4) < examined || started.elapsed() >= EXPIRY_TICK_BUDGET {
-            return total;
         }
+    };
+    for queued in written {
+        state.on_sweep_written(Some(queued)).await;
     }
+    total
 }
 
 /// Test-only: turn the borrowed path off, so a test can compare the replies

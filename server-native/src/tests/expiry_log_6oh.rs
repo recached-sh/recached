@@ -885,3 +885,51 @@ fn startup_discards_are_split_like_the_sweepers_frames() {
         chunked_frames(&[b"DEL"], &members[..3])
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_disk_does_not_slow_the_sweep_to_a_chunk_per_tick() {
+    // Review E, F1 round 2: waiting for each chunk's write, even outside the
+    // barrier, let one `fdatasync` per chunk outlast the tick's budget.
+    let log = Logged::new(AofSync::Always, AofFanout::Inline, KeyValueStore::new()).await;
+    let mut c = Pipe::tcp(&log.shared);
+    for i in 0..600 {
+        c.cmd(&["SET", &format!("chunks:{i}"), "v", "PX", "1"]).await;
+    }
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let aof = Arc::clone(log.shared.state.aof.as_ref().unwrap());
+    // The first chunk's write stops in the performer, as a slow disk would.
+    aof.hold_batch_containing(b"DEL");
+    let sweep = sweep_expired_tick(
+        &log.shared.store,
+        &log.shared.state,
+        &log.shared.watch_registry,
+        &log.shared.tx,
+    );
+    let check = async {
+        aof.wait_until_held().await;
+        let mut swept_meanwhile = false;
+        for _ in 0..200 {
+            if log.shared.store.key_count() == 0 {
+                swept_meanwhile = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        aof.release_hold();
+        swept_meanwhile
+    };
+    let (removed, swept_meanwhile) = tokio::join!(sweep, check);
+    assert!(
+        swept_meanwhile,
+        "the tick waited for its first chunk's write before sweeping on"
+    );
+    assert_eq!(removed, 600);
+    let logged: usize = log
+        .aof()
+        .await
+        .iter()
+        .filter(|r| r[0] == "DEL")
+        .map(|r| r.len() - 1)
+        .sum();
+    assert_eq!(logged, 600, "every swept key logged");
+}
