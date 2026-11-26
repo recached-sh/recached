@@ -337,6 +337,7 @@ async fn the_files_older_binaries_left_replay_here() {
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return;
     };
+    let mut replayed = 0;
     for entry in entries {
         let path = entry.unwrap().path();
         if path.extension().is_none_or(|ext| ext != "resp") {
@@ -348,7 +349,9 @@ async fn the_files_older_binaries_left_replay_here() {
         assert_eq!(get(&store, "a"), bulk("new"), "{}", path.display());
         assert_eq!(get(&store, "b"), bulk("old"), "{}", path.display());
         assert_eq!(get(&store, "d"), bulk("1"), "{}", path.display());
+        replayed += 1;
     }
+    assert_eq!(replayed, 6, "one file per older binary");
 }
 
 #[tokio::test]
