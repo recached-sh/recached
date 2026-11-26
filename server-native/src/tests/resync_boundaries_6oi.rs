@@ -139,6 +139,7 @@ async fn a_real_primary_answers_a_resume_inside_a_group_with_a_full_sync() {
         (last, capable, true),
         (first, legacy, true),
     ] {
+        let before = primary.state.replicas.syncs();
         let (mode, mut sock) = resume_request(addr, &run, at, accept).await;
         assert_eq!(
             mode == b'P',
@@ -146,6 +147,21 @@ async fn a_real_primary_answers_a_resume_inside_a_group_with_a_full_sync() {
             "resume at {at} ({accept}): mode {:?}",
             mode as char
         );
+        // Counted as served (review D, D-5): one partial or one full sync.
+        let mut after = primary.state.replicas.syncs();
+        for _ in 0..200 {
+            if after != before {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            after = primary.state.replicas.syncs();
+        }
+        let want = if partial {
+            (before.0 + 1, before.1)
+        } else {
+            (before.0, before.1 + 1)
+        };
+        assert_eq!(after, want, "resume at {at} ({accept})");
         if at == first - 1 {
             // The partial sync: three data frames, the header first.
             let mut head = [0u8; 12];
@@ -165,11 +181,15 @@ async fn a_real_primary_answers_a_resume_inside_a_group_with_a_full_sync() {
 // ── A replica disconnected inside a group ────────────────────────────────
 
 /// The primary's queue to the replica is smaller than a transaction's
-/// frames: `fan_out_group` disconnects it part-way through the group. It
-/// resumes before the group, from the backlog, and its readers never see
-/// part of the transaction meanwhile.
+/// frames: `fan_out_group` disconnects it while queueing the group. The
+/// link's buffered frames are refused once its handle is dropped, so the
+/// replica usually sees the link end before the group (review D, D-3: an
+/// end inside a group is covered deterministically by
+/// `a_link_that_ends_inside_a_group_applies_none_of_it_and_resumes_before_it`).
+/// It resumes from the backlog, its readers never see part of a
+/// transaction, and it converges.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_slow_replica_cut_off_inside_a_group_resumes_before_it_and_converges() {
+async fn a_replica_whose_queue_overflows_on_groups_resumes_and_converges() {
     let primary = node(false, true).await;
     primary.state.replicas.configure_queue_bytes(4 * 1024);
     let replica = node(true, true).await;
