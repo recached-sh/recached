@@ -794,3 +794,30 @@ fn sweeper_frames_split_exactly_at_the_bound() {
     let over = vec!["a".repeat(half), "b".repeat(half + 1)];
     assert_eq!(expiry_del_frames(&over).len(), 2);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn in_exec_only_a_failed_writes_del_reaches_the_writer() {
+    // Review B round 2, R-1: inside EXEC too, the effective write's DEL
+    // carries the writer's origin (its frame follows, which the writer never
+    // gets), and the failed write's DEL reaches the writer.
+    let shared = Shared::new(false);
+    let mut writer = Ws::connect(&shared).await;
+    let mut tcp = Pipe::tcp(&shared);
+    tcp.cmd(&["SET", "xw:k", "5"]).await;
+    tcp.cmd(&["RPUSH", "xw:l", "a"]).await;
+    expire(&mut tcp, "xw:k").await;
+    expire(&mut tcp, "xw:l").await;
+    let _ = writer.drain(300).await;
+    for c in [
+        &["MULTI"][..],
+        &["INCR", "xw:k"],
+        &["LSET", "xw:l", "0", "b"],
+        &["EXEC"],
+    ] {
+        writer.send(c).await;
+    }
+    let got = writer.drain(500).await;
+    assert_eq!(tcp.cmd(&["GET", "xw:k"]).await, bulk("1"));
+    assert!(!got.contains(&rec(&["DEL", "xw:k"])), "{got:?}");
+    assert!(got.contains(&rec(&["DEL", "xw:l"])), "{got:?}");
+}
