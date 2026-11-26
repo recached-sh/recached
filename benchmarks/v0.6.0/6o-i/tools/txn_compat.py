@@ -213,7 +213,7 @@ TX = (arr("SET", "a", "new"), arr("SET", "b", "new"))
 def run_cases(name, binary, root, files_out):
     def keep(case, data):
         if files_out:
-            with open(os.path.join(files_out, f"{case}.aof"), "wb") as f:
+            with open(os.path.join(files_out, f"{case}.resp"), "wb") as f:
                 f.write(data)
 
     # T1: a complete group replays; the control records change nothing else.
