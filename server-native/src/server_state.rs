@@ -767,19 +767,38 @@ impl ServerState {
     /// without the coalescer's yield (every writer is held by the sweep's
     /// barrier, so nothing could join), then replicated in order (review B,
     /// B-3).
-    pub(crate) async fn on_sweep_logged(&self, frames: &[&[u8]]) {
+    /// Queue the sweeper's `DEL` frames, under the all-write barrier its
+    /// caller holds: in the AOF (their place in the file fixed, nothing
+    /// written yet) and on the replication stream, in that order, as a
+    /// write's frames are. The caller releases the barrier, then waits on
+    /// the result: the `write(2)`, and under `always` the `fdatasync`, no
+    /// longer stop every writer (6O-H review E, F1).
+    ///
+    /// The replicas may receive these `DEL`s before the AOF holds them,
+    /// unlike a client write's frames. A crash in between leaves the
+    /// primary's file without a `DEL` of a key that had already expired:
+    /// on restart that key is masked by reads and swept (and logged) again,
+    /// and the replicas resynchronize in full from the new run id.
+    pub(crate) async fn on_sweep_queued(&self, frames: &[&[u8]]) -> Option<QueuedFrames<'_>> {
         if frames.is_empty() {
-            return;
+            return None;
         }
-        if let Some(aof) = &self.aof
-            && let Err(e) = aof.append_frames(frames).await
-        {
-            self.record_persistence_failure("aof_append", &e);
-        }
+        let queued = self.aof.as_ref().map(|aof| aof.queue_frames(frames));
         if self.replicas.is_enabled() {
             for frame in frames {
                 self.replicas.fan_out(frame.to_vec()).await;
             }
+        }
+        queued
+    }
+
+    /// The outcome of [`on_sweep_queued`](Self::on_sweep_queued)'s AOF
+    /// frames, waited on outside the barrier.
+    pub(crate) async fn on_sweep_written(&self, queued: Option<QueuedFrames<'_>>) {
+        if let Some(queued) = queued
+            && let Err(e) = queued.wait().await
+        {
+            self.record_persistence_failure("aof_append", &e);
         }
     }
 

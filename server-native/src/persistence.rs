@@ -1645,6 +1645,23 @@ impl Drop for LeadOnDrop<'_> {
     }
 }
 
+/// Frames queued by [`AofWriter::queue_frames`], not yet led.
+pub(crate) struct QueuedFrames<'a> {
+    shared: &'a Arc<AofShared>,
+    done: Arc<AofDone>,
+    lead: LeadOnDrop<'a>,
+}
+
+impl QueuedFrames<'_> {
+    /// Lead the batch (or find it led) and wait for its outcome, as
+    /// [`AofWriter::append_frames`] does.
+    pub(crate) async fn wait(self) -> std::io::Result<()> {
+        self.lead.disarm();
+        self.shared.lead();
+        self.done.wait().await
+    }
+}
+
 /// Wait for a gate's batch, counting the waits another task's write made park.
 async fn gate_wait(shared: &AofShared, done: &AofDone) -> std::io::Result<()> {
     if !done.is_complete() {
@@ -2029,6 +2046,23 @@ impl AofWriter {
             .await
     }
 
+    /// Queue `frames` now, their place in the file fixed under whatever the
+    /// caller holds, and write them later: [`QueuedFrames::wait`] leads the
+    /// batch and waits for it, after the caller has released its locks. For
+    /// the sweeper, which queues its `DEL`s under the all-write barrier: it
+    /// used to wait for their `write(2)`, and under `always` their
+    /// `fdatasync`, with every writer stopped behind the barrier (6O-H
+    /// review E, F1). Dropped unwaited, it still leads, so no frame queued
+    /// here is left unwritten.
+    pub(crate) fn queue_frames(&self, frames: &[&[u8]]) -> QueuedFrames<'_> {
+        let done = self.queue_only(false, |batch| push_frames(batch, frames));
+        QueuedFrames {
+            shared: &self.shared,
+            done,
+            lead: LeadOnDrop(Some(&self.shared)),
+        }
+    }
+
     /// [`append`](Self::append), giving other ready writers one chance to
     /// join the batch before this one leads it ([`AofFanout::Coalesced`]).
     ///
@@ -2310,9 +2344,9 @@ impl ReplayEphemeral {
             if let Value::Error(message) = store.execute(Command::Del(keys.clone())) {
                 return Err(std::io::Error::new(ErrorKind::InvalidData, message));
             }
-            let mut parts: Vec<&[u8]> = vec![b"DEL"];
-            parts.extend(keys.iter().map(String::as_bytes));
-            logged.push(resp_push(&parts));
+            // Split like the sweeper's: one record naming a million keys
+            // or more would be refused by the next replay (review E, F11).
+            logged.extend(chunked_frames(&[b"DEL"], &keys));
         }
         let mut by_key: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (key, member) in self.members {
@@ -2325,9 +2359,7 @@ impl ReplayEphemeral {
             {
                 return Err(std::io::Error::new(ErrorKind::InvalidData, message));
             }
-            let mut parts: Vec<&[u8]> = vec![b"SREM", key.as_bytes()];
-            parts.extend(members.iter().map(String::as_bytes));
-            logged.push(resp_push(&parts));
+            logged.extend(chunked_frames(&[b"SREM", key.as_bytes()], &members));
             if matches!(
                 store.execute(Command::SCard(key.clone())),
                 Value::Integer(0)
