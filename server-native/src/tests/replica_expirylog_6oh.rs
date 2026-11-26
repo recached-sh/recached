@@ -625,22 +625,29 @@ async fn a_replica_reads_ahead_while_its_full_sync_checkpoint_runs() {
     // sync, another checkpoint, in a loop (6O-H native lag run).
     let dir = files("readahead");
     let primary = node(false, true).await;
-    primary.state.replicas.configure_queue_bytes(256 * 1024);
+    // Room for a burst, so the primary's own sender keeping up is not what
+    // is measured: only the replica draining it is.
+    primary.state.replicas.configure_queue_bytes(1024 * 1024);
     write(&primary, set("ra:first", "1")).await;
     let replica = replica_with_files(&dir).await;
     replica
         .state
         .replicas
         .test_checkpoint_delay_ms
-        .store(3000, Ordering::Relaxed);
+        .store(5000, Ordering::Relaxed);
     follow(&replica, serve_replicas(&primary).await);
-    // Installed; the checkpoint now takes 3 s, as a slow disk would.
+    // Installed; the checkpoint now takes 5 s, as a slow disk would.
     wait_for(&replica.store, "ra:first", bulk("1")).await;
-    // Far more than the primary's queue and both sockets' buffers hold.
+    // Far more than the primary's queue and both sockets' buffers hold,
+    // paced (64 KiB per 2 ms) so the primary's sender keeps up with the
+    // writer even on a loaded host.
     let value = "v".repeat(8 * 1024);
-    const N: usize = 2048;
+    const N: usize = 3072;
     for i in 0..N {
         write(&primary, set(&format!("ra:{i}"), &value)).await;
+        if i % 8 == 7 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
     }
     let last = format!("ra:{}", N - 1);
     for _ in 0..2000 {
