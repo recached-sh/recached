@@ -833,6 +833,29 @@ impl ServerState {
         }
     }
 
+    /// [`on_transaction_logged`](Self::on_transaction_logged) for a group a
+    /// replica applied (6O-I): the frames are owned, so they move into the
+    /// relay instead of being copied again (review C L2).
+    pub(crate) async fn on_group_logged(&self, frames: Vec<Vec<u8>>) {
+        if frames.is_empty() {
+            return;
+        }
+        if let Some(aof) = &self.aof {
+            let refs: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+            let result = if aof.fanout() == AofFanout::Coalesced {
+                aof.append_coalesced_transaction(&refs).await
+            } else {
+                aof.append_transaction(&refs).await
+            };
+            if let Err(e) = result {
+                self.record_persistence_failure("aof_append", &e);
+            }
+        }
+        if self.replicas.is_enabled() {
+            self.replicas.fan_out_group(frames).await;
+        }
+    }
+
     /// Record a DEDUP outcome that changed no data — a write that did nothing
     /// (`HDEL` of a missing field), or a permanent refusal — in the AOF, so
     /// it survives a crash before the next checkpoint like an applied one.

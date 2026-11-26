@@ -75,9 +75,9 @@ fn follow_on_own_thread(replica: &Node, primary_addr: std::net::SocketAddr) {
 // ── Readers wait for the whole group ─────────────────────────────────────
 
 /// The replica stops inside a group's apply, after its first member, with
-/// the group's stripes held and marked. Every kind of read of its keys waits
-/// for the whole group, from the replica's store and from a client of the
-/// replica, and then sees all of it.
+/// the group's stripes held and marked. Every kind of read of its keys from
+/// the replica's store (the read paths its clients' commands take) waits for
+/// the whole group, and then sees all of it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn readers_of_a_replica_wait_for_the_whole_group() {
     let primary = node(false, true).await;
@@ -469,4 +469,190 @@ fn a_frames_fixed_cost_fits_the_per_frame_charge() {
         fixed <= REPL_QUEUE_FRAME_OVERHEAD,
         "{fixed} bytes per frame against a charge of {REPL_QUEUE_FRAME_OVERHEAD}"
     );
+}
+
+// ── Review C H1: notifications coalesced as the primary's ────────────────
+
+fn text(v: &Value) -> String {
+    match v {
+        Value::BulkString(Some(b)) => String::from_utf8_lossy(b).into_owned(),
+        Value::SimpleString(s) => s.clone(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// A delta-subscribed live query on a replica, while the primary runs
+/// `MULTI; SET k a; APPEND k b; EXEC`: the client's copy of `k` must end as
+/// the replica's ("ab"). Announcing each member after the whole group sent
+/// the final value, then the APPEND's delta ("abb").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_delta_live_query_on_a_replica_converges_after_a_group() {
+    let primary = node(false, true).await;
+    let replica = node(true, true).await;
+    follow_on_own_thread(&replica, serve_replicas(&primary).await);
+    let mut client = WsClient::connect(primary.ws).await;
+    client.cmd(&["SET", "dl:seed", "x"]).await;
+    wait_for(&replica.store, "dl:seed", bulk("x")).await;
+    let mut viewer = WsClient::connect(replica.ws).await;
+    viewer.send(&["CLIENT", "DELTA", "ON"]).await;
+    viewer.send(&["QSUB", "dl:k*"]).await;
+    while viewer.recv_frame(300).await.is_some() {}
+    exec(
+        &mut client,
+        &[&["SET", "dl:k", "a"], &["APPEND", "dl:k", "b"]],
+    )
+    .await;
+    wait_for(&replica.store, "dl:k", bulk("ab")).await;
+    let mut model: Option<Vec<u8>> = None;
+    let mut seen = Vec::new();
+    while let Some(raw) = viewer.recv_frame(500).await {
+        let Ok((v, _)) = Value::parse(&raw) else {
+            continue;
+        };
+        let items = match &v {
+            Value::Array(Some(items)) | Value::Push(items) => items.clone(),
+            _ => continue,
+        };
+        if items.len() < 3 {
+            continue;
+        }
+        seen.push(format!("{v:?}"));
+        let kind = text(&items[0]);
+        if kind == "keychange" && text(&items[1]) == "dl:k" {
+            model = match &items[2] {
+                Value::BulkString(Some(b)) => Some(b.clone()),
+                _ => None,
+            };
+        } else if kind == "keydelta" && text(&items[1]) == "dl:k" && text(&items[2]) == "append" {
+            let mut now = model.clone().unwrap_or_default();
+            if let Value::BulkString(Some(b)) = &items[3] {
+                now.extend_from_slice(b);
+            }
+            model = Some(now);
+        }
+    }
+    assert_eq!(
+        model.map(|b| String::from_utf8_lossy(&b).into_owned()),
+        Some("ab".to_string()),
+        "frames: {seen:#?}"
+    );
+}
+
+/// A group that creates a key and then deletes it invalidates a replica
+/// client's `WATCH` of that (absent) key, as the primary's `EXEC` would.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_that_sets_then_removes_a_key_invalidates_a_replica_watch() {
+    let primary = node(false, true).await;
+    let replica = node(true, true).await;
+    follow_on_own_thread(&replica, serve_replicas(&primary).await);
+    let mut client = WsClient::connect(primary.ws).await;
+    client.cmd(&["SADD", "ws:src", "m"]).await;
+    for _ in 0..200 {
+        if replica.store.execute(Command::SCard("ws:src".into())) == Value::Integer(1) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let mut watcher = WsClient::connect(replica.ws).await;
+    assert_eq!(
+        watcher.cmd(&["WATCH", "ws:dst"]).await,
+        Value::SimpleString("OK".into())
+    );
+    exec(
+        &mut client,
+        &[
+            &["SADD", "ws:src", "n"],
+            &["SINTERSTORE", "ws:dst", "ws:src"],
+            &["DEL", "ws:dst"],
+        ],
+    )
+    .await;
+    for _ in 0..200 {
+        if replica.store.execute(Command::SCard("ws:src".into())) == Value::Integer(2) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    watcher.cmd(&["MULTI"]).await;
+    watcher.cmd(&["GET", "ws:other"]).await;
+    assert_eq!(
+        watcher.cmd(&["EXEC"]).await,
+        Value::Array(None),
+        "the WATCH of ws:dst was invalidated"
+    );
+}
+
+// ── Reviews C M1 / D D-1: a failed group converges every copy ────────────
+
+/// A → B → C. B diverged from A on one key; a group of A fails on B after
+/// its first member applied there. B resets its stream, so C resynchronizes
+/// in full from B and ends with what B holds, even when B is promoted before
+/// it reconnects to A.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_group_on_a_middle_replica_resets_its_sub_replicas() {
+    let a = node(false, true).await;
+    let b = node(true, true).await;
+    let c = node(true, true).await;
+    follow_on_own_thread(&b, serve_replicas(&a).await);
+    follow_on_own_thread(&c, serve_replicas(&b).await);
+    let mut client = WsClient::connect(a.ws).await;
+    client.cmd(&["SET", "fg:pre", "0"]).await;
+    wait_for(&c.store, "fg:pre", bulk("0")).await;
+    // B (and, relayed, C) diverge from A on fg:list.
+    apply_repl_frame_for_tests(
+        &b.store,
+        &b.state,
+        &b.tx,
+        &b.watches,
+        &resp_push(&[b"SET", b"fg:list", b"str"]),
+    )
+    .await
+    .unwrap();
+    wait_for(&c.store, "fg:list", bulk("str")).await;
+    let b_run = b.state.replicas.run_id();
+    exec(
+        &mut client,
+        &[&["SET", "fg:k1", "v"], &["LPUSH", "fg:list", "x"]],
+    )
+    .await;
+    wait_for(&b.store, "fg:k1", bulk("v")).await;
+    b.state.promote_to_primary(&b.store).await;
+    assert_ne!(b.state.replicas.run_id(), b_run, "B reset its stream");
+    // C converges on B's keyspace: the applied prefix included.
+    wait_for(&c.store, "fg:k1", bulk("v")).await;
+}
+
+/// With an AOF, a failed group latches persistence unhealthy (its file no
+/// longer describes the keyspace); the members before the failure stay in
+/// the store until the full sync replaces it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_group_with_an_aof_latches_and_keeps_its_prefix_until_the_full_sync() {
+    let dir = files("6oi_replica_fail_aof");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replica = replica_with_files(&dir).await;
+    follow_on_own_thread(&replica, listener.local_addr().unwrap());
+    let (mut sock, _) = fake_primary_link(&listener).await;
+    full_sync(&mut sock, 10).await;
+    send(&mut sock, 11, &frame(&["SET", "fa:s", "text"])).await;
+    send_group(
+        &mut sock,
+        12,
+        &[
+            frame(&["SET", "fa:a", "1"]),
+            frame(&["INCR", "fa:s"]),
+            frame(&["SET", "fa:after", "1"]),
+        ],
+    )
+    .await;
+    let (_sock, run) = fake_primary_link(&listener).await;
+    assert_eq!(run, "");
+    assert_eq!(
+        replica.store.execute(Command::Get("fa:a".into())),
+        bulk("1")
+    );
+    assert_eq!(
+        replica.store.execute(Command::Get("fa:after".into())),
+        Value::BulkString(None)
+    );
+    assert!(!replica.state.persistence_is_healthy());
 }

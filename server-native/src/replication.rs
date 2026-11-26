@@ -2892,10 +2892,13 @@ impl GroupAssembler {
         bytes: Vec<u8>,
         committed: u64,
     ) -> std::io::Result<Received> {
+        // Checked (review D, D-2): an offset past `u64::MAX` is a protocol
+        // error, never a panic or an offset accepted twice.
         let next = |pending: &Option<PendingGroup>| {
             committed
-                .saturating_add(1)
-                .saturating_add(pending.as_ref().map_or(0, |p| p.frames.len() as u64))
+                .checked_add(1)
+                .and_then(|n| n.checked_add(pending.as_ref().map_or(0, |p| p.frames.len() as u64)))
+                .ok_or_else(|| protocol_error("replication offset overflow"))
         };
         if offset == 0 && self.txn {
             if self.open.is_some() {
@@ -2904,12 +2907,19 @@ impl GroupAssembler {
                 ));
             }
             let group = parse_group_header(&bytes)?;
-            if group.first != next(&self.open) {
+            let expected = next(&self.open)?;
+            if group.first != expected {
                 return Err(protocol_error(format!(
-                    "a transaction group header for offset {}, expected {}",
-                    group.first,
-                    next(&self.open)
+                    "a transaction group header for offset {}, expected {expected}",
+                    group.first
                 )));
+            }
+            if group
+                .first
+                .checked_add(u64::from(group.count) - 1)
+                .is_none()
+            {
+                return Err(protocol_error("replication offset overflow"));
             }
             if group.count > REPL_GROUP_MAX_FRAMES {
                 return Err(protocol_error(format!(
@@ -2936,7 +2946,7 @@ impl GroupAssembler {
             });
             return Ok(Received::Header);
         }
-        let expected = next(&self.open);
+        let expected = next(&self.open)?;
         if offset != expected {
             return Err(protocol_error(format!(
                 "replication offset gap: expected {expected}, received {offset}"
@@ -3047,13 +3057,17 @@ async fn apply_repl_group(
     let _order = state.replicas.lock_commands(&commands).await;
     still_following(state)?;
     let mut failed: Option<String> = None;
+    // Whether each member removed its keys, decided right after it ran,
+    // inside the hold (as `EXEC`'s phase 1 does), for the notifications.
+    let mut removes: Vec<bool> = Vec::with_capacity(commands.len());
     let mut apply = || {
         store.apply_transaction(&commands, core_engine::store::clock_ms(), |_, cmd| {
             if failed.is_some() {
                 return;
             }
-            if let (Value::Error(error), _) = store.execute_reporting_ref(cmd) {
-                failed = Some(error);
+            match store.execute_reporting_ref(cmd) {
+                (Value::Error(error), _) => failed = Some(error),
+                _ => removes.push(removes_named_keys(cmd) || stored_nothing(cmd, store)),
             }
         })
     };
@@ -3071,18 +3085,40 @@ async fn apply_repl_group(
         (None, None) => None,
     };
     if let Some(failure) = failure {
+        // The members before the failure are in the store and nowhere
+        // else: bring every other copy back to it now, as the primary's
+        // `converge` does (6O-G; reviews C M1 and D D-1), with the group's
+        // stripes still held. Sub-replicas take a full sync from a new run
+        // id (they must not resume partially past the prefix, also if this
+        // node is promoted first); sync clients rebuild; watchers and live
+        // queries are told the keyspace changed. With an AOF, its file no
+        // longer describes the keyspace either: writes answer `MISCONF`
+        // until a checkpoint.
         if state.aof.is_some() {
             state.record_internal_failure("replica_transaction");
         }
-        error!("Replica: {failure}; resynchronizing in full");
+        let sub_replicas = state.replicas.reset_stream();
+        let clients = tx.invalidate_all();
+        notify_keyspace_replaced(watches, store).await;
+        error!(
+            sub_replicas,
+            clients, "Replica: {failure}; resynchronizing in full"
+        );
         return Err(protocol_error(failure));
     }
-    // Logged first, then announced, as a write on the primary is.
-    let logged: Vec<&[u8]> = members.iter().map(Vec::as_slice).collect();
-    state.on_transaction_logged(&logged, false).await;
-    for (bytes, cmd) in members.iter().zip(&commands) {
-        notify_write(watches, cmd, store).await;
-        push_replicated(tx, cmd, bytes);
+    // Logged first, then announced, as a write on the primary is. Not
+    // cancellation-safe past this point (review C L3): dropped here, the
+    // group is applied but the resume point is still before it. No caller
+    // drops this future; a single frame's apply is the same.
+    let pushes: Vec<(usize, Vec<u8>)> = if tx.is_active() {
+        members.iter().cloned().enumerate().collect()
+    } else {
+        Vec::new()
+    };
+    state.on_group_logged(members).await;
+    notify_replicated_group(watches, store, &commands, &removes).await;
+    for (at, bytes) in &pushes {
+        push_replicated(tx, &commands[*at], bytes);
     }
     Ok(())
 }

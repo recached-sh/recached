@@ -330,13 +330,11 @@ async fn a_group_another_server_appended_after_replays_one_by_one() {
 #[tokio::test]
 async fn the_files_older_binaries_left_replay_here() {
     // T4's files (`raw/i1-compat/t4-files/*.resp`), as each older binary
-    // left them, when the design's evidence is present: abandoned, never
-    // discarded.
+    // left them: abandoned, never discarded.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../benchmarks/v0.6.0/6o-i/raw/i1-compat/t4-files");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
-    };
+    // Review B F1: the evidence is in the tree; a missing folder fails.
+    let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
     let mut replayed = 0;
     for entry in entries {
         let path = entry.unwrap().path();
@@ -721,6 +719,18 @@ async fn the_bytes_a_tail_cut_removes_are_kept_beside_the_file() {
         "{kept:?}"
     );
     assert_eq!(std::fs::read(&kept[0]).unwrap(), tail);
+    // Written under a temporary name and renamed (review A R3-L1): none left.
+    let temporary = std::fs::read_dir(&dir.0)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .path()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        })
+        .count();
+    assert_eq!(temporary, 0);
 }
 
 /// L1: 6O-I never appends after an open group. A replica restarted on its
@@ -763,4 +773,55 @@ async fn a_tail_cut_whose_copy_cannot_be_written_still_starts() {
     result.unwrap();
     assert_eq!(get(&store, "a"), bulk("0"));
     assert_eq!(std::fs::read(dir.aof()).unwrap(), head);
+}
+
+/// Review B F2: a member's `*` flipped to `>` abandons its group (a push
+/// inside an open group, §3.1 row 1); the push ends the timeless part, the
+/// stray `TXN-COMMIT` is then a no-op after it, and no member is lost.
+#[tokio::test]
+async fn a_member_flipped_to_a_push_abandons_its_group_and_loses_nothing() {
+    let bytes = [
+        format_txn(),
+        begin(2),
+        set("a", "1"),
+        push(&["SET", "b", "1"]),
+        commit(2),
+    ]
+    .concat();
+    let dir = Dir::new("6oi_flipped");
+    std::fs::write(dir.aof(), &bytes).unwrap();
+    let store = KeyValueStore::new();
+    let replayed = replay_aof_format(&store, &dir.aof(), 0, true)
+        .await
+        .unwrap();
+    assert_eq!((get(&store, "a"), get(&store, "b")), (bulk("1"), bulk("1")));
+    assert_eq!(replayed.mode, AofFileMode::Legacy);
+    assert!(!replayed.grouped);
+}
+
+/// Review B F3: a nested record the snapshot already holds (before the
+/// replay start) is never applied, so it does not refuse the start.
+#[tokio::test]
+async fn a_nested_record_before_the_replay_start_does_not_refuse_it() {
+    let nested = [
+        b"*3\r\n$3\r\nSET\r\n$1\r\nb\r\n".to_vec(),
+        push(&["SET", "d", "1"]),
+    ]
+    .concat();
+    let bytes = [
+        nested.clone(),
+        array(&["RECACHED-CHECKPOINT", "1"]),
+        set("after", "1"),
+    ]
+    .concat();
+    let dir = Dir::new("6oi_nested_before");
+    std::fs::write(dir.aof(), &bytes).unwrap();
+    let store = KeyValueStore::new();
+    replay_aof_format(&store, &dir.aof(), 1, true)
+        .await
+        .unwrap();
+    assert_eq!(get(&store, "after"), bulk("1"));
+    // After the replay start: refused.
+    let (store, _) = replay(&[set("x", "1"), nested].concat()).await;
+    assert!(store.is_err());
 }
