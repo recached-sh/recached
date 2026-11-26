@@ -3087,36 +3087,37 @@ pub(crate) async fn replay_aof_format(
         if renamed.is_err() {
             let _ = tokio::fs::remove_file(&partial).await;
         }
-        // Renamed but its directory entry not synced: the copy exists, and
-        // says so, but may not survive a power loss.
+        // Renamed but its directory entry not synced: the copy exists, but
+        // may not survive a power loss (review B round 2, N1).
         let kept = match renamed {
-            Ok(()) => sync_parent_dir(&cut).await.map_err(|e| {
-                warn!(
-                    "AOF: the copy of the cut tail at {} exists but its directory could not \
-                     be synced ({e})",
+            Ok(()) => match sync_parent_dir(&cut).await {
+                Ok(()) => {
+                    warn!(
+                        "AOF: the {removed} byte(s) about to be cut from offset {valid} were \
+                         saved to {} (remove it once inspected)",
+                        cut.display()
+                    );
+                    "true"
+                }
+                Err(e) => {
+                    warn!(
+                        "AOF: the {removed} byte(s) about to be cut from offset {valid} were \
+                         saved to {}, but its directory could not be synced ({e})",
+                        cut.display()
+                    );
+                    "unsynced"
+                }
+            },
+            Err(e) => {
+                error!(
+                    "AOF: the {removed} byte(s) about to be cut from offset {valid} could not be \
+                     saved to {} ({e}); cutting them without a copy, as before 6O-I",
                     cut.display()
                 );
-                e
-            }),
-            Err(e) => Err(e),
+                "false"
+            }
         };
-        match &kept {
-            Ok(()) => warn!(
-                "AOF: the {removed} byte(s) about to be cut from offset {valid} were saved to {} \
-                 (remove it once inspected)",
-                cut.display()
-            ),
-            Err(e) => error!(
-                "AOF: the {removed} byte(s) about to be cut from offset {valid} could not be saved \
-                 to {} ({e}); cutting them without a copy, as before 6O-I",
-                cut.display()
-            ),
-        }
-        counter!(
-            "recached_aof_tail_cuts_total",
-            "kept" => if kept.is_ok() { "true" } else { "false" }
-        )
-        .increment(1);
+        counter!("recached_aof_tail_cuts_total", "kept" => kept).increment(1);
         counter!("recached_aof_tail_cut_bytes_total").increment(removed as u64);
         let file = tokio::fs::OpenOptions::new().write(true).open(path).await?;
         file.set_len(valid as u64).await?;
