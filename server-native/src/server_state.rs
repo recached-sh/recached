@@ -697,6 +697,49 @@ impl ServerState {
         }
     }
 
+    /// [`on_write_logged`](Self::on_write_logged) for a write that found
+    /// expired entries and removed them first (6O-H, Expiry Option E1):
+    /// `expired` is their `DEL`, logged **before** the write's frame.
+    ///
+    /// The AOF takes both in one batch, queued in one step, so they are
+    /// contiguous and in order: one `write(2)`, and under `always` one
+    /// `fdatasync` before either is acknowledged. A torn tail can keep the
+    /// `DEL` without the frame, never the frame without the `DEL`; the `DEL`
+    /// alone is harmless, since the primary had already treated the entry as
+    /// gone. Replicas get them as two frames, `DEL` first. A DEDUP write's
+    /// `DEL` stays outside its envelope: it is not part of the write a retry
+    /// would repeat, only the state the write found.
+    pub(crate) async fn on_write_logged_after(
+        &self,
+        expired: &[u8],
+        resp: &[u8],
+        dedup: Option<(&str, u64)>,
+        may_defer: bool,
+    ) {
+        let wrapped = dedup.map(|(client, id)| dedup_wrap(client, id, resp));
+        if let Some(aof) = &self.aof {
+            let frames = [expired, wrapped.as_deref().unwrap_or(resp)];
+            let result = if may_defer && dedup.is_none() && !self.replicas.is_enabled() {
+                aof.append_client_writes(&frames).await
+            } else if aof.fanout() == AofFanout::Coalesced && dedup.is_none() {
+                aof.append_coalesced_frames(&frames).await
+            } else {
+                aof.append_frames(&frames).await
+            };
+            if let Err(e) = result {
+                self.record_persistence_failure("aof_append", &e);
+            }
+        }
+        if self.replicas.is_enabled() {
+            self.replicas.fan_out(expired.to_vec()).await;
+            let frame = match wrapped {
+                Some(envelope) if self.replicas.streams_dedup() => envelope,
+                _ => resp.to_vec(),
+            };
+            self.replicas.fan_out(frame).await;
+        }
+    }
+
     /// [`on_write_logged`](Self::on_write_logged) for a transaction's
     /// frames, in command order (6O-G): the AOF takes them as one batch
     /// (never split by the coalescer: they are queued in one step), then

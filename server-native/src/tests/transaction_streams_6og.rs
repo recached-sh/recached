@@ -598,3 +598,42 @@ async fn no_exec_reply_precedes_its_aof_write() {
         }
     }
 }
+
+/// 6O-H: a write that finds its key expired announces the removal before
+/// its own change. A delta client keeps the value it was sent until told
+/// otherwise (this model does not expire keys on its own), so without the
+/// removal an `APPEND` delta landed on the stale value: `oldtail` where the
+/// server holds `tail`. One by one and inside `EXEC`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delta_clients_converge_when_a_write_finds_its_key_expired() {
+    for in_tx in [false, true] {
+        let shared = Shared::new(false);
+        let mut viewer = WsPipe::connect(&shared).await;
+        viewer.send(&["CLIENT", "DELTA", "ON"]).await;
+        viewer.send(&["QSUB", "rb4:*"]).await;
+        let mut copy = Copy {
+            pattern: "rb4:*".into(),
+            ..Copy::default()
+        };
+        let mut writer = Pipe::tcp(&shared);
+        copy.drain(&mut viewer).await;
+        // Expiring on its own: nothing is announced when it does.
+        writer.cmd(&["SET", "rb4:s", "old", "PX", "50"]).await;
+        copy.drain(&mut viewer).await;
+        assert_eq!(copy.values.get("rb4:s"), Some(&bulk("old")));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let append: Vec<String> = ["APPEND", "rb4:s", "tail"].map(String::from).to_vec();
+        if in_tx {
+            queue(&mut writer, std::slice::from_ref(&append)).await;
+            exec(&mut writer).await;
+        } else {
+            writer.cmd(&["APPEND", "rb4:s", "tail"]).await;
+        }
+        copy.drain(&mut viewer).await;
+        assert_eq!(
+            copy.values.get("rb4:s"),
+            Some(&bulk("tail")),
+            "in_tx={in_tx}: the client's copy diverged"
+        );
+    }
+}

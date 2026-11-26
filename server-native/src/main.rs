@@ -968,7 +968,7 @@ async fn run(
                 if store_sweep.volatile_key_count() == 0 && !memory_over_limit {
                     continue;
                 }
-                sweep_expired_tick(&store_sweep, &state_sweep, &registry_sweep).await;
+                sweep_expired_tick(&store_sweep, &state_sweep, &registry_sweep, &tx_sweep).await;
                 // A follower evicts nothing of its own (it applies its
                 // primary's evictions), so taking every stripe for it would
                 // only stall the replication link each tick (6L review, R4).

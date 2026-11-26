@@ -423,7 +423,13 @@ async fn one_expiry_tick_removes_far_more_than_one_chunk() {
         ));
     }
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    let removed = sweep_expired_tick(&shared.store, &shared.state, &shared.watch_registry).await;
+    let removed = sweep_expired_tick(
+        &shared.store,
+        &shared.state,
+        &shared.watch_registry,
+        &shared.tx,
+    )
+    .await;
     // Several chunks in one tick, where one chunk was the old ceiling. (The
     // exact count depends on how many keys the time budget covers, which a
     // debug build running beside other tests makes much smaller.)
@@ -437,7 +443,13 @@ async fn one_expiry_tick_removes_far_more_than_one_chunk() {
     // tick early (as in Redis), but every tick examines at least a chunk.
     let mut ticks = 0;
     while shared.store.key_count() > 1_000 && ticks < 200 {
-        sweep_expired_tick(&shared.store, &shared.state, &shared.watch_registry).await;
+        sweep_expired_tick(
+            &shared.store,
+            &shared.state,
+            &shared.watch_registry,
+            &shared.tx,
+        )
+        .await;
         ticks += 1;
     }
     assert_eq!(
@@ -447,7 +459,13 @@ async fn one_expiry_tick_removes_far_more_than_one_chunk() {
     );
     let started = std::time::Instant::now();
     assert_eq!(
-        sweep_expired_tick(&shared.store, &shared.state, &shared.watch_registry).await,
+        sweep_expired_tick(
+            &shared.store,
+            &shared.state,
+            &shared.watch_registry,
+            &shared.tx
+        )
+        .await,
         0
     );
     assert!(

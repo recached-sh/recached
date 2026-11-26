@@ -349,13 +349,21 @@ async fn execute_locked_write_identified(
     };
     // By reference: the command is needed again below, and cloning it so the
     // store could consume the copy cost a key and a value per write.
-    let (response, evicted) = match clock {
-        Some(now) => core_engine::store::at_instant(now, || execute_and_record_ref(store, cmd)),
-        None => execute_and_record_ref(store, cmd),
+    let run = || {
+        observing_if(observes_writes(state, watch_registry), || {
+            execute_and_record_ref(store, cmd)
+        })
     };
+    let ((response, evicted), expired) = match clock {
+        Some(now) => core_engine::store::at_instant(now, run),
+        None => run(),
+    };
+    forget_expired(state, &expired);
+    let expired = expiries_to_log(cmd, &response, expired);
     apply_write_effects_identified(
         cmd,
         &response,
+        &expired,
         dedup,
         clock,
         tx,
@@ -491,14 +499,25 @@ async fn execute_locked_write_within_capacity(
     store: &KeyValueStore,
 ) -> Option<Value> {
     let claimable_members = claimable_eadd_members(cmd, state, store);
-    let (response, evicted) = execute_and_record_ref_within_capacity(store, cmd)?;
+    let (ran, expired) = observing_if(observes_writes(state, watch_registry), || {
+        execute_and_record_ref_within_capacity(store, cmd)
+    });
+    // Declined before the write ran: nothing was removed either.
+    debug_assert!(
+        ran.is_some() || expired.is_empty(),
+        "a declined write removed {expired:?}"
+    );
+    let (response, evicted) = ran?;
     debug_assert!(
         evicted.is_empty(),
         "a write within capacity evicted {evicted:?}"
     );
+    forget_expired(state, &expired);
+    let expired = expiries_to_log(cmd, &response, expired);
     apply_write_effects_identified(
         cmd,
         &response,
+        &expired,
         dedup,
         None,
         tx,
@@ -650,6 +669,7 @@ pub(crate) async fn sweep_expired_tick(
     store: &KeyValueStore,
     state: &ServerState,
     watch_registry: &WatchRegistry,
+    tx: &SyncTx,
 ) -> usize {
     let started = std::time::Instant::now();
     let mut total = 0usize;
@@ -662,6 +682,36 @@ pub(crate) async fn sweep_expired_tick(
             let _write_guards = state.replicas.lock_all_writes().await;
             let expired = store.sweep_expired_reporting_budget(EXPIRY_CHUNK);
             state.forget_ephemeral_keys(expired.iter().map(String::as_str));
+            // A primary logs what its sweeper removed (6O-H, Expiry Option
+            // E2): the AOF replay and expiry-log replicas never expire on
+            // their own, so this is how the removal reaches them. Under the
+            // barrier, so no write to these keys can be logged between the
+            // removal and its `DEL`. A replica's own sweep stays silent: its
+            // primary's stream is what its AOF and sub-replicas follow.
+            if !expired.is_empty() && !state.is_replica() {
+                if state.needs_write_log() {
+                    for frame in expiry_del_frames(&expired) {
+                        state.on_write(&frame).await;
+                    }
+                }
+                // One push per key: a frame naming several keys reaches only
+                // a socket allowed to read them all, which a tenant-scoped
+                // socket is not when a chunk spans tenants.
+                if tx.is_active() {
+                    for key in &expired {
+                        let del = Command::Del(vec![key.clone()]);
+                        if tx.would_route(&del) {
+                            let frame = resp_push(&[b"DEL", key.as_bytes()]);
+                            tx.send(Arc::new(SyncPush::for_command(
+                                0,
+                                &del,
+                                push_keys(&del),
+                                frame,
+                            )));
+                        }
+                    }
+                }
+            }
             if !watch_registry.is_empty() {
                 notify_removed(watch_registry, &expired).await;
             }
@@ -1498,6 +1548,7 @@ pub(crate) async fn apply_write_effects(
     apply_write_effects_identified(
         cmd,
         response,
+        &[],
         None,
         None,
         tx,
@@ -1509,10 +1560,96 @@ pub(crate) async fn apply_write_effects(
     .await;
 }
 
+/// Whether anything observes this server's writes: the AOF or replication,
+/// a WebSocket client routed pushes, or a WATCH or live query. A write is
+/// then run inside [`observing_expirations`], and its effects include a
+/// `DEL` for each expired entry it removed (6O-H, Expiry Option E1). With
+/// nothing observing, nobody could read that `DEL`, and the store behaves
+/// exactly as before: the plain-cache path pays nothing for it.
+pub(crate) fn observes_writes(state: &ServerState, watch_registry: &WatchRegistry) -> bool {
+    state.needs_write_log()
+        || state.replicas.unordered.has_push_receivers()
+        || !watch_registry.is_empty()
+}
+
+/// Run `f` inside [`observing_expirations`] when `observe`, else as is.
+pub(crate) fn observing_if<R>(observe: bool, f: impl FnOnce() -> R) -> (R, Vec<String>) {
+    if observe {
+        core_engine::store::observing_expirations(f)
+    } else {
+        (f(), Vec::new())
+    }
+}
+
+/// The expired entries a write removed that its own frame does not already
+/// delete. A `DEL`/`UNLINK` that ran produces a frame naming every key it
+/// was given, so its removals need no second record; one refused (a store
+/// over its key cap) produces none, and they do (6O-H review A, F2).
+pub(crate) fn expiries_to_log(
+    cmd: &Command,
+    response: &Value,
+    expired: Vec<String>,
+) -> Vec<String> {
+    if removes_named_keys(cmd) && !matches!(response, Value::Error(_)) {
+        Vec::new()
+    } else {
+        expired
+    }
+}
+
+/// Connection-scoped claims on keys a write found expired and removed, as
+/// the sweeper drops them for the keys it removes.
+pub(crate) fn forget_expired(state: &ServerState, expired: &[String]) {
+    if !expired.is_empty() {
+        state.forget_ephemeral_keys(expired.iter().map(String::as_str));
+    }
+}
+
+/// The `DEL` that logs the expired entries one write removed, in one frame
+/// (they are the keys of one command, so a single push routes like it).
+pub(crate) fn expired_deletion(expired: &[String]) -> Option<(Command, Vec<u8>)> {
+    if expired.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<&[u8]> = Vec::with_capacity(1 + expired.len());
+    parts.push(b"DEL");
+    parts.extend(expired.iter().map(String::as_bytes));
+    Some((Command::Del(expired.to_vec()), resp_push(&parts)))
+}
+
+/// Largest total of key bytes in one sweeper `DEL` frame. A chunk of keys
+/// is split across frames past it, so no frame nears the replication frame
+/// limit however long the keys are.
+pub(crate) const EXPIRY_DEL_FRAME_KEY_BYTES: usize = 64 * 1024;
+
+/// The sweeper's removals as `DEL` frames, in order, at most
+/// [`EXPIRY_DEL_FRAME_KEY_BYTES`] of keys each (and at least one key).
+pub(crate) fn expiry_del_frames(keys: &[String]) -> Vec<Vec<u8>> {
+    let mut frames = Vec::new();
+    let mut start = 0;
+    while start < keys.len() {
+        let mut end = start;
+        let mut bytes = 0usize;
+        while end < keys.len()
+            && (end == start || bytes + keys[end].len() <= EXPIRY_DEL_FRAME_KEY_BYTES)
+        {
+            bytes += keys[end].len();
+            end += 1;
+        }
+        let mut parts: Vec<&[u8]> = Vec::with_capacity(1 + end - start);
+        parts.push(b"DEL");
+        parts.extend(keys[start..end].iter().map(String::as_bytes));
+        frames.push(resp_push(&parts));
+        start = end;
+    }
+    frames
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn apply_write_effects_identified(
     cmd: &Command,
     response: &Value,
+    expired: &[String],
     dedup: Option<(&str, u64)>,
     clock: Option<u64>,
     tx: &SyncTx,
@@ -1528,7 +1665,11 @@ async fn apply_write_effects_identified(
     // with nothing else to do builds no frame either. Checked after the
     // write, so a connection routed later reads the write from the store.
     let has_ws = tx.would_route(cmd);
-    if !has_ws && !needs_log && !has_watch {
+    // The expired entries the write removed first (6O-H): their `DEL` goes
+    // before everything the write itself produces, on every stream.
+    let expiry = expired_deletion(expired);
+    let expiry_ws = expiry.as_ref().is_some_and(|(del, _)| tx.would_route(del));
+    if !has_ws && !expiry_ws && !needs_log && !has_watch {
         return;
     }
     // Read once, after the early-out above, so a standalone server with nothing
@@ -1542,7 +1683,30 @@ async fn apply_write_effects_identified(
     // propagates as the one the store set (6O-E review).
     let exact_deadline = exact_deadline_of(cmd, store, clock);
     let now = clock.unwrap_or_else(now_unix_ms);
+    let may_defer = !has_ws && !expiry_ws && !has_watch;
     let Some(msg) = broadcast_for_at(cmd, response, now, exact_deadline) else {
+        // A write that failed or changed nothing can still have removed an
+        // expired entry: that removal is logged and announced on its own.
+        if let Some((_, frame)) = &expiry {
+            if needs_log {
+                // Not deferred for a DEDUP write: its outcome record follows
+                // (here or the caller's refusal) and is waited for.
+                state
+                    .on_write_logged(frame, None, may_defer && dedup.is_none())
+                    .await;
+            }
+            if has_watch {
+                notify_removed(watch_registry, expired).await;
+            }
+            if expiry_ws && let Some((del, frame)) = expiry {
+                tx.send(Arc::new(SyncPush::for_command(
+                    0,
+                    &del,
+                    push_keys(&del),
+                    frame,
+                )));
+            }
+        }
         // A DEDUP write that changed nothing still has an outcome to keep, or
         // a crash would let its retry run where the first try did not.
         // Refusals are recorded by the caller.
@@ -1554,12 +1718,30 @@ async fn apply_write_effects_identified(
         return;
     };
     if needs_log {
-        state
-            .on_write_logged(&msg, dedup, !has_ws && !has_watch)
-            .await;
+        match &expiry {
+            Some((_, expired_frame)) => {
+                state
+                    .on_write_logged_after(expired_frame, &msg, dedup, may_defer)
+                    .await
+            }
+            None => state.on_write_logged(&msg, dedup, may_defer).await,
+        }
     }
     if has_watch {
+        // The removal first, then the write: a live query sees the key go,
+        // and come back as the write left it.
+        notify_removed(watch_registry, expired).await;
         notify_write(watch_registry, cmd, store).await;
+    }
+    // The server's deletion, not the writer's (origin 0), as for an
+    // eviction: the writer's own browser holds the expired entry too.
+    if expiry_ws && let Some((del, frame)) = expiry {
+        tx.send(Arc::new(SyncPush::for_command(
+            0,
+            &del,
+            push_keys(&del),
+            frame,
+        )));
     }
     if has_ws {
         tx.send(Arc::new(SyncPush::for_command(

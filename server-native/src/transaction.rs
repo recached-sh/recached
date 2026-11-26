@@ -44,6 +44,9 @@ pub(crate) struct AppliedWrite<'q> {
     pub(crate) removes: bool,
     /// Keys capacity eviction removed for it.
     pub(crate) evicted: Vec<String>,
+    /// Keys it found expired and removed before it ran (6O-H): logged as a
+    /// `DEL` before its frame, whether or not it was effective.
+    pub(crate) expired: Vec<String>,
 }
 
 impl AppliedWrite<'_> {
@@ -69,7 +72,13 @@ pub(crate) fn apply_queued_write<'q>(
     build_frame: bool,
 ) -> (Value, AppliedWrite<'q>) {
     let claimable_members = claimable_eadd_members(cmd, state, store);
-    let (response, evicted) = execute_and_record_ref(store, cmd);
+    // Observed exactly when the frames are built here: when something
+    // observes writes (6O-H). At the transaction's instant, which
+    // `apply_transaction` holds.
+    let ((response, evicted), expired) =
+        observing_if(build_frame, || execute_and_record_ref(store, cmd));
+    forget_expired(state, &expired);
+    let expired = expiries_to_log(cmd, &response, expired);
     // Read back only when the frame is built here (review B-4). A frame
     // built in phase 2 instead falls back to `now` plus the relative expiry:
     // the very deadline the store set, since it ran with its clock at `now`.
@@ -93,6 +102,7 @@ pub(crate) fn apply_queued_write<'q>(
             exact_deadline,
             removes,
             evicted,
+            expired,
         },
     )
 }
@@ -118,14 +128,25 @@ fn distinct_keys(cmd: &Command) -> KeyRefs<'_> {
     keys
 }
 
+/// How a queued write changed a key, in the order its effects are emitted:
+/// the expired entry it removed first (6O-H), its own write, then the
+/// evictions it caused.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+enum Change {
+    Expiry,
+    #[default]
+    Write,
+    Victim,
+}
+
 /// Each written key's effective writes in a transaction, for coalescing its
 /// WATCH/QSUB notification (design N1, P1, Q1).
 #[derive(Default, Clone, Copy)]
 struct KeyWrites {
     count: u32,
     /// The write it was last changed by (its position among the queue's
-    /// writes), and whether as an eviction victim of that write.
-    last: (usize, bool),
+    /// writes), and how.
+    last: (usize, Change),
     /// Whether any of them set the key (was not a removal).
     set: bool,
 }
@@ -144,6 +165,13 @@ impl NotificationPlan {
     fn new(writes: &[AppliedWrite<'_>]) -> Self {
         let mut plan = NotificationPlan::default();
         for (at, write) in writes.iter().enumerate() {
+            // An expired entry the write removed is a removal of its key,
+            // before the write's own change to it (6O-H).
+            for key in &write.expired {
+                let entry = plan.keys.entry(key.clone()).or_default();
+                entry.count = entry.count.saturating_add(1);
+                entry.last = (at, Change::Expiry);
+            }
             if write.effective() {
                 if matches!(write.cmd, Command::FlushDb) {
                     let set = plan
@@ -157,7 +185,7 @@ impl NotificationPlan {
                     for key in distinct_keys(write.cmd) {
                         let entry = plan.keys.entry(key.to_string()).or_default();
                         entry.count = entry.count.saturating_add(1);
-                        entry.last = (at, false);
+                        entry.last = (at, Change::Write);
                         entry.set |= !write.removes;
                     }
                 }
@@ -166,7 +194,7 @@ impl NotificationPlan {
             for victim in &write.evicted {
                 let entry = plan.keys.entry(victim.clone()).or_default();
                 entry.count = entry.count.saturating_add(1);
-                entry.last = (at, true);
+                entry.last = (at, Change::Victim);
             }
         }
         plan
@@ -194,7 +222,7 @@ impl NotificationPlan {
             let Some(writes) = self.keys.get(key) else {
                 continue;
             };
-            if writes.last != (at, false) {
+            if writes.last != (at, Change::Write) {
                 continue;
             }
             changes.push(match (writes.count, write.removes) {
@@ -217,15 +245,35 @@ impl NotificationPlan {
     /// The removal write `at`'s eviction of `victim` announces, if it is the
     /// victim's last change in the transaction.
     fn eviction(&self, at: usize, victim: &str) -> Option<KeyChange<'static>> {
-        let writes = self.keys.get(victim)?;
-        (writes.last == (at, true)).then(|| {
+        self.removal(at, victim, Change::Victim)
+    }
+
+    /// The removal write `at`'s expired entry `key` announces (6O-H), if
+    /// nothing later in the transaction changed the key again: otherwise
+    /// that later change announces it, as its full value.
+    fn expiry(&self, at: usize, key: &str) -> Option<KeyChange<'static>> {
+        self.removal(at, key, Change::Expiry)
+    }
+
+    fn removal(&self, at: usize, key: &str, by: Change) -> Option<KeyChange<'static>> {
+        let writes = self.keys.get(key)?;
+        (writes.last == (at, by)).then(|| {
             if writes.set {
-                KeyChange::removed_after_set(victim.to_string())
+                KeyChange::removed_after_set(key.to_string())
             } else {
-                KeyChange::removed(victim.to_string())
+                KeyChange::removed(key.to_string())
             }
         })
     }
+}
+
+/// The expired entries a queued write removed before it ran, as phase 2
+/// propagates them: one `DEL` (6O-H).
+struct Expiry {
+    /// Whether some sync client was routed it when phase 2 began.
+    routed: bool,
+    deletion: Command,
+    frame: Vec<u8>,
 }
 
 /// One eviction a queued write caused, as phase 2 propagates it: a `DEL`.
@@ -337,7 +385,9 @@ pub(crate) async fn run_transaction_queue(
     if !needs_log
         && !has_watch
         && !tx.is_active()
-        && writes.iter().all(|write| write.evicted.is_empty())
+        && writes
+            .iter()
+            .all(|write| write.evicted.is_empty() && write.expired.is_empty())
         && !queue
             .iter()
             .take(ran)
@@ -383,8 +433,21 @@ pub(crate) async fn run_transaction_queue(
                 .collect()
         })
         .collect();
+    // The `DEL` of what each write found expired, logged and pushed before
+    // its frame (6O-H): the server's deletion (origin 0), as an eviction's.
+    let expiries: Vec<Option<Expiry>> = writes
+        .iter()
+        .map(|write| {
+            expired_deletion(&write.expired).map(|(deletion, frame)| Expiry {
+                routed: tx.would_route(&deletion),
+                deletion,
+                frame,
+            })
+        })
+        .collect();
     let has_ws = routed.iter().any(|routed| *routed)
-        || victims.iter().flatten().any(|eviction| eviction.routed);
+        || victims.iter().flatten().any(|eviction| eviction.routed)
+        || expiries.iter().flatten().any(|expiry| expiry.routed);
     if needs_log || has_watch || has_ws {
         for write in &mut writes {
             if write.frame.is_none() {
@@ -399,7 +462,10 @@ pub(crate) async fn run_transaction_queue(
     }
     if needs_log {
         let mut frames: Vec<&[u8]> = Vec::new();
-        for (write, victims) in writes.iter().zip(&victims) {
+        for ((write, victims), expiry) in writes.iter().zip(&victims).zip(&expiries) {
+            if let Some(expiry) = expiry {
+                frames.push(&expiry.frame);
+            }
             if let Some(Some(frame)) = &write.frame {
                 frames.push(frame);
             }
@@ -423,6 +489,26 @@ pub(crate) async fn run_transaction_queue(
             let at = next_write;
             next_write += 1;
             let write = &mut writes[at];
+            if let Some(expiry) = &expiries[at] {
+                if has_watch {
+                    let changes: Vec<KeyChange<'_>> = write
+                        .expired
+                        .iter()
+                        .filter_map(|key| plan.expiry(at, key))
+                        .collect();
+                    if !changes.is_empty() {
+                        fan_out(watch_registry, &changes).await;
+                    }
+                }
+                if expiry.routed {
+                    tx.send(Arc::new(SyncPush::for_command(
+                        0,
+                        &expiry.deletion,
+                        push_keys(&expiry.deletion),
+                        expiry.frame.clone(),
+                    )));
+                }
+            }
             if has_watch && write.effective() {
                 if matches!(write.cmd, Command::FlushDb) {
                     let watched: Vec<String> = {

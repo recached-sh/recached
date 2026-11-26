@@ -116,7 +116,13 @@ async fn sweeper_removals_follow_the_same_rules() {
     set_px(&mut live, kl, 30).await;
     assert_eq!(live.cmd(&["WATCH", kl]).await, ok());
     expired(&shared.store, kl).await;
-    let removed = sweep_expired_tick(&shared.store, &shared.state, &shared.watch_registry).await;
+    let removed = sweep_expired_tick(
+        &shared.store,
+        &shared.state,
+        &shared.watch_registry,
+        &shared.tx,
+    )
+    .await;
     assert!(removed >= 2, "the sweeper removed {removed}");
     assert!(!commits(&mut live, kl).await, "live at WATCH, then swept");
     assert!(
