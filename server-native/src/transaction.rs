@@ -572,6 +572,60 @@ pub(crate) async fn run_transaction_queue(
     }
 }
 
+/// Notify WATCH and QSUB subscribers of a transaction group a replica
+/// applied atomically (6O-I, review C H1), the way `run_transaction_queue`
+/// notifies an `EXEC`'s: each key once, at its last change in the group, as
+/// its full value when the group changed it more than once (a delta of the
+/// last change alone would land on a copy that never saw the earlier ones),
+/// or as a removal that still invalidates a `WATCH` if an earlier member set
+/// it; `FLUSHDB` as the primary announces it. `removes[i]` is whether member
+/// `i` removed its keys, decided right after it ran. Every member is
+/// effective: the primary sent its frame.
+pub(crate) async fn notify_replicated_group(
+    watch_registry: &WatchRegistry,
+    store: &KeyValueStore,
+    commands: &[Command],
+    removes: &[bool],
+) {
+    // The writer's half of the WATCH registration handshake, after every
+    // write of the group (6O-E `watched_after_write`).
+    if commands.is_empty() || !watch_registry.watched_after_write() {
+        return;
+    }
+    let writes: Vec<AppliedWrite<'_>> = commands
+        .iter()
+        .zip(removes)
+        .enumerate()
+        .map(|(index, (cmd, &removes))| AppliedWrite {
+            index,
+            cmd,
+            // Effective: only whether a frame exists is read.
+            frame: Some(Some(Vec::new())),
+            exact_deadline: None,
+            removes,
+            evicted: Vec::new(),
+            expired: Vec::new(),
+        })
+        .collect();
+    let plan = NotificationPlan::new(&writes);
+    for (at, write) in writes.iter().enumerate() {
+        if matches!(write.cmd, Command::FlushDb) {
+            let watched: Vec<String> = {
+                let reg = watch_registry.map.lock().await;
+                reg.keys().cloned().collect()
+            };
+            let empty = HashSet::new();
+            let set_earlier = plan.flushes.get(&at).unwrap_or(&empty);
+            notify_flushdb_after(watch_registry, watched, set_earlier).await;
+        } else {
+            let changes = plan.changes(at, write, store);
+            if !changes.is_empty() {
+                fan_out(watch_registry, &changes).await;
+            }
+        }
+    }
+}
+
 /// A queued command panicked inside phase 1 (design R3/N2/P2). The store
 /// kept the applied prefix, rebuilt its metadata if the command was a write
 /// (`repaired`), and released its stripes; phase 2 still logs, replicates
