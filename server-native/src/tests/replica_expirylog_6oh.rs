@@ -616,3 +616,44 @@ async fn a_sub_replica_renegotiates_when_its_upstream_changes_mode_mid_handshake
         b.store.execute(Command::Get("d2:k".into()))
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replica_reads_ahead_while_its_full_sync_checkpoint_runs() {
+    // The primary streams right after the snapshot. A replica that stopped
+    // reading for its checkpoint's fsyncs let the frames back up into the
+    // primary's queue to it, which overflowed: a disconnect, another full
+    // sync, another checkpoint, in a loop (6O-H native lag run).
+    let dir = files("readahead");
+    let primary = node(false, true).await;
+    primary.state.replicas.configure_queue_bytes(256 * 1024);
+    write(&primary, set("ra:first", "1")).await;
+    let replica = replica_with_files(&dir).await;
+    replica
+        .state
+        .replicas
+        .test_checkpoint_delay_ms
+        .store(3000, Ordering::Relaxed);
+    follow(&replica, serve_replicas(&primary).await);
+    // Installed; the checkpoint now takes 3 s, as a slow disk would.
+    wait_for(&replica.store, "ra:first", bulk("1")).await;
+    // Far more than the primary's queue and both sockets' buffers hold.
+    let value = "v".repeat(8 * 1024);
+    const N: usize = 2048;
+    for i in 0..N {
+        write(&primary, set(&format!("ra:{i}"), &value)).await;
+    }
+    let last = format!("ra:{}", N - 1);
+    for _ in 0..2000 {
+        if replica.store.execute(Command::Get(last.clone())) == bulk(&value) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(primary.state.replicas.queue_disconnects(), 0);
+    assert_eq!(primary.state.replicas.syncs(), (0, 1));
+    assert!(
+        replica.store.execute(Command::Get(last.clone())) == bulk(&value),
+        "the replica never caught up"
+    );
+    assert_eq!(replica.store.key_count(), N + 1);
+}
