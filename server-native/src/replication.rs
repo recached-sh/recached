@@ -4092,4 +4092,37 @@ mod group_table_tests {
             [None, Some(10), Some(10), None]
         );
     }
+
+    /// The side table is trimmed with the backlog: it never holds a group
+    /// none of whose frames is retained, so it stays bounded by the backlog
+    /// (review E round 2, L5). A group whose first frame was trimmed but whose
+    /// last is retained stays, so rule 2 still sees the fragment.
+    #[tokio::test]
+    async fn the_group_table_shrinks_with_the_backlog() {
+        let hub = ReplHub::new();
+        hub.configure_backlog(1_000);
+        for i in 0..10_000u32 {
+            hub.fan_out_group(vec![vec![b'a'; 30 + (i % 7) as usize], vec![b'b'; 41]])
+                .await;
+            if i % 3 == 0 {
+                hub.fan_out(vec![b'c'; 25]).await;
+            }
+            let stream = hub.stream();
+            let backlog = &stream.backlog;
+            let oldest = backlog.frames.front().expect("frames retained").offset;
+            assert!(backlog.groups.len() <= backlog.frames.len() / 2 + 1);
+            let front = backlog.groups.front().expect("a group retained");
+            assert!(
+                front.last() >= oldest,
+                "a group with no retained frame stayed"
+            );
+            assert!(backlog.groups.iter().all(|g| g.count == 2));
+        }
+        let stream = hub.stream();
+        assert!(stream.backlog.frames.len() < 40, "backlog bounded by bytes");
+        assert!(
+            stream.backlog.groups.len() < 20,
+            "group table bounded with it"
+        );
+    }
 }
