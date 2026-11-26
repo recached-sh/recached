@@ -1,0 +1,230 @@
+   Compiling libc v0.2.186
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling cfg-if v1.0.4
+   Compiling shlex v1.3.0
+   Compiling find-msvc-tools v0.1.9
+   Compiling once_cell v1.21.4
+   Compiling parking_lot_core v0.9.12
+   Compiling smallvec v1.15.1
+   Compiling pin-project-lite v0.2.17
+   Compiling bytes v1.11.1
+   Compiling scopeguard v1.2.0
+   Compiling itoa v1.0.18
+   Compiling lock_api v0.4.14
+   Compiling getrandom v0.3.4
+   Compiling pkg-config v0.3.34
+   Compiling fs_extra v1.3.0
+   Compiling dunce v1.0.5
+   Compiling version_check v0.9.5
+   Compiling zerocopy v0.8.48
+   Compiling subtle v2.6.1
+   Compiling syn v2.0.117
+   Compiling futures-core v0.3.32
+   Compiling jobserver v0.1.34
+   Compiling errno v0.3.14
+   Compiling generic-array v0.14.7
+   Compiling signal-hook-registry v1.4.8
+   Compiling mio v1.2.0
+   Compiling socket2 v0.6.3
+   Compiling parking_lot v0.12.5
+   Compiling cc v1.2.61
+   Compiling http v1.4.0
+   Compiling typenum v1.20.0
+   Compiling rand_core v0.9.5
+   Compiling tracing-core v0.1.36
+   Compiling cmake v0.1.58
+   Compiling futures-sink v0.3.32
+   Compiling aws-lc-sys v0.45.0
+   Compiling log v0.4.29
+   Compiling crossbeam-utils v0.8.21
+   Compiling httparse v1.10.1
+   Compiling aws-lc-rs v1.18.1
+   Compiling zeroize v1.8.2
+   Compiling ppv-lite86 v0.2.21
+   Compiling slab v0.4.12
+   Compiling equivalent v1.0.2
+   Compiling hashbrown v0.17.0
+   Compiling rustls-pki-types v1.14.1
+   Compiling rand_chacha v0.9.0
+   Compiling crypto-common v0.1.7
+   Compiling indexmap v2.14.0
+   Compiling block-buffer v0.10.4
+   Compiling rustversion v1.0.22
+   Compiling serde_core v1.0.228
+   Compiling digest v0.10.7
+   Compiling rand v0.9.4
+   Compiling http-body v1.0.1
+   Compiling autocfg v1.5.0
+   Compiling fnv v1.0.7
+   Compiling try-lock v0.2.5
+   Compiling untrusted v0.9.0
+   Compiling tokio-macros v2.7.0
+   Compiling tracing-attributes v0.1.31
+   Compiling futures-macro v0.3.32
+   Compiling futures-task v0.3.32
+   Compiling atomic-waker v1.1.2
+   Compiling rustls v0.23.46
+   Compiling num-traits v0.2.19
+   Compiling want v0.3.1
+   Compiling tokio v1.54.1
+   Compiling futures-util v0.3.32
+   Compiling tracing v0.1.44
+   Compiling futures-channel v0.3.32
+   Compiling cpufeatures v0.2.17
+   Compiling httpdate v1.0.3
+   Compiling bitflags v2.11.1
+   Compiling thiserror v2.0.18
+   Compiling crossbeam-epoch v0.9.20
+   Compiling zmij v1.0.21
+   Compiling serde v1.0.228
+   Compiling raw-cpuid v11.6.0
+   Compiling rapidhash v4.4.1
+   Compiling thiserror-impl v2.0.18
+   Compiling serde_derive v1.0.228
+   Compiling tikv-jemalloc-sys v0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7
+   Compiling thiserror v1.0.69
+   Compiling regex-syntax v0.8.10
+   Compiling tower-service v0.3.3
+   Compiling openssl-probe v0.2.1
+   Compiling serde_json v1.0.150
+   Compiling foldhash v0.1.5
+   Compiling rustls-native-certs v0.8.3
+   Compiling hashbrown v0.15.5
+   Compiling regex-automata v0.4.14
+   Compiling tokio-util v0.7.18
+   Compiling quanta v0.12.6
+   Compiling h2 v0.4.19
+   Compiling metrics v0.24.6
+   Compiling sha1 v0.10.6
+   Compiling thiserror-impl v1.0.69
+   Compiling rand_xoshiro v0.7.0
+   Compiling sketches-ddsketch v0.3.1
+   Compiling data-encoding v2.11.0
+   Compiling hashbrown v0.14.5
+   Compiling hyper v1.9.0
+   Compiling lazy_static v1.5.0
+   Compiling memchr v2.8.0
+   Compiling sharded-slab v0.1.7
+   Compiling dashmap v6.1.0
+   Compiling tungstenite v0.29.0
+   Compiling metrics-util v0.19.1
+   Compiling hyper-util v0.1.20
+   Compiling rmp v0.8.15
+   Compiling matchers v0.2.0
+   Compiling http-body-util v0.1.3
+   Compiling tracing-log v0.2.0
+   Compiling thread_local v1.1.9
+   Compiling nu-ansi-term v0.50.3
+   Compiling base64 v0.22.1
+   Compiling ipnet v2.12.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling rmp-serde v1.3.1
+   Compiling core-engine v0.6.0 (/home/dennispaler/recached-6oh-bench/src-base/core-engine)
+   Compiling tokio-tungstenite v0.29.0
+   Compiling sha2 v0.10.9
+   Compiling hmac v0.12.1
+   Compiling num_cpus v1.17.0
+   Compiling socket2 v0.5.10
+   Compiling tikv-jemallocator v0.6.1
+   Compiling rustls-webpki v0.103.16
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-rustls v0.27.9
+   Compiling metrics-exporter-prometheus v0.16.2
+   Compiling recached v0.6.0 (/home/dennispaler/recached-6oh-bench/src-base/server-native)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 06s
+     Running unittests src/main.rs (target/debug/deps/recached_server-13106527e3828413)
+
+running 21 tests
+test tests::expiry_replay_6of::a_counter_that_restarted_an_expired_key_replays_as_permanent ... ok
+test tests::expiry_replay_6of::guard_a_counter_then_rename_replays ... ok
+test tests::expiry_replay_6of::a_counter_replayed_before_its_deadline_keeps_that_exact_deadline ... ok
+test tests::expiry_replay_6of::deadlines_past_i64_max_are_refused_as_redis_refuses_them ... ok
+test tests::expiry_replay_6of::guard_incr_then_persist_replayed_after_the_old_deadline ... ok
+test tests::expiry_replay_6of::only_overflowing_deadlines_are_clamped ... ok
+test tests::expiry_replay_6of::guard_incr_then_extend_replayed_between_its_deadlines ... ok
+test tests::expiry_replay_6of::records_with_a_deadline_past_i64_max_written_before_6of_replay ... ok
+test tests::expiry_replay_6of::guard_sliding_window_replayed_between_its_deadlines ... ok
+test tests::expiry_replay_6of::reproduce_a_client_set_keepttl_replayed_after_its_deadline ... FAILED
+test tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_always ... FAILED
+test tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_everysec ... FAILED
+test tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_no ... FAILED
+test tests::expiry_replay_6of::reproduce_incr_then_expire_once_replayed_after_the_window ... FAILED
+test tests::expiry_replay_6of::reproduce_lset_of_a_volatile_list_replayed_after_its_deadline ... FAILED
+test tests::expiry_replay_6of::reproduce_partial_updates_replayed_after_the_deadline ... FAILED
+test tests::expiry_replay_6of::the_largest_accepted_deadlines_replay ... ok
+test tests::expiry_replay_6of::a_full_resync_after_the_deadline_does_not_keep_the_counter ... ok
+test tests::expiry_replay_6of::a_replica_applying_a_counter_before_its_deadline_keeps_that_deadline ... ok
+test tests::expiry_replay_6of::guard_a_replica_applying_incr_then_persist_after_the_old_deadline ... ok
+test tests::expiry_replay_6of::reproduce_a_replica_applying_a_counter_after_its_deadline ... FAILED
+
+failures:
+
+---- tests::expiry_replay_6of::reproduce_a_client_set_keepttl_replayed_after_its_deadline stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_a_client_set_keepttl_replayed_after_its_deadline' (684986) panicked at server-native/src/tests/expiry_replay_6of.rs:271:5:
+assertion `left == right` failed
+  left: (BulkString(Some([98])), Integer(-1))
+ right: (BulkString(None), Integer(-2))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_always stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_always' (684992) panicked at server-native/src/tests/expiry_replay_6of.rs:211:5:
+assertion `left == right` failed: an expiring counter replayed after its deadline came back
+  left: (BulkString(Some([55])), Integer(-1))
+ right: (BulkString(None), Integer(-2))
+
+---- tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_everysec stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_everysec' (684997) panicked at server-native/src/tests/expiry_replay_6of.rs:211:5:
+assertion `left == right` failed: an expiring counter replayed after its deadline came back
+  left: (BulkString(Some([55])), Integer(-1))
+ right: (BulkString(None), Integer(-2))
+
+---- tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_no stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_no' (685004) panicked at server-native/src/tests/expiry_replay_6of.rs:211:5:
+assertion `left == right` failed: an expiring counter replayed after its deadline came back
+  left: (BulkString(Some([55])), Integer(-1))
+ right: (BulkString(None), Integer(-2))
+
+---- tests::expiry_replay_6of::reproduce_incr_then_expire_once_replayed_after_the_window stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_incr_then_expire_once_replayed_after_the_window' (685016) panicked at server-native/src/tests/expiry_replay_6of.rs:251:5:
+assertion `left == right` failed
+  left: BulkString(Some([50]))
+ right: BulkString(None)
+
+---- tests::expiry_replay_6of::reproduce_lset_of_a_volatile_list_replayed_after_its_deadline stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_lset_of_a_volatile_list_replayed_after_its_deadline' (685022) panicked at server-native/src/tests/expiry_replay_6of.rs:365:5:
+replay refused: Some(Custom { kind: InvalidData, error: "AOF command failed at offset 89: ERR no such key" })
+
+---- tests::expiry_replay_6of::reproduce_partial_updates_replayed_after_the_deadline stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_partial_updates_replayed_after_the_deadline' (685028) panicked at server-native/src/tests/expiry_replay_6of.rs:343:5:
+resurrected: ["6of:delta:s", "6of:delta:h", "6of:delta:l"]
+
+---- tests::expiry_replay_6of::reproduce_a_replica_applying_a_counter_after_its_deadline stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_a_replica_applying_a_counter_after_its_deadline' (685010) panicked at server-native/src/tests/expiry_replay_6of.rs:291:5:
+assertion `left == right` failed
+  left: (BulkString(Some([51])), Integer(-1))
+ right: (BulkString(None), Integer(-2))
+
+
+failures:
+    tests::expiry_replay_6of::reproduce_a_client_set_keepttl_replayed_after_its_deadline
+    tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_always
+    tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_everysec
+    tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_no
+    tests::expiry_replay_6of::reproduce_a_replica_applying_a_counter_after_its_deadline
+    tests::expiry_replay_6of::reproduce_incr_then_expire_once_replayed_after_the_window
+    tests::expiry_replay_6of::reproduce_lset_of_a_volatile_list_replayed_after_its_deadline
+    tests::expiry_replay_6of::reproduce_partial_updates_replayed_after_the_deadline
+
+test result: FAILED. 13 passed; 8 failed; 0 ignored; 0 measured; 739 filtered out; finished in 0.09s
+
+error: test failed, to rerun pass `-p recached --bin recached-server`

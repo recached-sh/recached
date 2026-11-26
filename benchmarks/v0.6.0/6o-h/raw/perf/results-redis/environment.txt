@@ -1,0 +1,34 @@
+date_utc: 2026-11-26T09:03:14Z
+rc_bin[h]: /home/dennispaler/recached-6oh-bench/bin/rc-h sha256=4c2a8e41db2935edb437126b380c4a364a74124882d9a17822ca821597c6e461 source=x version=recached-server 0.6.0
+rc_bin[base]: /home/dennispaler/recached-6oh-bench/bin/rc-base sha256=65cf742f6ac2acf67849e800d151d31583ccadfadf314eb997bb6b315b895c17 source=x version=recached-server 0.6.0
+kit_sha: unknown run-6oc.sh sha256=66fc33d48311c52a054bcae7a4e7bfbeb2bee506b3ebbf816d505b493108d7e9
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 1.25 1.92 1.53 4/1437 1355904
+pressure_at_start: load=1.25 io_psi10=0.15/0.14 mem_psi10=0.00/0.00 swap_used_mib=8176 dirty_wb_kib=612
+memory: total=15918 used=7342 available=8575 swap_total=8191 swap_used=8176
+aof_fs: /dev/sda3 btrfs rotational=1
+perf: absent perf_event_paranoid=2 uprof=off
+cpus: server=0 bench=3-5 reps=3 req_c1_p1=500000 req_c1_p16=2000000 req_c50_p1=3000000 req_c50_p16=5000000 always_requests=50000 bench_threads=2 keyspace=100000
+req_scale: 
+order: alternate=1 settle_io=8 settle_max_s=90 server_pin=0
+cells: redis-set-c50-P1 redis-setpx100-c50-P1 redis-setpx1000-c50-P1 redis-incrvol-c50-P1
+record_cells: none freq=2999
+sysc: off cells=none
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: unknown
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+   2651 dennisp+  39  19  969668 102764  10392 S 111.7   0.6  67:36.47 localse+
+      1 root      20   0   37116  12452   8224 S   0.0   0.1   0:03.01 systemd
+      2 root      20   0       0      0      0 S   0.0   0.0   0:00.04 kthreadd
+      3 root      20   0       0      0      0 S   0.0   0.0   0:00.00 pool_wo+
+      4 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+      5 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+      6 root       0 -20       0      0      0 I   0.0   0.0   0:00.00 kworker+
+loadavg_at_end: 1.97 2.00 1.73 4/1428 1359692
+pressure_at_end: load=1.97 io_psi10=10.89/3.30 mem_psi10=0.00/0.00 swap_used_mib=8175 dirty_wb_kib=2144

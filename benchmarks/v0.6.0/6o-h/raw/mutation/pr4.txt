@@ -1,0 +1,21 @@
+killed   M4 replay evaluates expiry after FORMAT: failed
+killed   M5 timeless replay of a file without FORMAT: failed
+killed   M13 FORMAT counted anywhere in the file: failed
+killed   Ma writer never marks authorship: failed
+killed   Mb writer always marks authorship: failed
+killed   Mc an older server's push does not end the timeless part: failed
+BUILD    Md unknown non-ignorable control ignored: mutant does not compile
+killed   Me must-understand features ignored: failed
+killed   Mf snapshot expired entries always dropped: failed
+killed   Mg snapshot expired entries never dropped: failed
+killed   Mh no follower mode in the timeless part: failed
+killed   Mi startup discards not logged: failed
+killed   Mj seed without the deadline: failed
+killed   Mk checkpoint id advanced only on success: failed
+killed   Ml checkpoint truncation without FORMAT: failed
+killed   Mm a primary does not begin an empty file: failed
+SKIP     Mn a replica keeps writing the format: pattern found 0 times
+killed   Mo reserved snapshot id accepted: failed
+killed   Mp format snapshots filtered by the local clock: failed
+killed   Md unknown non-ignorable control ignored: failed
+killed   Mn a replica keeps writing the format (PR 4: at the handshake): failed

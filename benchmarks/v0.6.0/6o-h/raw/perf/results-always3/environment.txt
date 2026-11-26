@@ -1,0 +1,35 @@
+date_utc: 2026-11-26T10:49:22Z
+rc_bin[comb]: /home/dennispaler/recached-6oh-bench/bin/rc-comb sha256=0127eeb147011117a3e85c10728a3e269d2aef319772e980ff9b790b3db7c6bf source=d98dc17 version=recached-server 0.6.0
+rc_bin[base]: /home/dennispaler/recached-6oh-bench/bin/rc-base sha256=65cf742f6ac2acf67849e800d151d31583ccadfadf314eb997bb6b315b895c17 source=f9a364d version=recached-server 0.6.0
+rc_bin[comb2]: /home/dennispaler/recached-6oh-bench/bin/rc-comb2 sha256=a3922e87125946d236c79bff621fbefe4e3c4bd21e93a3250fb032082587d941 source=53a2f1e version=recached-server 0.6.0
+kit_sha: unknown run-6oc.sh sha256=66fc33d48311c52a054bcae7a4e7bfbeb2bee506b3ebbf816d505b493108d7e9
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 1.99 1.94 1.87 3/1479 1479302
+pressure_at_start: load=1.99 io_psi10=36.93/31.31 mem_psi10=0.00/0.00 swap_used_mib=8152 dirty_wb_kib=4848
+memory: total=15918 used=7857 available=8061 swap_total=8191 swap_used=8152
+aof_fs: /dev/sda3 btrfs rotational=1
+perf: absent perf_event_paranoid=2 uprof=off
+cpus: server=0 bench=3-5 reps=3 req_c1_p1=500000 req_c1_p16=2000000 req_c50_p1=2000000 req_c50_p16=5000000 always_requests=30000 bench_threads=2 keyspace=100000
+req_scale: 
+order: alternate=1 settle_io=8 settle_max_s=90 server_pin=0
+cells: base/rc-always-incrvol-c50-P1 comb/rc-always-incrvol-c50-P1 comb2/rc-always-incrvol-c50-P1 
+record_cells: none freq=2999
+sysc: off cells=none
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: unknown
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+   2651 dennisp+  39  19  969288 111932  10228 S 145.5   0.7  78:29.43 localse+
+ 318073 dennisp+  20   0  683440  77680  50940 S  19.4   0.5  27:55.04 RDD Pro+
+ 317902 dennisp+  20   0   13.1g 498904 171948 S   9.7   3.1  35:41.67 firefox
+ 598609 dennisp+  20   0 3854284 652280 106864 S   4.9   4.0   6:34.70 Isolate+
+1462486 root      20   0       0      0      0 D   4.9   0.0   0:04.84 kworker+
+      1 root      20   0   37116  12348   8120 S   0.0   0.1   0:03.06 systemd
+      2 root      20   0       0      0      0 S   0.0   0.0   0:00.05 kthreadd
+loadavg_at_end: 2.61 1.97 1.84 4/1484 1487365
+pressure_at_end: load=2.61 io_psi10=67.95/63.66 mem_psi10=0.00/0.00 swap_used_mib=8151 dirty_wb_kib=4932

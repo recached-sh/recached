@@ -1,0 +1,7 @@
+v0.4.0     up=False a,b=None appended=None
+v0.5.1     up=True a,b=['1x', '2'] appended=b'>3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n'
+v0.5.2     up=True a,b=['1x', '2'] appended=b'>3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n'
+410235b    up=True a,b=['1x', '2'] appended=b'>3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n'
+f9a364d    up=True a,b=['1x', '2'] appended=b'>3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n'
+v0.4.0     up=False a,b=None appended=None
+v0.4.0     up=True a,b=['1x', '2'] appended=b'>3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n'

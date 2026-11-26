@@ -1,0 +1,2 @@
+inline exit=0 test result: ok. 772 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1308.89s
+coalesced exit=0 test result: ok. 772 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1299.14s

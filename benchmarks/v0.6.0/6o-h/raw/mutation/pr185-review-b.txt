@@ -1,0 +1,7 @@
+killed   B-1 DEL pushed to the writer (origin 0): failed
+killed   B-1 EXEC DEL pushed to the writer: failed
+killed   RB-M1 deferred branch [frame][DEL]: failed
+killed   RB-M2 forget_expired a no-op: failed
+killed   RB-M3 expiry removal never removed_after_set: failed
+killed   RB-M4 failed write's WS DEL dropped: failed
+killed   N-1 bound off by one: failed

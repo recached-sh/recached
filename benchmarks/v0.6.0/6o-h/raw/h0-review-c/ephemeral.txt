@@ -1,0 +1,8 @@
+E1 ESET OK PEXPIRE 1 PTTL 599999
+E1 SAVE OK aof after save: b'>3\r\n$4\r\nESET\r\n$1\r\nk\r\n$1\r\nv\r\n'
+E1 SET KEEPTTL OK live PTTL 599998
+E1 after restart: GET v2 PTTL -1 (expected v2 with PTTL > 0)
+E2 ESET OK
+E2 restart 1: GET None APPEND 1 GET x
+E2 restart 2: GET None (expected 'x', the acknowledged durable value)
+E2 aof: b'>3\r\n$4\r\nESET\r\n$1\r\ne\r\n$1\r\nv\r\n>3\r\n$6\r\nAPPEND\r\n$1\r\ne\r\n$1\r\nx\r\n'

@@ -1,0 +1,4 @@
+# #191 (b9bb6d5) and #192 (53a2f1e), run by hand
+killed  #191 F1: on_sweep_written awaited inside the barrier block  -> the_sweeper_writes_its_dels_after_releasing_the_barrier: "the barrier was held across the sweep's AOF write"
+killed  #192 F1 round 2: wait per chunk (on_sweep_written inside the tick loop) -> a_slow_disk_does_not_slow_the_sweep_to_a_chunk_per_tick: "the tick waited for its first chunk's write before sweeping on"
+#190 7b4ae13: first design (read-ahead chained, no reader while applying) -> a_replica_reads_ahead_while_its_full_sync_checkpoint_runs: killed (queue_disconnects left: 1, right: 0)

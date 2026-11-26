@@ -1,0 +1,2 @@
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"SET key:__rand_int__ v0123456789abcdef0123456789abcdef PX 1000","118797.77","0.409","0.056","0.399","0.535","0.575","35.391"

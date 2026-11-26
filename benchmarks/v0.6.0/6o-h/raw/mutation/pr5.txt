@@ -1,0 +1,14 @@
+killed   R1 replica applies with expiry evaluated: failed
+SKIP     R2 capable replica sweeps on its own: pattern found 0 times
+killed   R3 replica ignores caps=expirylog: failed
+killed   R4 partial resync across a mode change: failed
+killed   R5 full-sync snapshot filtered by the replica's clock: failed
+killed   R6 no full-sync checkpoint: failed
+SURVIVED R7 failed checkpoint does not fail closed
+killed   R8 wire not normalized to pushes: failed
+killed   R9 replica of an old primary advertises expirylog: failed
+killed   R10 mode not recorded at full sync: failed
+SURVIVED R11 replica startup keeps the format
+killed   R12 primary does not advertise expirylog: failed
+killed   R2 capable replica sweeps on its own: failed
+killed   R13 replica pushes a multi-key DEL as one frame: failed

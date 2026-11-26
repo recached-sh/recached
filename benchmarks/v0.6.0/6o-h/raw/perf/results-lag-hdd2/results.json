@@ -1,0 +1,1358 @@
+[
+ {
+  "exp": "lag",
+  "samples": [
+   {
+    "t": 0.0,
+    "primary_keys": 1,
+    "replica_keys": 1,
+    "replica_rss_kb": 7988,
+    "primary_rss_kb": 8228
+   },
+   {
+    "t": 1.0,
+    "primary_keys": 54564,
+    "replica_keys": 62136,
+    "replica_rss_kb": 43468,
+    "primary_rss_kb": 50368
+   },
+   {
+    "t": 2.0,
+    "primary_keys": 73449,
+    "replica_keys": 73421,
+    "replica_rss_kb": 60676,
+    "primary_rss_kb": 63020
+   },
+   {
+    "t": 3.0,
+    "primary_keys": 79862,
+    "replica_keys": 79842,
+    "replica_rss_kb": 62772,
+    "primary_rss_kb": 65116
+   },
+   {
+    "t": 4.0,
+    "primary_keys": 82318,
+    "replica_keys": 82287,
+    "replica_rss_kb": 63512,
+    "primary_rss_kb": 65852
+   },
+   {
+    "t": 5.0,
+    "primary_keys": 83665,
+    "replica_keys": 83644,
+    "replica_rss_kb": 63800,
+    "primary_rss_kb": 66152
+   },
+   {
+    "t": 6.0,
+    "primary_keys": 84109,
+    "replica_keys": 84078,
+    "replica_rss_kb": 63928,
+    "primary_rss_kb": 66304
+   },
+   {
+    "t": 7.0,
+    "primary_keys": 84731,
+    "replica_keys": 84678,
+    "replica_rss_kb": 63988,
+    "primary_rss_kb": 66364
+   },
+   {
+    "t": 8.0,
+    "primary_keys": 84883,
+    "replica_keys": 84839,
+    "replica_rss_kb": 64036,
+    "primary_rss_kb": 66416
+   },
+   {
+    "t": 9.0,
+    "primary_keys": 84562,
+    "replica_keys": 84530,
+    "replica_rss_kb": 64072,
+    "primary_rss_kb": 66452
+   },
+   {
+    "t": 10.0,
+    "primary_keys": 84270,
+    "replica_keys": null,
+    "replica_rss_kb": 64084,
+    "primary_rss_kb": 66680
+   },
+   {
+    "t": 11.0,
+    "primary_keys": 83921,
+    "replica_keys": null,
+    "replica_rss_kb": 64084,
+    "primary_rss_kb": 68248
+   },
+   {
+    "t": 12.0,
+    "primary_keys": 82829,
+    "replica_keys": null,
+    "replica_rss_kb": 64084,
+    "primary_rss_kb": 68252
+   },
+   {
+    "t": 13.0,
+    "primary_keys": 84310,
+    "replica_keys": null,
+    "replica_rss_kb": 64084,
+    "primary_rss_kb": 68252
+   },
+   {
+    "t": 14.0,
+    "primary_keys": 84236,
+    "replica_keys": null,
+    "replica_rss_kb": 64084,
+    "primary_rss_kb": 68272
+   },
+   {
+    "t": 15.0,
+    "primary_keys": 83948,
+    "replica_keys": null,
+    "replica_rss_kb": 64084,
+    "primary_rss_kb": 68324
+   },
+   {
+    "t": 16.0,
+    "primary_keys": 84026,
+    "replica_keys": null,
+    "replica_rss_kb": 64084,
+    "primary_rss_kb": 68328
+   },
+   {
+    "t": 17.0,
+    "primary_keys": 83688,
+    "replica_keys": null,
+    "replica_rss_kb": 64084,
+    "primary_rss_kb": 68336
+   },
+   {
+    "t": 18.0,
+    "primary_keys": 83453,
+    "replica_keys": null,
+    "replica_rss_kb": 64084,
+    "primary_rss_kb": 68348
+   },
+   {
+    "t": 19.0,
+    "primary_keys": 82723,
+    "replica_keys": null,
+    "replica_rss_kb": 64084,
+    "primary_rss_kb": 68372
+   },
+   {
+    "t": 20.0,
+    "primary_keys": 83648,
+    "replica_keys": 84269,
+    "replica_rss_kb": 64048,
+    "primary_rss_kb": 66652
+   },
+   {
+    "t": 21.0,
+    "primary_keys": 83499,
+    "replica_keys": 84453,
+    "replica_rss_kb": 64124,
+    "primary_rss_kb": 66680
+   },
+   {
+    "t": 22.0,
+    "primary_keys": 83761,
+    "replica_keys": 84453,
+    "replica_rss_kb": 64124,
+    "primary_rss_kb": 66692
+   },
+   {
+    "t": 23.0,
+    "primary_keys": 85989,
+    "replica_keys": 84678,
+    "replica_rss_kb": 80828,
+    "primary_rss_kb": 70668
+   },
+   {
+    "t": 24.0,
+    "primary_keys": 84942,
+    "replica_keys": 84678,
+    "replica_rss_kb": 80828,
+    "primary_rss_kb": 70668
+   },
+   {
+    "t": 25.0,
+    "primary_keys": 84557,
+    "replica_keys": 92778,
+    "replica_rss_kb": 81440,
+    "primary_rss_kb": 80912
+   },
+   {
+    "t": 26.0,
+    "primary_keys": 84271,
+    "replica_keys": 93853,
+    "replica_rss_kb": 80632,
+    "primary_rss_kb": 72292
+   },
+   {
+    "t": 27.0,
+    "primary_keys": 83801,
+    "replica_keys": 93853,
+    "replica_rss_kb": 64888,
+    "primary_rss_kb": 72316
+   },
+   {
+    "t": 28.0,
+    "primary_keys": 84653,
+    "replica_keys": 88904,
+    "replica_rss_kb": 66104,
+    "primary_rss_kb": 75012
+   },
+   {
+    "t": 29.0,
+    "primary_keys": 84251,
+    "replica_keys": 89719,
+    "replica_rss_kb": 51340,
+    "primary_rss_kb": 75012
+   }
+  ],
+  "replica_stream_bytes": 1081343,
+  "peak_replica_keys": 93853,
+  "peak_primary_keys": 85989,
+  "peak_replica_rss_kb": 81440,
+  "peak_primary_rss_kb": 80912,
+  "drain_after_load_s": 4.01,
+  "primary_ops_per_s": 106613.0,
+  "replica_stream_bytes_per_op": 0.3,
+  "name": "final",
+  "rep": 1,
+  "binary_sha": "05bda79760d2838d60c8f49db3883b66ab186205a6f7d3067e96e7e38128a9f2"
+ },
+ {
+  "exp": "lag",
+  "samples": [
+   {
+    "t": 0.0,
+    "primary_keys": 1,
+    "replica_keys": 1,
+    "replica_rss_kb": 9480,
+    "primary_rss_kb": 9612
+   },
+   {
+    "t": 1.0,
+    "primary_keys": 57354,
+    "replica_keys": 57275,
+    "replica_rss_kb": 45956,
+    "primary_rss_kb": 47448
+   },
+   {
+    "t": 2.0,
+    "primary_keys": 77263,
+    "replica_keys": 77239,
+    "replica_rss_kb": 60552,
+    "primary_rss_kb": 62864
+   },
+   {
+    "t": 3.0,
+    "primary_keys": 84851,
+    "replica_keys": 84842,
+    "replica_rss_kb": 63132,
+    "primary_rss_kb": 65432
+   },
+   {
+    "t": 4.0,
+    "primary_keys": 88165,
+    "replica_keys": 88158,
+    "replica_rss_kb": 64396,
+    "primary_rss_kb": 66696
+   },
+   {
+    "t": 5.0,
+    "primary_keys": 89134,
+    "replica_keys": 89126,
+    "replica_rss_kb": 64996,
+    "primary_rss_kb": 67292
+   },
+   {
+    "t": 6.0,
+    "primary_keys": 89374,
+    "replica_keys": 89361,
+    "replica_rss_kb": 65280,
+    "primary_rss_kb": 67584
+   },
+   {
+    "t": 7.0,
+    "primary_keys": 89444,
+    "replica_keys": 89430,
+    "replica_rss_kb": 65356,
+    "primary_rss_kb": 67648
+   },
+   {
+    "t": 8.0,
+    "primary_keys": 90096,
+    "replica_keys": 90091,
+    "replica_rss_kb": 65392,
+    "primary_rss_kb": 67680
+   },
+   {
+    "t": 9.0,
+    "primary_keys": 90215,
+    "replica_keys": 90207,
+    "replica_rss_kb": 65464,
+    "primary_rss_kb": 67692
+   },
+   {
+    "t": 10.0,
+    "primary_keys": 89880,
+    "replica_keys": null,
+    "replica_rss_kb": 65572,
+    "primary_rss_kb": 67812
+   },
+   {
+    "t": 11.0,
+    "primary_keys": 89764,
+    "replica_keys": null,
+    "replica_rss_kb": 65572,
+    "primary_rss_kb": 69276
+   },
+   {
+    "t": 12.0,
+    "primary_keys": 89542,
+    "replica_keys": null,
+    "replica_rss_kb": 65572,
+    "primary_rss_kb": 69360
+   },
+   {
+    "t": 13.0,
+    "primary_keys": 89554,
+    "replica_keys": null,
+    "replica_rss_kb": 65572,
+    "primary_rss_kb": 69376
+   },
+   {
+    "t": 14.0,
+    "primary_keys": 89390,
+    "replica_keys": null,
+    "replica_rss_kb": 65572,
+    "primary_rss_kb": 69452
+   },
+   {
+    "t": 15.0,
+    "primary_keys": 89672,
+    "replica_keys": null,
+    "replica_rss_kb": 65572,
+    "primary_rss_kb": 69452
+   },
+   {
+    "t": 16.0,
+    "primary_keys": 90425,
+    "replica_keys": null,
+    "replica_rss_kb": 65572,
+    "primary_rss_kb": 69484
+   },
+   {
+    "t": 17.0,
+    "primary_keys": 89799,
+    "replica_keys": null,
+    "replica_rss_kb": 65572,
+    "primary_rss_kb": 69528
+   },
+   {
+    "t": 18.0,
+    "primary_keys": 89833,
+    "replica_keys": null,
+    "replica_rss_kb": 65572,
+    "primary_rss_kb": 69600
+   },
+   {
+    "t": 19.0,
+    "primary_keys": 89659,
+    "replica_keys": null,
+    "replica_rss_kb": 65572,
+    "primary_rss_kb": 69660
+   },
+   {
+    "t": 20.0,
+    "primary_keys": 89554,
+    "replica_keys": 89869,
+    "replica_rss_kb": 65812,
+    "primary_rss_kb": 67764
+   },
+   {
+    "t": 21.0,
+    "primary_keys": 89512,
+    "replica_keys": 90233,
+    "replica_rss_kb": 65824,
+    "primary_rss_kb": 67988
+   },
+   {
+    "t": 22.0,
+    "primary_keys": 89401,
+    "replica_keys": 90233,
+    "replica_rss_kb": 65824,
+    "primary_rss_kb": 68072
+   },
+   {
+    "t": 23.0,
+    "primary_keys": 89299,
+    "replica_keys": 89730,
+    "replica_rss_kb": 93904,
+    "primary_rss_kb": 71416
+   },
+   {
+    "t": 24.0,
+    "primary_keys": 89667,
+    "replica_keys": 90480,
+    "replica_rss_kb": 87016,
+    "primary_rss_kb": 71716
+   },
+   {
+    "t": 25.0,
+    "primary_keys": 89926,
+    "replica_keys": 91281,
+    "replica_rss_kb": 89876,
+    "primary_rss_kb": 71716
+   },
+   {
+    "t": 26.0,
+    "primary_keys": 89723,
+    "replica_keys": 91928,
+    "replica_rss_kb": 90012,
+    "primary_rss_kb": 71716
+   },
+   {
+    "t": 27.0,
+    "primary_keys": 89501,
+    "replica_keys": 92179,
+    "replica_rss_kb": 90016,
+    "primary_rss_kb": 71716
+   },
+   {
+    "t": 28.0,
+    "primary_keys": 89491,
+    "replica_keys": 92738,
+    "replica_rss_kb": 90020,
+    "primary_rss_kb": 71716
+   },
+   {
+    "t": 29.1,
+    "primary_keys": 89754,
+    "replica_keys": 93070,
+    "replica_rss_kb": 90024,
+    "primary_rss_kb": 71716
+   }
+  ],
+  "replica_stream_bytes": 100349569,
+  "peak_replica_keys": 93070,
+  "peak_primary_keys": 90425,
+  "peak_replica_rss_kb": 93904,
+  "peak_primary_rss_kb": 71716,
+  "drain_after_load_s": 4.62,
+  "primary_ops_per_s": 103733.0,
+  "replica_stream_bytes_per_op": 32.2,
+  "name": "fixe2",
+  "rep": 1,
+  "binary_sha": "ce3ace14c262de22ad30578e7c689265635d5d5dc15ab310290eb6d7f192d9c7"
+ },
+ {
+  "exp": "lag",
+  "samples": [
+   {
+    "t": 0.0,
+    "primary_keys": 1,
+    "replica_keys": 1,
+    "replica_rss_kb": 9672,
+    "primary_rss_kb": 8508
+   },
+   {
+    "t": 1.0,
+    "primary_keys": 57862,
+    "replica_keys": 57835,
+    "replica_rss_kb": 45924,
+    "primary_rss_kb": 46052
+   },
+   {
+    "t": 2.0,
+    "primary_keys": 78154,
+    "replica_keys": 78138,
+    "replica_rss_kb": 60936,
+    "primary_rss_kb": 62024
+   },
+   {
+    "t": 3.0,
+    "primary_keys": 85467,
+    "replica_keys": 85449,
+    "replica_rss_kb": 63536,
+    "primary_rss_kb": 64564
+   },
+   {
+    "t": 4.0,
+    "primary_keys": 88030,
+    "replica_keys": 88011,
+    "replica_rss_kb": 64812,
+    "primary_rss_kb": 65812
+   },
+   {
+    "t": 5.0,
+    "primary_keys": 88603,
+    "replica_keys": 88591,
+    "replica_rss_kb": 65372,
+    "primary_rss_kb": 66280
+   },
+   {
+    "t": 6.0,
+    "primary_keys": 89154,
+    "replica_keys": 89140,
+    "replica_rss_kb": 65476,
+    "primary_rss_kb": 66420
+   },
+   {
+    "t": 7.0,
+    "primary_keys": 88475,
+    "replica_keys": 88465,
+    "replica_rss_kb": 65680,
+    "primary_rss_kb": 66516
+   },
+   {
+    "t": 8.0,
+    "primary_keys": 89745,
+    "replica_keys": 89714,
+    "replica_rss_kb": 65852,
+    "primary_rss_kb": 66556
+   },
+   {
+    "t": 9.0,
+    "primary_keys": 89896,
+    "replica_keys": 89825,
+    "replica_rss_kb": 65892,
+    "primary_rss_kb": 66588
+   },
+   {
+    "t": 10.0,
+    "primary_keys": 89610,
+    "replica_keys": null,
+    "replica_rss_kb": 65880,
+    "primary_rss_kb": 66784
+   },
+   {
+    "t": 11.0,
+    "primary_keys": 89301,
+    "replica_keys": null,
+    "replica_rss_kb": 65880,
+    "primary_rss_kb": 68264
+   },
+   {
+    "t": 12.0,
+    "primary_keys": 88964,
+    "replica_keys": null,
+    "replica_rss_kb": 65880,
+    "primary_rss_kb": 68332
+   },
+   {
+    "t": 13.0,
+    "primary_keys": 89058,
+    "replica_keys": null,
+    "replica_rss_kb": 65880,
+    "primary_rss_kb": 68348
+   },
+   {
+    "t": 14.0,
+    "primary_keys": 89023,
+    "replica_keys": null,
+    "replica_rss_kb": 65880,
+    "primary_rss_kb": 68408
+   },
+   {
+    "t": 15.0,
+    "primary_keys": 90047,
+    "replica_keys": null,
+    "replica_rss_kb": 65880,
+    "primary_rss_kb": 68412
+   },
+   {
+    "t": 16.0,
+    "primary_keys": 90078,
+    "replica_keys": null,
+    "replica_rss_kb": 65880,
+    "primary_rss_kb": 68432
+   },
+   {
+    "t": 17.0,
+    "primary_keys": 89670,
+    "replica_keys": null,
+    "replica_rss_kb": 65880,
+    "primary_rss_kb": 68480
+   },
+   {
+    "t": 18.0,
+    "primary_keys": 89995,
+    "replica_keys": null,
+    "replica_rss_kb": 65880,
+    "primary_rss_kb": 68516
+   },
+   {
+    "t": 19.0,
+    "primary_keys": 90879,
+    "replica_keys": null,
+    "replica_rss_kb": 65880,
+    "primary_rss_kb": 68536
+   },
+   {
+    "t": 20.0,
+    "primary_keys": 89777,
+    "replica_keys": 89617,
+    "replica_rss_kb": 66444,
+    "primary_rss_kb": 66776
+   },
+   {
+    "t": 21.0,
+    "primary_keys": 89844,
+    "replica_keys": 92128,
+    "replica_rss_kb": 69708,
+    "primary_rss_kb": 66968
+   },
+   {
+    "t": 22.0,
+    "primary_keys": 89758,
+    "replica_keys": 92128,
+    "replica_rss_kb": 69708,
+    "primary_rss_kb": 67036
+   },
+   {
+    "t": 23.0,
+    "primary_keys": 89381,
+    "replica_keys": 92401,
+    "replica_rss_kb": 90216,
+    "primary_rss_kb": 78808
+   },
+   {
+    "t": 24.0,
+    "primary_keys": 89828,
+    "replica_keys": 90088,
+    "replica_rss_kb": 93772,
+    "primary_rss_kb": 78808
+   },
+   {
+    "t": 25.0,
+    "primary_keys": 89894,
+    "replica_keys": 90788,
+    "replica_rss_kb": 90932,
+    "primary_rss_kb": 79124
+   },
+   {
+    "t": 26.0,
+    "primary_keys": 90209,
+    "replica_keys": 91061,
+    "replica_rss_kb": 91228,
+    "primary_rss_kb": 79124
+   },
+   {
+    "t": 27.0,
+    "primary_keys": 90438,
+    "replica_keys": 91565,
+    "replica_rss_kb": 91364,
+    "primary_rss_kb": 69328
+   },
+   {
+    "t": 28.0,
+    "primary_keys": 89978,
+    "replica_keys": 91942,
+    "replica_rss_kb": 91364,
+    "primary_rss_kb": 69360
+   },
+   {
+    "t": 29.0,
+    "primary_keys": 89884,
+    "replica_keys": 92098,
+    "replica_rss_kb": 91368,
+    "primary_rss_kb": 69428
+   }
+  ],
+  "replica_stream_bytes": 95011603,
+  "peak_replica_keys": 92401,
+  "peak_primary_keys": 90879,
+  "peak_replica_rss_kb": 93772,
+  "peak_primary_rss_kb": 79124,
+  "drain_after_load_s": 3.61,
+  "primary_ops_per_s": 104732.0,
+  "replica_stream_bytes_per_op": 30.2,
+  "name": "fixe2",
+  "rep": 2,
+  "binary_sha": "ce3ace14c262de22ad30578e7c689265635d5d5dc15ab310290eb6d7f192d9c7"
+ },
+ {
+  "exp": "lag",
+  "samples": [
+   {
+    "t": 0.0,
+    "primary_keys": 1,
+    "replica_keys": 1,
+    "replica_rss_kb": 8592,
+    "primary_rss_kb": 8368
+   },
+   {
+    "t": 1.0,
+    "primary_keys": 61430,
+    "replica_keys": 61400,
+    "replica_rss_kb": 47464,
+    "primary_rss_kb": 49572
+   },
+   {
+    "t": 2.0,
+    "primary_keys": 81051,
+    "replica_keys": 81034,
+    "replica_rss_kb": 60360,
+    "primary_rss_kb": 62452
+   },
+   {
+    "t": 3.0,
+    "primary_keys": 88373,
+    "replica_keys": 88361,
+    "replica_rss_kb": 62524,
+    "primary_rss_kb": 64632
+   },
+   {
+    "t": 4.0,
+    "primary_keys": 91157,
+    "replica_keys": 91144,
+    "replica_rss_kb": 63348,
+    "primary_rss_kb": 65440
+   },
+   {
+    "t": 5.0,
+    "primary_keys": 92117,
+    "replica_keys": 92082,
+    "replica_rss_kb": 63972,
+    "primary_rss_kb": 66044
+   },
+   {
+    "t": 6.0,
+    "primary_keys": 92660,
+    "replica_keys": 92635,
+    "replica_rss_kb": 64236,
+    "primary_rss_kb": 66304
+   },
+   {
+    "t": 7.0,
+    "primary_keys": 93043,
+    "replica_keys": 92986,
+    "replica_rss_kb": 64332,
+    "primary_rss_kb": 66368
+   },
+   {
+    "t": 8.0,
+    "primary_keys": 93550,
+    "replica_keys": 93514,
+    "replica_rss_kb": 64360,
+    "primary_rss_kb": 66424
+   },
+   {
+    "t": 9.0,
+    "primary_keys": 93140,
+    "replica_keys": 93085,
+    "replica_rss_kb": 64552,
+    "primary_rss_kb": 66584
+   },
+   {
+    "t": 10.0,
+    "primary_keys": 92763,
+    "replica_keys": null,
+    "replica_rss_kb": 64672,
+    "primary_rss_kb": 66740
+   },
+   {
+    "t": 11.0,
+    "primary_keys": 92955,
+    "replica_keys": null,
+    "replica_rss_kb": 64672,
+    "primary_rss_kb": 68488
+   },
+   {
+    "t": 12.0,
+    "primary_keys": 92623,
+    "replica_keys": null,
+    "replica_rss_kb": 64672,
+    "primary_rss_kb": 68512
+   },
+   {
+    "t": 13.0,
+    "primary_keys": 92758,
+    "replica_keys": null,
+    "replica_rss_kb": 64672,
+    "primary_rss_kb": 68528
+   },
+   {
+    "t": 14.0,
+    "primary_keys": 93057,
+    "replica_keys": null,
+    "replica_rss_kb": 64672,
+    "primary_rss_kb": 68548
+   },
+   {
+    "t": 15.0,
+    "primary_keys": 93068,
+    "replica_keys": null,
+    "replica_rss_kb": 64672,
+    "primary_rss_kb": 68576
+   },
+   {
+    "t": 16.0,
+    "primary_keys": 92910,
+    "replica_keys": null,
+    "replica_rss_kb": 64672,
+    "primary_rss_kb": 68604
+   },
+   {
+    "t": 17.0,
+    "primary_keys": 93073,
+    "replica_keys": null,
+    "replica_rss_kb": 64672,
+    "primary_rss_kb": 68620
+   },
+   {
+    "t": 18.0,
+    "primary_keys": 93219,
+    "replica_keys": null,
+    "replica_rss_kb": 64672,
+    "primary_rss_kb": 68632
+   },
+   {
+    "t": 19.0,
+    "primary_keys": 93269,
+    "replica_keys": null,
+    "replica_rss_kb": 64672,
+    "primary_rss_kb": 68648
+   },
+   {
+    "t": 20.0,
+    "primary_keys": 93483,
+    "replica_keys": 92758,
+    "replica_rss_kb": 64352,
+    "primary_rss_kb": 66892
+   },
+   {
+    "t": 21.0,
+    "primary_keys": 93260,
+    "replica_keys": 93165,
+    "replica_rss_kb": 64352,
+    "primary_rss_kb": 66912
+   },
+   {
+    "t": 22.0,
+    "primary_keys": 93467,
+    "replica_keys": 93165,
+    "replica_rss_kb": 64352,
+    "primary_rss_kb": 66912
+   },
+   {
+    "t": 23.0,
+    "primary_keys": 93316,
+    "replica_keys": 93883,
+    "replica_rss_kb": 74088,
+    "primary_rss_kb": 78176
+   },
+   {
+    "t": 24.0,
+    "primary_keys": 93461,
+    "replica_keys": 94264,
+    "replica_rss_kb": 73924,
+    "primary_rss_kb": 78176
+   },
+   {
+    "t": 25.0,
+    "primary_keys": 94705,
+    "replica_keys": 94264,
+    "replica_rss_kb": 73924,
+    "primary_rss_kb": 78176
+   },
+   {
+    "t": 26.0,
+    "primary_keys": 93106,
+    "replica_keys": 85683,
+    "replica_rss_kb": 73260,
+    "primary_rss_kb": 85972
+   },
+   {
+    "t": 27.0,
+    "primary_keys": 93526,
+    "replica_keys": 85683,
+    "replica_rss_kb": 63160,
+    "primary_rss_kb": 78444
+   },
+   {
+    "t": 28.0,
+    "primary_keys": 93314,
+    "replica_keys": 92493,
+    "replica_rss_kb": 62636,
+    "primary_rss_kb": 84988
+   },
+   {
+    "t": 29.0,
+    "primary_keys": 93684,
+    "replica_keys": 92817,
+    "replica_rss_kb": 55156,
+    "primary_rss_kb": 83620
+   }
+  ],
+  "replica_stream_bytes": 584165,
+  "peak_replica_keys": 94264,
+  "peak_primary_keys": 94705,
+  "peak_replica_rss_kb": 74088,
+  "peak_primary_rss_kb": 85972,
+  "drain_after_load_s": 3.21,
+  "primary_ops_per_s": 108816.0,
+  "replica_stream_bytes_per_op": 0.2,
+  "name": "final",
+  "rep": 2,
+  "binary_sha": "05bda79760d2838d60c8f49db3883b66ab186205a6f7d3067e96e7e38128a9f2"
+ },
+ {
+  "exp": "lag",
+  "samples": [
+   {
+    "t": 0.0,
+    "primary_keys": 1,
+    "replica_keys": 1,
+    "replica_rss_kb": 8624,
+    "primary_rss_kb": 8252
+   },
+   {
+    "t": 1.0,
+    "primary_keys": 58570,
+    "replica_keys": 58544,
+    "replica_rss_kb": 47276,
+    "primary_rss_kb": 49052
+   },
+   {
+    "t": 2.0,
+    "primary_keys": 78113,
+    "replica_keys": 78096,
+    "replica_rss_kb": 59848,
+    "primary_rss_kb": 61796
+   },
+   {
+    "t": 3.0,
+    "primary_keys": 85726,
+    "replica_keys": 85717,
+    "replica_rss_kb": 62300,
+    "primary_rss_kb": 64232
+   },
+   {
+    "t": 4.0,
+    "primary_keys": 88738,
+    "replica_keys": 88725,
+    "replica_rss_kb": 63548,
+    "primary_rss_kb": 65496
+   },
+   {
+    "t": 5.0,
+    "primary_keys": 89351,
+    "replica_keys": 89342,
+    "replica_rss_kb": 64100,
+    "primary_rss_kb": 66008
+   },
+   {
+    "t": 6.0,
+    "primary_keys": 89793,
+    "replica_keys": 89791,
+    "replica_rss_kb": 64276,
+    "primary_rss_kb": 66188
+   },
+   {
+    "t": 7.0,
+    "primary_keys": 89836,
+    "replica_keys": 89829,
+    "replica_rss_kb": 64356,
+    "primary_rss_kb": 66268
+   },
+   {
+    "t": 8.0,
+    "primary_keys": 89548,
+    "replica_keys": 89535,
+    "replica_rss_kb": 64396,
+    "primary_rss_kb": 66340
+   },
+   {
+    "t": 9.0,
+    "primary_keys": 89759,
+    "replica_keys": 89745,
+    "replica_rss_kb": 64432,
+    "primary_rss_kb": 66356
+   },
+   {
+    "t": 10.0,
+    "primary_keys": 89754,
+    "replica_keys": null,
+    "replica_rss_kb": 64472,
+    "primary_rss_kb": 66472
+   },
+   {
+    "t": 11.0,
+    "primary_keys": 89754,
+    "replica_keys": null,
+    "replica_rss_kb": 64472,
+    "primary_rss_kb": 68116
+   },
+   {
+    "t": 12.0,
+    "primary_keys": 89774,
+    "replica_keys": null,
+    "replica_rss_kb": 64472,
+    "primary_rss_kb": 68116
+   },
+   {
+    "t": 13.0,
+    "primary_keys": 90024,
+    "replica_keys": null,
+    "replica_rss_kb": 64472,
+    "primary_rss_kb": 68116
+   },
+   {
+    "t": 14.0,
+    "primary_keys": 89707,
+    "replica_keys": null,
+    "replica_rss_kb": 64472,
+    "primary_rss_kb": 68144
+   },
+   {
+    "t": 15.0,
+    "primary_keys": 89532,
+    "replica_keys": null,
+    "replica_rss_kb": 64472,
+    "primary_rss_kb": 68168
+   },
+   {
+    "t": 16.0,
+    "primary_keys": 89782,
+    "replica_keys": null,
+    "replica_rss_kb": 64472,
+    "primary_rss_kb": 68168
+   },
+   {
+    "t": 17.0,
+    "primary_keys": 90031,
+    "replica_keys": null,
+    "replica_rss_kb": 64472,
+    "primary_rss_kb": 68168
+   },
+   {
+    "t": 18.0,
+    "primary_keys": 90272,
+    "replica_keys": null,
+    "replica_rss_kb": 64472,
+    "primary_rss_kb": 68184
+   },
+   {
+    "t": 19.0,
+    "primary_keys": 90003,
+    "replica_keys": null,
+    "replica_rss_kb": 64472,
+    "primary_rss_kb": 68208
+   },
+   {
+    "t": 20.0,
+    "primary_keys": 89580,
+    "replica_keys": 89754,
+    "replica_rss_kb": 64080,
+    "primary_rss_kb": 66620
+   },
+   {
+    "t": 21.0,
+    "primary_keys": 90031,
+    "replica_keys": 90154,
+    "replica_rss_kb": 64092,
+    "primary_rss_kb": 66652
+   },
+   {
+    "t": 22.0,
+    "primary_keys": 90187,
+    "replica_keys": 90154,
+    "replica_rss_kb": 64092,
+    "primary_rss_kb": 66752
+   },
+   {
+    "t": 23.0,
+    "primary_keys": 90771,
+    "replica_keys": 91450,
+    "replica_rss_kb": 81752,
+    "primary_rss_kb": 71180
+   },
+   {
+    "t": 24.0,
+    "primary_keys": 90389,
+    "replica_keys": 91450,
+    "replica_rss_kb": 81752,
+    "primary_rss_kb": 71180
+   },
+   {
+    "t": 25.0,
+    "primary_keys": 90266,
+    "replica_keys": 89561,
+    "replica_rss_kb": 81692,
+    "primary_rss_kb": 83520
+   },
+   {
+    "t": 26.1,
+    "primary_keys": 90876,
+    "replica_keys": 90786,
+    "replica_rss_kb": 76360,
+    "primary_rss_kb": 82824
+   },
+   {
+    "t": 27.1,
+    "primary_keys": 90648,
+    "replica_keys": 90786,
+    "replica_rss_kb": 66728,
+    "primary_rss_kb": 82876
+   },
+   {
+    "t": 28.1,
+    "primary_keys": 89602,
+    "replica_keys": 83434,
+    "replica_rss_kb": 60608,
+    "primary_rss_kb": 80276
+   },
+   {
+    "t": 29.1,
+    "primary_keys": 90623,
+    "replica_keys": 85127,
+    "replica_rss_kb": 53972,
+    "primary_rss_kb": 80560
+   }
+  ],
+  "replica_stream_bytes": 1426310,
+  "peak_replica_keys": 91450,
+  "peak_primary_keys": 90876,
+  "peak_replica_rss_kb": 81752,
+  "peak_primary_rss_kb": 83520,
+  "drain_after_load_s": 3.62,
+  "primary_ops_per_s": 109527.0,
+  "replica_stream_bytes_per_op": 0.4,
+  "name": "final",
+  "rep": 3,
+  "binary_sha": "05bda79760d2838d60c8f49db3883b66ab186205a6f7d3067e96e7e38128a9f2"
+ },
+ {
+  "exp": "lag",
+  "samples": [
+   {
+    "t": 0.0,
+    "primary_keys": 1,
+    "replica_keys": 1,
+    "replica_rss_kb": 9256,
+    "primary_rss_kb": 8852
+   },
+   {
+    "t": 1.0,
+    "primary_keys": 58404,
+    "replica_keys": 58377,
+    "replica_rss_kb": 47076,
+    "primary_rss_kb": 48920
+   },
+   {
+    "t": 2.0,
+    "primary_keys": 78469,
+    "replica_keys": 78447,
+    "replica_rss_kb": 60640,
+    "primary_rss_kb": 62552
+   },
+   {
+    "t": 3.0,
+    "primary_keys": 85664,
+    "replica_keys": 85644,
+    "replica_rss_kb": 63192,
+    "primary_rss_kb": 64996
+   },
+   {
+    "t": 4.0,
+    "primary_keys": 88427,
+    "replica_keys": 88416,
+    "replica_rss_kb": 64372,
+    "primary_rss_kb": 66200
+   },
+   {
+    "t": 5.0,
+    "primary_keys": 89354,
+    "replica_keys": 89345,
+    "replica_rss_kb": 64900,
+    "primary_rss_kb": 66648
+   },
+   {
+    "t": 6.0,
+    "primary_keys": 89625,
+    "replica_keys": 89618,
+    "replica_rss_kb": 65140,
+    "primary_rss_kb": 66916
+   },
+   {
+    "t": 7.0,
+    "primary_keys": 89592,
+    "replica_keys": 89580,
+    "replica_rss_kb": 65216,
+    "primary_rss_kb": 66988
+   },
+   {
+    "t": 8.0,
+    "primary_keys": 89411,
+    "replica_keys": 89403,
+    "replica_rss_kb": 65264,
+    "primary_rss_kb": 67028
+   },
+   {
+    "t": 9.0,
+    "primary_keys": 89528,
+    "replica_keys": 89523,
+    "replica_rss_kb": 65348,
+    "primary_rss_kb": 67048
+   },
+   {
+    "t": 10.0,
+    "primary_keys": 89646,
+    "replica_keys": null,
+    "replica_rss_kb": 65432,
+    "primary_rss_kb": 67208
+   },
+   {
+    "t": 11.0,
+    "primary_keys": 89422,
+    "replica_keys": null,
+    "replica_rss_kb": 65432,
+    "primary_rss_kb": 68816
+   },
+   {
+    "t": 12.0,
+    "primary_keys": 89005,
+    "replica_keys": null,
+    "replica_rss_kb": 65432,
+    "primary_rss_kb": 68816
+   },
+   {
+    "t": 13.0,
+    "primary_keys": 89781,
+    "replica_keys": null,
+    "replica_rss_kb": 65432,
+    "primary_rss_kb": 68828
+   },
+   {
+    "t": 14.0,
+    "primary_keys": 89979,
+    "replica_keys": null,
+    "replica_rss_kb": 65432,
+    "primary_rss_kb": 68836
+   },
+   {
+    "t": 15.0,
+    "primary_keys": 90043,
+    "replica_keys": null,
+    "replica_rss_kb": 65432,
+    "primary_rss_kb": 68836
+   },
+   {
+    "t": 16.0,
+    "primary_keys": 89727,
+    "replica_keys": null,
+    "replica_rss_kb": 65432,
+    "primary_rss_kb": 68836
+   },
+   {
+    "t": 17.0,
+    "primary_keys": 89684,
+    "replica_keys": null,
+    "replica_rss_kb": 65432,
+    "primary_rss_kb": 68836
+   },
+   {
+    "t": 18.0,
+    "primary_keys": 89695,
+    "replica_keys": null,
+    "replica_rss_kb": 65432,
+    "primary_rss_kb": 68836
+   },
+   {
+    "t": 19.0,
+    "primary_keys": 89888,
+    "replica_keys": null,
+    "replica_rss_kb": 65432,
+    "primary_rss_kb": 68836
+   },
+   {
+    "t": 20.0,
+    "primary_keys": 89790,
+    "replica_keys": 89639,
+    "replica_rss_kb": 65512,
+    "primary_rss_kb": 67320
+   },
+   {
+    "t": 21.0,
+    "primary_keys": 89657,
+    "replica_keys": 90068,
+    "replica_rss_kb": 65524,
+    "primary_rss_kb": 67324
+   },
+   {
+    "t": 22.0,
+    "primary_keys": 89652,
+    "replica_keys": 90068,
+    "replica_rss_kb": 65524,
+    "primary_rss_kb": 67324
+   },
+   {
+    "t": 23.0,
+    "primary_keys": 89997,
+    "replica_keys": 90144,
+    "replica_rss_kb": 90628,
+    "primary_rss_kb": 70832
+   },
+   {
+    "t": 24.0,
+    "primary_keys": 90153,
+    "replica_keys": 88169,
+    "replica_rss_kb": 95060,
+    "primary_rss_kb": 70832
+   },
+   {
+    "t": 25.0,
+    "primary_keys": 89940,
+    "replica_keys": 88920,
+    "replica_rss_kb": 86688,
+    "primary_rss_kb": 71616
+   },
+   {
+    "t": 26.0,
+    "primary_keys": 89732,
+    "replica_keys": 91340,
+    "replica_rss_kb": 86692,
+    "primary_rss_kb": 71628
+   },
+   {
+    "t": 27.0,
+    "primary_keys": 89711,
+    "replica_keys": 91340,
+    "replica_rss_kb": 86692,
+    "primary_rss_kb": 71636
+   },
+   {
+    "t": 28.0,
+    "primary_keys": 89914,
+    "replica_keys": 93022,
+    "replica_rss_kb": 93540,
+    "primary_rss_kb": 77704
+   },
+   {
+    "t": 29.0,
+    "primary_keys": 89750,
+    "replica_keys": 93653,
+    "replica_rss_kb": 86304,
+    "primary_rss_kb": 77704
+   }
+  ],
+  "replica_stream_bytes": 30550641,
+  "peak_replica_keys": 93653,
+  "peak_primary_keys": 90153,
+  "peak_replica_rss_kb": 95060,
+  "peak_primary_rss_kb": 77704,
+  "drain_after_load_s": 3.61,
+  "primary_ops_per_s": 107435.0,
+  "replica_stream_bytes_per_op": 9.5,
+  "name": "fixe2",
+  "rep": 3,
+  "binary_sha": "ce3ace14c262de22ad30578e7c689265635d5d5dc15ab310290eb6d7f192d9c7"
+ }
+]

@@ -1,0 +1,5 @@
+R has a,b: True True
+R after 2nd full sync: c = 3  a = None
+R has d: True
+R aof: b'>3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n>3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n>3\r\n$3\r\nSET\r\n$1\r\nd\r\n$1\r\n4\r\n'
+R restarted, primary down: a='1' b='2' c=None d='4'   (primary had a=None b=2 c=3 d=4)

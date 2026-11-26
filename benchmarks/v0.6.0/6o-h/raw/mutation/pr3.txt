@@ -1,0 +1,19 @@
+killed   M1 observed expiry DEL not logged: failed
+killed   M2 DEL after the frame (AOF): failed
+killed   M2b DEL after the frame (replication): failed
+killed   M3 sweeper DEL not logged: failed
+killed   M4 EXEC expiry DEL after its frame: failed
+killed   M5 refused DEL's removal dropped: failed
+killed   M6 DEL's own keys logged twice: failed
+SURVIVED M7 watchers not told of the removal
+killed   M8 DEL wrapped into the DEDUP envelope: failed
+killed   M9 sweeper pushes a whole chunk to tenant sockets: failed
+SKIP     M10 no observing scope on ordered writes: pattern found 0 times
+killed   M11 no observing scope in EXEC: failed
+killed   M12 WS push of the expiry DEL dropped: failed
+killed   M13 failed write's DEL not logged: failed
+killed   M14 replica sweeps logged: failed
+SURVIVED M7 watchers not told of the removal
+killed   M10 no observing scope on ordered writes: failed
+killed   M7 watchers not told of the removal: failed
+killed   M10 no observing scope on ordered writes: failed
