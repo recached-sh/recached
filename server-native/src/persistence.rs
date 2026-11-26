@@ -2161,7 +2161,13 @@ impl AofWriter {
             done
         };
         self.shared.lead();
-        done.wait().await?;
+        if let Err(error) = done.wait().await {
+            // The file is not what the mode says (the truncation, or the
+            // FORMAT after it, failed): nothing more is written as the
+            // format's until a checkpoint succeeds (review C, R3-2).
+            self.shared.lock().mode = AofFileMode::Legacy;
+            return Err(error);
+        }
         info!("AOF truncated after snapshot save");
         Ok(())
     }
@@ -2334,6 +2340,14 @@ pub(crate) async fn start_expiry_log(
     aof.set_file_mode(replayed.mode);
     if starts_as_primary {
         aof.begin_expiry_log().await?;
+    } else {
+        // A replica leaves the format from its first moment: until a full
+        // synchronization from a primary that logs its expirations
+        // checkpoints the file, its sweeper removes keys silently, and a
+        // record after such a removal must not be replayed timelessly
+        // (6O-H review C, R3-1: an acknowledged write after a promotion
+        // was lost).
+        aof.leave_expiry_log();
     }
     for frame in &replayed.discarded {
         aof.append(frame).await?;

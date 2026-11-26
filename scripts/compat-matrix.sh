@@ -413,7 +413,7 @@ fi
 # records are pushes, not the format's arrays, so the new server replays them
 # by the old server's rules: the value it served ("new", permanent), not the
 # APPEND merged onto the expired entry ("oldnew", then gone).
-if grep -aq 'RECACHED-CHECKPOINT' "$RUN_DIR/aof-down/appendonly.aof"; then
+if grep -aq '17005593296757587969' "$RUN_DIR/aof-down/appendonly.aof"; then
   ok "the new server's SAVE began the AOF in the expiry-log format, and $OLD_REF started on it"
   echo "aof format new->old ok" >>"$SUMMARY"
 else
