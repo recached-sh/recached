@@ -1,0 +1,27 @@
+[2m2026-11-26T09:39:56.046571Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 1 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-26T09:39:56.046588Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-26T09:39:56.046593Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-26T09:39:56.046595Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-26T09:39:56.046597Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-26T09:39:56.046598Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 47017 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-26T09:39:56.046606Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 47017 to untrusted clients.
+[2m2026-11-26T09:39:56.046773Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m No snapshot at "/tmp/h-lag-base-jq4hface/r/dump.rdb", starting fresh
+[2m2026-11-26T09:39:56.046983Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m AOF enabled: "/tmp/h-lag-base-jq4hface/r/append.aof" (sync=no, coalesce=on, fanout=inline)
+[2m2026-11-26T09:39:56.046988Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+[2m2026-11-26T09:39:56.046990Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Max connections: 1024
+[2m2026-11-26T09:39:56.046994Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Replication to the primary is PLAINTEXT — the password and the entire keyspace cross the network unencrypted, and the primary's identity is not verified. Set RECACHED_REPL_TLS_CA, or keep replication on a private network.
+[2m2026-11-26T09:39:56.046996Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Replication server ENABLED on port 37887 WITHOUT a password, on loopback only. It serves the entire keyspace to whoever connects — set RECACHED_REPL_PASSWORD before binding any other interface.
+[2m2026-11-26T09:39:56.047014Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication carries DEDUP state: a promoted replica answers retried writes it already applied with +DUP. Replicas must run 0.6 or later.
+[2m2026-11-26T09:39:56.047016Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication buffers: backlog=16777216 bytes, per-replica queue=8388608 bytes / 65536 frames (derived from the byte budget)
+[2m2026-11-26T09:39:56.047107Z[0m [32m INFO[0m [2mrecached_server::server_state[0m[2m:[0m Restored 0 dedup high-water mark(s)
+[2m2026-11-26T09:39:56.047110Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Autosave disabled (RECACHED_SAVE=0 or RECACHED_SAVE_INTERVAL=0). Use SAVE or BGSAVE manually.
+[2m2026-11-26T09:39:56.047130Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Running as replica — writes are rejected until manually promoted with REPLICAOF NO ONE
+[2m2026-11-26T09:39:56.047255Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m TCP server listening on 127.0.0.1:56241 (1 accept loop(s))
+[2m2026-11-26T09:39:56.047266Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m WebSocket server listening on 127.0.0.1:47017
+[2m2026-11-26T09:39:56.047326Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replication server listening on 127.0.0.1:37887 (plaintext)
+[2m2026-11-26T09:39:56.047341Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:40893
+[2m2026-11-26T09:39:56.047724Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (0 entries, 0 DEDUP client(s))
+[2m2026-11-26T09:40:16.260048Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: early eof
+[2m2026-11-26T09:40:18.260934Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:40893
+[2m2026-11-26T09:40:18.280146Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (13073 entries, 0 DEDUP client(s))
+[2m2026-11-26T09:40:30.109214Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: early eof

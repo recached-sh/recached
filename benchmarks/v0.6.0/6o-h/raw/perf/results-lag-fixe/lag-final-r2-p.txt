@@ -1,0 +1,71 @@
+[2m2026-11-26T09:42:12.494900Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 1 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-26T09:42:12.494914Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-26T09:42:12.494917Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-26T09:42:12.494919Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-26T09:42:12.494921Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-26T09:42:12.494922Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 53633 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-26T09:42:12.494929Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 53633 to untrusted clients.
+[2m2026-11-26T09:42:12.495101Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m No snapshot at "/tmp/h-lag-final-6u8jih6i/p/dump.rdb", starting fresh
+[2m2026-11-26T09:42:12.495112Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+[2m2026-11-26T09:42:12.495113Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Max connections: 1024
+[2m2026-11-26T09:42:12.495118Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Replication server ENABLED on port 42803 WITHOUT a password, on loopback only. It serves the entire keyspace to whoever connects — set RECACHED_REPL_PASSWORD before binding any other interface.
+[2m2026-11-26T09:42:12.495142Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication carries DEDUP state: a promoted replica answers retried writes it already applied with +DUP. Replicas must run 0.6 or later.
+[2m2026-11-26T09:42:12.495144Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication buffers: backlog=16777216 bytes, per-replica queue=8388608 bytes / 65536 frames (derived from the byte budget)
+[2m2026-11-26T09:42:12.495170Z[0m [32m INFO[0m [2mrecached_server::server_state[0m[2m:[0m Restored 0 dedup high-water mark(s)
+[2m2026-11-26T09:42:12.495173Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Autosave disabled (RECACHED_SAVE=0 or RECACHED_SAVE_INTERVAL=0). Use SAVE or BGSAVE manually.
+[2m2026-11-26T09:42:12.495224Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replication server listening on 127.0.0.1:42803 (plaintext)
+[2m2026-11-26T09:42:12.495367Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m TCP server listening on 127.0.0.1:53473 (1 accept loop(s))
+[2m2026-11-26T09:42:12.495382Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m WebSocket server listening on 127.0.0.1:53633
+[2m2026-11-26T09:42:12.505943Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:48918
+[2m2026-11-26T09:42:23.100796Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-26T09:42:23.102946Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:48918 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-26T09:42:34.744271Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:59564
+[2m2026-11-26T09:42:42.610420Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610450Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610459Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610470Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610476Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610484Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610498Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610505Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610513Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610521Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610528Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610541Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610551Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610558Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610565Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610572Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610579Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610585Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610592Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610609Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610617Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610625Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610632Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610638Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610645Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610653Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610659Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610669Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610677Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610691Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610700Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610708Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610716Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610723Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610731Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610743Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610750Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610756Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610763Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610781Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610788Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610795Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610803Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610809Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610816Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610824Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610830Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610837Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)
+[2m2026-11-26T09:42:42.610845Z[0m [33m WARN[0m [2mrecached_server::connection[0m[2m:[0m TCP read error: Connection reset by peer (os error 104)

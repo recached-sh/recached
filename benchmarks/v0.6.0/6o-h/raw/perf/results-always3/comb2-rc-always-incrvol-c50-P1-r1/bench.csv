@@ -1,0 +1,2 @@
+"test","rps","avg_latency_ms","min_latency_ms","p50_latency_ms","p95_latency_ms","p99_latency_ms","max_latency_ms"
+"INCR counter:__rand_int__","347.99","143.218","49.760","149.887","183.295","366.847","1950.719"

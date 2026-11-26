@@ -1,0 +1,2 @@
+inline exit=101 test result: FAILED. 786 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1300.11s
+coalesced exit=101 test result: FAILED. 786 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1377.58s

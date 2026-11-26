@@ -1,0 +1,95 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.67s
+     Running unittests src/main.rs (target/debug/deps/recached_server-13106527e3828413)
+
+running 21 tests
+test tests::expiry_replay_6of::a_counter_that_restarted_an_expired_key_replays_as_permanent ... ok
+test tests::expiry_replay_6of::guard_a_counter_then_rename_replays ... ok
+test tests::expiry_replay_6of::a_counter_replayed_before_its_deadline_keeps_that_exact_deadline ... ok
+test tests::expiry_replay_6of::guard_incr_then_extend_replayed_between_its_deadlines ... ok
+test tests::expiry_replay_6of::guard_incr_then_persist_replayed_after_the_old_deadline ... ok
+test tests::expiry_replay_6of::only_overflowing_deadlines_are_clamped ... ok
+test tests::expiry_replay_6of::deadlines_past_i64_max_are_refused_as_redis_refuses_them ... ok
+test tests::expiry_replay_6of::records_with_a_deadline_past_i64_max_written_before_6of_replay ... ok
+test tests::expiry_replay_6of::guard_sliding_window_replayed_between_its_deadlines ... ok
+test tests::expiry_replay_6of::reproduce_a_client_set_keepttl_replayed_after_its_deadline ... FAILED
+test tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_always ... FAILED
+test tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_everysec ... FAILED
+test tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_no ... FAILED
+test tests::expiry_replay_6of::reproduce_incr_then_expire_once_replayed_after_the_window ... FAILED
+test tests::expiry_replay_6of::reproduce_lset_of_a_volatile_list_replayed_after_its_deadline ... FAILED
+test tests::expiry_replay_6of::reproduce_partial_updates_replayed_after_the_deadline ... FAILED
+test tests::expiry_replay_6of::the_largest_accepted_deadlines_replay ... ok
+test tests::expiry_replay_6of::a_full_resync_after_the_deadline_does_not_keep_the_counter ... ok
+test tests::expiry_replay_6of::a_replica_applying_a_counter_before_its_deadline_keeps_that_deadline ... ok
+test tests::expiry_replay_6of::guard_a_replica_applying_incr_then_persist_after_the_old_deadline ... ok
+test tests::expiry_replay_6of::reproduce_a_replica_applying_a_counter_after_its_deadline ... FAILED
+
+failures:
+
+---- tests::expiry_replay_6of::reproduce_a_client_set_keepttl_replayed_after_its_deadline stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_a_client_set_keepttl_replayed_after_its_deadline' (685121) panicked at server-native/src/tests/expiry_replay_6of.rs:271:5:
+assertion `left == right` failed
+  left: (BulkString(Some([98])), Integer(-1))
+ right: (BulkString(None), Integer(-2))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_always stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_always' (685125) panicked at server-native/src/tests/expiry_replay_6of.rs:211:5:
+assertion `left == right` failed: an expiring counter replayed after its deadline came back
+  left: (BulkString(Some([55])), Integer(-1))
+ right: (BulkString(None), Integer(-2))
+
+---- tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_everysec stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_everysec' (685134) panicked at server-native/src/tests/expiry_replay_6of.rs:211:5:
+assertion `left == right` failed: an expiring counter replayed after its deadline came back
+  left: (BulkString(Some([55])), Integer(-1))
+ right: (BulkString(None), Integer(-2))
+
+---- tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_no stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_no' (685140) panicked at server-native/src/tests/expiry_replay_6of.rs:211:5:
+assertion `left == right` failed: an expiring counter replayed after its deadline came back
+  left: (BulkString(Some([55])), Integer(-1))
+ right: (BulkString(None), Integer(-2))
+
+---- tests::expiry_replay_6of::reproduce_incr_then_expire_once_replayed_after_the_window stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_incr_then_expire_once_replayed_after_the_window' (685151) panicked at server-native/src/tests/expiry_replay_6of.rs:251:5:
+assertion `left == right` failed
+  left: BulkString(Some([50]))
+ right: BulkString(None)
+
+---- tests::expiry_replay_6of::reproduce_lset_of_a_volatile_list_replayed_after_its_deadline stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_lset_of_a_volatile_list_replayed_after_its_deadline' (685159) panicked at server-native/src/tests/expiry_replay_6of.rs:365:5:
+replay refused: Some(Custom { kind: InvalidData, error: "AOF command failed at offset 89: ERR no such key" })
+
+---- tests::expiry_replay_6of::reproduce_partial_updates_replayed_after_the_deadline stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_partial_updates_replayed_after_the_deadline' (685164) panicked at server-native/src/tests/expiry_replay_6of.rs:343:5:
+resurrected: ["6of:delta:s", "6of:delta:h", "6of:delta:l"]
+
+---- tests::expiry_replay_6of::reproduce_a_replica_applying_a_counter_after_its_deadline stdout ----
+
+thread 'tests::expiry_replay_6of::reproduce_a_replica_applying_a_counter_after_its_deadline' (685146) panicked at server-native/src/tests/expiry_replay_6of.rs:291:5:
+assertion `left == right` failed
+  left: (BulkString(Some([51])), Integer(-1))
+ right: (BulkString(None), Integer(-2))
+
+
+failures:
+    tests::expiry_replay_6of::reproduce_a_client_set_keepttl_replayed_after_its_deadline
+    tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_always
+    tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_everysec
+    tests::expiry_replay_6of::reproduce_a_counter_replayed_after_its_deadline_aof_no
+    tests::expiry_replay_6of::reproduce_a_replica_applying_a_counter_after_its_deadline
+    tests::expiry_replay_6of::reproduce_incr_then_expire_once_replayed_after_the_window
+    tests::expiry_replay_6of::reproduce_lset_of_a_volatile_list_replayed_after_its_deadline
+    tests::expiry_replay_6of::reproduce_partial_updates_replayed_after_the_deadline
+
+test result: FAILED. 13 passed; 8 failed; 0 ignored; 0 measured; 739 filtered out; finished in 0.08s
+
+error: test failed, to rerun pass `-p recached --bin recached-server`

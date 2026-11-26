@@ -1,0 +1,10 @@
+{"exp": "replay-legacy-file", "restart_s": 3.711, "aof_bytes": 45000000, "keys": 632136, "name": "base", "rep": 1}
+{"exp": "replay-legacy-file", "restart_s": 2.507, "aof_bytes": 45000000, "keys": 632136, "name": "final", "rep": 1}
+{"exp": "replay-legacy-file", "restart_s": 3.845, "aof_bytes": 45000000, "keys": 632136, "name": "final", "rep": 2}
+{"exp": "replay-legacy-file", "restart_s": 3.046, "aof_bytes": 45000000, "keys": 632136, "name": "base", "rep": 2}
+{"exp": "replay-legacy-file", "restart_s": 3.955, "aof_bytes": 45000000, "keys": 632136, "name": "base", "rep": 3}
+{"exp": "replay-legacy-file", "restart_s": 2.435, "aof_bytes": 45000000, "keys": 632136, "name": "final", "rep": 3}
+{"exp": "replay-legacy-file", "restart_s": 3.149, "aof_bytes": 45000000, "keys": 632136, "name": "final", "rep": 4}
+{"exp": "replay-legacy-file", "restart_s": 2.628, "aof_bytes": 45000000, "keys": 632136, "name": "base", "rep": 4}
+{"exp": "replay-legacy-file", "restart_s": 3.271, "aof_bytes": 45000000, "keys": 632136, "name": "base", "rep": 5}
+{"exp": "replay-legacy-file", "restart_s": 3.854, "aof_bytes": 45000000, "keys": 632136, "name": "final", "rep": 5}

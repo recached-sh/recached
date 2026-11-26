@@ -1,0 +1,67 @@
+# marker_compat.py, 2026-11-26T03:58:58Z, kernel 7.3.4-300.fc45.x86_64
+# v0.4.0 sha256 0e365b43f0d8fa8715c2150b0553feb4f014dcce37d4ca5fcc4aed48bc4d8562
+# v0.5.1 sha256 426f96d85b39d107616e2bf39b921c0c0c7f9fb1aefe7009be0bdd67aed32100
+# v0.5.2 sha256 b20365ec9aa7cad8c77831718ccf36a480cfc5652c510004a680f8ae04579d2b
+# 6of-410235b sha256 d8d7781067b13ee1fa20b3c17d1fc750835a8f6724c31fca683affec4d7d8e0b
+# dev-f9a364d sha256 65cf742f6ac2acf67849e800d151d31583ccadfadf314eb997bb6b315b895c17
+ok    v0.4.0     A1 every control kind replays as a no-op         up=True got=['1', '2', '5'] dbsize=3 keys=['a', 'b', 'n'] pttl=3599912 
+ok    v0.4.0     A1b appends after markers; replays after SIGKILL got=['1', '2', '3', '5']
+ok    v0.4.0     A1c SAVE: checkpoint id 1, markers truncated     save=OK ck=1 aof_bytes=0
+ok    v0.4.0     A2 replay starts after the snapshot's own marker ck=1 got=['s', None, 'y'] 
+ok    v0.4.0     A3 torn marker tail handled as a torn data record marker: up=True got=1 cut=False; control data record: cut=False
+ok    v0.4.0     A3b torn head marker handled as a torn data record marker: up=True dbsize=0 cut=False; control: cut=False
+ok    v0.4.0     A4 ids up to u64::MAX accepted                   up=True got=1
+ok    v0.4.0     A5 id past u64::MAX is refused (boundary)        started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/v0.4.0-a5/appendonly.aof: AOF
+ok    v0.4.0     A5b non-numeric id is refused (boundary)         started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/v0.4.0-a5b/appendonly.aof: AO
+ok    v0.4.0     A5c three-part record is refused (boundary)      started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/v0.4.0-a5c/appendonly.aof: AO
+ok    v0.4.0     A6 array records replay; its own appends are pushes up=True got=['1x', '2'] appended=b'>3\r\n$3\r\nSET\r'
+ok    v0.4.0     B1 reserved-key DEL removes a user key of that name up=True got=None (None = user data lost: candidate B unsafe)
+ok    v0.5.1     A1 every control kind replays as a no-op         up=True got=['1', '2', '5'] dbsize=3 keys=['a', 'b', 'n'] pttl=3599948 
+ok    v0.5.1     A1b appends after markers; replays after SIGKILL got=['1', '2', '3', '5']
+ok    v0.5.1     A1c SAVE: checkpoint id 1, markers truncated     save=OK ck=1 aof_bytes=0
+ok    v0.5.1     A2 replay starts after the snapshot's own marker ck=1 got=['s', None, 'y'] 
+ok    v0.5.1     A3 torn marker tail handled as a torn data record marker: up=True got=1 cut=True; control data record: cut=True
+ok    v0.5.1     A3b torn head marker handled as a torn data record marker: up=True dbsize=0 cut=True; control: cut=True
+ok    v0.5.1     A4 ids up to u64::MAX accepted                   up=True got=1
+ok    v0.5.1     A5 id past u64::MAX is refused (boundary)        started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/v0.5.1-a5/appendonly.aof: AOF
+ok    v0.5.1     A5b non-numeric id is refused (boundary)         started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/v0.5.1-a5b/appendonly.aof: AO
+ok    v0.5.1     A5c three-part record is refused (boundary)      started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/v0.5.1-a5c/appendonly.aof: AO
+ok    v0.5.1     A6 array records replay; its own appends are pushes up=True got=['1x', '2'] appended=b'>3\r\n$3\r\nSET\r'
+ok    v0.5.1     B1 reserved-key DEL removes a user key of that name up=True got=None (None = user data lost: candidate B unsafe)
+ok    v0.5.2     A1 every control kind replays as a no-op         up=True got=['1', '2', '5'] dbsize=3 keys=['a', 'b', 'n'] pttl=3599948 
+ok    v0.5.2     A1b appends after markers; replays after SIGKILL got=['1', '2', '3', '5']
+ok    v0.5.2     A1c SAVE: checkpoint id 1, markers truncated     save=OK ck=1 aof_bytes=0
+ok    v0.5.2     A2 replay starts after the snapshot's own marker ck=1 got=['s', None, 'y'] 
+ok    v0.5.2     A3 torn marker tail handled as a torn data record marker: up=True got=1 cut=True; control data record: cut=True
+ok    v0.5.2     A3b torn head marker handled as a torn data record marker: up=True dbsize=0 cut=True; control: cut=True
+ok    v0.5.2     A4 ids up to u64::MAX accepted                   up=True got=1
+ok    v0.5.2     A5 id past u64::MAX is refused (boundary)        started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/v0.5.2-a5/appendonly.aof: AOF
+ok    v0.5.2     A5b non-numeric id is refused (boundary)         started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/v0.5.2-a5b/appendonly.aof: AO
+ok    v0.5.2     A5c three-part record is refused (boundary)      started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/v0.5.2-a5c/appendonly.aof: AO
+ok    v0.5.2     A6 array records replay; its own appends are pushes up=True got=['1x', '2'] appended=b'>3\r\n$3\r\nSET\r'
+ok    v0.5.2     B1 reserved-key DEL removes a user key of that name up=True got=None (None = user data lost: candidate B unsafe)
+ok    6of-410235b A1 every control kind replays as a no-op         up=True got=['1', '2', '5'] dbsize=3 keys=['a', 'b', 'n'] pttl=3599949 
+ok    6of-410235b A1b appends after markers; replays after SIGKILL got=['1', '2', '3', '5']
+ok    6of-410235b A1c SAVE: checkpoint id 1, markers truncated     save=OK ck=1 aof_bytes=0
+ok    6of-410235b A2 replay starts after the snapshot's own marker ck=1 got=['s', None, 'y'] 
+ok    6of-410235b A3 torn marker tail handled as a torn data record marker: up=True got=1 cut=True; control data record: cut=True
+ok    6of-410235b A3b torn head marker handled as a torn data record marker: up=True dbsize=0 cut=True; control: cut=True
+ok    6of-410235b A4 ids up to u64::MAX accepted                   up=True got=1
+ok    6of-410235b A5 id past u64::MAX is refused (boundary)        started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/6of-410235b-a5/appendonly.aof
+ok    6of-410235b A5b non-numeric id is refused (boundary)         started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/6of-410235b-a5b/appendonly.ao
+ok    6of-410235b A5c three-part record is refused (boundary)      started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/6of-410235b-a5c/appendonly.ao
+ok    6of-410235b A6 array records replay; its own appends are pushes up=True got=['1x', '2'] appended=b'>3\r\n$3\r\nSET\r'
+ok    6of-410235b B1 reserved-key DEL removes a user key of that name up=True got=None (None = user data lost: candidate B unsafe)
+ok    dev-f9a364d A1 every control kind replays as a no-op         up=True got=['1', '2', '5'] dbsize=3 keys=['a', 'b', 'n'] pttl=3599948 
+ok    dev-f9a364d A1b appends after markers; replays after SIGKILL got=['1', '2', '3', '5']
+ok    dev-f9a364d A1c SAVE: checkpoint id 1, markers truncated     save=OK ck=1 aof_bytes=0
+ok    dev-f9a364d A2 replay starts after the snapshot's own marker ck=1 got=['s', None, 'y'] 
+ok    dev-f9a364d A3 torn marker tail handled as a torn data record marker: up=True got=1 cut=True; control data record: cut=True
+ok    dev-f9a364d A3b torn head marker handled as a torn data record marker: up=True dbsize=0 cut=True; control: cut=True
+ok    dev-f9a364d A4 ids up to u64::MAX accepted                   up=True got=1
+ok    dev-f9a364d A5 id past u64::MAX is refused (boundary)        started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/dev-f9a364d-a5/appendonly.aof
+ok    dev-f9a364d A5b non-numeric id is refused (boundary)         started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/dev-f9a364d-a5b/appendonly.ao
+ok    dev-f9a364d A5c three-part record is refused (boundary)      started=False Error: Custom { kind: InvalidData, error: "failed to replay AOF /tmp/rc6oh-marker-u3rnbhde/dev-f9a364d-a5c/appendonly.ao
+ok    dev-f9a364d A6 array records replay; its own appends are pushes up=True got=['1x', '2'] appended=b'>3\r\n$3\r\nSET\r'
+ok    dev-f9a364d B1 reserved-key DEL removes a user key of that name up=True got=None (None = user data lost: candidate B unsafe)
+60/60 checks as expected

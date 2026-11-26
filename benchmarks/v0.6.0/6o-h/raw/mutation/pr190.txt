@@ -1,0 +1,6 @@
+# #190 read-ahead (fix/v0.6o-h-replica-checkpoint-readahead), run by hand:
+# mutant: `reading_ahead` returns `work.await` at once (no read-ahead)
+# test:   a_replica_reads_ahead_while_its_full_sync_checkpoint_runs
+5268c81 (256 KiB queue, 3 s delay, 16 MiB):  killed   (the replica never caught up within 20 s)
+9a47d1e (1 MiB queue, 5 s delay, 24 MiB paced): killed   (queue_disconnects left: 1, right: 0)
+unmutated 9a47d1e: passes locally (5.5 s) and under CI's command with --include-ignored (809 passed)
