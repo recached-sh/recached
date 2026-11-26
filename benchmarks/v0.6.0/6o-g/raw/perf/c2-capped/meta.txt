@@ -1,0 +1,6 @@
+host 7.3.4-300.fc45.x86_64 6 cpus; load 1.47 2.26 2.59; governors       6 performance 
+base 9fa02bfcb2deee0243532ec8ab8333e7fa58f997b1bfcf1632647d7233b7db4c size=10363584
+g1 a4190741f886192c237bd48c4f9df903f69ccb5fbb75d7c739a893cb561723e7 size=10424544
+gcap 65cf742f6ac2acf67849e800d151d31583ccadfadf314eb997bb6b315b895c17 size=10425632
+txbench 974b161fe015aea1992ef1908f98f15f1349d448a46eb83e034dcc3ecbaa363b
+reps=5 secs=20 max_load=3.0 cells=1:set-set:unrelated:50:4::RECACHED_MAX_KEYS=200000,RECACHED_EVICTION=allkeys-lru 3:set-set:unrelated:24:4:READERS=8:RECACHED_MAX_KEYS=200000,RECACHED_EVICTION=allkeys-lru 3:wide20:unrelated:16:4:READERS=8:RECACHED_MAX_KEYS=200000,RECACHED_EVICTION=allkeys-lru 1:set-set:unrelated:50:4::RECACHED_MAX_KEYS=90000,RECACHED_EVICTION=allkeys-lru 3:set-set:unrelated:24:4:READERS=8:RECACHED_MAX_KEYS=90000,RECACHED_EVICTION=allkeys-lru 3:wide20:unrelated:16:4:READERS=8:RECACHED_MAX_KEYS=90000,RECACHED_EVICTION=allkeys-lru 
