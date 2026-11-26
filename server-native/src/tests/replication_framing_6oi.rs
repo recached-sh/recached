@@ -301,12 +301,13 @@ impl FakePrimary {
     }
 }
 
+/// Best effort: a replica that refused an earlier frame may have closed the
+/// link already, which is what the tests then check.
 async fn send(sock: &mut TcpStream, offset: u64, bytes: &[u8]) {
-    sock.write_all(&offset.to_le_bytes()).await.unwrap();
-    sock.write_all(&(bytes.len() as u32).to_le_bytes())
-        .await
-        .unwrap();
-    sock.write_all(bytes).await.unwrap();
+    let mut out = offset.to_le_bytes().to_vec();
+    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(bytes);
+    let _ = sock.write_all(&out).await;
 }
 
 async fn send_header(sock: &mut TcpStream, count: u32, first: u64, bytes: u64) {
@@ -315,7 +316,7 @@ async fn send_header(sock: &mut TcpStream, count: u32, first: u64, bytes: u64) {
         count,
         bytes,
     });
-    sock.write_all(&header).await.unwrap();
+    let _ = sock.write_all(&header).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -413,6 +414,11 @@ async fn malformed_groups_force_a_full_synchronization() {
             None,
         ),
         (
+            "a group of more frames than the bound",
+            vec![(Some((REPL_GROUP_MAX_FRAMES + 1, 11, len)), 11, a.clone())],
+            None,
+        ),
+        (
             "a group past the bound",
             vec![(Some((2, 11, REPL_GROUP_MAX_BYTES as u64)), 11, a.clone())],
             None,
@@ -434,7 +440,7 @@ async fn malformed_groups_force_a_full_synchronization() {
         let (mut sock, _, _) = fake.accept().await;
         FakePrimary::full_sync(&mut sock, 10).await;
         if let Some(raw) = raw {
-            sock.write_all(&raw).await.unwrap();
+            let _ = sock.write_all(&raw).await;
             send(&mut sock, 11, &a).await;
         }
         for (header, offset, bytes) in frames {

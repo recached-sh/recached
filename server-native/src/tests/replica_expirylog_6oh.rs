@@ -79,7 +79,7 @@ async fn a_new_replica_negotiates_the_expiry_log_with_a_new_primary() {
     let primary = node(false, true).await;
     let addr = serve_replicas(&primary).await;
     let id = advertised(addr).await;
-    assert!(id.ends_with(";caps=dedup1,expirylog1"), "{id}");
+    assert!(id.ends_with(";caps=dedup1,expirylog1,txn1"), "{id}");
     let replica = node(true, true).await;
     follow(&replica, addr);
     write(&primary, set("ng:a", "1")).await;
@@ -91,7 +91,7 @@ async fn a_new_replica_negotiates_the_expiry_log_with_a_new_primary() {
     // Without DEDUP, the capability is offered alone.
     let plain = node(false, false).await;
     let id = advertised(serve_replicas(&plain).await).await;
-    assert!(id.ends_with(";caps=expirylog1"), "{id}");
+    assert!(id.ends_with(";caps=expirylog1,txn1"), "{id}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -103,7 +103,7 @@ async fn a_primary_without_the_capability_gets_todays_replica() {
         .test_old_primary
         .store(true, Ordering::Relaxed);
     let addr = serve_replicas(&primary).await;
-    assert!(advertised(addr).await.ends_with(";caps=dedup1"));
+    assert!(advertised(addr).await.ends_with(";caps=dedup1,txn1"));
     let replica = node(true, true).await;
     follow(&replica, addr);
     // Once it follows: a snapshot would carry the expired entry, which a
