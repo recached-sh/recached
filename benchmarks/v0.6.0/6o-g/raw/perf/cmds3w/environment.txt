@@ -1,0 +1,36 @@
+date_utc: 2026-11-25T14:13:09Z
+rc_bin[g]: /home/dennispaler/recached-6og-bench/bin/rc-g sha256=155765e3d04e6bae67730ca297d3ee0bc7aedc1d794ac5f270211e1232a6387e source=47e6442 version=recached-server 0.6.0
+rc_bin[base]: /home/dennispaler/recached-6og-bench/bin/rc-base sha256=9fa02bfcb2deee0243532ec8ab8333e7fa58f997b1bfcf1632647d7233b7db4c source=25948a1b90e2ca1bc83f837b203bb2d416f8377f version=recached-server 0.6.0
+kit_sha: unknown run-6oc.sh sha256=e1faa607a960f877d05e5d61553a83f6835bea6323f7ecfa03757d9d6765a8ac
+sandboxed: no
+kernel: Linux 7.3.4-300.fc45.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Nov 11 00:15:32 UTC 2026 x86_64
+cpu: Intel(R) Core(TM) i5-9400F CPU @ 2.90GHz nproc=6
+governors:       6 performance 
+loadavg_at_start: 1.17 2.30 3.09 4/1457 584829
+pressure_at_start: load=1.17 io_psi10=0.74/0.73 mem_psi10=0.00/0.00 swap_used_mib=5344 dirty_wb_kib=1632
+memory: total=15918 used=9074 available=6844 swap_total=8191 swap_used=5344
+aof_fs: /dev/sda3 btrfs rotational=1
+perf: absent perf_event_paranoid=2 uprof=off
+cpus: server=0 bench=3-5 reps=3 req_c1_p1=500000 req_c1_p16=2000000 req_c50_p1=6000000 req_c50_p16=40000000 always_requests=50000 bench_threads=3 keyspace=100000
+req_scale: REQ_SCALE_mget=0.5 
+order: alternate=1 settle_io=8 settle_max_s=90 server_pin=0-2
+label_env: LABEL_ENV_base=RECACHED_WORKER_THREADS=3
+label_env: LABEL_ENV_g=RECACHED_WORKER_THREADS=3
+cells: base/rc-noaof-get-c50-P16 base/rc-noaof-mget-c50-P16 base/rc-everysec-set-c50-P1 g/rc-noaof-get-c50-P16 g/rc-noaof-mget-c50-P16 g/rc-everysec-set-c50-P1 
+record_cells: none freq=2999
+sysc: off cells=none
+redis-server: d6dd540017b76cebcf2c64f77713f783d66c477b4b9ff113a0e9e63d262b5d2e Redis server v=7.2.5 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=7fa7d45f1d3dc5e0
+valkey-server: 8906188654d88a2aa4a83a9fd0d10397de4fda09f778445f5d96bd1eecc5a205 Valkey server v=9.1.0 sha=00000000:1 malloc=jemalloc-5.3.0 bits=64 build=e790ed272ac294f
+redis-benchmark: 0a7bf1a9122b3370a0f809e7bc84669e38aabf648b5fdf85a464edf07c74e90b redis-benchmark 7.2.5
+rustc_of_rc_bins: unknown
+top_at_start:
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+   2651 dennisp+  39  19  980952  82228  11532 S 102.2   0.5  23:01.18 localse+
+ 562022 root      20   0       0      0      0 I  14.6   0.0   0:34.04 kworker+
+  14280 dennisp+  20   0 1448.1g 331088  49364 S   9.7   2.0  12:40.36 code
+ 318073 dennisp+  20   0  678716  66596  50044 S   4.9   0.4  19:16.22 RDD Pro+
+ 318333 dennisp+  20   0 4197240 835724 102900 S   4.9   5.1  25:49.51 Isolate+
+      1 root      20   0   37116  13292   9064 S   0.0   0.1   0:02.64 systemd
+      2 root      20   0       0      0      0 S   0.0   0.0   0:00.03 kthreadd
+loadavg_at_end: 5.41 4.64 3.94 4/1453 589133
+pressure_at_end: load=5.41 io_psi10=2.18/0.41 mem_psi10=0.00/0.00 swap_used_mib=5341 dirty_wb_kib=3576

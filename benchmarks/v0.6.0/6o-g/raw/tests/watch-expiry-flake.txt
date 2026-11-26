@@ -1,0 +1,4 @@
+watch_expiry::repeated_watch_cycles_leak_nothing, isolated, idle host, 20 runs each (2026-11-25):
+  25948a1 (base): 0/20 failed
+  47e6442 (final tip): 0/20 failed
+Failed only in full-suite runs on a loaded host (two reviewer builds or mutants running): 9c8bf04 inline+coalesced, 47e6442 inline. Pre-existing load-sensitive flake (SET PX 5 then WATCH), also recorded in 6O-F.
