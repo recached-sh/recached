@@ -123,6 +123,14 @@ pub(crate) struct ReplHub {
     /// Test-only: advertise no `expirylog`, as a primary before 6O-H.
     #[cfg(test)]
     pub(crate) test_old_primary: AtomicBool,
+    /// Test-only: milliseconds a replica's full-sync install sleeps before
+    /// its checkpoint, as a slow disk would.
+    #[cfg(test)]
+    pub(crate) test_checkpoint_delay_ms: AtomicU64,
+    /// Test-only: microseconds a replica sleeps after applying each
+    /// streamed frame, as a replica slower than its link would.
+    #[cfg(test)]
+    pub(crate) test_apply_delay_us: AtomicU64,
     /// Socket flushes by replica senders, summed over replicas (6N-C5). Each
     /// flush is one send burst, so the kernel's share of a replicated write
     /// (the socket send, and the replica's acknowledgement that answers it)
@@ -174,6 +182,27 @@ pub(crate) const REPL_SEND_DEFER_MIN_CAPACITY: usize = 4 * REPL_SEND_BATCH_FRAME
 const REPL_SEND_BUFFER_BYTES: usize = 64 * 1024;
 /// Receive buffer on a replica's stream from its primary.
 const REPL_RECV_BUFFER_BYTES: usize = 64 * 1024;
+/// How far a replica reads its primary's stream ahead of applying it while
+/// it installs a full synchronization (6O-H). The primary streams frames
+/// right after the snapshot, without waiting for the boundary; a replica
+/// that stopped reading for its checkpoint's fsyncs let them back up into
+/// the primary's per-replica queue, which overflowed and forced another
+/// full sync, and another. Bounded: past this, the replica stops reading,
+/// as it did before.
+const REPL_READ_AHEAD_MAX_BYTES: usize = 64 * 1024 * 1024;
+/// Chunks of at most [`REPL_RECV_BUFFER_BYTES`] a replica reads from its
+/// link ahead of applying them while it streams (6O-H): 64 MiB. The link is
+/// read concurrently with applying, so a replica catching up after a full
+/// synchronization holds the backlog here rather than in the primary's
+/// per-replica queue, which is 8 MiB by default and filled in well under a
+/// second at 100k expiring writes per second (a stream with one `DEL` per
+/// expired key carries about 1.45× the bytes). Together with the read-ahead
+/// above, at most 128 MiB per link. Past it, the replica stops reading, as
+/// it did before, and the primary's queue decides.
+const REPL_RECV_QUEUE_CHUNKS: usize = 1024;
+/// Frames a replica applies before yielding, so its link reader runs even
+/// when every frame applies without waiting.
+const REPL_APPLY_YIELD_FRAMES: u32 = 64;
 
 /// In-flight counters for [`UnorderedGate`], one per cache line so writers on
 /// different workers do not contend on one counter.
@@ -549,6 +578,10 @@ impl ReplHub {
             upstream_expirylog: AtomicBool::new(false),
             #[cfg(test)]
             test_old_primary: AtomicBool::new(false),
+            #[cfg(test)]
+            test_checkpoint_delay_ms: AtomicU64::new(0),
+            #[cfg(test)]
+            test_apply_delay_us: AtomicU64::new(0),
             send_flushes: AtomicU64::new(0),
             send_frames: AtomicU64::new(0),
             send_queue_peak: AtomicU64::new(0),
@@ -2192,6 +2225,9 @@ where
 
     let mut mode = [0u8; 1];
     socket.read_exact(&mut mode).await?;
+    // The primary's stream, read past the boundary while a full sync was
+    // installed: applied first, in order.
+    let mut read_ahead = Vec::new();
     if mode[0] == SYNC_MODE_REFUSED {
         let mut len = [0u8; 2];
         socket.read_exact(&mut len).await?;
@@ -2238,7 +2274,9 @@ where
             None
         };
         let count = entries.len();
-        let clients = {
+        // Installed while the primary's stream is read ahead, so the frames
+        // it sends meanwhile wait here, not in its queue to this replica.
+        let install = async {
             // `save_lock` before the barrier, the order `save` takes them:
             // the checkpoint below runs under both (6O-H).
             let _save = state.save_lock.lock().await;
@@ -2296,6 +2334,16 @@ where
                 );
             }
             counter!("recached_replica_full_resync_total").increment(1);
+            #[cfg(test)]
+            {
+                let ms = state
+                    .replicas
+                    .test_checkpoint_delay_ms
+                    .load(Ordering::Relaxed);
+                if ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                }
+            }
             // This node's own files describe the old keyspace: checkpoint
             // them to the new one, under the same barrier, before any
             // further frame is applied or acknowledged (6O-H review C, H1;
@@ -2322,8 +2370,9 @@ where
             resume.run_id = primary_run_id.clone();
             resume.offset = boundary;
             resume.expirylog = with_expirylog;
-            clients
+            Ok::<_, std::io::Error>(clients)
         };
+        let clients = reading_ahead(socket, &mut read_ahead, install).await??;
         match clients {
             Some(clients) => {
                 info!("Replica: full snapshot loaded ({count} entries, {clients} DEDUP client(s))");
@@ -2376,30 +2425,183 @@ where
     // Read through a buffer: each frame used to take three `read_exact`
     // calls on the bare socket, plus an 8-byte acknowledgement write — four
     // syscalls per replicated write, which capped how fast a replica could
-    // follow a pipelined primary. Nothing was read from the socket before
-    // this point beyond what the handshake consumed exactly, so no bytes are
-    // stranded by wrapping it here.
-    let (rd, mut wr) = tokio::io::split(socket);
-    let mut rd = tokio::io::BufReader::with_capacity(REPL_RECV_BUFFER_BYTES, rd);
-    loop {
-        let (offset, cmd_bytes) = read_repl_frame(&mut rd).await?;
-        let expected = resume.offset.saturating_add(1);
-        if offset != expected {
-            return Err(std::io::Error::new(
-                ErrorKind::InvalidData,
-                format!("replication offset gap: expected {expected}, received {offset}"),
-            ));
+    // follow a pipelined primary. Beyond what the handshake consumed
+    // exactly, the only bytes read before this point are a full sync's
+    // read-ahead, which is chained in front so no byte is stranded.
+    //
+    // The link is read concurrently with applying (6O-H): a reader fills a
+    // bounded queue of chunks while frames apply, so a replica catching up
+    // keeps the primary's queue to it drained. Both run in this task, under
+    // `select!`; the applier yields every few frames so the reader runs.
+    let (mut rd, mut wr) = tokio::io::split(socket);
+    let (chunks, received) = mpsc::channel(REPL_RECV_QUEUE_CHUNKS);
+    let reader = async move {
+        let mut buf = vec![0u8; REPL_RECV_BUFFER_BYTES];
+        loop {
+            let chunk = match rd.read(&mut buf).await {
+                Ok(0) => Err(std::io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "the primary closed the replication link",
+                )),
+                Ok(n) => Ok(buf[..n].to_vec()),
+                Err(error) => Err(error),
+            };
+            let last = chunk.is_err();
+            if chunks.send(chunk).await.is_err() || last {
+                break;
+            }
         }
-        apply_repl_frame(store, state, tx, watches, &cmd_bytes).await?;
-        resume.offset = offset;
+        // Done reading; the applier ends the link once it reaches the
+        // failure queued above.
+        std::future::pending::<()>().await;
+    };
+    let mut rd = ChunkReader::new(read_ahead, received);
+    let apply = async {
+        let mut since_yield = 0u32;
+        loop {
+            let (offset, cmd_bytes) = read_repl_frame(&mut rd).await?;
+            let expected = resume.offset.saturating_add(1);
+            if offset != expected {
+                return Err(std::io::Error::new(
+                    ErrorKind::InvalidData,
+                    format!("replication offset gap: expected {expected}, received {offset}"),
+                ));
+            }
+            apply_repl_frame(store, state, tx, watches, &cmd_bytes).await?;
+            resume.offset = offset;
+            #[cfg(test)]
+            {
+                let us = state.replicas.test_apply_delay_us.load(Ordering::Relaxed);
+                if us > 0 {
+                    tokio::time::sleep(std::time::Duration::from_micros(us)).await;
+                }
+            }
 
-        // The acknowledgement is cumulative (the primary keeps the maximum),
-        // so one per burst says as much as one per frame: acknowledge when
-        // the buffer holds no further frame, i.e. before waiting on the
-        // socket again. Lag is then reported at most one burst late.
-        if rd.buffer().is_empty() {
-            wr.write_all(&offset.to_le_bytes()).await?;
-            wr.flush().await?;
+            // The acknowledgement is cumulative (the primary keeps the
+            // maximum), so one per burst says as much as one per frame:
+            // acknowledge when nothing more has been received, i.e. before
+            // waiting on the link again. Lag is then reported at most one
+            // burst late.
+            if rd.is_drained() {
+                wr.write_all(&offset.to_le_bytes()).await?;
+                wr.flush().await?;
+            }
+            since_yield += 1;
+            if since_yield >= REPL_APPLY_YIELD_FRAMES {
+                since_yield = 0;
+                tokio::task::yield_now().await;
+            }
+        }
+    };
+    tokio::select! {
+        result = apply => result,
+        () = reader => unreachable!("the link reader never completes"),
+    }
+}
+
+/// The replication stream as received by a replica's link reader: what a
+/// full sync read ahead, then the chunks the reader queued, in order. Each
+/// chunk is dropped once consumed.
+struct ChunkReader {
+    chunk: Vec<u8>,
+    at: usize,
+    received: mpsc::Receiver<std::io::Result<Vec<u8>>>,
+}
+
+impl ChunkReader {
+    fn new(read_ahead: Vec<u8>, received: mpsc::Receiver<std::io::Result<Vec<u8>>>) -> Self {
+        ChunkReader {
+            chunk: read_ahead,
+            at: 0,
+            received,
+        }
+    }
+
+    /// Nothing received is left unread.
+    fn is_drained(&self) -> bool {
+        self.at == self.chunk.len() && self.received.is_empty()
+    }
+}
+
+impl AsyncRead for ChunkReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        out: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::task::Poll;
+        let this = &mut *self;
+        while this.at == this.chunk.len() {
+            match this.received.poll_recv(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Some(Ok(chunk))) => {
+                    this.chunk = chunk;
+                    this.at = 0;
+                }
+                Poll::Ready(Some(Err(error))) => return Poll::Ready(Err(error)),
+                // The reader queues its failure before it stops.
+                Poll::Ready(None) => {
+                    return Poll::Ready(Err(std::io::Error::new(
+                        ErrorKind::UnexpectedEof,
+                        "the replication link reader stopped",
+                    )));
+                }
+            }
+        }
+        let n = out.remaining().min(this.chunk.len() - this.at);
+        out.put_slice(&this.chunk[this.at..this.at + n]);
+        this.at += n;
+        if this.at == this.chunk.len() {
+            // Release the chunk (the read-ahead can be 64 MiB) as soon as
+            // it is consumed.
+            this.chunk = Vec::new();
+            this.at = 0;
+        }
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Runs `work` while reading `socket` into `buf`, up to
+/// [`REPL_READ_AHEAD_MAX_BYTES`] (6O-H). Raw bytes, not frames: `read` is
+/// cancel-safe, so a read that loses to `work` leaves nothing half-consumed.
+/// The link ending or failing meanwhile stops the reading; `work` still runs
+/// to completion (it leaves the files consistent), then the failure is
+/// returned and the frames read ahead are dropped: the next connection
+/// resumes from the boundary `work` recorded.
+async fn reading_ahead<S, F>(
+    socket: &mut S,
+    buf: &mut Vec<u8>,
+    work: F,
+) -> std::io::Result<F::Output>
+where
+    S: AsyncRead + Unpin,
+    F: std::future::Future,
+{
+    tokio::pin!(work);
+    let mut chunk = vec![0u8; REPL_RECV_BUFFER_BYTES];
+    loop {
+        let room = REPL_READ_AHEAD_MAX_BYTES.saturating_sub(buf.len());
+        if room == 0 {
+            return Ok((&mut work).await);
+        }
+        let room = room.min(chunk.len());
+        tokio::select! {
+            biased;
+            out = &mut work => return Ok(out),
+            read = socket.read(&mut chunk[..room]) => match read {
+                Ok(0) => {
+                    (&mut work).await;
+                    return Err(std::io::Error::new(
+                        ErrorKind::UnexpectedEof,
+                        "primary closed the link during a full synchronization",
+                    ));
+                }
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(error) => {
+                    (&mut work).await;
+                    return Err(error);
+                }
+            },
         }
     }
 }
