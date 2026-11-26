@@ -622,7 +622,11 @@ async fn a_replica_reads_ahead_while_its_full_sync_checkpoint_runs() {
     // The primary streams right after the snapshot. A replica that stopped
     // reading for its checkpoint's fsyncs let the frames back up into the
     // primary's queue to it, which overflowed: a disconnect, another full
-    // sync, another checkpoint, in a loop (6O-H native lag run).
+    // sync, another checkpoint, in a loop (6O-H native lag run). Reading
+    // ahead during the checkpoint alone was not enough on an HDD: the
+    // replica then applied that backlog without reading its link, and the
+    // queue overflowed 0.6 s later (review E, F2). The link is now read
+    // while frames apply, too.
     let dir = files("readahead");
     let primary = node(false, true).await;
     // Room for a burst, so the primary's own sender keeping up is not what
@@ -630,27 +634,52 @@ async fn a_replica_reads_ahead_while_its_full_sync_checkpoint_runs() {
     primary.state.replicas.configure_queue_bytes(1024 * 1024);
     write(&primary, set("ra:first", "1")).await;
     let replica = replica_with_files(&dir).await;
+    // The checkpoint takes 5 s, as a slow disk would, and each streamed
+    // frame 1 ms to apply: a replica slower than its link while it catches
+    // up.
     replica
         .state
         .replicas
         .test_checkpoint_delay_ms
         .store(5000, Ordering::Relaxed);
+    replica
+        .state
+        .replicas
+        .test_apply_delay_us
+        .store(1000, Ordering::Relaxed);
     follow(&replica, serve_replicas(&primary).await);
-    // Installed; the checkpoint now takes 5 s, as a slow disk would.
     wait_for(&replica.store, "ra:first", bulk("1")).await;
     // Far more than the primary's queue and both sockets' buffers hold,
     // paced (64 KiB per 2 ms) so the primary's sender keeps up with the
     // writer even on a loaded host.
     let value = "v".repeat(8 * 1024);
-    const N: usize = 3072;
-    for i in 0..N {
-        write(&primary, set(&format!("ra:{i}"), &value)).await;
-        if i % 8 == 7 {
-            tokio::time::sleep(Duration::from_millis(2)).await;
+    let paced = async |prefix: &str, n: usize| {
+        for i in 0..n {
+            write(&primary, set(&format!("{prefix}:{i}"), &value)).await;
+            if i % 8 == 7 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
         }
+    };
+    // 24 MiB during the checkpoint.
+    const N: usize = 3072;
+    paced("ra", N).await;
+    // 16 MiB more once the replica applies that backlog, about 3 s of it.
+    for _ in 0..1000 {
+        if replica.store.execute(Command::Get("ra:0".into())) == bulk(&value) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let last = format!("ra:{}", N - 1);
-    for _ in 0..2000 {
+    let applied = replica.store.key_count();
+    assert!(
+        (2..=N / 2 + 1).contains(&applied),
+        "{applied} keys: the second burst must arrive while the backlog applies"
+    );
+    const M: usize = 2048;
+    paced("rb", M).await;
+    let last = format!("rb:{}", M - 1);
+    for _ in 0..3000 {
         if replica.store.execute(Command::Get(last.clone())) == bulk(&value) {
             break;
         }
@@ -662,5 +691,5 @@ async fn a_replica_reads_ahead_while_its_full_sync_checkpoint_runs() {
         replica.store.execute(Command::Get(last.clone())) == bulk(&value),
         "the replica never caught up"
     );
-    assert_eq!(replica.store.key_count(), N + 1);
+    assert_eq!(replica.store.key_count(), N + M + 1);
 }
