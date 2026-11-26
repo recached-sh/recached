@@ -1,0 +1,163 @@
+   Compiling libc v0.2.186
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling cfg-if v1.0.4
+   Compiling shlex v1.3.0
+   Compiling find-msvc-tools v0.1.9
+   Compiling once_cell v1.21.4
+   Compiling smallvec v1.15.1
+   Compiling parking_lot_core v0.9.12
+   Compiling bytes v1.11.1
+   Compiling scopeguard v1.2.0
+   Compiling pin-project-lite v0.2.17
+   Compiling lock_api v0.4.14
+   Compiling itoa v1.0.18
+   Compiling pkg-config v0.3.34
+   Compiling getrandom v0.3.4
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling version_check v0.9.5
+   Compiling futures-core v0.3.32
+   Compiling generic-array v0.14.7
+   Compiling subtle v2.6.1
+   Compiling zerocopy v0.8.48
+   Compiling typenum v1.20.0
+   Compiling tracing-core v0.1.36
+   Compiling syn v2.0.117
+   Compiling http v1.4.0
+   Compiling aws-lc-rs v1.18.1
+   Compiling jobserver v0.1.34
+   Compiling cc v1.2.61
+   Compiling errno v0.3.14
+   Compiling signal-hook-registry v1.4.8
+   Compiling parking_lot v0.12.5
+   Compiling socket2 v0.6.3
+   Compiling mio v1.2.0
+   Compiling cmake v0.1.58
+   Compiling rand_core v0.9.5
+   Compiling zeroize v1.8.2
+   Compiling aws-lc-sys v0.45.0
+   Compiling log v0.4.29
+   Compiling futures-sink v0.3.32
+   Compiling crossbeam-utils v0.8.21
+   Compiling tokio-macros v2.7.0
+   Compiling httparse v1.10.1
+   Compiling tracing-attributes v0.1.31
+   Compiling ppv-lite86 v0.2.21
+   Compiling slab v0.4.12
+   Compiling equivalent v1.0.2
+   Compiling tokio v1.54.1
+   Compiling hashbrown v0.17.0
+   Compiling tracing v0.1.44
+   Compiling indexmap v2.14.0
+   Compiling rustls-pki-types v1.14.1
+   Compiling rand_chacha v0.9.0
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling rustversion v1.0.22
+   Compiling serde_core v1.0.228
+   Compiling digest v0.10.7
+   Compiling rand v0.9.4
+   Compiling futures-macro v0.3.32
+   Compiling http-body v1.0.1
+   Compiling autocfg v1.5.0
+   Compiling atomic-waker v1.1.2
+   Compiling untrusted v0.9.0
+   Compiling rustls v0.23.46
+   Compiling futures-task v0.3.32
+   Compiling try-lock v0.2.5
+   Compiling fnv v1.0.7
+   Compiling num-traits v0.2.19
+   Compiling want v0.3.1
+   Compiling futures-util v0.3.32
+   Compiling futures-channel v0.3.32
+   Compiling serde v1.0.228
+   Compiling crossbeam-epoch v0.9.20
+   Compiling httpdate v1.0.3
+   Compiling cpufeatures v0.2.17
+   Compiling bitflags v2.11.1
+   Compiling thiserror v2.0.18
+   Compiling zmij v1.0.21
+   Compiling raw-cpuid v11.6.0
+   Compiling rapidhash v4.4.1
+   Compiling serde_derive v1.0.228
+   Compiling thiserror-impl v2.0.18
+   Compiling tikv-jemalloc-sys v0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7
+   Compiling foldhash v0.1.5
+   Compiling openssl-probe v0.2.1
+   Compiling regex-syntax v0.8.10
+   Compiling tower-service v0.3.3
+   Compiling thiserror v1.0.69
+   Compiling serde_json v1.0.150
+   Compiling hashbrown v0.15.5
+   Compiling rustls-native-certs v0.8.3
+   Compiling quanta v0.12.6
+   Compiling regex-automata v0.4.14
+   Compiling metrics v0.24.6
+   Compiling sha1 v0.10.6
+   Compiling thiserror-impl v1.0.69
+   Compiling rand_xoshiro v0.7.0
+   Compiling lazy_static v1.5.0
+   Compiling data-encoding v2.11.0
+   Compiling hashbrown v0.14.5
+   Compiling tokio-util v0.7.18
+   Compiling sketches-ddsketch v0.3.1
+   Compiling memchr v2.8.0
+   Compiling h2 v0.4.19
+   Compiling metrics-util v0.19.1
+   Compiling dashmap v6.1.0
+   Compiling matchers v0.2.0
+   Compiling tungstenite v0.29.0
+   Compiling sharded-slab v0.1.7
+   Compiling rmp v0.8.15
+   Compiling http-body-util v0.1.3
+   Compiling tracing-log v0.2.0
+   Compiling thread_local v1.1.9
+   Compiling ipnet v2.12.0
+   Compiling nu-ansi-term v0.50.3
+   Compiling base64 v0.22.1
+   Compiling tracing-subscriber v0.3.23
+   Compiling rmp-serde v1.3.1
+   Compiling tokio-tungstenite v0.29.0
+   Compiling core-engine v0.6.0 (/home/dennispaler/Documents/OpenSource/recached-6oi-capture/core-engine)
+   Compiling sha2 v0.10.9
+   Compiling hyper v1.9.0
+   Compiling hmac v0.12.1
+   Compiling socket2 v0.5.10
+   Compiling num_cpus v1.17.0
+   Compiling hyper-util v0.1.20
+   Compiling tikv-jemallocator v0.6.1
+   Compiling rustls-webpki v0.103.16
+   Compiling tokio-rustls v0.26.4
+   Compiling hyper-rustls v0.27.9
+   Compiling metrics-exporter-prometheus v0.16.2
+   Compiling recached v0.6.0 (/home/dennispaler/Documents/OpenSource/recached-6oi-capture/server-native)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 49s
+     Running unittests src/main.rs (target/debug/deps/recached_server-13106527e3828413)
+
+running 2 tests
+test tests::transaction_framing_6oi::a_replica_reader_never_sees_part_of_an_exec ... FAILED
+test tests::transaction_framing_6oi::an_exec_cut_anywhere_in_its_records_replays_all_or_nothing ... FAILED
+
+failures:
+
+---- tests::transaction_framing_6oi::a_replica_reader_never_sees_part_of_an_exec stdout ----
+
+thread 'tests::transaction_framing_6oi::a_replica_reader_never_sees_part_of_an_exec' (1175779) panicked at server-native/src/tests/transaction_framing_6oi.rs:104:5:
+the replica's reader saw 274 part-applied state(s), e.g. Some(Array(Some([BulkString(Some([49])), BulkString(Some([48]))])))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tests::transaction_framing_6oi::an_exec_cut_anywhere_in_its_records_replays_all_or_nothing stdout ----
+
+thread 'tests::transaction_framing_6oi::an_exec_cut_anywhere_in_its_records_replays_all_or_nothing' (1175788) panicked at server-native/src/tests/transaction_framing_6oi.rs:50:5:
+34 of 68 cut(s) replayed part of the transaction, e.g. Some((159, BulkString(Some([110, 101, 119])), BulkString(Some([111, 108, 100]))))
+
+
+failures:
+    tests::transaction_framing_6oi::a_replica_reader_never_sees_part_of_an_exec
+    tests::transaction_framing_6oi::an_exec_cut_anywhere_in_its_records_replays_all_or_nothing
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 816 filtered out; finished in 0.61s
+
+error: test failed, to rerun pass `-p recached --bin recached-server`

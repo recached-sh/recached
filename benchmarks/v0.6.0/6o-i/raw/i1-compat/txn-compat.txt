@@ -1,0 +1,80 @@
+# txn_compat.py, 2026-11-26T12:07:44Z, kernel 7.3.4-300.fc45.x86_64
+# v0.4.0 sha256 0e365b43f0d8fa8715c2150b0553feb4f014dcce37d4ca5fcc4aed48bc4d8562
+# v0.5.1 sha256 426f96d85b39d107616e2bf39b921c0c0c7f9fb1aefe7009be0bdd67aed32100
+# v0.5.2 sha256 b20365ec9aa7cad8c77831718ccf36a480cfc5652c510004a680f8ae04579d2b
+# 6of-410235b sha256 d8d7781067b13ee1fa20b3c17d1fc750835a8f6724c31fca683affec4d7d8e0b
+# 6og-f9a364d sha256 65cf742f6ac2acf67849e800d151d31583ccadfadf314eb997bb6b315b895c17
+# 6oh-6068337 sha256 a3922e87125946d236c79bff621fbefe4e3c4bd21e93a3250fb032082587d941
+ok    v0.4.0         T1 complete group replays; markers are no-ops              up=True got=['new', 'new', '1'] dbsize=3 
+ok    v0.4.0         T2 incomplete tail group: what it replays                  up=True got=['new', 'old'] (['new','old'] = the prefix applied) 
+ok    v0.4.0         T2b incomplete group, member torn: replay and cut          up=True got=['new', 'old'] file=210 (torn record cut: False)
+ok    v0.4.0         T3 SAVE, write, SIGKILL, restart (downgrade procedure)     save=OK got=['new', 'new', '1'] group_markers_after_save=False
+ok    v0.4.0         T4 appends after a dangling group as a push                up=True appended=b'>3\r\n$3\r\nSET\r'
+ok    v0.4.0         T5 FORMAT expirylog only: replay mode                      up=True k=['x'] -> legacy 
+ok    v0.4.0         T5b FORMAT expirylog + txn: replay mode                    up=True k=['x'] -> legacy 
+ok    v0.4.0         T5c appends to a txn-bit file as                           up=True first_byte=b'>' ('>' = push, '*' = array)
+ok    v0.4.0         T6 replay starts after the snapshot's marker, not a group's got=['s', None, 'y', 'y'] 
+ok    v0.4.0         T7 option C, MULTI/EXEC records (rejected)                 started=False got=None AOF command failed at offset 188: ERR EXEC without MULTI" }
+ok    v0.4.0         T8 option B, one composite record (rejected)               started=False got=None AOF command failed at offset 115: ERR unknown command 'RECACHED-TXN'" }
+ok    v0.4.0         T9 malformed groups (empty, huge count)                    started=True got=['1'] 
+ok    v0.5.1         T1 complete group replays; markers are no-ops              up=True got=['new', 'new', '1'] dbsize=3 
+ok    v0.5.1         T2 incomplete tail group: what it replays                  up=True got=['new', 'old'] (['new','old'] = the prefix applied) 
+ok    v0.5.1         T2b incomplete group, member torn: replay and cut          up=True got=['new', 'old'] file=201 (torn record cut: True)
+ok    v0.5.1         T3 SAVE, write, SIGKILL, restart (downgrade procedure)     save=OK got=['new', 'new', '1'] group_markers_after_save=False
+ok    v0.5.1         T4 appends after a dangling group as a push                up=True appended=b'>3\r\n$3\r\nSET\r'
+ok    v0.5.1         T5 FORMAT expirylog only: replay mode                      up=True k=['x'] -> legacy 
+ok    v0.5.1         T5b FORMAT expirylog + txn: replay mode                    up=True k=['x'] -> legacy 
+ok    v0.5.1         T5c appends to a txn-bit file as                           up=True first_byte=b'>' ('>' = push, '*' = array)
+ok    v0.5.1         T6 replay starts after the snapshot's marker, not a group's got=['s', None, 'y', 'y'] 
+ok    v0.5.1         T7 option C, MULTI/EXEC records (rejected)                 started=False got=None AOF command failed at offset 188: ERR EXEC without MULTI" }
+ok    v0.5.1         T8 option B, one composite record (rejected)               started=False got=None AOF command failed at offset 115: ERR unknown command 'RECACHED-TXN'" }
+ok    v0.5.1         T9 malformed groups (empty, huge count)                    started=True got=['1'] 
+ok    v0.5.2         T1 complete group replays; markers are no-ops              up=True got=['new', 'new', '1'] dbsize=3 
+ok    v0.5.2         T2 incomplete tail group: what it replays                  up=True got=['new', 'old'] (['new','old'] = the prefix applied) 
+ok    v0.5.2         T2b incomplete group, member torn: replay and cut          up=True got=['new', 'old'] file=201 (torn record cut: True)
+ok    v0.5.2         T3 SAVE, write, SIGKILL, restart (downgrade procedure)     save=OK got=['new', 'new', '1'] group_markers_after_save=False
+ok    v0.5.2         T4 appends after a dangling group as a push                up=True appended=b'>3\r\n$3\r\nSET\r'
+ok    v0.5.2         T5 FORMAT expirylog only: replay mode                      up=True k=['x'] -> legacy 
+ok    v0.5.2         T5b FORMAT expirylog + txn: replay mode                    up=True k=['x'] -> legacy 
+ok    v0.5.2         T5c appends to a txn-bit file as                           up=True first_byte=b'>' ('>' = push, '*' = array)
+ok    v0.5.2         T6 replay starts after the snapshot's marker, not a group's got=['s', None, 'y', 'y'] 
+ok    v0.5.2         T7 option C, MULTI/EXEC records (rejected)                 started=False got=None AOF command failed at offset 188: ERR EXEC without MULTI" }
+ok    v0.5.2         T8 option B, one composite record (rejected)               started=False got=None AOF command failed at offset 115: ERR unknown command 'RECACHED-TXN'" }
+ok    v0.5.2         T9 malformed groups (empty, huge count)                    started=True got=['1'] 
+ok    6of-410235b    T1 complete group replays; markers are no-ops              up=True got=['new', 'new', '1'] dbsize=3 
+ok    6of-410235b    T2 incomplete tail group: what it replays                  up=True got=['new', 'old'] (['new','old'] = the prefix applied) 
+ok    6of-410235b    T2b incomplete group, member torn: replay and cut          up=True got=['new', 'old'] file=201 (torn record cut: True)
+ok    6of-410235b    T3 SAVE, write, SIGKILL, restart (downgrade procedure)     save=OK got=['new', 'new', '1'] group_markers_after_save=False
+ok    6of-410235b    T4 appends after a dangling group as a push                up=True appended=b'>3\r\n$3\r\nSET\r'
+ok    6of-410235b    T5 FORMAT expirylog only: replay mode                      up=True k=['x'] -> legacy 
+ok    6of-410235b    T5b FORMAT expirylog + txn: replay mode                    up=True k=['x'] -> legacy 
+ok    6of-410235b    T5c appends to a txn-bit file as                           up=True first_byte=b'>' ('>' = push, '*' = array)
+ok    6of-410235b    T6 replay starts after the snapshot's marker, not a group's got=['s', None, 'y', 'y'] 
+ok    6of-410235b    T7 option C, MULTI/EXEC records (rejected)                 started=False got=None AOF command failed at offset 188: ERR EXEC without MULTI" }
+ok    6of-410235b    T8 option B, one composite record (rejected)               started=False got=None AOF command failed at offset 115: ERR unknown command 'RECACHED-TXN'" }
+ok    6of-410235b    T9 malformed groups (empty, huge count)                    started=True got=['1'] 
+ok    6og-f9a364d    T1 complete group replays; markers are no-ops              up=True got=['new', 'new', '1'] dbsize=3 
+ok    6og-f9a364d    T2 incomplete tail group: what it replays                  up=True got=['new', 'old'] (['new','old'] = the prefix applied) 
+ok    6og-f9a364d    T2b incomplete group, member torn: replay and cut          up=True got=['new', 'old'] file=201 (torn record cut: True)
+ok    6og-f9a364d    T3 SAVE, write, SIGKILL, restart (downgrade procedure)     save=OK got=['new', 'new', '1'] group_markers_after_save=False
+ok    6og-f9a364d    T4 appends after a dangling group as a push                up=True appended=b'>3\r\n$3\r\nSET\r'
+ok    6og-f9a364d    T5 FORMAT expirylog only: replay mode                      up=True k=['x'] -> legacy 
+ok    6og-f9a364d    T5b FORMAT expirylog + txn: replay mode                    up=True k=['x'] -> legacy 
+ok    6og-f9a364d    T5c appends to a txn-bit file as                           up=True first_byte=b'>' ('>' = push, '*' = array)
+ok    6og-f9a364d    T6 replay starts after the snapshot's marker, not a group's got=['s', None, 'y', 'y'] 
+ok    6og-f9a364d    T7 option C, MULTI/EXEC records (rejected)                 started=False got=None AOF command failed at offset 188: ERR EXEC without MULTI" }
+ok    6og-f9a364d    T8 option B, one composite record (rejected)               started=False got=None AOF command failed at offset 115: ERR unknown command 'RECACHED-TXN'" }
+ok    6og-f9a364d    T9 malformed groups (empty, huge count)                    started=True got=['1'] 
+ok    6oh-6068337    T1 complete group replays; markers are no-ops              up=True got=['new', 'new', '1'] dbsize=3 
+ok    6oh-6068337    T2 incomplete tail group: what it replays                  up=True got=['new', 'old'] (['new','old'] = the prefix applied) 
+ok    6oh-6068337    T2b incomplete group, member torn: replay and cut          up=True got=['new', 'old'] file=201 (torn record cut: True)
+ok    6oh-6068337    T3 SAVE, write, SIGKILL, restart (downgrade procedure)     save=OK got=['new', 'new', '1'] group_markers_after_save=False
+ok    6oh-6068337    T4 appends after a dangling group as a push                up=True appended=b'>3\r\n$3\r\nSET\r'
+ok    6oh-6068337    T5 FORMAT expirylog only: replay mode                      up=True k=[None] -> timeless 
+ok    6oh-6068337    T5b FORMAT expirylog + txn: replay mode                    up=True k=['x'] -> legacy 
+ok    6oh-6068337    T5c appends to a txn-bit file as                           up=True first_byte=b'>' ('>' = push, '*' = array)
+ok    6oh-6068337    T6 replay starts after the snapshot's marker, not a group's got=['s', None, 'y', 'y'] 
+ok    6oh-6068337    T7 option C, MULTI/EXEC records (rejected)                 started=False got=None AOF command failed at offset 188: ERR EXEC without MULTI" }
+ok    6oh-6068337    T8 option B, one composite record (rejected)               started=False got=None AOF command failed at offset 115: ERR unknown command 'RECACHED-TXN'" }
+ok    6oh-6068337    T9 malformed groups (empty, huge count)                    started=True got=['1'] 
+72/72 checks as expected

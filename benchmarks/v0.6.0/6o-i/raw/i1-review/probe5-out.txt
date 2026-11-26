@@ -1,0 +1,3 @@
+rc-v0.4.0 bytes 784 errs [('INCRBYFLOAT', "ERR:ERR unknown command 'INCRBYFLOAT'")] -> 6O-I started True after= 1 
+rc-v0.5.2 bytes 784 errs [('INCRBYFLOAT', "ERR:ERR unknown command 'INCRBYFLOAT'")] -> 6O-I started True after= 1 
+rc-6og-f9a364d bytes 784 errs [('INCRBYFLOAT', "ERR:ERR unknown command 'INCRBYFLOAT'")] -> 6O-I started True after= 1 
