@@ -1,0 +1,332 @@
+//! Review B probes (scratch, not part of the PR).
+
+use super::aof_format_6oh::{Dir, array, boot, push};
+use super::mset_atomicity::Pipe;
+use super::*;
+use core_engine::resp::Value;
+use core_engine::store::KeyValueStore;
+
+fn ctl(record: Control) -> Vec<u8> {
+    let mut frame = control_frame(record);
+    frame[0] = b'*';
+    frame
+}
+
+fn bulk(s: &str) -> Value {
+    Value::BulkString(Some(s.as_bytes().to_vec()))
+}
+
+async fn replay_bytes(bytes: &[u8]) -> (std::io::Result<(KeyValueStore, ReplayedAof)>, Vec<u8>) {
+    let dir = Dir::new("rb_replay");
+    std::fs::write(dir.aof(), bytes).unwrap();
+    let store = KeyValueStore::new();
+    let result = replay_aof_format(&store, &dir.aof(), 0, true).await;
+    let after = std::fs::read(dir.aof()).unwrap();
+    (result.map(|r| (store, r)), after)
+}
+
+/// P1: files every older binary wrote with a broad command mix replay here
+/// (no nested-record refusal of a legitimate file).
+#[tokio::test]
+async fn rb_older_binaries_files_replay() {
+    let dir = std::path::Path::new("/home/dennispaler/recached-6oi-bench/review-b/probe/old-files");
+    let mut n = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let bytes = std::fs::read(&path).unwrap();
+        let (result, after) = replay_bytes(&bytes).await;
+        let (store, _) = result.unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(after, bytes, "{}", path.display());
+        assert!(
+            matches!(store.execute(Command::Get("t1".into())), Value::BulkString(Some(_))),
+            "{}",
+            path.display()
+        );
+        n += 1;
+    }
+    assert_eq!(n, 6);
+}
+
+/// P2: a concurrent workload of transactions of 2..=6 records and single
+/// writes, cut at every byte: each transaction all or nothing, and the
+/// recovered file then replays to the same state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rb_concurrent_workload_cut_at_every_byte() {
+    let dir = Dir::new("rb_conc");
+    let node = boot(&dir).await;
+    let before = std::fs::read(dir.aof()).unwrap().len();
+    let clients = 6usize;
+    let per = 6usize;
+    let mut tasks = Vec::new();
+    for c in 0..clients {
+        let mut p = Pipe::tcp(&node);
+        tasks.push(tokio::spawn(async move {
+            for t in 0..per {
+                let id = c * 100 + t;
+                let k = 2 + (id % 5);
+                // pipelined MULTI ... EXEC
+                p.send(&["MULTI"]).await;
+                for j in 0..k {
+                    p.send(&["SET", &format!("tx:{id}:{j}"), &id.to_string()]).await;
+                }
+                p.send(&["EXEC"]).await;
+                p.send(&["SET", &format!("single:{id}"), "1"]).await;
+                for _ in 0..(k + 3) {
+                    p.reply().await;
+                }
+            }
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap();
+    }
+    let full = std::fs::read(dir.aof()).unwrap();
+    drop(node);
+    let mut groups = 0;
+    {
+        let mut at = 0;
+        while at < full.len() {
+            let (v, used) = Value::parse(&full[at..]).unwrap();
+            if let Value::Array(Some(items)) = &v
+                && items.len() == 2
+                && let Value::BulkString(Some(id)) = &items[1]
+                && std::str::from_utf8(id).unwrap().parse::<u64>().ok().and_then(Control::of)
+                    .is_some_and(|c| matches!(c, Control::TxnBegin { .. }))
+            {
+                groups += 1;
+            }
+            at += used;
+        }
+    }
+    assert_eq!(groups, clients * per, "every EXEC grouped");
+    let mut bad = Vec::new();
+    for cut in before..=full.len() {
+        let (result, after) = replay_bytes(&full[..cut]).await;
+        let (store, _) = result.unwrap_or_else(|e| panic!("cut {cut}: {e}"));
+        for c in 0..clients {
+            for t in 0..per {
+                let id = c * 100 + t;
+                let k = 2 + (id % 5);
+                let present = (0..k)
+                    .filter(|j| {
+                        store.execute(Command::Get(format!("tx:{id}:{j}"))) == bulk(&id.to_string())
+                    })
+                    .count();
+                if present != 0 && present != k {
+                    bad.push((cut, id, present, k));
+                }
+            }
+        }
+        // The cut file replays the same, untouched.
+        let (again, after2) = replay_bytes(&after).await;
+        again.unwrap_or_else(|e| panic!("cut {cut} re-replay: {e}"));
+        assert_eq!(after2, after, "cut {cut}: stable after the cut");
+    }
+    assert!(bad.is_empty(), "{} partial: {:?}", bad.len(), &bad[..bad.len().min(5)]);
+}
+
+/// P3: several groups in one batch, the write torn at every byte of the
+/// batch: the file keeps only whole groups (and whole singles outside
+/// groups), and the next append follows a complete record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rb_multi_group_batch_torn_at_every_byte() {
+    let g = |k: &str| {
+        [
+            push(&["SET", &format!("{k}:a"), "1"]),
+            push(&["SET", &format!("{k}:b"), "1"]),
+            push(&["SET", &format!("{k}:c"), "1"]),
+        ]
+    };
+    // The size of the second batch, measured once.
+    let batch_len = {
+        let mut n = 0;
+        for k in ["x0", "x1", "x2"] {
+            let frames = g(k);
+            n += ctl(Control::TxnBegin { count: 3 }).len() * 2
+                + frames.iter().map(|f| f.len()).sum::<usize>();
+        }
+        n + push(&["SET", "plain", "1"]).len()
+    };
+    for torn in 1..batch_len {
+        let dir = Dir::new("rb_multi");
+        let aof = Arc::new(AofWriter::open(dir.aof(), AofSync::EverySec).await.unwrap());
+        aof.set_file_mode(AofFileMode::Empty);
+        assert!(aof.begin_expiry_log().await.unwrap());
+        // Batch 1, held before its write.
+        aof.hold_batch_containing(b"hold:a");
+        let first = {
+            let aof = Arc::clone(&aof);
+            tokio::spawn(async move {
+                let frames = g("hold");
+                let frames: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+                aof.append_transaction(&frames).await
+            })
+        };
+        aof.wait_until_held().await;
+        // Its write goes through (a Short that covers it), the next is torn.
+        aof.inject_fault(AofFault::Short(1 << 20));
+        aof.inject_fault(AofFault::TornThenFail(torn, std::io::ErrorKind::Other));
+        let mut joined = Vec::new();
+        for (i, k) in ["x0", "x1", "x2"].into_iter().enumerate() {
+            let aof = Arc::clone(&aof);
+            joined.push(tokio::spawn(async move {
+                if i == 1 {
+                    aof.append(&push(&["SET", "plain", "1"])).await?;
+                }
+                let frames = g(k);
+                let frames: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+                aof.append_transaction(&frames).await
+            }));
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        aof.release_hold();
+        first.await.unwrap().unwrap();
+        for j in joined {
+            let _ = j.await.unwrap();
+        }
+        let bytes = std::fs::read(dir.aof()).unwrap();
+        let (result, after) = replay_bytes(&bytes).await;
+        let (store, _) = result.unwrap_or_else(|e| panic!("torn {torn}: {e}"));
+        assert_eq!(after, bytes, "torn {torn}: the writer left nothing to cut");
+        {
+            let present: Vec<bool> = ["hold", "x0", "x1", "x2"].iter().map(|k| store.execute(Command::Get(format!("{k}:a"))) == bulk("1")).collect();
+            let plain = store.execute(Command::Get("plain".into())) == bulk("1");
+            println!("P3 torn {torn}: groups {present:?} plain {plain}");
+        }
+        for k in ["hold", "x0", "x1", "x2"] {
+            let n = ["a", "b", "c"]
+                .iter()
+                .filter(|s| store.execute(Command::Get(format!("{k}:{s}"))) == bulk("1"))
+                .count();
+            assert!(n == 0 || n == 3, "torn {torn}: {k} has {n} of 3");
+        }
+        // The next transaction appends cleanly after it.
+        let frames = g("next");
+        let frames: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+        aof.append_transaction(&frames).await.unwrap();
+        let (result, _) = replay_bytes(&std::fs::read(dir.aof()).unwrap()).await;
+        let (store, _) = result.unwrap_or_else(|e| panic!("torn {torn} next: {e}"));
+        assert_eq!(store.execute(Command::Get("next:c".into())), bulk("1"));
+    }
+}
+
+/// P4: the cut after a failed write cannot be made (twice): the file holds
+/// the open group's fragment; a crash now (no more appends) leaves a tail
+/// the startup cuts back to `TXN-BEGIN`; or the next append fails, and the
+/// one after removes the fragment first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rb_unrepairable_cut_inside_a_group() {
+    let frames = [push(&["SET", "u:a", "1"]), push(&["SET", "u:b", "1"])];
+    let frames: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+    let glen = ctl(Control::TxnBegin { count: 2 }).len() * 2
+        + frames.iter().map(|f| f.len()).sum::<usize>();
+    for torn in 1..glen {
+        let dir = Dir::new("rb_unrep");
+        let aof = AofWriter::open(dir.aof(), AofSync::EverySec).await.unwrap();
+        aof.set_file_mode(AofFileMode::Empty);
+        assert!(aof.begin_expiry_log().await.unwrap());
+        let head = std::fs::read(dir.aof()).unwrap();
+        aof.inject_fault(AofFault::TornUnrepairable(torn, std::io::ErrorKind::Other));
+        assert!(aof.append_transaction(&frames).await.is_err());
+        // "Crash" now: the file as left.
+        let crashed = std::fs::read(dir.aof()).unwrap();
+        let (result, after) = replay_bytes(&crashed).await;
+        let (store, _) = result.unwrap_or_else(|e| panic!("torn {torn}: {e}"));
+        assert_eq!(after, head, "torn {torn}: startup cuts to the group's begin");
+        assert_eq!(store.execute(Command::Get("u:a".into())), Value::BulkString(None));
+        // Or the process goes on: next append fails (retry fails), the one after works.
+        assert!(aof.append(&push(&["SET", "z", "1"])).await.is_err(), "torn {torn}");
+        aof.append_transaction(&frames).await.unwrap();
+        let bytes = std::fs::read(dir.aof()).unwrap();
+        let (result, after) = replay_bytes(&bytes).await;
+        let (store, _) = result.unwrap_or_else(|e| panic!("torn {torn} later: {e}"));
+        assert_eq!(after, bytes);
+        assert_eq!(store.execute(Command::Get("u:b".into())), bulk("1"));
+    }
+}
+
+/// P5 (observation): an older server's torn push right after the dangling
+/// group's members makes the whole group an incomplete tail (row 8), so
+/// the member the older server had applied and served is discarded.
+#[tokio::test]
+async fn rb_torn_push_after_dangling_group() {
+    let format = ctl(Control::Format { features: FORMAT_FEATURES });
+    let p = push(&["SET", "d", "1"]);
+    let bytes = [
+        format.clone(),
+        array(&["SET", "a", "0"]),
+        ctl(Control::TxnBegin { count: 2 }),
+        array(&["SET", "a", "1"]),
+        p[..p.len() - 3].to_vec(),
+    ]
+    .concat();
+    let (result, after) = replay_bytes(&bytes).await;
+    let (store, _) = result.unwrap();
+    println!(
+        "P5: a = {:?}, file cut to {} of {} bytes",
+        store.execute(Command::Get("a".into())),
+        after.len(),
+        bytes.len()
+    );
+}
+
+/// P6: a nested record before the replay start (covered by the snapshot)
+/// now refuses the start, where 6O-H skipped it.
+#[tokio::test]
+async fn rb_nested_record_before_the_replay_start() {
+    let dir = Dir::new("rb_nested_pre");
+    let bytes = [
+        b"*3\r\n$3\r\nSET\r\n$1\r\nb\r\n".to_vec(),
+        push(&["SET", "d", "1"]),
+        push(&["RECACHED-CHECKPOINT", "5"]),
+        push(&["SET", "e", "1"]),
+    ]
+    .concat();
+    std::fs::write(dir.aof(), &bytes).unwrap();
+    let store = KeyValueStore::new();
+    let r = replay_aof_format(&store, &dir.aof(), 5, true).await;
+    println!("P6: {:?}", r.as_ref().map(|_| ()).map_err(|e| e.to_string()));
+}
+
+/// P7: design §3.6's last row: `*` flipped to `>` in a member.
+#[tokio::test]
+async fn rb_flipped_member_marker() {
+    let format = ctl(Control::Format { features: FORMAT_FEATURES });
+    for (label, body) in [
+        (
+            "first member flipped",
+            [
+                ctl(Control::TxnBegin { count: 2 }),
+                push(&["SET", "a", "1"]),
+                array(&["SET", "b", "1"]),
+                ctl(Control::TxnCommit { count: 2 }),
+                array(&["SET", "c", "1"]),
+            ]
+            .concat(),
+        ),
+        (
+            "second member flipped",
+            [
+                ctl(Control::TxnBegin { count: 2 }),
+                array(&["SET", "a", "1"]),
+                push(&["SET", "b", "1"]),
+                ctl(Control::TxnCommit { count: 2 }),
+            ]
+            .concat(),
+        ),
+    ] {
+        let bytes = [format.clone(), body].concat();
+        let (result, after) = replay_bytes(&bytes).await;
+        println!(
+            "P7 {label}: {:?}, cut={}",
+            result.as_ref().map(|(s, r)| (
+                s.execute(Command::Get("a".into())),
+                s.execute(Command::Get("b".into())),
+                r.mode,
+                r.grouped
+            )).map_err(|e| e.to_string()),
+            after != bytes
+        );
+    }
+}

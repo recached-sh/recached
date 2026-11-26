@@ -1,0 +1,349 @@
+//! Review D probes (review copy only, not part of the change).
+
+use super::replication_dedup::{node, serve_replicas, wait_for};
+use super::*;
+use core_engine::resp::Value;
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+fn bulk(s: &str) -> Value {
+    Value::BulkString(Some(s.as_bytes().to_vec()))
+}
+
+async fn exec(client: &mut WsClient, writes: &[&[&str]]) {
+    client.cmd(&["MULTI"]).await;
+    for w in writes {
+        client.cmd(w).await;
+    }
+    let reply = client.cmd(&["EXEC"]).await;
+    assert!(matches!(reply, Value::Array(Some(_))), "{reply:?}");
+}
+
+/// Handshake by hand: the mode byte and, for 'P', (boundary, count, first
+/// frame offset).
+async fn by_hand(
+    addr: std::net::SocketAddr,
+    run: &str,
+    offset: u64,
+    accept: &str,
+) -> (u8, Option<(u64, u32, u64)>) {
+    let mut sock = TcpStream::connect(addr).await.unwrap();
+    let mut magic = [0u8; 4];
+    sock.read_exact(&mut magic).await.unwrap();
+    let mut len = [0u8; 2];
+    sock.read_exact(&mut len).await.unwrap();
+    let mut id = vec![0u8; usize::from(u16::from_le_bytes(len))];
+    sock.read_exact(&mut id).await.unwrap();
+    let requested = format!("{run};accept={accept}");
+    sock.write_all(&(requested.len() as u16).to_le_bytes())
+        .await
+        .unwrap();
+    sock.write_all(requested.as_bytes()).await.unwrap();
+    sock.write_all(&offset.to_le_bytes()).await.unwrap();
+    let mut mode = [0u8; 1];
+    sock.read_exact(&mut mode).await.unwrap();
+    if mode[0] != b'P' {
+        return (mode[0], None);
+    }
+    let mut head = [0u8; 12];
+    sock.read_exact(&mut head).await.unwrap();
+    let boundary = u64::from_le_bytes(head[..8].try_into().unwrap());
+    let count = u32::from_le_bytes(head[8..].try_into().unwrap());
+    let mut off = [0u8; 8];
+    let first = if count > 0 {
+        sock.read_exact(&mut off).await.unwrap();
+        u64::from_le_bytes(off)
+    } else {
+        0
+    };
+    (mode[0], Some((boundary, count, first)))
+}
+
+/// One real replica link (`sync_from_primary`) from a crafted resume point,
+/// until `done` holds; returns the resume state it ended with.
+async fn run_replica_from(
+    replica: &super::replication_dedup::Node,
+    addr: std::net::SocketAddr,
+    resume: ReplResume,
+    done_key: &str,
+    done_value: Value,
+) -> (String, u64, bool, bool) {
+    let (store, state, tx, watches) = (
+        Arc::clone(&replica.store),
+        Arc::clone(&replica.state),
+        replica.tx.clone(),
+        Arc::clone(&replica.watches),
+    );
+    let shared = Arc::new(std::sync::Mutex::new(resume));
+    let s2 = Arc::clone(&shared);
+    let task = tokio::spawn(async move {
+        let mut resume = std::mem::take(&mut *s2.lock().unwrap());
+        let mut socket = TcpStream::connect(addr).await.unwrap();
+        let fut = sync_from_primary(
+            &mut socket,
+            &store,
+            None,
+            &tx,
+            &watches,
+            &state,
+            &mut resume,
+        );
+        let r = tokio::time::timeout(Duration::from_millis(1500), fut).await;
+        *s2.lock().unwrap() = resume;
+        r
+    });
+    wait_for(&replica.store, done_key, done_value).await;
+    let r = task.await.unwrap();
+    assert!(r.is_err(), "the link should still be streaming: {r:?}");
+    shared.lock().unwrap().review_d_parts()
+}
+
+/// Required example (review D item 7): design §7.3's worked example on a
+/// real primary, with a real replica link, the backlog trimmed so it begins
+/// inside the group.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pd1_mid_group_resume_on_a_real_primary_with_a_trimmed_backlog() {
+    let primary = node(false, true).await;
+    let addr = serve_replicas(&primary).await;
+    let hub = &primary.state.replicas;
+    let mut client = WsClient::connect(primary.ws).await;
+    client.cmd(&["SET", "rd:pre", "0"]).await;
+    exec(
+        &mut client,
+        &[
+            &["SET", "rd:a", "1"],
+            &["SET", "rd:b", "1"],
+            &["SET", "rd:c", "1"],
+        ],
+    )
+    .await;
+    client.cmd(&["SET", "rd:z", "1"]).await;
+    let bl = hub.review_d_backlog();
+    let group = bl
+        .iter()
+        .find_map(|(_, _, g)| *g)
+        .expect("the EXEC is a group");
+    assert_eq!(group.count, 3);
+    let f = group.first;
+    let len_of = |o: u64| bl.iter().find(|(off, _, _)| *off == o).unwrap().1;
+    let z = bl.last().unwrap();
+    // Trim so the backlog holds f+1, f+2, z and the next write (same
+    // length as z): G's tail alone.
+    let keep = len_of(f + 1) + len_of(f + 2) + z.1 * 2;
+    hub.configure_backlog(keep);
+    client.cmd(&["SET", "rd:y", "1"]).await;
+    let bl = hub.review_d_backlog();
+    eprintln!("PD1 backlog after trim: {bl:?}");
+    assert_eq!(bl.first().unwrap().0, f + 1, "front is G's second frame");
+    assert_eq!(bl.first().unwrap().2, Some(group));
+    let run = hub.run_id();
+    let current = hub.current_offset();
+
+    // By hand: capable at f (inside G) -> full; legacy at f -> partial fragment.
+    let (mode, _) = by_hand(addr, &run, f, "dedup1,expirylog1,txn1").await;
+    eprintln!("PD1 by hand, capable at {f}: mode {:?}", mode as char);
+    assert_ne!(mode, b'P');
+    let (mode, p) = by_hand(addr, &run, f, "dedup1,expirylog1").await;
+    eprintln!("PD1 by hand, legacy at {f}: mode {:?} {p:?}", mode as char);
+    assert_eq!(mode, b'P');
+    assert_eq!(p, Some((current, 4, f + 1)));
+    let (mode, _) = by_hand(addr, &run, f - 1, "dedup1,expirylog1,txn1").await;
+    assert_ne!(mode, b'P', "f is trimmed");
+
+    // A real replica link whose resume point is inside G (it applied f
+    // alone: a buggy replica, or one that applied before negotiating txn1
+    // and kept its txn flag wrong).
+    let (p0, f0) = hub.syncs();
+    let replica = node(true, true).await;
+    replica.store.execute(Command::Get("rd:a".into()));
+    // Its keyspace as of offset f: rd:pre and rd:a only.
+    for frame in [
+        resp_push(&[b"SET", b"rd:pre", b"0"]),
+        resp_push(&[b"SET", b"rd:a", b"1"]),
+    ] {
+        apply_repl_frame_for_tests(
+            &replica.store,
+            &replica.state,
+            &replica.tx,
+            &replica.watches,
+            &frame,
+        )
+        .await
+        .unwrap();
+    }
+    replica
+        .state
+        .replicas
+        .upstream_expirylog
+        .store(true, Ordering::Release);
+    let ended = run_replica_from(
+        &replica,
+        addr,
+        ReplResume::review_d(run.clone(), f, true, true),
+        "rd:y",
+        bulk("1"),
+    )
+    .await;
+    let (p1, f1) = hub.syncs();
+    eprintln!("PD1 real replica from {f}: partial +{} full +{} ended {ended:?}", p1 - p0, f1 - f0);
+    assert_eq!((p1 - p0, f1 - f0), (0, 1), "a full synchronization");
+    for k in ["rd:a", "rd:b", "rd:c", "rd:z", "rd:y"] {
+        assert_eq!(replica.store.execute(Command::Get(k.into())), bulk("1"), "{k}");
+    }
+    assert_eq!(ended.1, current);
+
+    // Control: the same replica resuming at G's end resumes partially.
+    let replica2 = node(true, true).await;
+    replica2
+        .state
+        .replicas
+        .upstream_expirylog
+        .store(true, Ordering::Release);
+    let ended = run_replica_from(
+        &replica2,
+        addr,
+        ReplResume::review_d(run.clone(), f + 2, true, true),
+        "rd:y",
+        bulk("1"),
+    )
+    .await;
+    let (p2, f2) = hub.syncs();
+    eprintln!("PD1 control from {}: partial +{} full +{} ended {ended:?}", f + 2, p2 - p1, f2 - f1);
+    assert_eq!((p2 - p1, f2 - f1), (1, 0));
+    // Partial from G's end: rd:a..c never arrive (the control replica's
+    // keyspace was empty, which is the point: only frames after G).
+    assert_eq!(replica2.store.execute(Command::Get("rd:a".into())), Value::BulkString(None));
+}
+
+/// A group whose last offset is past `u64::MAX` (a corrupt or hostile
+/// authenticated primary): `ReplGroup::last` overflows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pd2_a_group_ending_past_u64_max() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let replica = node(true, false).await;
+    let (store, state, tx, watches) = (
+        Arc::clone(&replica.store),
+        Arc::clone(&replica.state),
+        replica.tx.clone(),
+        Arc::clone(&replica.watches),
+    );
+    let task = tokio::spawn(async move {
+        let mut resume = ReplResume::default();
+        let mut socket = TcpStream::connect(addr).await.unwrap();
+        sync_from_primary(&mut socket, &store, None, &tx, &watches, &state, &mut resume).await
+    });
+    let (mut sock, _) = listener.accept().await.unwrap();
+    let advertised = "fake-run;caps=expirylog1,txn1";
+    sock.write_all(REPL_MAGIC).await.unwrap();
+    sock.write_all(&(advertised.len() as u16).to_le_bytes()).await.unwrap();
+    sock.write_all(advertised.as_bytes()).await.unwrap();
+    let mut len = [0u8; 2];
+    sock.read_exact(&mut len).await.unwrap();
+    let mut id = vec![0u8; usize::from(u16::from_le_bytes(len))];
+    sock.read_exact(&mut id).await.unwrap();
+    let mut off = [0u8; 8];
+    sock.read_exact(&mut off).await.unwrap();
+    let boundary = u64::MAX - 1;
+    sock.write_all(b"F").await.unwrap();
+    sock.write_all(&boundary.to_le_bytes()).await.unwrap();
+    let empty = rmp_serde::to_vec(&Vec::<SnapshotEntry>::new()).unwrap();
+    sock.write_all(&(empty.len() as u32).to_le_bytes()).await.unwrap();
+    sock.write_all(&empty).await.unwrap();
+    let mut ack = [0u8; 8];
+    sock.read_exact(&mut ack).await.unwrap();
+    let a = resp_push(&[b"SET", b"ov:a", b"1"]);
+    let b = resp_push(&[b"SET", b"ov:b", b"1"]);
+    let mut out = group_header(ReplGroup {
+        first: u64::MAX,
+        count: 2,
+        bytes: (a.len() + b.len()) as u64,
+    })
+    .to_vec();
+    for f in [&a, &b] {
+        out.extend_from_slice(&u64::MAX.to_le_bytes());
+        out.extend_from_slice(&(f.len() as u32).to_le_bytes());
+        out.extend_from_slice(f);
+    }
+    sock.write_all(&out).await.unwrap();
+    let r = tokio::time::timeout(Duration::from_secs(3), task).await;
+    eprintln!("PD2 outcome: {r:?}");
+    match r {
+        Ok(Err(join)) => assert!(join.is_panic(), "{join:?}"),
+        other => panic!("PD2: expected the replica task to panic, got {other:?}"),
+    }
+}
+
+/// A → B → C, all `txn1`. B has diverged from A on one key; A's EXEC's
+/// second member fails on B after its first applied. B never relays the
+/// first and does not reset its stream: C partially follows a stream that
+/// no longer describes B's keyspace. Promoting B before its full sync
+/// makes that permanent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pd3_a_failed_group_member_on_a_middle_replica() {
+    for grouped in [true, false] {
+        let a = node(false, true).await;
+        a.state
+            .replicas
+            .test_without_txn
+            .store(!grouped, Ordering::Relaxed);
+        let b = node(true, true).await;
+        let c = node(true, true).await;
+        let a_addr = serve_replicas(&a).await;
+        let b_addr = serve_replicas(&b).await;
+        for (n, addr) in [(&b, a_addr), (&c, b_addr)] {
+            let (store, state, tx, watches) = (
+                Arc::clone(&n.store),
+                Arc::clone(&n.state),
+                n.tx.clone(),
+                Arc::clone(&n.watches),
+            );
+            tokio::spawn(run_repl_client(
+                addr.to_string(),
+                store,
+                state,
+                None,
+                None,
+                tx,
+                watches,
+                None,
+            ));
+        }
+        let mut client = WsClient::connect(a.ws).await;
+        client.cmd(&["SET", "pd3:pre", "0"]).await;
+        wait_for(&c.store, "pd3:pre", bulk("0")).await;
+        // B (and, relayed, C) diverge from A on pd3:list.
+        apply_repl_frame_for_tests(
+            &b.store,
+            &b.state,
+            &b.tx,
+            &b.watches,
+            &resp_push(&[b"SET", b"pd3:list", b"str"]),
+        )
+        .await
+        .unwrap();
+        wait_for(&c.store, "pd3:list", bulk("str")).await;
+        let b_run = b.state.replicas.run_id();
+        let (_, b_full) = b.state.replicas.syncs();
+        exec(
+            &mut client,
+            &[&["SET", "pd3:k1", "v"], &["LPUSH", "pd3:list", "x"]],
+        )
+        .await;
+        wait_for(&b.store, "pd3:k1", bulk("v")).await;
+        // Promote B before run_repl_client's 2 s backoff ends.
+        b.state.promote_to_primary(&b.store).await;
+        let mut on_b = WsClient::connect(b.ws).await;
+        on_b.cmd(&["SET", "pd3:after", "1"]).await;
+        wait_for(&c.store, "pd3:after", bulk("1")).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let c_k1 = c.store.execute(Command::Get("pd3:k1".into()));
+        let (_, b_full_after) = b.state.replicas.syncs();
+        eprintln!(
+            "PD3 grouped={grouped}: B k1={:?} C k1={c_k1:?}; B run id unchanged={}; full syncs B served since: {}",
+            b.store.execute(Command::Get("pd3:k1".into())),
+            b.state.replicas.run_id() == b_run,
+            b_full_after - b_full
+        );
+    }
+}

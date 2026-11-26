@@ -1,0 +1,5 @@
+host 7.3.4-300.fc45.x86_64 6 cpus; load 2.39 3.52 4.86; governors       6 performance 
+base a3922e87125946d236c79bff621fbefe4e3c4bd21e93a3250fb032082587d941 size=14
+i f835dfb6b4b61cb95408885197c90a888eae76e9233112b33c2f3436e93d4a9f size=14
+txbench 974b161fe015aea1992ef1908f98f15f1349d448a46eb83e034dcc3ecbaa363b
+reps=5 secs=20 max_load=3.0 cells=1:get-get:unrelated:50:0 1:set-set:unrelated:50:0 1:set-set:unrelated:50:0::RECACHED_AOF_SYNC=everysec 1:set-set:unrelated:50:0::RECACHED_AOF_SYNC=always 1:get-set:unrelated:50:0::RECACHED_AOF_SYNC=everysec 1:mget-mset:unrelated:50:0::RECACHED_AOF_SYNC=everysec 1:mset10:unrelated:50:0::RECACHED_AOF_SYNC=everysec 1:wide20:unrelated:50:0::RECACHED_AOF_SYNC=everysec 1:setn:unrelated:20:0:TX_N=100:RECACHED_AOF_SYNC=everysec 1:setn:unrelated:8:0:TX_N=1000:RECACHED_AOF_SYNC=everysec 1:setn:unrelated:2:0:TX_N=10000:RECACHED_AOF_SYNC=everysec 1:set-set:unrelated:50:0::REPLICA=1 1:setn:unrelated:20:0:TX_N=100:REPLICA=1

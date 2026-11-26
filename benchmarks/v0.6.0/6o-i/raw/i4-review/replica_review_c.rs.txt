@@ -1,0 +1,106 @@
+//! Review C reproductions (not part of the PR).
+
+use super::replication_dedup::{Node, node, serve_replicas, wait_for};
+use super::*;
+use core_engine::resp::Value;
+use std::time::Duration;
+
+fn bulk(s: &str) -> Value {
+    Value::BulkString(Some(s.as_bytes().to_vec()))
+}
+
+fn follow_on_own_thread(replica: &Node, primary_addr: std::net::SocketAddr) {
+    let (store, state, tx, watches) = (
+        Arc::clone(&replica.store),
+        Arc::clone(&replica.state),
+        replica.tx.clone(),
+        Arc::clone(&replica.watches),
+    );
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async move {
+                let mut resume = ReplResume::default();
+                loop {
+                    if let Ok(mut socket) = TcpStream::connect(primary_addr).await
+                        && let Err(e) = sync_from_primary(
+                            &mut socket, &store, None, &tx, &watches, &state, &mut resume,
+                        )
+                        .await
+                        && e.kind() == std::io::ErrorKind::InvalidData
+                    {
+                        resume = ReplResume::default();
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            });
+    });
+}
+
+fn text(v: &Value) -> String {
+    match v {
+        Value::BulkString(Some(b)) => String::from_utf8_lossy(b).into_owned(),
+        Value::SimpleString(s) => s.clone(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// A delta-subscribed live query on a replica, primary runs
+/// `MULTI; SET k a; APPEND k b; EXEC`. The client's model of `k` must be
+/// what the replica's store holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn review_c_delta_live_query_on_replica_converges_after_a_group() {
+    let primary = node(false, true).await;
+    let replica = node(true, true).await;
+    follow_on_own_thread(&replica, serve_replicas(&primary).await);
+    let mut client = WsClient::connect(primary.ws).await;
+    client.cmd(&["SET", "dl:seed", "x"]).await;
+    wait_for(&replica.store, "dl:seed", bulk("x")).await;
+
+    let mut viewer = WsClient::connect(replica.ws).await;
+    viewer.send(&["CLIENT", "DELTA", "ON"]).await;
+    viewer.send(&["QSUB", "dl:k*"]).await;
+    // Drain the replies.
+    while viewer.recv_frame(300).await.is_some() {}
+
+    client.cmd(&["MULTI"]).await;
+    client.cmd(&["SET", "dl:k", "a"]).await;
+    client.cmd(&["APPEND", "dl:k", "b"]).await;
+    let reply = client.cmd(&["EXEC"]).await;
+    assert!(matches!(reply, Value::Array(Some(_))), "{reply:?}");
+    wait_for(&replica.store, "dl:k", bulk("ab")).await;
+
+    let mut model: Option<Vec<u8>> = None;
+    let mut seen = Vec::new();
+    while let Some(raw) = viewer.recv_frame(500).await {
+        let Ok((v, _)) = Value::parse(&raw) else { continue };
+        let items = match &v {
+            Value::Array(Some(items)) | Value::Push(items) => items.clone(),
+            _ => continue,
+        };
+        if items.len() < 3 {
+            continue;
+        }
+        let kind = text(&items[0]);
+        seen.push(format!("{v:?}"));
+        if kind == "keychange" && text(&items[1]) == "dl:k" {
+            model = match &items[2] {
+                Value::BulkString(Some(b)) => Some(b.clone()),
+                _ => None,
+            };
+        } else if kind == "keydelta" && text(&items[1]) == "dl:k" && text(&items[2]) == "append" {
+            let mut now = model.clone().unwrap_or_default();
+            if let Value::BulkString(Some(b)) = &items[3] {
+                now.extend_from_slice(b);
+            }
+            model = Some(now);
+        }
+    }
+    assert_eq!(
+        model.as_deref().map(|b| String::from_utf8_lossy(b).into_owned()),
+        Some("ab".to_string()),
+        "the replica's delta live query diverged; frames: {seen:#?}"
+    );
+}

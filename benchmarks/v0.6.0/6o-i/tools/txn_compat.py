@@ -211,6 +211,9 @@ TX = (arr("SET", "a", "new"), arr("SET", "b", "new"))
 
 
 def run_cases(name, binary, root, files_out):
+    # The 6O-I binary itself (a NAME starting "6oi"): it discards incomplete
+    # groups, cuts the dangling one before appending, and understands `txn`.
+    new = name.startswith("6oi")
     def keep(case, data):
         if files_out:
             with open(os.path.join(files_out, f"{case}.resp"), "wb") as f:
@@ -231,7 +234,7 @@ def run_cases(name, binary, root, files_out):
     d = fresh(root, f"{name}-t2")
     write(d, BASE + ctl(BEGIN, 2) + TX[0])
     up, got, db, tail = boot(binary, d, ("a", "b"))
-    report(up, name, "T2 incomplete tail group: what it replays",
+    report(up and (got == ["old", "old"] if new else True), name, "T2 incomplete tail group: what it replays",
            f"up={up} got={got} (['new','old'] = the prefix applied) {'' if up else tail}")
 
     # T2b: the same with the second member torn part-way.
@@ -240,7 +243,7 @@ def run_cases(name, binary, root, files_out):
     write(d, body + TX[1][:9])
     up, got, db, tail = boot(binary, d, ("a", "b"))
     cut = len(read(d))
-    report(up, name, "T2b incomplete group, member torn: replay and cut",
+    report(up and (got == ["old", "old"] if new else True), name, "T2b incomplete group, member torn: replay and cut",
            f"up={up} got={got} file={cut} (torn record cut: {cut == len(body)})")
 
     # T3: downgrade by the documented procedure: SAVE, then the older
@@ -277,8 +280,12 @@ def run_cases(name, binary, root, files_out):
     data = read(d)
     appended = data[len(body):]
     keep(f"t4-{name}", data)
-    report(up and appended[:1] == b">", name,
-           "T4 appends after a dangling group as a push",
+    # 6O-I cuts the dangling group first and continues in arrays.
+    t4_ok = (data.startswith(BASE) and b"\r\nnew\r\n" not in data
+             and data[len(BASE):len(BASE) + 1] == b"*") if new else appended[:1] == b">"
+    report(up and t4_ok, name,
+           "T4 appends after a dangling group as a push" if not new else
+           "T4 (6O-I) cuts the dangling group, then appends",
            f"up={up} appended={appended[:12]!r}")
 
     # T5: the must-understand `txn` bit. Timeless replay keeps an entry
@@ -294,7 +301,7 @@ def run_cases(name, binary, root, files_out):
         write(d, head + arr("SET", "k", "v", "PXAT", past) + arr("APPEND", "k", "x"))
         up, got, db, tail = boot(binary, d, ("k",))
         mode = ("timeless" if got == [None] else "legacy" if got == ["x"] else f"? {got}")
-        report(up, name, f"T{case[1:]} FORMAT {label}: replay mode",
+        report(up and (mode == "timeless" if new else True), name, f"T{case[1:]} FORMAT {label}: replay mode",
                f"up={up} k={got} -> {mode} {'' if up else tail}")
     # ... and what it appends to a txn-bit file: pushes if it does not
     # understand the bit (or the format at all).
@@ -307,7 +314,7 @@ def run_cases(name, binary, root, files_out):
         cmd(s.port, "SET", "z", "1")
     s.kill9()
     appended = read(d)[len(body):]
-    report(up, name, "T5c appends to a txn-bit file as",
+    report(up and (appended[:1] == b"*" if new else True), name, "T5c appends to a txn-bit file as",
            f"up={up} first_byte={appended[:1]!r} ('>' = push, '*' = array)")
 
     # T6: the group's markers around the snapshot's own checkpoint marker

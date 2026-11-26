@@ -1,0 +1,11 @@
+# aof_bytes.py 2026-11-26T15:34:41Z N=2000; base=6oh 6068337 i=6oi 0a1f95e
+| shape | binary | bytes/tx | records/tx |
+|---|---|---|---|
+| set-set | base | 130.9 | 2.00 |
+| set-set | i | 244.9 | 4.00 |
+| single SET in EXEC | base | 63.4 | 1.00 |
+| single SET in EXEC | i | 63.4 | 1.00 |
+| wide20 | base | 1318.9 | 20.00 |
+| wide20 | i | 1432.9 | 22.00 |
+| setn100 | base | 6634.5 | 100.00 |
+| setn100 | i | 6748.5 | 102.00 |

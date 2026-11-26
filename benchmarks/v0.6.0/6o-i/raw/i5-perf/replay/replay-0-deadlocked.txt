@@ -1,0 +1,17 @@
+# replay_time.py 2026-11-26T18:22:52Z; base=6oh 6068337 p3=6oi #200 976574a; REPS=5
+| workload | binary | AOF MiB | restart s (each rep) | median s | keys |
+|---|---|---|---|---|---|
+| sets | base | 71.5 | 1.86 1.87 1.76 1.77 1.84 | 1.84 | 631793 |
+| sets | p3 | 71.5 | 1.74 1.74 1.63 1.65 1.75 | 1.74 | 632183 |
+Traceback (most recent call last):
+  File "/home/dennispaler/recached-6oi-bench/kit/tools/replay_time.py", line 105, in <module>
+    main()
+    ~~~~^^
+  File "/home/dennispaler/recached-6oi-bench/kit/tools/replay_time.py", line 79, in main
+    (write_sets if workload == "sets" else write_exec2)(port)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/home/dennispaler/recached-6oi-bench/kit/tools/replay_time.py", line 60, in write_exec2
+    c.sendall(b"".join(chunk))
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^
+TimeoutError: timed out
+replay done 2026-11-26T18:24:20Z

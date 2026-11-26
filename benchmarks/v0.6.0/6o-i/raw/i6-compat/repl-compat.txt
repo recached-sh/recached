@@ -1,0 +1,16 @@
+# repl_compat.py, 2026-11-26T14:25:47Z; rc-6oi-0a1f95e
+ok    6oi->6oi         links, follows and converges                 linked=True converged=True 
+ok    6oi->6oi         replica readers never see part of an EXEC    part-applied MGETs seen: 0
+ok    6oi->6oh         links, follows and converges                 linked=True converged=True 
+ok    6oi->6oh         replica readers (per-frame replica, recorded) part-applied MGETs seen: 3 (an older replica applies frame by frame)
+ok    6oi->6og         links, follows and converges                 linked=True converged=True 
+ok    6oi->6og         replica readers (per-frame replica, recorded) part-applied MGETs seen: 0 (an older replica applies frame by frame)
+ok    6oi->6of         links, follows and converges                 linked=True converged=True 
+ok    6oi->6of         replica readers (per-frame replica, recorded) part-applied MGETs seen: 2 (an older replica applies frame by frame)
+ok    6oi->v0.5.2      links, follows and converges                 linked=True converged=True 
+ok    6oi->v0.5.2      replica readers (per-frame replica, recorded) part-applied MGETs seen: 10 (an older replica applies frame by frame)
+ok    6oh->6oi         links, follows and converges                 linked=True converged=True 
+ok    6oh->6oi         replica readers (per-frame replica, recorded) part-applied MGETs seen: 5 (an older replica applies frame by frame)
+ok    v0.5.2->6oi      links, follows and converges                 linked=True converged=True 
+ok    v0.5.2->6oi      replica readers (per-frame replica, recorded) part-applied MGETs seen: 25 (an older replica applies frame by frame)
+14/14 as expected

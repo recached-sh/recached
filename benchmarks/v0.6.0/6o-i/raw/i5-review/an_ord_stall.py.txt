@@ -1,0 +1,30 @@
+"""Review E round 2: paired ratios for ord.log.txt and stall.log.txt.
+usage: python3 -I an_ord_stall.py ord|stall LOG"""
+import re, sys, statistics as st
+from collections import defaultdict
+kind, path = sys.argv[1], sys.argv[2]
+cells = defaultdict(lambda: defaultdict(dict)); order = []
+for line in open(path):
+    if not line.startswith('label='): continue
+    kv = dict(re.findall(r"(\w+)=(\S*)", line))
+    if kind == 'ord':
+        cell = f"{kv['kind']} {kv['test']}"
+        d = dict(rps=float(kv['rps']), cpu=float(kv['oncpu_s'])*1e9/float(kv['requests']), p99=float(kv['p99_ms']),
+                 mx=float(kv['max_ms']), hwm=float(kv['primary_hwm_kb'])/1024, rhwm=float(kv['replica_hwm_kb'])/1024, load=float(kv['load']))
+    else:
+        cell = f"rw{kv['replica_workers']} TX_N={kv['tx_n']}"
+        d = dict(rps=float(kv['reader_rps']), p50=float(kv['reader_p50_ms']), p99=float(kv['reader_p99_ms']), mx=float(kv['reader_max_ms']),
+                 tps=float(kv['tx_per_s']), rhwm=float(kv['replica_hwm_kb'])/1024, db=(kv['replica_dbsize'], kv['primary_dbsize']), load=float(kv['load']))
+    if cell not in order: order.append(cell)
+    cells[cell][kv['label']][int(kv['rep'])] = d
+def fmt(v): return '[' + ' '.join(f'{x:.3f}' for x in v) + ']'
+for c in order:
+    b, p = cells[c]['base'], cells[c]['p3']; rs = sorted(set(b) & set(p))
+    out = [c, f"n={len(rs)}"]
+    keys = ('rps', 'cpu', 'p99', 'hwm', 'rhwm') if kind == 'ord' else ('rps', 'p50', 'p99', 'mx', 'tps', 'rhwm')
+    for k in keys:
+        r = [p[x][k]/b[x][k] for x in rs if b[x][k]]
+        out.append(f"{k}: base {fmt([b[x][k] for x in rs])} p3 {fmt([p[x][k] for x in rs])} paired med {st.median(r):.3f} [{min(r):.3f}-{max(r):.3f}]" if r else f"{k}: -")
+    if kind == 'stall':
+        out.append(f"db {[b[x]['db'] for x in rs]} {[p[x]['db'] for x in rs]}")
+    print('\n   '.join(out))

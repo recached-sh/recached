@@ -1,0 +1,6 @@
+host 7.3.4-300.fc45.x86_64 6 cpus; load 0.00 0.47 1.02; governors       6 performance 
+base a3922e87125946d236c79bff621fbefe4e3c4bd21e93a3250fb032082587d941 size=10507872 -> /home/dennispaler/recached-6oi-bench/bin/rc-6oh-6068337
+i f835dfb6b4b61cb95408885197c90a888eae76e9233112b33c2f3436e93d4a9f size=10566528 -> /home/dennispaler/recached-6oi-bench/bin/rc-6oi-0a1f95e
+p3 30a91a97bfada10a91050ce1c73f3973d4faf2d2c8a16cd04a1ec72f3fcaa1ba size=10572480 -> /home/dennispaler/recached-6oi-bench/bin/rc-6oi-perf-976574a
+txbench 974b161fe015aea1992ef1908f98f15f1349d448a46eb83e034dcc3ecbaa363b
+reps=5 secs=20 max_load=3.0 cells=1:set-set:unrelated:50:0::RECACHED_AOF_SYNC=everysec,REPLICA=1 1:setn:unrelated:20:0:TX_N=100:RECACHED_AOF_SYNC=everysec,REPLICA=1 1:set-set:unrelated:50:0::REPLICA=1 1:setn:unrelated:20:0:TX_N=100:REPLICA=1

@@ -1,0 +1,32 @@
+import re,sys,statistics as st
+from collections import defaultdict
+path=sys.argv[1]; labels=sys.argv[2].split(',')
+cells=defaultdict(lambda: defaultdict(dict)); order=[]
+seq=[]
+for line in open(path):
+    if not line.startswith('label='): continue
+    kv=dict(re.findall(r"(\w+)=(\S*)",line))
+    cell=f"{kv['mode']} {kv.get('txenv','')} {kv.get('srvenv') or 'noaof'}"
+    if cell not in order: order.append(cell)
+    r=int(kv['rep']); tx=float(kv['tx'])
+    d=dict(tps=float(kv['tx_per_s']),cpu=float(kv['oncpu_s'])*1e6/tx,srvcpus=float(kv['oncpu_s'])/float(kv['secs']),
+      p99=float(kv['p99_us']),mx=float(kv['max_us']),hwm=int(kv['hwm_kb'])/1024,rss=int(kv['rss_kb'])/1024,
+      load=float(kv['load']),psi=float(kv.get('io_psi10') or 'nan'),foreign=float(kv['foreign_cpus']),gen=float(kv['gen_cpus']),
+      aof=int(kv['aof_bytes']),waited=int(kv['waited_s']),rcpu=float(kv.get('replica_oncpu_s','nan'))*1e6/tx,
+      p50=float(kv['p50_us']))
+    cells[cell][kv['label']][r]=d; seq.append((r,cell,kv['label']))
+for c in order:
+    print('==',c)
+    for l in labels:
+        rows=cells[c][l]
+        print(f"  {l:4s} "+' | '.join(f"r{r}: tps {d['tps']:.0f} cpu {d['cpu']:.2f} srv {d['srvcpus']:.2f} p50 {d['p50']:.0f} p99 {d['p99']:.0f} hwm {d['hwm']:.0f} ld {d['load']:.1f} psi {d['psi']:.1f} fo {d['foreign']:.2f} gen {d['gen']:.2f} aof {d['aof']} w{d['waited']}" + (f" rcpu {d['rcpu']:.2f}" if d['rcpu']==d['rcpu'] else '') for r,d in sorted(rows.items())))
+    for l in labels[1:]:
+        b=cells[c][labels[0]]; x=cells[c][l]
+        tr=[x[r]['tps']/b[r]['tps'] for r in sorted(b)]
+        cr=[x[r]['cpu']/b[r]['cpu'] for r in sorted(b)]
+        hr=[x[r]['hwm']-b[r]['hwm'] for r in sorted(b)]
+        print(f"  {l}/base tps med {st.median(tr):.3f} [{min(tr):.3f}-{max(tr):.3f}]  cpu med {st.median(cr):.3f} [{min(cr):.3f}-{max(cr):.3f}] n_cpu>1 {sum(v>1 for v in cr)}/5  hwm delta MiB {[round(v,1) for v in hr]}")
+    if 'p' in labels and 'i' in labels:
+        b=cells[c]['i']; x=cells[c]['p']
+        cr=[x[r]['cpu']/b[r]['cpu'] for r in sorted(b)]; tr=[x[r]['tps']/b[r]['tps'] for r in sorted(b)]
+        print(f"  p/i tps med {st.median(tr):.3f} [{min(tr):.3f}-{max(tr):.3f}] cpu med {st.median(cr):.3f} [{min(cr):.3f}-{max(cr):.3f}]")
