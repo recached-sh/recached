@@ -732,6 +732,10 @@ struct AofQueue {
     /// decided under this lock as appends and truncations are queued, so it
     /// describes the file as the queue will leave it.
     mode: AofFileMode,
+    /// Whether the file's `FORMAT` carries the `txn` feature (6O-I): only
+    /// then, and only while `mode` is `Timeless`, are a transaction's records
+    /// written as a group. Changes only where `mode` does.
+    grouped: bool,
 }
 
 /// What an AOF file holds, as the expiry-log protocol sees it (6O-H,
@@ -766,6 +770,9 @@ struct AofBatch {
     /// as RESP2 arrays, the format's authorship mark (6O-H, design §2.2).
     /// Set under the queue lock before each append, from the file's mode.
     author: bool,
+    /// A transaction pushed now is written as a group (6O-I): the file is a
+    /// `txn` file in the format. Set with `author`.
+    grouping: bool,
     done: Arc<AofDone>,
 }
 
@@ -873,6 +880,31 @@ fn push_frames(batch: &mut AofBatch, frames: &[&[u8]]) {
     }
 }
 
+/// [`push_transaction`] when `transaction`, else [`push_frames`].
+fn push_batch(batch: &mut AofBatch, frames: &[&[u8]], transaction: bool) {
+    if transaction {
+        push_transaction(batch, frames);
+    } else {
+        push_frames(batch, frames);
+    }
+}
+
+/// Queue a transaction's `frames` onto `batch` (one queue-lock hold): as a
+/// group, `TXN-BEGIN n`, the frames unchanged, `TXN-COMMIT n`, when the
+/// file groups transactions and there are two or more of them; otherwise
+/// as [`push_frames`]. One record needs no group: a torn record is cut, so
+/// it replays whole or not at all (6O-I design §2.2).
+fn push_transaction(batch: &mut AofBatch, frames: &[&[u8]]) {
+    match u32::try_from(frames.len()) {
+        Ok(count) if batch.grouping && count >= 2 => {
+            batch.push_frame(&control_frame(Control::TxnBegin { count }));
+            push_frames(batch, frames);
+            batch.push_frame(&control_frame(Control::TxnCommit { count }));
+        }
+        _ => push_frames(batch, frames),
+    }
+}
+
 impl AofBatch {
     fn new() -> Self {
         AofBatch {
@@ -882,6 +914,7 @@ impl AofBatch {
             truncate: false,
             sealed: false,
             author: false,
+            grouping: false,
             done: Arc::new(AofDone::default()),
         }
     }
@@ -1291,19 +1324,33 @@ impl AofShared {
     }
 }
 
-/// How many leading bytes of `bytes[..written]` are whole RESP frames.
-/// Only on the failure path: a batch is a run of frames, so parsing them
-/// one after another stops at the first one that did not land in full.
+/// How many leading bytes of `bytes[..written]` to keep after a failed
+/// write: the whole RESP frames, up to the `TXN-BEGIN` of a transaction
+/// group whose `TXN-COMMIT` did not land (6O-I design §3.5), so the file
+/// never ends inside a group the next appends would follow. Only on the
+/// failure path: a batch is a run of frames, so parsing them one after
+/// another stops at the first one that did not land in full.
 fn whole_frames_len(bytes: &[u8], written: usize) -> usize {
     let landed = bytes.get(..written).unwrap_or(bytes);
-    let mut end = 0usize;
+    let (mut end, mut keep) = (0usize, 0usize);
+    let mut open = false;
     while let Some(rest) = landed.get(end..).filter(|rest| !rest.is_empty()) {
         match Value::parse(rest) {
-            Ok((_, used)) if used > 0 => end = end.saturating_add(used),
+            Ok((value, used)) if used > 0 => {
+                end = end.saturating_add(used);
+                match checkpoint_marker(&value).and_then(Control::of) {
+                    Some(Control::TxnBegin { .. }) => open = true,
+                    Some(Control::TxnCommit { .. }) => open = false,
+                    _ => {}
+                }
+                if !open {
+                    keep = end;
+                }
+            }
             _ => break,
         }
     }
-    end
+    keep
 }
 
 /// `write_all`, counting each `write(2)` and its time. Returns how many
@@ -1929,9 +1976,11 @@ impl AofWriter {
             let mut queue = self.shared.lock();
             let busy = queue.busy;
             let author = queue.mode == AofFileMode::Timeless;
+            let grouping = author && queue.grouped;
             let batch = open_batch(&mut queue, fresh);
             let (frames, truncate) = (batch.frames, batch.truncate);
             batch.author = author;
+            batch.grouping = grouping;
             edit(batch);
             let (appended, truncated) = (batch.frames > frames, batch.truncate && !truncate);
             let done = Arc::clone(&batch.done);
@@ -1939,8 +1988,10 @@ impl AofWriter {
             // it, if not `FORMAT` ([`Self::control`]), makes it a legacy one.
             if truncated {
                 queue.mode = AofFileMode::Empty;
+                queue.grouped = false;
             } else if appended && queue.mode == AofFileMode::Empty {
                 queue.mode = AofFileMode::Legacy;
+                queue.grouped = false;
             }
             (done, busy)
         }
@@ -1966,6 +2017,8 @@ impl AofWriter {
             batch.push_frame(&control_frame(record));
             let done = Arc::clone(&batch.done);
             queue.mode = to;
+            queue.grouped = to == AofFileMode::Timeless
+                && matches!(record, Control::Format { features } if format_is_grouped(features));
             done
         };
         self.shared.lead();
@@ -1983,7 +2036,7 @@ impl AofWriter {
         self.control(
             AofFileMode::Empty,
             Control::Format {
-                features: FEATURE_EXPIRY_LOG,
+                features: FORMAT_FEATURES,
             },
             AofFileMode::Timeless,
         )
@@ -1998,12 +2051,23 @@ impl AofWriter {
         let mut queue = self.shared.lock();
         if queue.mode == AofFileMode::Timeless {
             queue.mode = AofFileMode::Legacy;
+            queue.grouped = false;
         }
     }
 
-    /// Set what the file holds, from the replay at startup.
+    /// Set what the file holds: not a `txn` file
+    /// ([`set_file_format`](Self::set_file_format) for that).
+    #[cfg(test)]
     pub(crate) fn set_file_mode(&self, mode: AofFileMode) {
-        self.shared.lock().mode = mode;
+        self.set_file_format(mode, false);
+    }
+
+    /// Set what the file holds, and whether it groups transactions (a
+    /// `Timeless` file whose `FORMAT` has the `txn` bit, 6O-I).
+    pub(crate) fn set_file_format(&self, mode: AofFileMode, grouped: bool) {
+        let mut queue = self.shared.lock();
+        queue.mode = mode;
+        queue.grouped = grouped && mode == AofFileMode::Timeless;
     }
 
     /// What the file holds, as the queue will leave it.
@@ -2041,12 +2105,22 @@ impl AofWriter {
     /// and in order — one `write(2)`, and under `always` one `fdatasync`.
     ///
     /// The bytes are exactly the frames' own, back to back, as separate
-    /// appends would have written them: no record marks the transaction.
-    /// So this is not crash atomicity: a torn tail, or a power loss under
-    /// `everysec`/`no` that persists part of the batch, can replay a prefix
-    /// of the transaction (transaction framing is a separate design).
+    /// appends would have written them. For a transaction's, see
+    /// [`append_transaction`](Self::append_transaction).
     pub(crate) async fn append_frames(&self, frames: &[&[u8]]) -> std::io::Result<()> {
-        self.enqueue(false, |batch| push_frames(batch, frames))
+        self.append_batch(frames, false).await
+    }
+
+    /// [`append_frames`](Self::append_frames) for a transaction's frames
+    /// (6O-I): in a `txn` file, two or more are written as a group between
+    /// `TXN-BEGIN` and `TXN-COMMIT`, so a replay applies all of them or none
+    /// (`push_transaction`).
+    pub(crate) async fn append_transaction(&self, frames: &[&[u8]]) -> std::io::Result<()> {
+        self.append_batch(frames, true).await
+    }
+
+    async fn append_batch(&self, frames: &[&[u8]], transaction: bool) -> std::io::Result<()> {
+        self.enqueue(false, |batch| push_batch(batch, frames, transaction))
             .wait()
             .await
     }
@@ -2101,11 +2175,29 @@ impl AofWriter {
     /// frames, queued together into one batch as by
     /// [`append_frames`](Self::append_frames).
     pub(crate) async fn append_coalesced_frames(&self, frames: &[&[u8]]) -> std::io::Result<()> {
+        self.append_coalesced_batch(frames, false).await
+    }
+
+    /// [`append_coalesced_frames`](Self::append_coalesced_frames) for a
+    /// transaction's frames, grouped as by
+    /// [`append_transaction`](Self::append_transaction).
+    pub(crate) async fn append_coalesced_transaction(
+        &self,
+        frames: &[&[u8]],
+    ) -> std::io::Result<()> {
+        self.append_coalesced_batch(frames, true).await
+    }
+
+    async fn append_coalesced_batch(
+        &self,
+        frames: &[&[u8]],
+        transaction: bool,
+    ) -> std::io::Result<()> {
         // The last frame's position in its batch: 1 if it opened the batch
         // alone.
         let mut position = 0;
         let (done, busy) = self.queue_only_busy(false, |batch| {
-            push_frames(batch, frames);
+            push_batch(batch, frames, transaction);
             position = batch.frames;
         });
         let shared = &self.shared;
@@ -2171,14 +2263,29 @@ impl AofWriter {
     /// transaction's frames, queued together into one batch as by
     /// [`append_frames`](Self::append_frames): one deferred wait.
     pub(crate) async fn append_client_writes(&self, frames: &[&[u8]]) -> std::io::Result<()> {
+        self.append_client_batch(frames, false).await
+    }
+
+    /// [`append_client_writes`](Self::append_client_writes) for a
+    /// transaction's frames, grouped as by
+    /// [`append_transaction`](Self::append_transaction).
+    pub(crate) async fn append_client_transaction(&self, frames: &[&[u8]]) -> std::io::Result<()> {
+        self.append_client_batch(frames, true).await
+    }
+
+    async fn append_client_batch(
+        &self,
+        frames: &[&[u8]],
+        transaction: bool,
+    ) -> std::io::Result<()> {
         let deferred = AOF_DEFERRED.try_with(Arc::clone).ok();
         match deferred {
             Some(deferred) => {
-                let done = self.queue_only(false, |batch| push_frames(batch, frames));
+                let done = self.queue_only(false, |batch| push_batch(batch, frames, transaction));
                 deferred.push(&self.shared, done);
                 Ok(())
             }
-            None => self.append_frames(frames).await,
+            None => self.append_batch(frames, transaction).await,
         }
     }
 
@@ -2236,8 +2343,9 @@ impl AofWriter {
             batch.truncate = true;
             if expiry_log {
                 batch.author = true;
+                batch.grouping = true;
                 batch.push_frame(&control_frame(Control::Format {
-                    features: FEATURE_EXPIRY_LOG,
+                    features: FORMAT_FEATURES,
                 }));
             }
             let done = Arc::clone(&batch.done);
@@ -2246,6 +2354,7 @@ impl AofWriter {
             } else {
                 AofFileMode::Empty
             };
+            queue.grouped = expiry_log;
             done
         };
         self.shared.lead();
@@ -2253,7 +2362,9 @@ impl AofWriter {
             // The file is not what the mode says (the truncation, or the
             // FORMAT after it, failed): nothing more is written as the
             // format's until a checkpoint succeeds (review C, R3-2).
-            self.shared.lock().mode = AofFileMode::Legacy;
+            let mut queue = self.shared.lock();
+            queue.mode = AofFileMode::Legacy;
+            queue.grouped = false;
             return Err(error);
         }
         info!("AOF truncated after snapshot save");
@@ -2423,7 +2534,7 @@ pub(crate) async fn start_expiry_log(
     replayed: &ReplayedAof,
     starts_as_primary: bool,
 ) -> std::io::Result<()> {
-    aof.set_file_mode(replayed.mode);
+    aof.set_file_format(replayed.mode, replayed.grouped);
     if starts_as_primary {
         aof.begin_expiry_log().await?;
     } else {
@@ -2441,6 +2552,15 @@ pub(crate) async fn start_expiry_log(
     aof.flush().await
 }
 
+/// A transaction group pass 1 is inside (6O-I): where its `TXN-BEGIN` is,
+/// how many records it declares, and how many it has found.
+#[derive(Clone, Copy)]
+struct OpenGroup {
+    begin: usize,
+    count: u32,
+    seen: u32,
+}
+
 /// What replaying the AOF found, for the server that goes on writing it.
 pub(crate) struct ReplayedAof {
     #[cfg_attr(not(test), allow(dead_code))]
@@ -2449,6 +2569,9 @@ pub(crate) struct ReplayedAof {
     /// What the file holds: whether this server may continue it in the
     /// expiry-log format, or must begin one, or keeps it legacy.
     pub(crate) mode: AofFileMode,
+    /// Whether the file, continued in the format, groups transactions
+    /// (its `FORMAT` has the `txn` bit, 6O-I).
+    pub(crate) grouped: bool,
     /// What the replay removed on its own (ephemeral keys whose owner did not
     /// survive the restart), as records to append before anything else: the
     /// next session's writes are made against a keyspace without them, and
@@ -2505,6 +2628,20 @@ pub(crate) async fn replay_aof_format(
     let mut records = 0usize;
     let mut timeless_head = false;
     let mut timeless_end = usize::MAX;
+    // Transaction groups (6O-I, design §3.1): whether the file's head
+    // `FORMAT` has the `txn` bit, the group open at this point, and where
+    // an incomplete group at the tail begins (nothing from there is applied,
+    // and the file is cut back to it).
+    let mut grouped_head = false;
+    let mut group: Option<OpenGroup> = None;
+    let mut discard_from: Option<(usize, OpenGroup)> = None;
+    let mut abandoned = 0usize;
+    let corrupt = |at: usize, why: &str| {
+        std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!("AOF corrupted at offset {at}: {why}"),
+        )
+    };
     while offset < bytes.len() {
         match Value::parse(&bytes[offset..]) {
             Ok((value, consumed)) => {
@@ -2512,11 +2649,112 @@ pub(crate) async fn replay_aof_format(
                 offset += consumed;
                 records += 1;
                 let marker = checkpoint_marker(&value);
-                match (marker, marker.and_then(Control::of)) {
+                let control = marker.and_then(Control::of);
+                if records == 1
+                    && let Some(Control::Format { features }) = control
+                {
+                    grouped_head = format_is_grouped(features);
+                }
+                if grouped_head {
+                    let push = matches!(value, Value::Push(_));
+                    match (&mut group, control) {
+                        // Another server took the file over after this one
+                        // left a group open (a crash, then an older binary
+                        // started on the file): it applied the members it
+                        // found one by one and served that state, so they
+                        // replay as it replayed them. The push itself is
+                        // handled below, as any push (§2.4, §3.2).
+                        (Some(open), _) if push => {
+                            warn!(
+                                "AOF: the transaction at offset {} was left incomplete, and \
+                                 another server appended records after it from offset \
+                                 {record_at}: its {} record(s) replay one by one, as that \
+                                 server replayed them (transaction atomicity was lost when it \
+                                 recovered the file without a SAVE)",
+                                open.begin, open.seen
+                            );
+                            abandoned += 1;
+                            group = None;
+                        }
+                        (Some(open), Some(Control::TxnCommit { count }))
+                            if count == open.count && open.seen == open.count =>
+                        {
+                            group = None;
+                        }
+                        (Some(_), Some(Control::TxnBegin { .. })) => {
+                            return Err(corrupt(
+                                record_at,
+                                "a transaction group opened inside another",
+                            ));
+                        }
+                        (Some(_), Some(_)) => {
+                            return Err(corrupt(
+                                record_at,
+                                "a control record inside a transaction group that does not close it",
+                            ));
+                        }
+                        (Some(_), None) if marker.is_some() => {
+                            return Err(corrupt(
+                                record_at,
+                                "a checkpoint inside a transaction group",
+                            ));
+                        }
+                        (Some(_), None)
+                            if dedup_record(&value).is_some() || is_dedup_mark_only(&value) =>
+                        {
+                            return Err(corrupt(
+                                record_at,
+                                "a DEDUP record inside a transaction group",
+                            ));
+                        }
+                        (Some(open), None) => {
+                            open.seen = open.seen.saturating_add(1);
+                            if open.seen > open.count {
+                                return Err(corrupt(
+                                    record_at,
+                                    &format!(
+                                        "a transaction group of {} records holds more",
+                                        open.count
+                                    ),
+                                ));
+                            }
+                        }
+                        (None, Some(c)) if c.is_txn() && timeless_end != usize::MAX => {
+                            return Err(corrupt(
+                                record_at,
+                                "a transaction group after records another server appended",
+                            ));
+                        }
+                        (None, Some(Control::TxnBegin { count })) if count >= 2 => {
+                            group = Some(OpenGroup {
+                                begin: record_at,
+                                count,
+                                seen: 0,
+                            });
+                        }
+                        (None, Some(Control::TxnBegin { .. })) => {
+                            return Err(corrupt(
+                                record_at,
+                                "a transaction group of fewer than two records",
+                            ));
+                        }
+                        (None, Some(Control::TxnCommit { .. })) => {
+                            return Err(corrupt(
+                                record_at,
+                                "a transaction group closed but never opened",
+                            ));
+                        }
+                        (None, _) => {}
+                    }
+                }
+                match (marker, control) {
                     (_, Some(Control::Format { features })) if records == 1 => {
                         timeless_head = format_is_timeless(features);
                     }
                     (_, Some(Control::Format { .. })) => {}
+                    // Classified above in a `txn` file; elsewhere, ignorable
+                    // kinds a writer may omit (6O-H rules).
+                    (_, Some(Control::TxnBegin { .. } | Control::TxnCommit { .. })) => {}
                     (_, Some(Control::Unknown { ignorable: true })) => {}
                     (_, Some(Control::Unknown { ignorable: false })) => {
                         if timeless_head && timeless_end == usize::MAX {
@@ -2579,9 +2817,16 @@ pub(crate) async fn replay_aof_format(
             }
         }
     }
+    // A group still open here is this format's own torn tail: everything
+    // from its `TXN-BEGIN` on is its arrays (a push would have closed it
+    // above), at most one record torn. None of it is applied (§3.2).
+    if let Some(open) = group.take() {
+        discard_from = Some((open.begin, open));
+    }
     recovered.refusals = refusals.into_iter().flatten().collect();
-    // Only complete records count: a torn one is cut off below.
-    let complete = torn_at.unwrap_or(bytes.len());
+    // Only complete records count: a torn one, or an incomplete transaction,
+    // is cut off below.
+    let complete = discard_from.map_or(torn_at.unwrap_or(bytes.len()), |(at, _)| at);
     let mode = if records == 0 {
         AofFileMode::Empty
     } else if timeless_head && timeless_end == usize::MAX {
@@ -2589,6 +2834,9 @@ pub(crate) async fn replay_aof_format(
     } else {
         AofFileMode::Legacy
     };
+    if abandoned > 0 {
+        counter!("recached_aof_abandoned_transactions_total").increment(abandoned as u64);
+    }
     let timeless_at_start = match mode {
         AofFileMode::Empty => empty_is_timeless,
         _ => timeless_head && replay_start < timeless_end.min(complete.max(replay_start + 1)),
@@ -2615,6 +2863,8 @@ pub(crate) async fn replay_aof_format(
     let mut clamped = 0usize;
     let mut ephemeral = ReplayEphemeral::default();
     let mut offset = replay_start;
+    // Nothing of an incomplete transaction at the tail is applied.
+    let replay_end = discard_from.map_or(bytes.len(), |(at, _)| at);
     // Restored on every return, an error included.
     struct Follower<'s>(&'s KeyValueStore, bool);
     impl Drop for Follower<'_> {
@@ -2625,7 +2875,7 @@ pub(crate) async fn replay_aof_format(
     let was_follower = store.is_follower();
     let _restore = Follower(store, was_follower);
     let mut following = false;
-    while offset < bytes.len() {
+    while offset < replay_end {
         match Value::parse(&bytes[offset..]) {
             Ok((value, consumed)) => {
                 let record_at = offset;
@@ -2718,7 +2968,19 @@ pub(crate) async fn replay_aof_format(
     // from here on, so leaving the fragment in place put every later write
     // behind it, and the next startup refused the file as corrupted. The
     // fragment never completed, so no write it held was acknowledged.
-    if let Some(valid) = torn_at {
+    // An incomplete transaction at the tail is cut off from its
+    // `TXN-BEGIN` the same way (6O-I): its `TXN-COMMIT` never reached the
+    // file, so its `EXEC` was not acknowledged, and the next appends must not
+    // follow a group left open.
+    if let Some((at, open)) = discard_from {
+        warn!(
+            "AOF: discarded an incomplete transaction at offset {at} ({} of its {} record(s) \
+             present): none of it is replayed",
+            open.seen, open.count
+        );
+        counter!("recached_aof_incomplete_transactions_total").increment(1);
+    }
+    if let Some(valid) = discard_from.map(|(at, _)| at).or(torn_at) {
         let file = tokio::fs::OpenOptions::new().write(true).open(path).await?;
         file.set_len(valid as u64).await?;
         file.sync_all().await?;
@@ -2732,6 +2994,7 @@ pub(crate) async fn replay_aof_format(
         replayed,
         recovered,
         mode,
+        grouped: grouped_head && mode == AofFileMode::Timeless,
         discarded,
     })
 }
@@ -2911,18 +3174,37 @@ const CONTROL_LAYOUT: u64 = 1;
 /// expiration the primary acted on logged as a `DEL`, so the file replays
 /// without evaluating expiry.
 pub(crate) const FEATURE_EXPIRY_LOG: u32 = 1;
+/// `FORMAT` feature bit 16 (6O-I, must-understand): the file groups each
+/// transaction's records between `TXN-BEGIN` and `TXN-COMMIT`, and every
+/// record in it is this format's writer's (an array). A reader that does
+/// not understand it replays the file as legacy and appends pushes, so a
+/// push inside an open group always means another server took the file
+/// over (`benchmarks/v0.6.0/6o-i/V0.6O-I-PROTOCOL-DESIGN.md` §2.4).
+pub(crate) const FEATURE_TXN: u32 = 1 << 16;
+/// What this server writes at the head of a file in the format.
+pub(crate) const FORMAT_FEATURES: u32 = FEATURE_EXPIRY_LOG | FEATURE_TXN;
 /// `FORMAT` feature bits a reader must understand to replay the file in
 /// the format (16–31). Bits 0–15 may be ignored: a feature there must be
 /// defined so that ignoring it replays no worse than a file without it.
 const FEATURES_MUST_UNDERSTAND: u32 = 0xFFFF_0000;
-/// The must-understand features this server knows: none yet.
-const FEATURES_UNDERSTOOD: u32 = 0;
+/// The must-understand features this server knows.
+const FEATURES_UNDERSTOOD: u32 = FEATURE_TXN;
+/// Control kind of `TXN-BEGIN` (6O-I): ignorable (`0x80`–`0xFF`), so a
+/// reader that does not know it treats it as a no-op.
+const KIND_TXN_BEGIN: u64 = 0x81;
+/// Control kind of `TXN-COMMIT` (6O-I), ignorable likewise.
+const KIND_TXN_COMMIT: u64 = 0x82;
 
-/// One expiry-log control record.
+/// One control record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Control {
     /// The file's first record: the features its records were written with.
     Format { features: u32 },
+    /// A transaction's records follow: exactly `count` of them, then
+    /// `TxnCommit` with the same count (6O-I).
+    TxnBegin { count: u32 },
+    /// The end of a transaction's records.
+    TxnCommit { count: u32 },
     /// A kind or layout this server does not know (a later server's).
     /// Kinds `0x80`–`0xFF` are declared ignorable; any other ends the
     /// timeless part of the file, since what it means is unknown here.
@@ -2939,10 +3221,11 @@ impl Control {
             return Some(Control::Unknown { ignorable: false });
         }
         let kind = (id >> 40) & 0xFF;
+        let payload = (id & 0xFFFF_FFFF) as u32;
         Some(match kind {
-            1 => Control::Format {
-                features: (id & 0xFFFF_FFFF) as u32,
-            },
+            1 => Control::Format { features: payload },
+            KIND_TXN_BEGIN => Control::TxnBegin { count: payload },
+            KIND_TXN_COMMIT => Control::TxnCommit { count: payload },
             _ => Control::Unknown {
                 ignorable: kind >= 0x80,
             },
@@ -2952,9 +3235,16 @@ impl Control {
     pub(crate) fn id(self) -> u64 {
         let (kind, payload) = match self {
             Control::Format { features } => (1, u64::from(features)),
+            Control::TxnBegin { count } => (KIND_TXN_BEGIN, u64::from(count)),
+            Control::TxnCommit { count } => (KIND_TXN_COMMIT, u64::from(count)),
             Control::Unknown { ignorable } => (if ignorable { 0x80 } else { 0x7F }, 0),
         };
         (CONTROL_TAG << 48) | (kind << 40) | (CONTROL_LAYOUT << 32) | payload
+    }
+
+    /// Whether this is one of a transaction group's markers.
+    fn is_txn(self) -> bool {
+        matches!(self, Control::TxnBegin { .. } | Control::TxnCommit { .. })
     }
 }
 
@@ -2965,6 +3255,12 @@ pub(crate) fn is_control_id(id: u64) -> bool {
 
 pub(crate) fn control_frame(record: Control) -> Vec<u8> {
     checkpoint_frame(record.id())
+}
+
+/// Whether a `FORMAT` record's features make its file group transactions
+/// here: the `txn` bit, and no must-understand bit this server lacks.
+fn format_is_grouped(features: u32) -> bool {
+    features & FEATURES_MUST_UNDERSTAND & !FEATURES_UNDERSTOOD == 0 && features & FEATURE_TXN != 0
 }
 
 /// Whether a `FORMAT` record's features make its file replay without
@@ -4121,6 +4417,35 @@ mod gate_tests {
         assert_eq!(whole_frames_len(&both, both.len()), both.len());
         // A written count past the buffer (cannot happen) is clamped.
         assert_eq!(whole_frames_len(&both, both.len() + 10), both.len());
+    }
+
+    /// 6O-I: whole frames of a group whose `TXN-COMMIT` did not land are
+    /// not kept: the cut goes back to its `TXN-BEGIN`, never past a
+    /// complete group before it.
+    #[test]
+    fn a_cut_never_keeps_part_of_a_transaction_group() {
+        let group = |n: u32, frames: &[Vec<u8>]| {
+            [
+                vec![control_frame(Control::TxnBegin { count: n })],
+                frames.to_vec(),
+                vec![control_frame(Control::TxnCommit { count: n })],
+            ]
+            .concat()
+            .concat()
+        };
+        let plain = set("p", "0");
+        let first = group(2, &[set("a", "1"), set("b", "1")]);
+        let second = group(2, &[set("c", "1"), set("d", "1")]);
+        let batch = [plain.clone(), first.clone(), second.clone()].concat();
+        let kept = plain.len() + first.len();
+        for written in kept..batch.len() {
+            assert_eq!(whole_frames_len(&batch, written), kept, "{written}");
+        }
+        assert_eq!(whole_frames_len(&batch, batch.len()), batch.len());
+        // Inside the first group: back to before it.
+        for written in plain.len()..kept {
+            assert_eq!(whole_frames_len(&batch, written), plain.len(), "{written}");
+        }
     }
 
     // ── 6N-0B: `always` fail-stop (latched in-process; the real exit is

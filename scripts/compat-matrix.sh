@@ -413,7 +413,8 @@ fi
 # records are pushes, not the format's arrays, so the new server replays them
 # by the old server's rules: the value it served ("new", permanent), not the
 # APPEND merged onto the expired entry ("oldnew", then gone).
-if grep -aq '17005593296757587969' "$RUN_DIR/aof-down/appendonly.aof"; then
+# The id is FORMAT(expirylog) before 6O-I, FORMAT(expirylog, txn) since.
+if grep -aqE '17005593296757587969|17005593296757653505' "$RUN_DIR/aof-down/appendonly.aof"; then
   ok "the new server's SAVE began the AOF in the expiry-log format, and $OLD_REF started on it"
   echo "aof format new->old ok" >>"$SUMMARY"
 else

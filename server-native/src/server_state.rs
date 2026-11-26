@@ -804,19 +804,22 @@ impl ServerState {
 
     /// [`on_write_logged`](Self::on_write_logged) for a transaction's
     /// frames, in command order (6O-G): the AOF takes them as one batch
-    /// (never split by the coalescer: they are queued in one step), then
-    /// each is replicated in order. Transactions carry no DEDUP identity.
+    /// (never split by the coalescer: they are queued in one step), as a
+    /// group between `TXN-BEGIN` and `TXN-COMMIT` in a `txn` file (6O-I),
+    /// then each is replicated in order. Transactions carry no DEDUP
+    /// identity.
     pub(crate) async fn on_transaction_logged(&self, frames: &[&[u8]], may_defer: bool) {
         if frames.is_empty() {
             return;
         }
         if let Some(aof) = &self.aof {
+            // A group in a `txn` file (6O-I): replayed whole or not at all.
             let result = if may_defer && !self.replicas.is_enabled() {
-                aof.append_client_writes(frames).await
+                aof.append_client_transaction(frames).await
             } else if aof.fanout() == AofFanout::Coalesced {
-                aof.append_coalesced_frames(frames).await
+                aof.append_coalesced_transaction(frames).await
             } else {
-                aof.append_frames(frames).await
+                aof.append_transaction(frames).await
             };
             if let Err(e) = result {
                 self.record_persistence_failure("aof_append", &e);
