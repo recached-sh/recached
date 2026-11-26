@@ -500,3 +500,119 @@ async fn a_replicas_tenant_sockets_get_the_primarys_swept_dels() {
             .all(|p| p.contains("tenant:a:") && !p.contains("tenant:b:"))
     );
 }
+
+fn px(k: &str, v: &str, ms: u64) -> Command {
+    Command::Set(
+        k.into(),
+        v.as_bytes().to_vec(),
+        SetOptions {
+            expiry: Some(core_engine::cmd::SetExpiry::Px(ms)),
+            ..Default::default()
+        },
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sweep_queued_behind_a_full_sync_does_not_sweep_its_keyspace() {
+    // Review D, D1: a tick that read the mode before a full sync switched it
+    // waited on the barrier, then swept the new, timeless keyspace silently:
+    // a later PERSIST from the primary then found nothing.
+    let primary = node(false, true).await;
+    let addr = serve_replicas(&primary).await;
+    let replica = node(true, true).await;
+    replica.store.execute(px("d1:old", "x", 1)); // something volatile to sweep
+    write(&primary, px("d1:k", "v", 900)).await;
+    let hold = replica.state.replicas.lock_all_writes().await;
+    follow(&replica, addr);
+    // Long enough for the sync to queue on the barrier first (its stripes
+    // are FIFO): the tick then waits behind it.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!upstream_expirylog(&replica));
+    let (s, st, w, t) = (
+        Arc::clone(&replica.store),
+        Arc::clone(&replica.state),
+        Arc::clone(&replica.watches),
+        replica.tx.clone(),
+    );
+    let tick = tokio::spawn(async move { sweep_expired_tick(&s, &st, &w, &t).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        write(&primary, Command::Persist("d1:k".into())).await,
+        Value::Integer(1)
+    );
+    tokio::time::sleep(Duration::from_millis(450)).await;
+    drop(hold);
+    let removed = tick.await.unwrap();
+    write(&primary, set("d1:sentinel", "1")).await;
+    wait_for(&replica.store, "d1:sentinel", bulk("1")).await;
+    assert!(upstream_expirylog(&replica));
+    assert_eq!(
+        replica.store.execute(Command::Get("d1:k".into())),
+        bulk("v"),
+        "the tick (removed {removed}) swept a key the primary kept"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sub_replica_renegotiates_when_its_upstream_changes_mode_mid_handshake() {
+    // Review D, D2: B advertised expirylog to C, then (before taking C on)
+    // took a full sync from a primary that does not log expirations. C must
+    // not stream B's new, legacy keyspace as if it were timeless.
+    let b = node(true, true).await;
+    b.state
+        .replicas
+        .upstream_expirylog
+        .store(true, Ordering::Release);
+    b.store.execute(set("d2:k", "v"));
+    b.store.execute(Command::PExpire("d2:k".into(), 300));
+    let baddr = serve_replicas(&b).await;
+    let hold = b.state.replicas.lock_all_writes().await;
+    let c = node(true, true).await;
+    let mut resume = ReplResume::default();
+    // C reads `caps=…expirylog1` and waits on B's barrier.
+    let (cs, cst, ctx, cw) = (
+        Arc::clone(&c.store),
+        Arc::clone(&c.state),
+        c.tx.clone(),
+        Arc::clone(&c.watches),
+    );
+    let first = tokio::spawn(async move {
+        let mut socket = TcpStream::connect(baddr).await.unwrap();
+        let mut resume = ReplResume::default();
+        sync_from_primary(&mut socket, &cs, None, &ctx, &cw, &cst, &mut resume).await
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    // B is synced from an old primary meanwhile.
+    b.state
+        .replicas
+        .upstream_expirylog
+        .store(false, Ordering::Release);
+    b.state.replicas.reset_stream();
+    drop(hold);
+    let first = tokio::time::timeout(Duration::from_secs(5), first)
+        .await
+        .expect("the first handshake ends")
+        .unwrap();
+    assert!(first.is_err(), "the stale handshake must be dropped");
+    assert_eq!(c.store.key_count(), 0, "nothing was streamed on it");
+    // Reconnecting, C negotiates what B now streams: no expiry log.
+    follow_for(&c, baddr, &mut resume, 400).await;
+    assert!(!upstream_expirylog(&c));
+    // And C converges with B on B's own (legacy) rules.
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    follow(&c, baddr);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    for f in [
+        resp_push(&[b"APPEND", b"d2:k", b"x"]),
+        resp_push(&[b"SET", b"d2:sentinel", b"1"]),
+    ] {
+        crate::replication::apply_repl_frame_for_tests(&b.store, &b.state, &b.tx, &b.watches, &f)
+            .await
+            .unwrap();
+    }
+    wait_for(&c.store, "d2:sentinel", bulk("1")).await;
+    assert_eq!(
+        c.store.execute(Command::Get("d2:k".into())),
+        b.store.execute(Command::Get("d2:k".into()))
+    );
+}

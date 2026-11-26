@@ -686,6 +686,13 @@ pub(crate) async fn sweep_expired_tick(
         }
         let removed = {
             let _write_guards = state.replicas.lock_all_writes().await;
+            // Again under the barrier: a full synchronization or a promotion
+            // changes the mode only under it, and a tick that queued behind
+            // one must not sweep a keyspace now applied without evaluating
+            // expiry (6O-H review D, D1).
+            if state.is_replica() && state.replicas.upstream_expirylog.load(Ordering::Acquire) {
+                return total;
+            }
             let expired = store.sweep_expired_reporting_budget(EXPIRY_CHUNK);
             state.forget_ephemeral_keys(expired.iter().map(String::as_str));
             // A primary logs what its sweeper removed (6O-H, Expiry Option
