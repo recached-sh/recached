@@ -561,3 +561,27 @@ async fn offsets_past_u64_max_are_a_protocol_error() {
         "a full sync, after no panic"
     );
 }
+
+/// A resume point taken from a stream applied one frame at a time is never
+/// offered to the same run id once it offers `txn1`: the replica asks for a
+/// full sync (review A L5, mutant M10).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resume_point_is_offered_only_in_the_framing_mode_it_was_taken_in() {
+    let mut fake = FakePrimary::new("expirylog1").await;
+    let replica = node(true, false).await;
+    let _following = follow_reconnecting(&replica, fake.addr());
+    let (mut sock, run, _) = fake.accept().await;
+    assert_eq!(run, "");
+    FakePrimary::full_sync(&mut sock, 10).await;
+    send(&mut sock, 11, &frame(&["SET", "fm:a", "1"])).await;
+    wait_for(&replica.store, "fm:a", bulk("1")).await;
+    drop(sock);
+    // The same run id, unchanged otherwise: a partial resume.
+    let (sock, run, offset) = fake.accept().await;
+    assert_eq!((run.as_str(), offset), ("fake-run", 11));
+    drop(sock);
+    // The same run id, now offering txn1: a full sync.
+    fake.advertised = "fake-run;caps=expirylog1,txn1".into();
+    let (_sock, run, offset) = fake.accept().await;
+    assert_eq!((run.as_str(), offset), ("", 11), "a full sync is asked for");
+}
