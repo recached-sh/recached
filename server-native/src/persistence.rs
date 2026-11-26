@@ -19,6 +19,14 @@ use crate::*;
 /// high-water marks that stop a replayed write being applied twice — so the
 /// barrier belongs here rather than at each call site.
 pub(crate) async fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_private_parts(path, &[bytes]).await
+}
+
+/// [`write_private`] for content in several parts, written in order.
+pub(crate) async fn write_private_parts(
+    path: &std::path::Path,
+    parts: &[&[u8]],
+) -> std::io::Result<()> {
     let mut opts = tokio::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -26,7 +34,9 @@ pub(crate) async fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::
     let mut f = opts.open(path).await?;
     #[cfg(unix)]
     restrict_permissions(&f).await;
-    f.write_all(bytes).await?;
+    for part in parts {
+        f.write_all(part).await?;
+    }
     f.flush().await?;
     // `sync_all`, not `sync_data`: this file was just created, so its metadata
     // is part of what has to reach the device.
@@ -163,9 +173,10 @@ pub(crate) async fn save_snapshot_payload(
     if bytes.pop() != Some(0x90) {
         return Err(std::io::Error::other("unexpected snapshot envelope"));
     }
-    bytes.extend_from_slice(payload);
     let tmp = temp_sibling(&cfg.path, "snap");
-    if let Err(error) = write_private(&tmp, &bytes).await {
+    // The envelope, then the payload, without copying the payload (review D,
+    // D4: it can be most of a large keyspace).
+    if let Err(error) = write_private_parts(&tmp, &[&bytes, payload]).await {
         let _ = tokio::fs::remove_file(&tmp).await;
         return Err(error);
     }

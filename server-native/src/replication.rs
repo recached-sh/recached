@@ -1495,7 +1495,12 @@ where
     // Versioned resume handshake. A replica identifies the primary run and
     // last offset it applied; an empty run id requests a full synchronization.
     socket.write_all(REPL_MAGIC).await?;
-    let advertised = replicas.advertised_id(dedup_source.writes_expiry_log());
+    // What this node tells the replica it streams. It may change before the
+    // barrier below, under which the stream is chosen; then the replica
+    // must negotiate again (6O-H review D, D2).
+    let advertised_expirylog = dedup_source.writes_expiry_log();
+    let advertised_run = replicas.run_id();
+    let advertised = replicas.advertised_id(advertised_expirylog);
     let advertised = advertised.as_bytes();
     socket
         .write_all(&(advertised.len() as u16).to_le_bytes())
@@ -1544,6 +1549,19 @@ where
     // queued with a strictly higher offset.
     let sync_started = std::time::Instant::now();
     let write_barrier = replicas.lock_all_writes().await;
+    if dedup_source.writes_expiry_log() != advertised_expirylog
+        || replicas.run_id() != advertised_run
+    {
+        // This node took a full synchronization (or was promoted) between
+        // the advertisement and now: the replica negotiated a stream that no
+        // longer exists. It reconnects and negotiates the one that does.
+        drop(write_barrier);
+        counter!("recached_replication_refusals_total", "reason" => "renegotiate").increment(1);
+        return Err(std::io::Error::new(
+            ErrorKind::Interrupted,
+            "this node's stream changed during the handshake; the replica renegotiates",
+        ));
+    }
     let current_offset = replicas.offset.load(Ordering::Acquire);
     let missing = replicas
         .resume_frames(&requested_run_id, requested_offset)
