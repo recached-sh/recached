@@ -348,13 +348,14 @@ async fn a_replica_relays_each_group_to_its_sub_replicas_as_a_group() {
     while let Ok(queued) = rx.try_recv() {
         frames.push((queued.offset(), queued.group()));
     }
-    let grouped: Vec<_> = frames.iter().filter(|(_, g)| g.is_some()).collect();
-    assert_eq!(grouped.len(), 2, "{frames:?}");
-    let g = grouped[0].1.unwrap();
-    assert_eq!(
-        (g.count, grouped[0].0, grouped[1].0),
-        (2, g.first, g.first + 1)
-    );
+    let starts: Vec<usize> = (0..frames.len())
+        .filter(|&i| frames[i].1.is_some())
+        .collect();
+    assert_eq!(starts.len(), 1, "{frames:?}");
+    let (offset, group) = frames[starts[0]];
+    let g = group.unwrap();
+    assert_eq!((g.count, g.first), (2, offset));
+    assert_eq!(frames[starts[0] + 1], (offset + 1, None));
 }
 
 // ── Failure: a member that fails, or panics ──────────────────────────────

@@ -249,8 +249,10 @@ async fn a_groups_offsets_are_consecutive_among_concurrent_writers() {
         if let Some(g) = group {
             assert_eq!(g.first, offset, "a group starts at its first frame");
             assert_eq!(g.count, 3);
-            for j in 0..3 {
-                assert_eq!(frames[i + j], (g.first + j as u64, Some(g)));
+            // Its other frames follow at consecutive offsets; only the first
+            // carries the group (the header goes before it).
+            for j in 1..3 {
+                assert_eq!(frames[i + j], (g.first + j as u64, None));
             }
             groups += 1;
             i += 3;
