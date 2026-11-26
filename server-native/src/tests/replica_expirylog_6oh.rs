@@ -301,7 +301,7 @@ async fn the_wire_carries_pushes_only() {
 
 // ── The replica's own files ─────────────────────────────────────────────
 
-struct Files(PathBuf);
+pub(super) struct Files(pub(super) PathBuf);
 
 impl Drop for Files {
     fn drop(&mut self) {
@@ -310,7 +310,7 @@ impl Drop for Files {
 }
 
 /// A replica node whose state has an AOF and a snapshot in `dir`.
-async fn replica_with_files(dir: &Files) -> Node {
+pub(super) async fn replica_with_files(dir: &Files) -> Node {
     let base = node(true, true).await;
     let aof = AofWriter::open(dir.0.join("append.aof"), AofSync::Always)
         .await
@@ -335,7 +335,7 @@ async fn replica_with_files(dir: &Files) -> Node {
     Node { state, ..base }
 }
 
-fn files(name: &str) -> Files {
+pub(super) fn files(name: &str) -> Files {
     let dir = std::env::temp_dir().join(format!(
         "recached_6oh_replica_{name}_{}_{}",
         std::process::id(),
@@ -345,7 +345,7 @@ fn files(name: &str) -> Files {
     Files(dir)
 }
 
-fn aof_words(dir: &Files) -> Vec<(bool, String)> {
+pub(super) fn aof_words(dir: &Files) -> Vec<(bool, String)> {
     let bytes = std::fs::read(dir.0.join("append.aof")).unwrap_or_default();
     let mut out = Vec::new();
     let mut at = 0;

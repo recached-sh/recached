@@ -2988,11 +2988,30 @@ fn parse_group_header(bytes: &[u8]) -> std::io::Result<ReplGroup> {
     })
 }
 
-/// Apply a whole transaction group received from the primary (6O-I).
+/// Apply a whole transaction group received from the primary, atomically
+/// (6O-I design §6.4): a reader of this replica sees all of it or none of
+/// it, as a reader of the primary sees its `EXEC`.
 ///
-/// Every member is checked before any is applied: none may be a DEDUP
-/// record (an `EXEC` never carries one), and each must parse. The members
-/// are then applied in order, each as [`apply_repl_frame`] applies a frame.
+/// 1. Every member is parsed and checked before anything is applied: as
+///    [`apply_repl_frame`] parses a frame, and none may be a DEDUP record (an
+///    `EXEC` never carries one).
+/// 2. The replication-order stripes of all of them are taken, then the node
+///    is checked to still follow (promotion's barrier excludes this).
+/// 3. They run through [`KeyValueStore::apply_transaction`], the primary's
+///    own boundary (6O-G): one hold of their store stripes, marked, from the
+///    first member to the last, at one instant, and without evaluating
+///    expiry when the stream logs expirations (6O-H). A follower holds only
+///    its keys' stripes. The first member that fails stops the rest.
+/// 4. Only then the effects, in member order: this node's AOF (one group in
+///    a `txn` file) and its sub-replicas (one group, `fan_out_group`), then
+///    notifications and sync pushes per member.
+///
+/// A member that fails, or panics, means this replica had already diverged:
+/// the link ends with a protocol error, which forces a full
+/// synchronization; with an AOF, persistence is latched unhealthy, since the
+/// file no longer describes the keyspace. Readers can see the part-applied
+/// group until the full synchronization installs: the store cannot undo a
+/// member that ran (as on the primary, 6O-G4).
 async fn apply_repl_group(
     store: &KeyValueStore,
     state: &ServerState,
@@ -3000,19 +3019,133 @@ async fn apply_repl_group(
     watches: &WatchRegistry,
     frames: Vec<Vec<u8>>,
 ) -> std::io::Result<()> {
-    for bytes in &frames {
-        let body = bytes.get(1..).unwrap_or_default();
-        let value = Value::parse(&[b">".as_slice(), body].concat())
-            .map_err(|e| protocol_error(e.to_string()))?
-            .0;
+    let mut members = Vec::with_capacity(frames.len());
+    let mut commands = Vec::with_capacity(frames.len());
+    for bytes in frames {
+        let (bytes, value) = parse_replicated(bytes)?;
         if dedup_record(&value).is_some() || is_dedup_mark_only(&value) {
             return Err(protocol_error("a DEDUP record inside a transaction group"));
         }
+        let normalised = match value {
+            Value::Push(inner) => Value::Array(Some(inner)),
+            other => other,
+        };
+        commands.push(Command::from_value(normalised).map_err(protocol_error)?);
+        members.push(bytes);
     }
-    for bytes in &frames {
-        apply_repl_frame(store, state, tx, watches, bytes).await?;
+    let _order = state.replicas.lock_commands(&commands).await;
+    still_following(state)?;
+    let mut failed: Option<String> = None;
+    // Whether each member removed its keys, decided right after it ran,
+    // inside the hold (as `EXEC`'s phase 1 does), for the notifications.
+    let mut removes: Vec<bool> = Vec::with_capacity(commands.len());
+    let mut apply = || {
+        store.apply_transaction(&commands, core_engine::store::clock_ms(), |_, cmd| {
+            if failed.is_some() {
+                return;
+            }
+            match store.execute_reporting_ref(cmd) {
+                (Value::Error(error), _) => failed = Some(error),
+                _ => removes.push(removes_named_keys(cmd) || stored_nothing(cmd, store)),
+            }
+        })
+    };
+    let applied = if state.replicas.upstream_expirylog.load(Ordering::Acquire) {
+        core_engine::store::without_expiry(apply)
+    } else {
+        apply()
+    };
+    let failure = match (applied.panicked, failed) {
+        (Some(at), _) => Some(format!(
+            "member {at} of a replicated transaction panicked (metadata rebuilt: {})",
+            applied.repaired
+        )),
+        (None, Some(error)) => Some(format!("replicated command failed: {error}")),
+        (None, None) => None,
+    };
+    if let Some(failure) = failure {
+        // The members before the failure are in the store and nowhere
+        // else: bring every other copy back to it now, as the primary's
+        // `converge` does (6O-G; reviews C M1 and D D-1), with the group's
+        // stripes still held. Sub-replicas take a full sync from a new run
+        // id (they must not resume partially past the prefix, also if this
+        // node is promoted first); sync clients rebuild; watchers and live
+        // queries are told the keyspace changed. With an AOF, its file no
+        // longer describes the keyspace either: writes answer `MISCONF`
+        // until a checkpoint.
+        if state.aof.is_some() {
+            state.record_internal_failure("replica_transaction");
+        }
+        let sub_replicas = state.replicas.reset_stream();
+        let clients = tx.invalidate_all();
+        notify_keyspace_replaced(watches, store).await;
+        error!(
+            sub_replicas,
+            clients, "Replica: {failure}; resynchronizing in full"
+        );
+        return Err(protocol_error(failure));
+    }
+    // Logged first, then announced, as a write on the primary is. Not
+    // cancellation-safe past this point (review C L3): dropped here, the
+    // group is applied but the resume point is still before it. No caller
+    // drops this future; a single frame's apply is the same.
+    let pushes: Vec<(usize, Vec<u8>)> = if tx.is_active() {
+        members.iter().cloned().enumerate().collect()
+    } else {
+        Vec::new()
+    };
+    state.on_group_logged(members).await;
+    notify_replicated_group(watches, store, &commands, &removes).await;
+    for (at, bytes) in &pushes {
+        push_replicated(tx, &commands[*at], bytes);
     }
     Ok(())
+}
+
+/// A replicated frame as [`apply_repl_frame`] reads one: normalized to a
+/// push (6O-H R2-1), parsed whole, a pre-6O-F deadline clamped.
+fn parse_replicated(bytes: Vec<u8>) -> std::io::Result<(Vec<u8>, Value)> {
+    let bytes = match bytes.split_first() {
+        Some((b'*', rest)) => [b">".as_slice(), rest].concat(),
+        _ => bytes,
+    };
+    let (mut value, consumed) = Value::parse(&bytes).map_err(|e| protocol_error(e.to_string()))?;
+    if consumed != bytes.len() {
+        return Err(protocol_error("replication frame contains trailing bytes"));
+    }
+    if clamp_overflowing_deadline(&mut value) {
+        warn!("replicated frame carried a deadline past i64::MAX (pre-6O-F primary); clamped");
+    }
+    Ok((bytes, value))
+}
+
+/// Push a replicated write to this node's sync clients that may read it,
+/// as [`apply_repl_frame`] does: a multi-key `DEL` one key at a time
+/// (6O-H review B, B-5).
+fn push_replicated(tx: &SyncTx, cmd: &Command, bytes: &[u8]) {
+    if let Command::Del(keys) = cmd
+        && keys.len() > 1
+        && tx.is_active()
+    {
+        for key in keys {
+            let del = Command::Del(vec![key.clone()]);
+            if tx.would_route(&del) {
+                tx.send(Arc::new(SyncPush::for_command(
+                    0,
+                    &del,
+                    push_keys(&del),
+                    resp_push(&[b"DEL", key.as_bytes()]),
+                )));
+            }
+        }
+    } else if tx.would_route(cmd) {
+        tx.send(Arc::new(SyncPush::for_command(
+            0,
+            cmd,
+            push_keys(cmd),
+            bytes.to_vec(),
+        )));
+    }
 }
 
 /// Refuse a replicated write once this node has been promoted.
@@ -3144,34 +3277,12 @@ async fn apply_repl_frame(
     // Built only when a browser is a candidate for it: the push copies the
     // frame, which every replicated write paid for even with no WebSocket
     // client. Checked after the write, so a client routed before it is
-    // pushed it and one routed later reads it from the store.
-    if let Command::Del(keys) = &cmd
-        && keys.len() > 1
-        && tx.is_active()
-    {
-        // One push per key (6O-H review B, B-5): a frame naming several keys
-        // reaches only a socket allowed to read them all, so a tenant-scoped
-        // one would never see the primary's swept `DEL`s, which this replica
-        // no longer makes itself. The primary pushes its own sweeps per key.
-        for key in keys {
-            let del = Command::Del(vec![key.clone()]);
-            if tx.would_route(&del) {
-                tx.send(Arc::new(SyncPush::for_command(
-                    0,
-                    &del,
-                    push_keys(&del),
-                    resp_push(&[b"DEL", key.as_bytes()]),
-                )));
-            }
-        }
-    } else if tx.would_route(&cmd) {
-        tx.send(Arc::new(SyncPush::for_command(
-            0,
-            &cmd,
-            push_keys(&cmd),
-            bytes.to_vec(),
-        )));
-    }
+    // pushed it and one routed later reads it from the store. A multi-key
+    // `DEL` goes one key at a time (6O-H review B, B-5): a frame naming
+    // several keys reaches only a socket allowed to read them all, so a
+    // tenant-scoped one would never see the primary's swept `DEL`s, which
+    // this replica no longer makes itself.
+    push_replicated(tx, &cmd, bytes);
     Ok(())
 }
 
