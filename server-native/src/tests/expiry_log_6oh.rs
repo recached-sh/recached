@@ -821,3 +821,67 @@ async fn in_exec_only_a_failed_writes_del_reaches_the_writer() {
     assert!(!got.contains(&rec(&["DEL", "xw:k"])), "{got:?}");
     assert!(got.contains(&rec(&["DEL", "xw:l"])), "{got:?}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_sweeper_writes_its_dels_after_releasing_the_barrier() {
+    // Review E, F1: the sweeper waited for its `DEL`s' `write(2)`, and under
+    // `always` their `fdatasync`, inside the all-write barrier, so every
+    // writer stopped for a disk flush per chunk (about 65 ms on an HDD) and
+    // the sweep fell to a chunk per tick.
+    let mut log = Logged::new(AofSync::Always, AofFanout::Inline, KeyValueStore::new()).await;
+    let mut c = Pipe::tcp(&log.shared);
+    c.cmd(&["SET", "swb:k", "v", "PX", "1"]).await;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let start = log.aof().await.len();
+    let aof = Arc::clone(log.shared.state.aof.as_ref().unwrap());
+    // The sweep's batch stops in the performer, as a slow disk would.
+    aof.hold_batch_containing(b"swb:k");
+    let sweep = sweep_expired_tick(
+        &log.shared.store,
+        &log.shared.state,
+        &log.shared.watch_registry,
+        &log.shared.tx,
+    );
+    let check = async {
+        aof.wait_until_held().await;
+        let barrier = tokio::time::timeout(
+            Duration::from_secs(2),
+            log.shared.state.replicas.lock_all_writes(),
+        )
+        .await;
+        let free = barrier.is_ok();
+        drop(barrier);
+        aof.release_hold();
+        free
+    };
+    let (removed, free) = tokio::join!(sweep, check);
+    assert!(free, "the barrier was held across the sweep's AOF write");
+    assert_eq!(removed, 1);
+    // Still logged, in place, and replicated.
+    assert_eq!(log.aof().await[start..], [rec(&["DEL", "swb:k"])]);
+    assert_eq!(log.replicated().last(), Some(&rec(&["DEL", "swb:k"])));
+}
+
+#[test]
+fn startup_discards_are_split_like_the_sweepers_frames() {
+    // Review E, F11: a restart discarding a million abandoned ephemeral
+    // keys (or set members) logged them in one record, which the next
+    // replay refuses (`MAX_ARRAY_ELEMENTS`).
+    let members: Vec<String> = (0..300_000).map(|i| format!("m{i}")).collect();
+    let frames = chunked_frames(&[b"SREM", b"owner:set"], &members);
+    assert!(frames.len() > 1);
+    let mut seen = Vec::new();
+    for frame in &frames {
+        let words: Vec<String> = records(frame).remove(0);
+        assert_eq!(words[..2], ["SREM", "owner:set"]);
+        let bytes: usize = words[2..].iter().map(String::len).sum();
+        assert!(bytes <= EXPIRY_DEL_FRAME_KEY_BYTES, "{bytes}");
+        assert!(words.len() - 2 <= EXPIRY_DEL_FRAME_KEY_BYTES);
+        seen.extend(words[2..].iter().cloned());
+    }
+    assert_eq!(seen, members, "every member once, in order");
+    assert_eq!(
+        expiry_del_frames(&members[..3]),
+        chunked_frames(&[b"DEL"], &members[..3])
+    );
+}

@@ -684,7 +684,7 @@ pub(crate) async fn sweep_expired_tick(
         if examined == 0 {
             return total;
         }
-        let removed = {
+        let (removed, queued) = {
             let _write_guards = state.replicas.lock_all_writes().await;
             // Again under the barrier: a full synchronization or a promotion
             // changes the mode only under it, and a tick that queued behind
@@ -694,6 +694,7 @@ pub(crate) async fn sweep_expired_tick(
                 return total;
             }
             let expired = store.sweep_expired_reporting_budget(EXPIRY_CHUNK);
+            let mut queued = None;
             state.forget_ephemeral_keys(expired.iter().map(String::as_str));
             // A primary logs what its sweeper removed (6O-H, Expiry Option
             // E2): the AOF replay and expiry-log replicas never expire on
@@ -701,11 +702,13 @@ pub(crate) async fn sweep_expired_tick(
             // barrier, so no write to these keys can be logged between the
             // removal and its `DEL`. A replica's own sweep stays silent: its
             // primary's stream is what its AOF and sub-replicas follow.
+            // Queued here, written once the barrier is released (review E,
+            // F1).
             if !expired.is_empty() && !state.is_replica() {
                 if state.needs_write_log() {
                     let frames = expiry_del_frames(&expired);
                     let frames: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
-                    state.on_sweep_logged(&frames).await;
+                    queued = state.on_sweep_queued(&frames).await;
                 }
                 // One push per key: a frame naming several keys reaches only
                 // a socket allowed to read them all, which a tenant-scoped
@@ -728,8 +731,9 @@ pub(crate) async fn sweep_expired_tick(
             if !watch_registry.is_empty() {
                 notify_removed(watch_registry, &expired).await;
             }
-            expired.len()
+            (expired.len(), queued)
         };
+        state.on_sweep_written(queued).await;
         total = total.saturating_add(removed);
         if removed.saturating_mul(4) < examined || started.elapsed() >= EXPIRY_TICK_BUDGET {
             return total;
@@ -1638,20 +1642,28 @@ pub(crate) const EXPIRY_DEL_FRAME_KEY_BYTES: usize = 64 * 1024;
 /// The sweeper's removals as `DEL` frames, in order, at most
 /// [`EXPIRY_DEL_FRAME_KEY_BYTES`] of keys each (and at least one key).
 pub(crate) fn expiry_del_frames(keys: &[String]) -> Vec<Vec<u8>> {
+    chunked_frames(&[b"DEL"], keys)
+}
+
+/// `head` followed by `items`, as frames of at most
+/// [`EXPIRY_DEL_FRAME_KEY_BYTES`] of items each (and at least one item), in
+/// order. Bounded per frame so no record outgrows what a replay or a
+/// replica parses (`MAX_ARRAY_ELEMENTS`, a million elements).
+pub(crate) fn chunked_frames(head: &[&[u8]], items: &[String]) -> Vec<Vec<u8>> {
     let mut frames = Vec::new();
     let mut start = 0;
-    while start < keys.len() {
+    while start < items.len() {
         let mut end = start;
         let mut bytes = 0usize;
-        while end < keys.len()
-            && (end == start || bytes + keys[end].len() <= EXPIRY_DEL_FRAME_KEY_BYTES)
+        while end < items.len()
+            && (end == start || bytes + items[end].len() <= EXPIRY_DEL_FRAME_KEY_BYTES)
         {
-            bytes += keys[end].len();
+            bytes += items[end].len();
             end += 1;
         }
-        let mut parts: Vec<&[u8]> = Vec::with_capacity(1 + end - start);
-        parts.push(b"DEL");
-        parts.extend(keys[start..end].iter().map(String::as_bytes));
+        let mut parts: Vec<&[u8]> = Vec::with_capacity(head.len() + end - start);
+        parts.extend_from_slice(head);
+        parts.extend(items[start..end].iter().map(String::as_bytes));
         frames.push(resp_push(&parts));
         start = end;
     }
