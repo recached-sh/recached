@@ -893,7 +893,8 @@ async fn a_slow_disk_does_not_slow_the_sweep_to_a_chunk_per_tick() {
     let log = Logged::new(AofSync::Always, AofFanout::Inline, KeyValueStore::new()).await;
     let mut c = Pipe::tcp(&log.shared);
     for i in 0..600 {
-        c.cmd(&["SET", &format!("chunks:{i}"), "v", "PX", "1"]).await;
+        c.cmd(&["SET", &format!("chunks:{i}"), "v", "PX", "1"])
+            .await;
     }
     tokio::time::sleep(Duration::from_millis(10)).await;
     let aof = Arc::clone(log.shared.state.aof.as_ref().unwrap());

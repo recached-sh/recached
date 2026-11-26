@@ -274,9 +274,11 @@ async fn repeated_watch_cycles_leak_nothing() {
     let mut s = Pipe::tcp(&shared);
     let k = "6oe:wx:cycles";
     for i in 0..300 {
-        // Even cycles let the key expire; odd ones change its TTL, with a
-        // deadline long enough that it is live at WATCH on a loaded host.
-        set_px(&mut s, k, if i % 2 == 0 { 5 } else { 60_000 }).await;
+        // Even cycles let the key expire; odd ones change its TTL. Each
+        // deadline is long enough that the key is live at WATCH on a loaded
+        // host: at 5 ms it was not, on CI's coverage runner, and a key
+        // absent at WATCH rightly lets EXEC commit (cycles 198 and 264).
+        set_px(&mut s, k, if i % 2 == 0 { 50 } else { 60_000 }).await;
         assert_eq!(s.cmd(&["WATCH", k]).await, ok());
         if i % 2 == 0 {
             expired(&shared.store, k).await;
