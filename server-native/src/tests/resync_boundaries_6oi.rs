@@ -43,7 +43,6 @@ impl Drop for Following {
     }
 }
 
-
 /// Follow `primary_addr` on a thread of its own, reconnecting with the
 /// resume state kept across links and cleared after a protocol error, as
 /// `run_repl_client` does.
