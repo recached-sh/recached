@@ -411,10 +411,18 @@ const REPL_GROUP_HEADER_KIND: u8 = 1;
 
 /// The most a replica buffers of one group, charged as the sum of its
 /// frames' lengths plus [`REPL_QUEUE_FRAME_OVERHEAD`] each (the charge the
-/// primary's queue uses): the largest payload a link already accepts. A
-/// larger group is refused, and the replica takes a full synchronization,
-/// which carries the transaction's effects atomically (6O-I design §8).
-pub(crate) const REPL_GROUP_MAX_BYTES: usize = MAX_REPL_FRAME_BYTES;
+/// primary's queue uses, which also covers a parsed command's fixed part):
+/// the read-ahead's own bound, 64 MiB. A larger group is refused, and the
+/// replica takes a full synchronization, which carries the transaction's
+/// effects atomically. With the default 8 MiB queue and 16 MiB backlog, a
+/// group above 16 MiB reaches a replica only through a full sync anyway
+/// (6O-I design §8, decision D1).
+pub(crate) const REPL_GROUP_MAX_BYTES: usize = REPL_READ_AHEAD_MAX_BYTES;
+/// The most frames one group may declare: the byte bound at the per-frame
+/// charge alone (524,288), stated on its own so a header is refused for its
+/// count before anything is buffered.
+pub(crate) const REPL_GROUP_MAX_FRAMES: u32 =
+    (REPL_GROUP_MAX_BYTES / REPL_QUEUE_FRAME_OVERHEAD) as u32;
 
 /// Mode byte: full synchronization followed by the DEDUP table.
 const SYNC_MODE_FULL_DEDUP: u8 = b'D';
@@ -2265,6 +2273,10 @@ pub(crate) struct ReplResume {
     /// evaluating expiry (6O-H): a partial resynchronization continues only
     /// in the same mode.
     expirylog: bool,
+    /// Whether they were applied with transaction groups (6O-I): likewise,
+    /// so a resume point taken one frame at a time is never offered to a
+    /// stream that groups them (design §7.2, review A L5).
+    txn: bool,
 }
 
 pub(crate) async fn sync_from_primary<S>(
@@ -2332,7 +2344,10 @@ where
     // continuation cannot trust, and the reverse. Another mode for the same
     // run id (a primary promoted from a replica of another kind) takes a
     // full synchronization.
-    let resume_id = if resume.run_id == primary_run_id && resume.expirylog == with_expirylog {
+    let resume_id = if resume.run_id == primary_run_id
+        && resume.expirylog == with_expirylog
+        && resume.txn == with_txn
+    {
         resume.run_id.as_str()
     } else {
         ""
@@ -2504,6 +2519,7 @@ where
             resume.run_id = primary_run_id.clone();
             resume.offset = boundary;
             resume.expirylog = with_expirylog;
+            resume.txn = with_txn;
             Ok::<_, std::io::Error>(clients)
         };
         let clients = reading_ahead(socket, &mut read_ahead, install).await??;
@@ -2567,6 +2583,7 @@ where
     resume.run_id = primary_run_id;
     resume.offset = boundary;
     resume.expirylog = with_expirylog;
+    resume.txn = with_txn;
     socket.write_all(&boundary.to_le_bytes()).await?;
     socket.flush().await?;
 
@@ -2871,6 +2888,13 @@ impl GroupAssembler {
                     "a transaction group header for offset {}, expected {}",
                     group.first,
                     next(&self.open)
+                )));
+            }
+            if group.count > REPL_GROUP_MAX_FRAMES {
+                return Err(protocol_error(format!(
+                    "a transaction group of {} frames exceeds the {REPL_GROUP_MAX_FRAMES}-frame \
+                     group limit; resynchronizing in full",
+                    group.count
                 )));
             }
             let charge = group.bytes.saturating_add(
