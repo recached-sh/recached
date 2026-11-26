@@ -329,8 +329,9 @@ async fn a_group_another_server_appended_after_replays_one_by_one() {
 
 #[tokio::test]
 async fn the_files_older_binaries_left_replay_here() {
-    // T4's files, as each older binary left them (raw/i1-compat), when the
-    // design's evidence directory is present: abandoned, never discarded.
+    // T4's files (`raw/i1-compat/t4-files/*.resp`), as each older binary
+    // left them, when the design's evidence is present: abandoned, never
+    // discarded.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../benchmarks/v0.6.0/6o-i/raw/i1-compat/t4-files");
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -338,6 +339,9 @@ async fn the_files_older_binaries_left_replay_here() {
     };
     for entry in entries {
         let path = entry.unwrap().path();
+        if path.extension().is_none_or(|ext| ext != "resp") {
+            continue;
+        }
         let bytes = std::fs::read(&path).unwrap();
         let (store, _) = replay(&bytes).await;
         let store = store.unwrap_or_else(|e| panic!("{}: {e}", path.display()));
