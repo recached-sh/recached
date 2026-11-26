@@ -9,10 +9,6 @@ use std::hash::{Hash, Hasher};
 pub(crate) struct ReplFrame {
     offset: u64,
     bytes: Arc<Vec<u8>>,
-    /// The transaction group this frame belongs to, if any (6O-I): a
-    /// capable replica is sent a header before the group's first frame, and
-    /// a partial resynchronization never resumes inside one.
-    group: Option<ReplGroup>,
 }
 
 /// A transaction's frames on the replication stream (6O-I design §6): the
@@ -33,6 +29,9 @@ impl ReplGroup {
 
 pub(crate) struct QueuedReplFrame {
     frame: ReplFrame,
+    /// On a transaction group's first frame, the group (6O-I): a capable
+    /// replica's sender writes its header first. `None` on every other frame.
+    starts: Option<ReplGroup>,
     charged_bytes: usize,
     pending_bytes: Arc<AtomicUsize>,
 }
@@ -49,9 +48,9 @@ impl QueuedReplFrame {
         self.frame.offset
     }
 
-    /// The transaction group the frame belongs to (6O-I), for tests.
+    /// The transaction group this frame starts (6O-I), for tests.
     pub(crate) fn group(&self) -> Option<ReplGroup> {
-        self.frame.group
+        self.starts
     }
 }
 
@@ -90,6 +89,22 @@ pub(crate) struct ReplicaHandle {
 struct ReplBacklog {
     frames: VecDeque<ReplFrame>,
     bytes: usize,
+    /// The transaction groups among the backlogged frames (6O-I), oldest
+    /// first: one 24-byte entry per group, so a frame costs what it did
+    /// before 6O-I (the extent carried on every frame cost 13 MiB of primary
+    /// RSS over a full 16 MiB backlog of small frames, review E M2). A group
+    /// stays while any of its frames does, so a resume point inside one is
+    /// recognized even after its first frame was trimmed (rule 2).
+    groups: VecDeque<ReplGroup>,
+}
+
+impl ReplBacklog {
+    /// The group the frame at `offset` belongs to, if any.
+    fn group_of(&self, offset: u64) -> Option<ReplGroup> {
+        let after = self.groups.partition_point(|group| group.first <= offset);
+        let group = *self.groups.get(after.checked_sub(1)?)?;
+        (offset <= group.last()).then_some(group)
+    }
 }
 
 /// The replication stream's state: the backlog partial resynchronisation
@@ -500,27 +515,25 @@ impl ReplHub {
     /// up. Increments each surviving replica's sent counter, which is one half
     /// of the lag calculation.
     pub(crate) async fn fan_out(&self, bytes: Vec<u8>) {
-        self.publish(vec![bytes]);
+        // Inline: a single write allocates nothing more than before 6O-I
+        // (review E, H2).
+        self.publish(smallvec::smallvec![bytes]);
     }
 
     /// Replicate a transaction's frames, in order (6O-I design §6.3): one
     /// hold of the stream lock gives them consecutive offsets — no other
     /// writer's frame can take one between them — and, when there are two
-    /// or more, marks them as one group, so a capable replica applies them
+    /// or more, records them as one group, so a capable replica applies them
     /// all at once and never resumes inside them.
     pub(crate) async fn fan_out_group(&self, frames: Vec<Vec<u8>>) {
-        self.publish(frames);
+        self.publish(frames.into());
     }
 
-    fn publish(&self, frames: Vec<Vec<u8>>) {
+    fn publish(&self, frames: smallvec::SmallVec<[Vec<u8>; 1]>) {
         if !self.is_enabled() || frames.is_empty() {
             return;
         }
         let count = frames.len();
-        let total: u64 = frames
-            .iter()
-            .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
-            .fold(0, u64::saturating_add);
         // Keep the backlog guard until every replica queue has accepted these
         // frames. Independent-key writes can propagate concurrently; without
         // this serialization offset 2 could be queued before offset 1.
@@ -530,23 +543,25 @@ impl ReplHub {
             senders: reg,
         } = &mut *stream;
         let first = self.offset.fetch_add(count as u64, Ordering::AcqRel) + 1;
-        // A group of more frames than a `u32` counts (it cannot fit in
-        // memory) would go ungrouped rather than wrap.
+        // A group of more frames than a `u32` counts cannot fit in memory;
+        // `u32::try_from` failing would only leave it ungrouped.
         let group = u32::try_from(count)
             .ok()
             .filter(|count| *count >= 2)
             .map(|count| ReplGroup {
                 first,
                 count,
-                bytes: total,
+                bytes: frames
+                    .iter()
+                    .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+                    .fold(0, u64::saturating_add),
             });
-        let frames: Vec<ReplFrame> = frames
+        let frames: smallvec::SmallVec<[ReplFrame; 1]> = frames
             .into_iter()
             .zip(first..)
             .map(|(bytes, offset)| ReplFrame {
                 offset,
                 bytes: Arc::new(bytes),
-                group,
             })
             .collect();
         let backlog_limit = self.backlog_bytes.load(Ordering::Acquire);
@@ -554,11 +569,26 @@ impl ReplHub {
             backlog.bytes = backlog.bytes.saturating_add(frame.bytes.len());
             backlog.frames.push_back(frame.clone());
         }
+        if let Some(group) = group {
+            backlog.groups.push_back(group);
+        }
         while backlog.bytes > backlog_limit {
             let Some(expired) = backlog.frames.pop_front() else {
                 break;
             };
             backlog.bytes = backlog.bytes.saturating_sub(expired.bytes.len());
+        }
+        // Groups none of whose frames is still retained.
+        let oldest = backlog
+            .frames
+            .front()
+            .map_or(u64::MAX, |frame| frame.offset);
+        while backlog
+            .groups
+            .front()
+            .is_some_and(|group| group.last() < oldest)
+        {
+            backlog.groups.pop_front();
         }
         let backlog_bytes = backlog.bytes;
 
@@ -582,6 +612,7 @@ impl ReplHub {
                 }
                 let queued = QueuedReplFrame {
                     frame: frame.clone(),
+                    starts: group.filter(|group| group.first == frame.offset),
                     charged_bytes,
                     pending_bytes: Arc::clone(&r.pending_bytes),
                 };
@@ -1121,7 +1152,7 @@ impl ReplHub {
         requested_run_id: &str,
         requested_offset: u64,
         txn: bool,
-    ) -> Option<Vec<ReplFrame>> {
+    ) -> Option<(Vec<ReplFrame>, Vec<ReplGroup>)> {
         if requested_run_id != self.run_id() {
             return None;
         }
@@ -1132,7 +1163,7 @@ impl ReplHub {
         let stream = self.stream();
         let backlog = &stream.backlog;
         if requested_offset == current {
-            return Some(Vec::new());
+            return Some((Vec::new(), Vec::new()));
         }
         let first = backlog.frames.front()?.offset;
         if requested_offset.saturating_add(1) < first {
@@ -1146,7 +1177,7 @@ impl ReplHub {
             .collect();
         if txn
             && let Some(next) = missing.first()
-            && let Some(group) = next.group
+            && let Some(group) = backlog.group_of(next.offset)
             && group.first < next.offset
         {
             warn!(
@@ -1158,7 +1189,13 @@ impl ReplHub {
             counter!("recached_replication_midgroup_resumes_total").increment(1);
             return None;
         }
-        Some(missing)
+        let groups = backlog
+            .groups
+            .iter()
+            .filter(|group| group.first > requested_offset)
+            .copied()
+            .collect();
+        Some((missing, groups))
     }
 }
 
@@ -1811,7 +1848,7 @@ where
             socket.write_all(&len.to_le_bytes()).await?;
             socket.write_all(&table).await?;
         }
-    } else if let Some(missing) = missing {
+    } else if let Some((missing, groups)) = missing {
         counter!("recached_replication_syncs_total", "type" => "partial").increment(1);
         replicas.syncs_partial.fetch_add(1, Ordering::Relaxed);
         let count = u32::try_from(missing.len()).map_err(|_| {
@@ -1823,8 +1860,10 @@ where
         socket.write_all(&count.to_le_bytes()).await?;
         // `count` counts data frames; a capable replica also gets each
         // group's header before its first frame.
+        let mut groups = groups.into_iter().peekable();
         for frame in &missing {
-            write_repl_frame_to(&mut socket, frame, with_txn).await?;
+            let starts = groups.next_if(|group| group.first == frame.offset);
+            write_repl_frame_to(&mut socket, frame, starts, with_txn).await?;
         }
     }
     socket.flush().await?;
@@ -1909,7 +1948,7 @@ where
                     break;
                 };
                 replicas.record_wake(rx.len() + 1, pending_bytes.load(Ordering::Relaxed));
-                write_repl_frame_to(&mut wr, &queued.frame, with_txn).await?;
+                write_repl_frame_to(&mut wr, &queued.frame, queued.starts, with_txn).await?;
                 unflushed += 1;
                 // Everything already queued goes into the buffer too. Frames
                 // leave the queue only once written, as before, so the byte
@@ -1917,7 +1956,7 @@ where
                 while unflushed < REPL_SEND_BATCH_FRAMES {
                     match rx.try_recv() {
                         Ok(queued) => {
-                            write_repl_frame_to(&mut wr, &queued.frame, with_txn).await?;
+                            write_repl_frame_to(&mut wr, &queued.frame, queued.starts, with_txn).await?;
                             unflushed += 1;
                         }
                         Err(_) => break,
@@ -2126,14 +2165,16 @@ where
 
 /// [`write_repl_frame`], preceded, on a link that negotiated `txn1`, by
 /// the group header when `frame` is its group's first (6O-I design §6.2).
-async fn write_repl_frame_to<S>(socket: &mut S, frame: &ReplFrame, txn: bool) -> std::io::Result<()>
+async fn write_repl_frame_to<S>(
+    socket: &mut S,
+    frame: &ReplFrame,
+    starts: Option<ReplGroup>,
+    txn: bool,
+) -> std::io::Result<()>
 where
     S: AsyncWrite + Unpin,
 {
-    if txn
-        && let Some(group) = frame.group
-        && group.first == frame.offset
-    {
+    if txn && let Some(group) = starts {
         socket.write_all(&group_header(group)).await?;
     }
     write_repl_frame(socket, frame).await
@@ -3492,7 +3533,7 @@ mod write_order_tests {
             hub.resume_frames(&hub.run_id(), 0, false).await.is_none(),
             "offset one was evicted, so offset zero cannot resume"
         );
-        let frames = hub
+        let (frames, _) = hub
             .resume_frames(&hub.run_id(), 1, false)
             .await
             .expect("offset one should resume from retained offset two");
@@ -3514,8 +3555,8 @@ mod write_order_tests {
         hub.fan_out_group(vec![vec![b'a'], vec![b'b'], vec![b'c']])
             .await;
         let run = hub.run_id();
-        let offsets = |frames: Option<Vec<ReplFrame>>| {
-            frames.map(|frames| frames.iter().map(|f| f.offset).collect::<Vec<_>>())
+        let offsets = |frames: Option<(Vec<ReplFrame>, Vec<ReplGroup>)>| {
+            frames.map(|(frames, _)| frames.iter().map(|f| f.offset).collect::<Vec<_>>())
         };
         let resume = |at: u64, txn: bool| {
             let (hub, run) = (&hub, run.clone());
@@ -4019,5 +4060,69 @@ mod legacy_deadline_6of_tests {
         ])
         .await;
         assert_eq!(at, Value::Integer(i64::MAX));
+    }
+}
+
+#[cfg(test)]
+mod group_table_tests {
+    use super::*;
+
+    /// A backlogged frame costs what it did before 6O-I; groups live in a
+    /// side table of one entry each (review E, M2).
+    #[test]
+    fn a_frame_costs_what_it_did_and_groups_live_beside_the_backlog() {
+        assert_eq!(std::mem::size_of::<ReplFrame>(), 16);
+        let mut backlog = ReplBacklog::default();
+        backlog.groups.extend([
+            ReplGroup {
+                first: 3,
+                count: 2,
+                bytes: 10,
+            },
+            ReplGroup {
+                first: 10,
+                count: 4,
+                bytes: 10,
+            },
+        ]);
+        let of = |o| backlog.group_of(o).map(|g| g.first);
+        assert_eq!([of(2), of(3), of(4), of(5)], [None, Some(3), Some(3), None]);
+        assert_eq!(
+            [of(9), of(10), of(13), of(14)],
+            [None, Some(10), Some(10), None]
+        );
+    }
+
+    /// The side table is trimmed with the backlog: it never holds a group
+    /// none of whose frames is retained, so it stays bounded by the backlog
+    /// (review E round 2, L5). A group whose first frame was trimmed but whose
+    /// last is retained stays, so rule 2 still sees the fragment.
+    #[tokio::test]
+    async fn the_group_table_shrinks_with_the_backlog() {
+        let hub = ReplHub::new();
+        hub.configure_backlog(1_000);
+        for i in 0..10_000u32 {
+            hub.fan_out_group(vec![vec![b'a'; 30 + (i % 7) as usize], vec![b'b'; 41]])
+                .await;
+            if i % 3 == 0 {
+                hub.fan_out(vec![b'c'; 25]).await;
+            }
+            let stream = hub.stream();
+            let backlog = &stream.backlog;
+            let oldest = backlog.frames.front().expect("frames retained").offset;
+            assert!(backlog.groups.len() <= backlog.frames.len() / 2 + 1);
+            let front = backlog.groups.front().expect("a group retained");
+            assert!(
+                front.last() >= oldest,
+                "a group with no retained frame stayed"
+            );
+            assert!(backlog.groups.iter().all(|g| g.count == 2));
+        }
+        let stream = hub.stream();
+        assert!(stream.backlog.frames.len() < 40, "backlog bounded by bytes");
+        assert!(
+            stream.backlog.groups.len() < 20,
+            "group table bounded with it"
+        );
     }
 }

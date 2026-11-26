@@ -845,10 +845,28 @@ fn open_batch(queue: &mut AofQueue, fresh: bool) -> &mut AofBatch {
 /// `N` × `$len CRLF bytes CRLF`), walked without allocating: the debug check
 /// on every AOF append must not show in the allocation budgets.
 fn is_one_record(frame: &[u8]) -> bool {
+    // Digits up to `\r\n`, read byte by byte: every grouped transaction
+    // checks each member in release builds (6O-I, review A L6), and a
+    // window search plus `str::parse` per length cost about 50 ns per
+    // member (`V0.6O-I-PERFORMANCE.md`).
     fn number(bytes: &[u8], at: &mut usize) -> Option<usize> {
-        let end = *at + bytes[*at..].windows(2).position(|w| w == b"\r\n")?;
-        let n = std::str::from_utf8(&bytes[*at..end]).ok()?.parse().ok()?;
-        *at = end + 2;
+        let start = *at;
+        let mut i = start;
+        let mut n: usize = 0;
+        while let Some(&b) = bytes.get(i) {
+            if b == b'\r' {
+                break;
+            }
+            if !b.is_ascii_digit() {
+                return None;
+            }
+            n = n.checked_mul(10)?.checked_add(usize::from(b - b'0'))?;
+            i += 1;
+        }
+        if i == start || bytes.get(i) != Some(&b'\r') || bytes.get(i + 1) != Some(&b'\n') {
+            return None;
+        }
+        *at = i + 2;
         Some(n)
     }
     let walk = || -> Option<bool> {
@@ -884,8 +902,29 @@ fn push_frames(batch: &mut AofBatch, frames: &[&[u8]]) {
 /// before the queue lock is taken (review B F4): nothing in them depends on
 /// the queue.
 pub(crate) struct GroupMarkers {
-    begin: Vec<u8>,
-    commit: Vec<u8>,
+    begin: std::borrow::Cow<'static, [u8]>,
+    commit: std::borrow::Cow<'static, [u8]>,
+}
+
+/// Groups of up to this many records take their markers from a table built
+/// once, rather than formatting and allocating two frames per transaction.
+const PREBUILT_GROUP_MARKERS: u32 = 64;
+
+/// `TXN-BEGIN n` and `TXN-COMMIT n` for `n` in `2..=PREBUILT_GROUP_MARKERS`.
+fn prebuilt_group_markers(count: u32) -> Option<(&'static [u8], &'static [u8])> {
+    static TABLE: std::sync::OnceLock<Vec<(Vec<u8>, Vec<u8>)>> = std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        (2..=PREBUILT_GROUP_MARKERS)
+            .map(|count| {
+                (
+                    control_frame(Control::TxnBegin { count }),
+                    control_frame(Control::TxnCommit { count }),
+                )
+            })
+            .collect()
+    });
+    let (begin, commit) = table.get(usize::try_from(count.checked_sub(2)?).ok()?)?;
+    Some((begin.as_slice(), commit.as_slice()))
 }
 
 /// The markers for a transaction's `frames`, if they can form a group: two
@@ -901,10 +940,18 @@ fn group_markers(frames: &[&[u8]]) -> Option<GroupMarkers> {
         return None;
     }
     match u32::try_from(frames.len()) {
-        Ok(count) if frames.iter().all(|frame| is_one_record(frame)) => Some(GroupMarkers {
-            begin: control_frame(Control::TxnBegin { count }),
-            commit: control_frame(Control::TxnCommit { count }),
-        }),
+        Ok(count) if frames.iter().all(|frame| is_one_record(frame)) => {
+            Some(match prebuilt_group_markers(count) {
+                Some((begin, commit)) => GroupMarkers {
+                    begin: begin.into(),
+                    commit: commit.into(),
+                },
+                None => GroupMarkers {
+                    begin: control_frame(Control::TxnBegin { count }).into(),
+                    commit: control_frame(Control::TxnCommit { count }).into(),
+                },
+            })
+        }
         _ => {
             error!(
                 frames = frames.len(),
@@ -4564,6 +4611,73 @@ mod gate_tests {
         assert_eq!(whole_frames_len(&both, both.len()), both.len());
         // A written count past the buffer (cannot happen) is clamped.
         assert_eq!(whole_frames_len(&both, both.len() + 10), both.len());
+    }
+
+    /// 6O-I: the prebuilt group markers are exactly the formatted ones, for
+    /// every count the table holds; larger groups format their own.
+    #[test]
+    fn prebuilt_group_markers_are_the_formatted_ones() {
+        for count in 2..=PREBUILT_GROUP_MARKERS {
+            let (begin, commit) = prebuilt_group_markers(count).expect("in the table");
+            assert_eq!(begin, control_frame(Control::TxnBegin { count }).as_slice());
+            assert_eq!(
+                commit,
+                control_frame(Control::TxnCommit { count }).as_slice()
+            );
+        }
+        for count in [0, 1, PREBUILT_GROUP_MARKERS + 1, u32::MAX] {
+            assert!(prebuilt_group_markers(count).is_none(), "{count}");
+        }
+        let frames: Vec<Vec<u8>> = (0..70).map(|i| set(&format!("k{i}"), "v")).collect();
+        for n in [2usize, 64, 65, 70] {
+            let refs: Vec<&[u8]> = frames[..n].iter().map(Vec::as_slice).collect();
+            let markers = group_markers(&refs).expect("groupable");
+            let count = u32::try_from(n).unwrap();
+            assert_eq!(
+                &*markers.begin,
+                control_frame(Control::TxnBegin { count }).as_slice()
+            );
+            assert_eq!(
+                &*markers.commit,
+                control_frame(Control::TxnCommit { count }).as_slice()
+            );
+        }
+    }
+
+    /// 6O-I: the one-record check every grouped transaction runs on each
+    /// member, in every build. Accepts exactly one push or array of bulk
+    /// strings; refuses anything else.
+    #[test]
+    fn is_one_record_accepts_exactly_one_record_of_bulk_strings() {
+        let one = set("k", "v");
+        assert!(is_one_record(&one));
+        let mut push = one.clone();
+        push[0] = b'>';
+        assert!(is_one_record(&push));
+        assert!(is_one_record(b"*0\r\n"));
+        let long = format!("*2\r\n$3\r\nSET\r\n${}\r\n{}\r\n", 1000, "x".repeat(1000));
+        assert!(is_one_record(long.as_bytes()));
+        for (label, bad) in [
+            ("empty", b"".to_vec()),
+            ("two records", [one.clone(), one.clone()].concat()),
+            ("trailing byte", [one.clone(), b"x".to_vec()].concat()),
+            ("torn", one[..one.len() - 1].to_vec()),
+            ("not an aggregate", b"$1\r\nx\r\n".to_vec()),
+            ("non-digit count", b"*x\r\n".to_vec()),
+            ("empty count", b"*\r\n".to_vec()),
+            ("signed count", b"*+1\r\n$1\r\nx\r\n".to_vec()),
+            ("count without CRLF", b"*1".to_vec()),
+            ("count with a bare CR", b"*1\rx".to_vec()),
+            ("length past the end", b"*1\r\n$9\r\nx\r\n".to_vec()),
+            ("element not bulk", b"*1\r\n:1\r\n".to_vec()),
+            ("bulk without CRLF", b"*1\r\n$1\r\nxyz".to_vec()),
+            (
+                "overflowing length",
+                b"*1\r\n$99999999999999999999999\r\nx\r\n".to_vec(),
+            ),
+        ] {
+            assert!(!is_one_record(&bad), "{label}");
+        }
     }
 
     /// 6O-I: whole frames of a group whose `TXN-COMMIT` did not land are
