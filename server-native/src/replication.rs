@@ -1109,10 +1109,18 @@ impl ReplHub {
         self.backlog_bytes.load(Ordering::Acquire) > 0
     }
 
+    /// The frames a replica that applied `requested_offset` of
+    /// `requested_run_id` is missing, if a partial synchronization can give
+    /// it them: every one still in the backlog and, for a replica that
+    /// accepted `txn1` (`txn`), the first of them not inside a group (6O-I
+    /// design §7.2 rule 2). A capable replica resumes only at a group's
+    /// boundary; a resume point inside one would replay the group's tail
+    /// as if it were whole, so it takes a full synchronization instead.
     async fn resume_frames(
         &self,
         requested_run_id: &str,
         requested_offset: u64,
+        txn: bool,
     ) -> Option<Vec<ReplFrame>> {
         if requested_run_id != self.run_id() {
             return None;
@@ -1130,14 +1138,27 @@ impl ReplHub {
         if requested_offset.saturating_add(1) < first {
             return None;
         }
-        Some(
-            backlog
-                .frames
-                .iter()
-                .filter(|frame| frame.offset > requested_offset)
-                .cloned()
-                .collect(),
-        )
+        let missing: Vec<ReplFrame> = backlog
+            .frames
+            .iter()
+            .filter(|frame| frame.offset > requested_offset)
+            .cloned()
+            .collect();
+        if txn
+            && let Some(next) = missing.first()
+            && let Some(group) = next.group
+            && group.first < next.offset
+        {
+            warn!(
+                "A replica asked to resume at offset {requested_offset}, inside the transaction \
+                 group at {}..={}: synchronizing it in full",
+                group.first,
+                group.last()
+            );
+            counter!("recached_replication_midgroup_resumes_total").increment(1);
+            return None;
+        }
+        Some(missing)
     }
 }
 
@@ -1703,7 +1724,7 @@ where
     }
     let current_offset = replicas.offset.load(Ordering::Acquire);
     let missing = replicas
-        .resume_frames(&requested_run_id, requested_offset)
+        .resume_frames(&requested_run_id, requested_offset, with_txn)
         .await;
     let partial_sync = missing.is_some();
     let snapshot = if missing.is_none() {
@@ -3432,15 +3453,50 @@ mod write_order_tests {
         hub.fan_out(vec![4, 5, 6]).await;
 
         assert!(
-            hub.resume_frames(&hub.run_id(), 0).await.is_none(),
+            hub.resume_frames(&hub.run_id(), 0, false).await.is_none(),
             "offset one was evicted, so offset zero cannot resume"
         );
         let frames = hub
-            .resume_frames(&hub.run_id(), 1)
+            .resume_frames(&hub.run_id(), 1, false)
             .await
             .expect("offset one should resume from retained offset two");
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].offset, 2);
+    }
+
+    /// 6O-I design §7.3, the worked example: group G = offsets 101–103.
+    /// A capable replica that asks to resume inside G is synchronized in
+    /// full, whether or not G's first frame is still retained; a legacy
+    /// replica resumes anywhere, as before.
+    #[tokio::test]
+    async fn a_capable_replica_never_resumes_inside_a_group() {
+        let hub = ReplHub::new();
+        hub.configure_backlog(1 << 20);
+        for _ in 0..100 {
+            hub.fan_out(vec![b'x']).await;
+        }
+        hub.fan_out_group(vec![vec![b'a'], vec![b'b'], vec![b'c']])
+            .await;
+        let run = hub.run_id();
+        let offsets = |frames: Option<Vec<ReplFrame>>| {
+            frames.map(|frames| frames.iter().map(|f| f.offset).collect::<Vec<_>>())
+        };
+        let resume = |at: u64, txn: bool| {
+            let (hub, run) = (&hub, run.clone());
+            async move { offsets(hub.resume_frames(&run, at, txn).await) }
+        };
+        assert_eq!(resume(100, true).await, Some(vec![101, 102, 103]));
+        assert_eq!(resume(101, true).await, None, "inside G");
+        assert_eq!(resume(102, true).await, None, "inside G");
+        assert_eq!(resume(103, true).await, Some(vec![]));
+        assert_eq!(resume(101, false).await, Some(vec![102, 103]), "legacy");
+        // Trimmed to begin at 102: G's tail alone is retained.
+        hub.configure_backlog(3);
+        hub.fan_out(vec![b'd']).await;
+        assert_eq!(resume(103, true).await, Some(vec![104]));
+        assert_eq!(resume(100, true).await, None, "101 is gone");
+        assert_eq!(resume(101, true).await, None, "rule 2, not a fragment");
+        assert_eq!(resume(101, false).await, Some(vec![102, 103, 104]));
     }
 
     /// `AckReader` alone: whole, split, several-at-once and trailing partial

@@ -6847,6 +6847,7 @@ mod replication_framing_6oi;
 mod reply_coalesce_6ob;
 mod reply_coalesce_6oc;
 mod request_path;
+mod resync_boundaries_6oi;
 mod security_v06_regressions;
 mod sync_routing;
 mod tcp_owned_split;
