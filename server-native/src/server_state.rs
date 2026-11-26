@@ -974,6 +974,18 @@ impl ServerState {
     /// [`save`](Self::save) for a caller that already holds `save_lock`
     /// and the all-write barrier (a replica's full synchronization, 6O-H).
     pub(crate) async fn checkpoint_locked(&self, store: &KeyValueStore) -> std::io::Result<()> {
+        self.checkpoint_locked_with(store, None).await
+    }
+
+    /// [`checkpoint_locked`](Self::checkpoint_locked) writing `payload`, a
+    /// serialized `Vec<SnapshotEntry>`, as the snapshot instead of
+    /// serializing the store: a replica's full synchronization writes what
+    /// its primary sent, as received (6O-H review C, R2-2/R2-4).
+    pub(crate) async fn checkpoint_locked_with(
+        &self,
+        store: &KeyValueStore,
+        payload: Option<&[u8]>,
+    ) -> std::io::Result<()> {
         let started = std::time::Instant::now();
         let checkpoint_id = self
             .snap
@@ -1012,8 +1024,13 @@ impl ServerState {
             // in the same window left marks *behind* a snapshot that held
             // their writes, and a retried `INCR` ran twice.
             self.persist_dedup().await?;
-            let entries = self.durable_snapshot(store);
-            save_snapshot_entries(entries, &self.snap, checkpoint_id).await?;
+            match payload {
+                Some(payload) => save_snapshot_payload(payload, &self.snap, checkpoint_id).await?,
+                None => {
+                    let entries = self.durable_snapshot(store);
+                    save_snapshot_entries(entries, &self.snap, checkpoint_id).await?;
+                }
+            }
             if let Some(aof) = &self.aof {
                 // The new file begins in the expiry-log format, before the
                 // seed, when this node logs its expirations: `FORMAT` is

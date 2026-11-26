@@ -13,9 +13,8 @@
 //! (`APPEND`, `HSET`, `RPUSH`), and `LSET` on a volatile list made the replay
 //! refuse the file. Fixed by 6O-H (Expiry Option E: the primary logs every
 //! expiration it acts on, and the AOF replay applies the expiry-log format
-//! without evaluating expiry), so the AOF reproductions now always run. The
-//! replica one still runs only with `RECACHED_REPRODUCE_6OF_COUNTER=1`
-//! until replicas apply the log the same way.
+//! without evaluating expiry, as does a replica that negotiated
+//! `expirylog`), so they now always run.
 //!
 //! **Regression guards (always run).** A fix that only changes the counter
 //! frame was tried (`SET <n> PXAT <deadline>`, branch
@@ -56,14 +55,6 @@ fn int(n: i64) -> Value {
 
 fn nil() -> Value {
     Value::BulkString(None)
-}
-
-fn reproducing() -> bool {
-    let on = std::env::var_os("RECACHED_REPRODUCE_6OF_COUNTER").is_some();
-    if !on {
-        eprintln!("6O-F reproduction skipped: set RECACHED_REPRODUCE_6OF_COUNTER=1 to run it");
-    }
-    on
 }
 
 /// A primary with an AOF under `policy`, written by the real TCP path.
@@ -269,9 +260,6 @@ async fn reproduce_a_client_set_keepttl_replayed_after_its_deadline() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reproduce_a_replica_applying_a_counter_after_its_deadline() {
-    if !reproducing() {
-        return;
-    }
     let deadline = now_unix_ms() + HOUR_MS;
     let at = deadline.to_string();
     let state = replica_state_after(

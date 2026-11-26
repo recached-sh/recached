@@ -671,6 +671,12 @@ pub(crate) async fn sweep_expired_tick(
     watch_registry: &WatchRegistry,
     tx: &SyncTx,
 ) -> usize {
+    // A replica of a primary that logs its expirations removes nothing on
+    // its own: it applies that primary's `DEL`s, and its reads mask expired
+    // keys meanwhile (6O-H, Expiry Option E4). Promotion turns this back on.
+    if state.is_replica() && state.replicas.upstream_expirylog.load(Ordering::Acquire) {
+        return 0;
+    }
     let started = std::time::Instant::now();
     let mut total = 0usize;
     loop {

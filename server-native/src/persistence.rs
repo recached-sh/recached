@@ -143,6 +143,44 @@ pub(crate) async fn save_snapshot_entries(
     Ok(())
 }
 
+/// [`save_snapshot_entries`] for entries already serialized (a replica's
+/// full synchronization payload, `rmp_serde` of `Vec<SnapshotEntry>`): the
+/// snapshot file is the envelope around those bytes, unchanged.
+pub(crate) async fn save_snapshot_payload(
+    payload: &[u8],
+    cfg: &SnapshotConfig,
+    aof_checkpoint: u64,
+) -> std::io::Result<()> {
+    let mut bytes = rmp_serde::to_vec(&SnapshotFile {
+        version: 1,
+        aof_checkpoint,
+        entries: Vec::new(),
+    })
+    .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
+    // The struct is a three-element array whose last element, the entries,
+    // is an empty array here (`0x90`): the payload, an array itself, goes in
+    // its place.
+    if bytes.pop() != Some(0x90) {
+        return Err(std::io::Error::other("unexpected snapshot envelope"));
+    }
+    bytes.extend_from_slice(payload);
+    let tmp = temp_sibling(&cfg.path, "snap");
+    if let Err(error) = write_private(&tmp, &bytes).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(error);
+    }
+    if let Err(error) = tokio::fs::rename(&tmp, &cfg.path).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(error);
+    }
+    sync_parent_dir(&cfg.path).await?;
+    info!(
+        "Snapshot saved from a full synchronization → {:?}",
+        cfg.path
+    );
+    Ok(())
+}
+
 pub(crate) async fn load_snapshot_checkpoint(
     store: &KeyValueStore,
     path: &std::path::Path,
