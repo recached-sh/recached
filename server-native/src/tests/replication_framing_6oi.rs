@@ -39,10 +39,24 @@ async fn exec(client: &mut WsClient, writes: &[&[&str]]) {
     assert!(matches!(reply, Value::Array(Some(_))), "{reply:?}");
 }
 
+/// Stops its follow loop when dropped (review D round 2, R2-1): a loop that
+/// outlived its test reconnected to whatever later bound its primary's port,
+/// such as another test's fake primary.
+#[must_use = "the replica stops following when this is dropped"]
+struct Following(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Following {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Follow `primary_addr` for the rest of the test, reconnecting with the
 /// resume state kept across links and cleared after a protocol error, as
 /// the server's replication loop (`run_repl_client`) does.
-fn follow_reconnecting(replica: &Node, primary_addr: std::net::SocketAddr) {
+fn follow_reconnecting(replica: &Node, primary_addr: std::net::SocketAddr) -> Following {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = Arc::clone(&stop);
     let (store, state, tx, watches) = (
         Arc::clone(&replica.store),
         Arc::clone(&replica.state),
@@ -52,6 +66,9 @@ fn follow_reconnecting(replica: &Node, primary_addr: std::net::SocketAddr) {
     tokio::spawn(async move {
         let mut resume = ReplResume::default();
         loop {
+            if stopped.load(Ordering::Relaxed) {
+                return;
+            }
             if let Ok(mut socket) = TcpStream::connect(primary_addr).await
                 && let Err(e) = sync_from_primary(
                     &mut socket,
@@ -70,6 +87,7 @@ fn follow_reconnecting(replica: &Node, primary_addr: std::net::SocketAddr) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     });
+    Following(stop)
 }
 
 // ── Negotiation ──────────────────────────────────────────────────────────
@@ -323,7 +341,7 @@ async fn send_header(sock: &mut TcpStream, count: u32, first: u64, bytes: u64) {
 async fn a_link_that_ends_inside_a_group_applies_none_of_it_and_resumes_before_it() {
     let fake = FakePrimary::new("expirylog1,txn1").await;
     let replica = node(true, false).await;
-    follow_reconnecting(&replica, fake.addr());
+    let _following = follow_reconnecting(&replica, fake.addr());
     let (mut sock, run, offset) = fake.accept().await;
     assert_eq!((run.as_str(), offset), ("", 0));
     FakePrimary::full_sync(&mut sock, 10).await;
@@ -436,7 +454,7 @@ async fn malformed_groups_force_a_full_synchronization() {
     for (label, frames, raw) in cases {
         let fake = FakePrimary::new("expirylog1,txn1").await;
         let replica = node(true, false).await;
-        follow_reconnecting(&replica, fake.addr());
+        let _following = follow_reconnecting(&replica, fake.addr());
         let (mut sock, _, _) = fake.accept().await;
         FakePrimary::full_sync(&mut sock, 10).await;
         if let Some(raw) = raw {
@@ -464,7 +482,7 @@ async fn malformed_groups_force_a_full_synchronization() {
 async fn a_header_on_a_link_without_txn1_is_a_gap() {
     let fake = FakePrimary::new("expirylog1").await;
     let replica = node(true, false).await;
-    follow_reconnecting(&replica, fake.addr());
+    let _following = follow_reconnecting(&replica, fake.addr());
     let (mut sock, _, _) = fake.accept().await;
     FakePrimary::full_sync(&mut sock, 10).await;
     send_header(&mut sock, 2, 11, 10).await;
@@ -482,7 +500,7 @@ async fn every_combination_of_expirylog1_and_txn1_converges() {
         hub.test_old_primary.store(!expirylog, Ordering::Relaxed);
         hub.test_without_txn.store(!txn, Ordering::Relaxed);
         let replica = node(true, true).await;
-        follow_reconnecting(&replica, serve_replicas(&primary).await);
+        let _following = follow_reconnecting(&replica, serve_replicas(&primary).await);
         let mut client = WsClient::connect(primary.ws).await;
         client.cmd(&["SET", "c4:x", "old", "PX", "1"]).await;
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -529,7 +547,7 @@ async fn every_combination_of_expirylog1_and_txn1_converges() {
 async fn offsets_past_u64_max_are_a_protocol_error() {
     let fake = FakePrimary::new("expirylog1,txn1").await;
     let replica = node(true, false).await;
-    follow_reconnecting(&replica, fake.addr());
+    let _following = follow_reconnecting(&replica, fake.addr());
     let (mut sock, _, _) = fake.accept().await;
     FakePrimary::full_sync(&mut sock, u64::MAX - 1).await;
     let (a, b) = (frame(&["SET", "o:a", "1"]), frame(&["SET", "o:b", "1"]));
