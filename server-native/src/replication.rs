@@ -11,11 +11,40 @@ pub(crate) struct ReplFrame {
     bytes: Arc<Vec<u8>>,
     /// The transaction group this frame belongs to, if any (6O-I): a
     /// capable replica is sent a header before the group's first frame, and
-    /// a partial resynchronization never resumes inside one. One allocation
-    /// shared by the group's frames: 8 bytes per backlogged frame, not 32
-    /// (measured: +13 MiB of primary RSS over a full 16 MiB backlog of small
-    /// frames, `V0.6O-I-PERFORMANCE.md`).
-    group: Option<Arc<ReplGroup>>,
+    /// a partial resynchronization never resumes inside one. Kept compact,
+    /// inline and without an allocation: the backlog holds hundreds of
+    /// thousands of small frames (`V0.6O-I-PERFORMANCE.md`: a 32-byte extent
+    /// per frame cost 13 MiB of primary RSS over a full 16 MiB backlog).
+    group: Option<GroupMark>,
+}
+
+/// A group's extent as a backlogged frame carries it: 16 bytes, inline. The
+/// byte total saturates at `u32::MAX`; a group that large is refused by every
+/// capable replica (its bound is 64 MiB), so the header it then declares
+/// leads to the same full synchronization.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct GroupMark {
+    first: std::num::NonZeroU64,
+    count: u32,
+    bytes: u32,
+}
+
+impl GroupMark {
+    fn new(group: ReplGroup) -> Option<GroupMark> {
+        Some(GroupMark {
+            first: std::num::NonZeroU64::new(group.first)?,
+            count: group.count,
+            bytes: u32::try_from(group.bytes).unwrap_or(u32::MAX),
+        })
+    }
+
+    pub(crate) fn group(self) -> ReplGroup {
+        ReplGroup {
+            first: self.first.get(),
+            count: self.count,
+            bytes: u64::from(self.bytes),
+        }
+    }
 }
 
 /// A transaction's frames on the replication stream (6O-I design §6): the
@@ -54,7 +83,7 @@ impl QueuedReplFrame {
 
     /// The transaction group the frame belongs to (6O-I), for tests.
     pub(crate) fn group(&self) -> Option<ReplGroup> {
-        self.frame.group.as_deref().copied()
+        self.frame.group.map(GroupMark::group)
     }
 }
 
@@ -538,8 +567,8 @@ impl ReplHub {
         let group = u32::try_from(count)
             .ok()
             .filter(|count| *count >= 2)
-            .map(|count| {
-                Arc::new(ReplGroup {
+            .and_then(|count| {
+                GroupMark::new(ReplGroup {
                     first,
                     count,
                     bytes: total,
@@ -551,7 +580,7 @@ impl ReplHub {
             .map(|(bytes, offset)| ReplFrame {
                 offset,
                 bytes: Arc::new(bytes),
-                group: group.clone(),
+                group,
             })
             .collect();
         let backlog_limit = self.backlog_bytes.load(Ordering::Acquire);
@@ -1151,7 +1180,7 @@ impl ReplHub {
             .collect();
         if txn
             && let Some(next) = missing.first()
-            && let Some(group) = next.group.as_deref().copied()
+            && let Some(group) = next.group.map(GroupMark::group)
             && group.first < next.offset
         {
             warn!(
@@ -2136,7 +2165,7 @@ where
     S: AsyncWrite + Unpin,
 {
     if txn
-        && let Some(group) = frame.group.as_deref().copied()
+        && let Some(group) = frame.group.map(GroupMark::group)
         && group.first == frame.offset
     {
         socket.write_all(&group_header(group)).await?;
@@ -4024,5 +4053,29 @@ mod legacy_deadline_6of_tests {
         ])
         .await;
         assert_eq!(at, Value::Integer(i64::MAX));
+    }
+}
+
+#[cfg(test)]
+mod group_mark_tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_carries_its_group_in_16_bytes() {
+        assert_eq!(std::mem::size_of::<Option<GroupMark>>(), 16);
+        let group = ReplGroup {
+            first: 7,
+            count: 3,
+            bytes: 99,
+        };
+        assert_eq!(GroupMark::new(group).map(GroupMark::group), Some(group));
+        // A total past u32::MAX saturates: still refused by a capable replica.
+        let huge = ReplGroup {
+            bytes: u64::from(u32::MAX) + 5,
+            ..group
+        };
+        let back = GroupMark::new(huge).map(GroupMark::group).unwrap();
+        assert_eq!(back.bytes, u64::from(u32::MAX));
+        assert!(back.bytes > REPL_GROUP_MAX_BYTES as u64);
     }
 }
