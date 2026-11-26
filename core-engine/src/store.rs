@@ -109,9 +109,21 @@ thread_local! {
 /// - **Reported even when the write fails or changes nothing.** The removal
 ///   happened, and the caller must log it: a `RENAME` of an expired source
 ///   answers `no such key` and produces no frame, but the source is gone.
-/// - **Not reported for `DEL`/`UNLINK`.** Their own frame deletes every key
-///   they name, the expired ones included, so a second `DEL` would only
-///   duplicate it.
+/// - **Every removal is reported, `DEL`/`UNLINK`'s included.** Their own
+///   frame names every key, so a caller may leave those out once the frame
+///   is produced; but a refused `DEL` (a store over its key cap) produces
+///   none, and the removal must still be logged (review A, F2).
+/// - **Order.** Keys come in the order the write's path visits them: sorted
+///   and de-duplicated on the general path. They go in one `DEL`, so the
+///   order inside it does not matter.
+/// - **The instant is taken on entry**, before the write waits for its
+///   stripes. That wait is short (the server already holds the keys'
+///   ordering guards), and the frame carries the deadline the store read
+///   back, so the primary and every applier agree; a relative deadline may
+///   count from a few microseconds earlier (review A, F5).
+/// - **A panic** inside the scope drops the keys collected so far, though
+///   they were removed: the caller must then treat its log as diverged, as
+///   a panicking transaction does (6O-G fails closed).
 /// - **Scoped.** Only writes run inside `f`, on this thread, report here; a
 ///   scope nested inside another collects its own keys. The outer list is
 ///   restored on return and on unwind.
@@ -5268,7 +5280,15 @@ impl KeyValueStore {
                         for key in &keys {
                             self.sync_key_metadata(key.as_ref());
                         }
-                        evicted.clear();
+                        // What admission already removed stays removed and
+                        // is still reported. Under `NoEviction` (the only
+                        // policy that rolls back) the memory pass evicts
+                        // nothing, so these are expired keys
+                        // `reserve_key_slots` reclaimed for room: gone from
+                        // the map, and not restored above, which saves only
+                        // the keys the write names. Cleared, their removal
+                        // reached no AOF, replica or client (6O-H review A,
+                        // F1; pre-existing).
                         return (
                             Value::Error(
                                 "OOM command not allowed when used memory > 'maxmemory'."
@@ -5343,16 +5363,16 @@ impl KeyValueStore {
     /// The caller holds the keys' write-order stripes (or a transaction's
     /// scope that holds them) and, on a capped store, the capacity gate, as
     /// for any removal: the sweeper's own removal does exactly this. Keys
-    /// are visited in the order given; each is removed and reported once
-    /// even if the command names it twice, since a removed key is no longer
-    /// expired.
+    /// are visited in the order given (the general path passes them sorted
+    /// and de-duplicated); each is removed and reported once even if the
+    /// command names it twice, since a removed key is no longer expired.
     fn purge_expired_for_write<K: AsRef<str>>(&self, keys: &[K], cmd: &Command) {
+        // A DEDUP envelope that reaches the store is refused without running
+        // (the server unwraps it first): it acts on nothing (review A, F3).
+        if matches!(cmd, Command::Dedup(..)) {
+            return;
+        }
         let now = now_ms();
-        let report = !matches!(cmd, Command::Del(_) | Command::Unlink(_))
-            && !matches!(
-                cmd,
-                Command::Dedup(_, _, inner) if matches!(**inner, Command::Del(_) | Command::Unlink(_))
-            );
         for key in keys {
             let key = key.as_ref();
             let Some((removed, entry)) = self.data.remove_if(key, |_, entry| entry.is_expired(now))
@@ -5362,9 +5382,7 @@ impl KeyValueStore {
             self.adjust_memory(entry_size(&removed, &entry), 0);
             drop(entry);
             self.sync_key_metadata(key);
-            if report {
-                report_expired(key);
-            }
+            report_expired(key);
         }
     }
 
@@ -6041,6 +6059,12 @@ impl KeyValueStore {
     /// Writes take the same primitives, stripe and accounting as the owned
     /// path ([`run_probed_write`](Self::run_probed_write)).
     pub fn execute_ref_into(&self, cmd: &CommandRef<'_>, out: &mut Vec<u8>) -> Option<RefOutcome> {
+        // A write here takes the plain probed path, which removes nothing
+        // early: inside an observing scope it goes to the owned path, which
+        // does (review A, F4). The server borrows only when nothing observes.
+        if cmd.is_write() && observing() {
+            return None;
+        }
         let error = |out: &mut Vec<u8>| {
             out.push(b'-');
             out.extend_from_slice(WRONGTYPE.as_bytes());

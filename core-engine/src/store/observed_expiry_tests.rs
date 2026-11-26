@@ -493,6 +493,14 @@ fn every_single_key_write_reports_the_expired_key_it_acts_on() {
             expire_now(&store, "ox:k");
             let (reply, reported) = observe(&store, &case.write);
             assert_eq!(reported, strings(&["ox:k"]), "{what}: reported once");
+            // Redis's model: an expired key does not exist. The write must
+            // answer exactly as on a key that never did.
+            let fresh = KeyValueStore::new();
+            assert_eq!(
+                reply,
+                fresh.execute(case.write.clone()),
+                "{what}: differs from the write on an absent key"
+            );
             assert!((case.check)(&store, &reply), "{what}: reply {reply:?}");
             assert!(
                 !store.holds_expired("ox:k"),
@@ -560,7 +568,9 @@ fn live_absent_and_read_keys_report_nothing_and_allocate_nothing() {
 }
 
 #[test]
-fn del_and_unlink_remove_expired_keys_without_reporting_them() {
+fn del_and_unlink_report_the_expired_keys_they_remove() {
+    // Their frame names every key, so the server leaves these out of the
+    // `DEL` it logs once the frame exists; a refused `DEL` (below) has none.
     for (label, store) in stores() {
         for del in [
             Command::Del(strings(&["dl:a", "dl:b", "dl:c"])),
@@ -570,18 +580,138 @@ fn del_and_unlink_remove_expired_keys_without_reporting_them() {
             store.execute(set("dl:b", "1"));
             expire_now(&store, "dl:a");
             let (reply, reported) = observe(&store, &del);
-            // Their frame is `DEL dl:a dl:b dl:c` whatever they return, so
-            // it already deletes the expired one on every applier.
             assert_eq!(
                 reply,
                 Value::Integer(1),
                 "{label}: only the live key counts"
             );
-            assert!(reported.is_empty(), "{label}: {reported:?}");
+            assert_eq!(reported, strings(&["dl:a"]), "{label}");
             assert_eq!(store.data.len(), 0, "{label}: both gone");
             assert!(metadata_is_consistent(&store), "{label}");
         }
     }
+}
+
+#[test]
+fn a_refused_del_on_a_store_over_its_cap_still_reports_what_it_removed() {
+    // Review A, F2: a promoted follower two keys over its cap refuses DEL
+    // (`max keys limit reached`), so no frame names the key it removed.
+    let store = KeyValueStore::with_config(Some(2), None, EvictionPolicy::NoEviction);
+    store.set_follower(true);
+    for key in ["rd:a", "rd:b", "rd:c", "rd:d"] {
+        store.execute(set(key, "v"));
+    }
+    expire_now(&store, "rd:a");
+    store.set_follower(false);
+    let ((reply, evicted), reported) =
+        observing_expirations(|| store.execute_reporting_ref(&Command::Del(strings(&["rd:a"]))));
+    assert!(
+        matches!(reply, Value::Error(ref e) if e.contains("max keys")),
+        "{reply:?}"
+    );
+    assert!(!store.data.contains_key("rd:a"));
+    assert!(evicted.is_empty());
+    assert_eq!(reported, strings(&["rd:a"]));
+}
+
+#[test]
+fn a_rolled_back_write_keeps_reporting_the_expired_key_admission_reclaimed() {
+    // Review A, F1: NoEviction with both caps. Admission reclaims expired
+    // `a` for room, then the write crosses maxmemory and is rolled back.
+    let store = KeyValueStore::with_config(Some(2), Some(2_000), EvictionPolicy::NoEviction);
+    store.execute(set("rb:a", "1"));
+    store.execute(set("rb:b", "1"));
+    expire_now(&store, "rb:a");
+    let big = "x".repeat(4_000);
+    let ((reply, evicted), reported) =
+        observing_expirations(|| store.execute_reporting_ref(&set("rb:c", &big)));
+    assert!(
+        matches!(reply, Value::Error(ref e) if e.contains("OOM")),
+        "{reply:?}"
+    );
+    assert!(!store.data.contains_key("rb:a"), "reclaimed");
+    assert_eq!(
+        evicted,
+        strings(&["rb:a"]),
+        "and still reported for its DEL"
+    );
+    assert!(reported.is_empty(), "not a key the write names");
+    assert!(!store.data.contains_key("rb:c"), "rolled back");
+    assert!(metadata_is_consistent(&store));
+}
+
+#[test]
+fn a_dedup_envelope_reaching_the_store_removes_nothing() {
+    // Review A, F3: refused without running, so it acts on nothing.
+    let store = KeyValueStore::new();
+    store.execute(set("de:d", "1"));
+    expire_now(&store, "de:d");
+    for inner in [Command::Del(strings(&["de:d"])), set("de:d", "2")] {
+        let cmd = Command::Dedup("c".into(), 1, Box::new(inner));
+        let ((reply, _), reported) = observing_expirations(|| store.execute_reporting_ref(&cmd));
+        assert!(matches!(reply, Value::Error(_)), "{reply:?}");
+        assert!(reported.is_empty());
+        assert!(store.holds_expired("de:d"));
+    }
+}
+
+#[test]
+fn the_borrowed_path_declines_writes_inside_a_scope() {
+    // Review A, F4: it would reset an expired key unreported.
+    let store = KeyValueStore::new();
+    store.execute(set("bp:k", "41"));
+    expire_now(&store, "bp:k");
+    let mut out = Vec::new();
+    let (outcome, reported) =
+        observing_expirations(|| store.execute_ref_into(&CommandRef::Incr("bp:k"), &mut out));
+    assert!(outcome.is_none() && out.is_empty() && reported.is_empty());
+    assert!(
+        store.holds_expired("bp:k"),
+        "untouched: the owned path runs it"
+    );
+    // Reads still borrow.
+    let (outcome, _) =
+        observing_expirations(|| store.execute_ref_into(&CommandRef::Get("bp:k"), &mut out));
+    assert!(outcome.is_some());
+}
+
+#[test]
+fn the_purge_comes_before_admission() {
+    // Review A, M1: COPY from an expired source at the key cap must neither
+    // evict nor refuse: the source's slot is free before admission counts.
+    for policy in [EvictionPolicy::AllKeysLru, EvictionPolicy::NoEviction] {
+        let store = KeyValueStore::with_config(Some(3), None, policy);
+        for key in ["pa:a", "pa:b", "pa:c"] {
+            store.execute(set(key, "v"));
+        }
+        expire_now(&store, "pa:a");
+        let ((reply, evicted), reported) = observing_expirations(|| {
+            store.execute_reporting_ref(&Command::Copy("pa:a".into(), "pa:d".into(), false))
+        });
+        assert_eq!(reply, Value::Integer(0), "{policy:?}");
+        assert!(evicted.is_empty(), "{policy:?}: {evicted:?}");
+        assert_eq!(reported, strings(&["pa:a"]));
+        assert_eq!(store.key_count(), 2);
+        assert!(metadata_is_consistent(&store));
+    }
+}
+
+#[test]
+fn the_rollback_snapshot_is_taken_after_the_purge() {
+    // Review A, M12: rolled back to "absent", not to the expired entry.
+    let store = KeyValueStore::with_config(None, Some(2_000), EvictionPolicy::NoEviction);
+    store.execute(set("rs2:k", "small"));
+    expire_now(&store, "rs2:k");
+    let big = "x".repeat(4_000);
+    let ((reply, _), reported) =
+        observing_expirations(|| store.execute_reporting_ref(&set("rs2:k", &big)));
+    assert!(
+        matches!(reply, Value::Error(ref e) if e.contains("OOM")),
+        "{reply:?}"
+    );
+    assert_eq!(reported, strings(&["rs2:k"]));
+    assert!(!store.data.contains_key("rs2:k"), "not restored");
+    assert!(metadata_is_consistent(&store));
 }
 
 #[test]
