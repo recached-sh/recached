@@ -120,6 +120,9 @@ pub(crate) struct ReplHub {
     /// Whether this node, a replica, follows a primary that negotiated
     /// `expirylog` (6O-H): set by its synchronizations.
     pub(crate) upstream_expirylog: AtomicBool,
+    /// Test-only: advertise no `expirylog`, as a primary before 6O-H.
+    #[cfg(test)]
+    pub(crate) test_old_primary: AtomicBool,
     /// Socket flushes by replica senders, summed over replicas (6N-C5). Each
     /// flush is one send burst, so the kernel's share of a replicated write
     /// (the socket send, and the replica's acknowledgement that answers it)
@@ -325,6 +328,15 @@ impl UnorderedGate {
 /// `accept`), and a 0.6 replica adds `accept` only when the primary offered
 /// the capability, so a 0.5 primary never sees it.
 pub(crate) const REPL_CAP_DEDUP: &str = "dedup1";
+
+/// Capability (6O-H): this node's stream carries every expiry transition
+/// it acts on as a `DEL` (Expiry Option E), so a replica that accepts it
+/// applies frames without evaluating expiry and runs no sweeper of its own.
+/// Advertised by a primary, and by a replica whose keyspace was built from a
+/// primary that advertised it. A replica accepts it whenever offered; an
+/// older one ignores it (it looks for `dedup1` in the list). Run-id strings
+/// are limited to 128 bytes by every release, so tokens stay short.
+pub(crate) const REPL_CAP_EXPIRYLOG: &str = "expirylog1";
 
 /// Mode byte: full synchronization followed by the DEDUP table.
 const SYNC_MODE_FULL_DEDUP: u8 = b'D';
@@ -535,6 +547,8 @@ impl ReplHub {
             dedup: AtomicBool::new(true),
             upstream_dedup: AtomicBool::new(false),
             upstream_expirylog: AtomicBool::new(false),
+            #[cfg(test)]
+            test_old_primary: AtomicBool::new(false),
             send_flushes: AtomicU64::new(0),
             send_frames: AtomicU64::new(0),
             send_queue_peak: AtomicU64::new(0),
@@ -636,13 +650,23 @@ impl ReplHub {
         self.dedup.load(Ordering::Acquire)
     }
 
-    /// The run id string this primary advertises.
-    fn advertised_id(&self) -> String {
+    /// The run id string this node advertises; `expirylog` when its stream
+    /// carries every expiry transition (`ServerState::writes_expiry_log`).
+    fn advertised_id(&self, expirylog: bool) -> String {
         let run_id = self.run_id();
-        if self.streams_dedup() {
-            format!("{run_id};caps={REPL_CAP_DEDUP}")
-        } else {
+        #[cfg(test)]
+        let expirylog = expirylog && !self.test_old_primary.load(Ordering::Relaxed);
+        let caps: Vec<&str> = [
+            self.streams_dedup().then_some(REPL_CAP_DEDUP),
+            expirylog.then_some(REPL_CAP_EXPIRYLOG),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if caps.is_empty() {
             run_id
+        } else {
+            format!("{run_id};caps={}", caps.join(","))
         }
     }
 
@@ -1471,7 +1495,7 @@ where
     // Versioned resume handshake. A replica identifies the primary run and
     // last offset it applied; an empty run id requests a full synchronization.
     socket.write_all(REPL_MAGIC).await?;
-    let advertised = replicas.advertised_id();
+    let advertised = replicas.advertised_id(dedup_source.writes_expiry_log());
     let advertised = advertised.as_bytes();
     socket
         .write_all(&(advertised.len() as u16).to_le_bytes())
@@ -2055,6 +2079,10 @@ pub(crate) async fn run_repl_client(
 pub(crate) struct ReplResume {
     run_id: String,
     offset: u64,
+    /// Whether the frames applied from `run_id` were applied without
+    /// evaluating expiry (6O-H): a partial resynchronization continues only
+    /// in the same mode.
+    expirylog: bool,
 }
 
 pub(crate) async fn sync_from_primary<S>(
@@ -2112,16 +2140,30 @@ where
     // Accept DEDUP replication whenever the primary offers it, whatever this
     // node's own setting: that governs what it sends its own replicas.
     let with_dedup = advertised.has("caps", REPL_CAP_DEDUP);
+    // And the expiry log, likewise (6O-H): never inferred from a version.
+    let with_expirylog = advertised.has("caps", REPL_CAP_EXPIRYLOG);
 
-    let resume_id = if resume.run_id == primary_run_id {
+    // A stream resumes partially only in the mode its frames were applied
+    // in: frames applied with expiry evaluated built a keyspace a timeless
+    // continuation cannot trust, and the reverse. Another mode for the same
+    // run id (a primary promoted from a replica of another kind) takes a
+    // full synchronization.
+    let resume_id = if resume.run_id == primary_run_id && resume.expirylog == with_expirylog {
         resume.run_id.as_str()
     } else {
         ""
     };
-    let requested = if with_dedup {
-        format!("{resume_id};accept={REPL_CAP_DEDUP}")
-    } else {
+    let accepted: Vec<&str> = [
+        with_dedup.then_some(REPL_CAP_DEDUP),
+        with_expirylog.then_some(REPL_CAP_EXPIRYLOG),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let requested = if accepted.is_empty() {
         resume_id.to_string()
+    } else {
+        format!("{resume_id};accept={}", accepted.join(","))
     };
     socket
         .write_all(&(requested.len() as u16).to_le_bytes())
@@ -2156,12 +2198,6 @@ where
         .replicas
         .upstream_dedup
         .store(with_dedup, Ordering::Release);
-    // This primary does not log its expirations (no `expirylog` yet, 6O-H
-    // PR 5): frames applied from it are not expiry-log records, so this
-    // node's AOF stops being written in the format.
-    if let Some(aof) = &state.aof {
-        aof.leave_expiry_log();
-    }
     let mut boundary = [0u8; 8];
     socket.read_exact(&mut boundary).await?;
     let boundary = u64::from_le_bytes(boundary);
@@ -2185,12 +2221,26 @@ where
         };
         let count = entries.len();
         let clients = {
+            // `save_lock` before the barrier, the order `save` takes them:
+            // the checkpoint below runs under both (6O-H).
+            let _save = state.save_lock.lock().await;
             // Behind the all-write barrier, as a QSUB snapshot is: a live
             // query registered on this replica must not snapshot a keyspace
             // that is half replaced (the prefix plan would read the fresh,
             // empty index installed at the start of `replace`).
             let _barrier = state.replicas.lock_all_writes().await;
-            store.replace(entries);
+            // From a primary that logs its expirations, every entry it sent
+            // is installed, whatever this node's clock says: the primary
+            // decides when it goes (6O-H, Expiry Option E3).
+            if with_expirylog {
+                core_engine::store::without_expiry(|| store.replace(entries));
+            } else {
+                store.replace(entries);
+            }
+            state
+                .replicas
+                .upstream_expirylog
+                .store(with_expirylog, Ordering::Release);
             // The DEDUP table with the data, under the same barrier (6N-C
             // PR 0d): installed after it, a sub-replica's cut (or a QSUB, or
             // a WebSocket replay on this node) could pair the new keyspace
@@ -2228,6 +2278,32 @@ where
                 );
             }
             counter!("recached_replica_full_resync_total").increment(1);
+            // This node's own files describe the old keyspace: checkpoint
+            // them to the new one, under the same barrier, before any
+            // further frame is applied or acknowledged (6O-H review C, H1;
+            // pre-existing). The snapshot is the payload as received; the
+            // new AOF begins in the expiry-log format iff the primary logs
+            // its expirations.
+            if state.aof.is_some()
+                && let Err(error) = state.checkpoint_locked_with(store, Some(&snap_bytes)).await
+            {
+                // Memory and files now describe different keyspaces: refuse
+                // writes until a SAVE succeeds (also after a promotion), and
+                // resume from nothing (R2-3).
+                state.record_internal_failure("replica_checkpoint");
+                if let Some(aof) = &state.aof {
+                    aof.leave_expiry_log();
+                }
+                *resume = ReplResume::default();
+                return Err(std::io::Error::other(format!(
+                    "checkpoint after a full synchronization failed: {error}"
+                )));
+            }
+            // Resumable from here: a disconnect after the checkpoint
+            // resumes partially from the primary's backlog (R2-4).
+            resume.run_id = primary_run_id.clone();
+            resume.offset = boundary;
+            resume.expirylog = with_expirylog;
             clients
         };
         match clients {
@@ -2273,6 +2349,7 @@ where
 
     resume.run_id = primary_run_id;
     resume.offset = boundary;
+    resume.expirylog = with_expirylog;
     socket.write_all(&boundary.to_le_bytes()).await?;
     socket.flush().await?;
 
@@ -2463,7 +2540,7 @@ async fn apply_repl_frame(
         .lock_commands(std::slice::from_ref(&cmd))
         .await;
     still_following(state)?;
-    if let (Value::Error(error), _) = store.execute_reporting_ref(&cmd) {
+    if let (Value::Error(error), _) = apply_replicated(store, state, &cmd) {
         return Err(std::io::Error::new(
             ErrorKind::InvalidData,
             format!("replicated command failed: {error}"),
@@ -2478,7 +2555,26 @@ async fn apply_repl_frame(
     // frame, which every replicated write paid for even with no WebSocket
     // client. Checked after the write, so a client routed before it is
     // pushed it and one routed later reads it from the store.
-    if tx.would_route(&cmd) {
+    if let Command::Del(keys) = &cmd
+        && keys.len() > 1
+        && tx.is_active()
+    {
+        // One push per key (6O-H review B, B-5): a frame naming several keys
+        // reaches only a socket allowed to read them all, so a tenant-scoped
+        // one would never see the primary's swept `DEL`s, which this replica
+        // no longer makes itself. The primary pushes its own sweeps per key.
+        for key in keys {
+            let del = Command::Del(vec![key.clone()]);
+            if tx.would_route(&del) {
+                tx.send(Arc::new(SyncPush::for_command(
+                    0,
+                    &del,
+                    push_keys(&del),
+                    resp_push(&[b"DEL", key.as_bytes()]),
+                )));
+            }
+        }
+    } else if tx.would_route(&cmd) {
         tx.send(Arc::new(SyncPush::for_command(
             0,
             &cmd,
@@ -2487,6 +2583,34 @@ async fn apply_repl_frame(
         )));
     }
     Ok(())
+}
+
+/// Test-only: [`apply_repl_frame`], for driving a replica with crafted frames.
+#[cfg(test)]
+pub(crate) async fn apply_repl_frame_for_tests(
+    store: &KeyValueStore,
+    state: &ServerState,
+    tx: &SyncTx,
+    watches: &WatchRegistry,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    apply_repl_frame(store, state, tx, watches, bytes).await
+}
+
+/// Run one replicated write: without evaluating expiry when this node
+/// follows a primary that logs its expirations (6O-H, Expiry Option E3),
+/// so a frame lands on the state the primary's command saw, however late or
+/// with whatever clock this node applies it. Else as before.
+fn apply_replicated(
+    store: &KeyValueStore,
+    state: &ServerState,
+    cmd: &Command,
+) -> (Value, Vec<String>) {
+    if state.replicas.upstream_expirylog.load(Ordering::Acquire) {
+        core_engine::store::without_expiry(|| store.execute_reporting_ref(cmd))
+    } else {
+        store.execute_reporting_ref(cmd)
+    }
 }
 
 // ── security helpers ─────────────────────────────────────────────────────────
@@ -2537,7 +2661,7 @@ async fn apply_dedup_envelope(
         .lock_commands(std::slice::from_ref(&cmd))
         .await;
     still_following(state)?;
-    if let (Value::Error(error), _) = store.execute_reporting_ref(&cmd) {
+    if let (Value::Error(error), _) = apply_replicated(store, state, &cmd) {
         return Err(std::io::Error::new(
             ErrorKind::InvalidData,
             format!("replicated command failed: {error}"),

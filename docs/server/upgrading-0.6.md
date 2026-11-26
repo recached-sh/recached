@@ -127,6 +127,12 @@ evaluated by their own clock, as they always did. Upgrading again after a rollba
 0.6 recognises the records the older server appended (they are RESP pushes, not arrays) and
 replays them by the older server's rules, whether or not either server shut down cleanly.
 
+**Replication and expiry.** A 0.6 primary offers its replicas `caps=expirylog1`: its stream carries
+every expiration as a `DEL`. A 0.6 replica that accepts it applies the stream without evaluating
+expiry and runs no expiry sweep of its own. An older replica ignores the capability and expires keys
+by its own clock, as before; a 0.6 replica of an older primary does the same. Mixed versions keep
+replicating either way.
+
 For replicated deployments, roll back the **primary first**: a 0.6 replica follows a 0.5.1
 primary, but a 0.6 primary refuses 0.5.1 replicas unless `RECACHED_REPL_DEDUP=off`.
 

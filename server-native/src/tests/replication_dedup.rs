@@ -583,7 +583,11 @@ async fn a_dedup_primary_refuses_a_replica_that_cannot_read_dedup_frames() {
     let mut advertised = vec![0u8; usize::from(u16::from_le_bytes(len))];
     sock.read_exact(&mut advertised).await.unwrap();
     let advertised = String::from_utf8(advertised).unwrap();
-    assert!(advertised.ends_with(";caps=dedup1"), "{advertised}");
+    // 6O-H: the expiry log too; a 0.5 replica echoes the whole string.
+    assert!(
+        advertised.ends_with(";caps=dedup1,expirylog1"),
+        "{advertised}"
+    );
     sock.write_all(&(advertised.len() as u16).to_le_bytes())
         .await
         .unwrap();
