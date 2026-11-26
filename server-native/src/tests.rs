@@ -6308,7 +6308,7 @@ async fn failed_checkpoint_keeps_dirty_state_and_aof_until_recovery() {
     // (6O-H), a primary's.
     assert_eq!(tokio::fs::read(&aof_path).await.unwrap(), {
         let mut format = control_frame(Control::Format {
-            features: FEATURE_EXPIRY_LOG,
+            features: FORMAT_FEATURES,
         });
         format[0] = b'*';
         format
@@ -6850,6 +6850,7 @@ mod security_v06_regressions;
 mod sync_routing;
 mod tcp_owned_split;
 mod transaction_atomicity_6og;
+mod transaction_framing_6oi;
 mod transaction_recovery_6og;
 mod transaction_streams_6og;
 mod watch_cas;

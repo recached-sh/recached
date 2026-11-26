@@ -412,7 +412,7 @@ async fn a_full_sync_checkpoints_the_replicas_own_files() {
             format!(
                 "RECACHED-CHECKPOINT {}",
                 Control::Format {
-                    features: FEATURE_EXPIRY_LOG
+                    features: FORMAT_FEATURES
                 }
                 .id()
             ),
