@@ -51,6 +51,11 @@ fn follow_on_own_thread(replica: &Node, primary_addr: std::net::SocketAddr) {
             .block_on(async move {
                 let mut resume = ReplResume::default();
                 loop {
+                    // As `run_repl_client`: a promoted node stops following
+                    // (review C round 2, R2-L1).
+                    if !state.is_replica() {
+                        return;
+                    }
                     if let Ok(mut socket) = TcpStream::connect(primary_addr).await
                         && let Err(e) = sync_from_primary(
                             &mut socket,
