@@ -746,3 +746,21 @@ async fn a_replica_restarted_on_an_incomplete_tail_cuts_it_before_appending() {
     assert_eq!(&bytes[..head.len()], head.as_slice());
     assert_eq!(&bytes[head.len()..], push(&["SET", "r", "1"]).as_slice());
 }
+
+/// Review A R2-M1: a copy that cannot be written does not stop the start;
+/// the cut goes ahead in place, as before 6O-I.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_tail_cut_whose_copy_cannot_be_written_still_starts() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Dir::new("6oi_cut_readonly");
+    let head = [format_txn(), set("a", "0")].concat();
+    std::fs::write(dir.aof(), [head.clone(), begin(2), set("a", "1")].concat()).unwrap();
+    std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let store = KeyValueStore::new();
+    let result = replay_aof_format(&store, &dir.aof(), 0, true).await;
+    std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o755)).unwrap();
+    result.unwrap();
+    assert_eq!(get(&store, "a"), bulk("0"));
+    assert_eq!(std::fs::read(dir.aof()).unwrap(), head);
+}
