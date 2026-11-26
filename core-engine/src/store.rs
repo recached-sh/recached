@@ -3008,6 +3008,14 @@ struct TransactionHold<'a> {
     _gate: Option<std::sync::RwLockWriteGuard<'a, ()>>,
 }
 
+impl<'a> TransactionHold<'a> {
+    /// Leave the scope and release the stripes, keeping (and returning) the
+    /// capacity gate, if held.
+    fn release_stripes(mut self) -> Option<std::sync::RwLockWriteGuard<'a, ()>> {
+        self._gate.take()
+    }
+}
+
 impl Drop for TransactionHold<'_> {
     fn drop(&mut self) {
         // The scope first: nothing that runs once the stripes are released
@@ -3405,8 +3413,10 @@ impl KeyValueStore {
     /// - on a capped store, the capacity gate, exclusively;
     /// - every write-order stripe the queue's writes take — the union of
     ///   [`mutation_scope`] over them, or every stripe for a whole-keyspace
-    ///   write or a capped store — taken in ascending order before the first
-    ///   write and **marked** multi-step, as one MSET marks its keys (6O-D).
+    ///   write, or for a capped store whose queue might evict (any key could
+    ///   then be removed; see `hold_transaction`) — taken in ascending order
+    ///   before the first write and **marked** multi-step, as one MSET marks
+    ///   its keys (6O-D).
     ///
     /// So a single-key reader of a written key waits for the span, and a
     /// multi-key reader validates across it or waits; a reader that finished
@@ -3462,7 +3472,7 @@ impl KeyValueStore {
                     false
                 }
             };
-            if all || capped {
+            if all {
                 held = [u64::MAX; STRIPE_WORDS];
             }
             span = Some((span.map_or(i, |(first, _)| first), i));
@@ -3471,7 +3481,10 @@ impl KeyValueStore {
         let mut hold: Option<TransactionHold<'_>> = None;
         for (i, cmd) in queue.iter().enumerate() {
             if span.is_some_and(|(first, _)| i == first) {
-                hold = Some(self.hold_transaction(held, capped));
+                hold =
+                    Some(self.hold_transaction(held, capped, || {
+                        self.queue_fits_without_eviction(queue)
+                    }));
             }
             let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 at_instant(now, || each(i, cmd));
@@ -3511,12 +3524,26 @@ impl KeyValueStore {
 
     /// Take the capacity gate (capped stores), then the stripes in `held`
     /// in ascending order, mark them, and enter this thread's scope.
-    fn hold_transaction(&self, held: [u64; STRIPE_WORDS], capped: bool) -> TransactionHold<'_> {
+    ///
+    /// On a capped store a write may evict any key, so the transaction then
+    /// holds and marks every stripe — unless, decided under the gate it now
+    /// holds exclusively, the whole queue certainly fits (`fits`): then no
+    /// write in it can evict, refuse for capacity or roll back, and only its
+    /// own keys' stripes are needed, as on an uncapped store (6O-G perf).
+    fn hold_transaction(
+        &self,
+        mut held: [u64; STRIPE_WORDS],
+        capped: bool,
+        fits: impl FnOnce() -> bool,
+    ) -> TransactionHold<'_> {
         let gate = capped.then(|| {
             self.capacity_gate
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
         });
+        if capped && !fits() {
+            held = [u64::MAX; STRIPE_WORDS];
+        }
         // The set's stripes in ascending order, visiting only its set bits:
         // a scan of all 256 cost more than taking two stripes.
         let count: usize = held.iter().map(|word| word.count_ones() as usize).sum();
@@ -3546,17 +3573,56 @@ impl KeyValueStore {
         }
     }
 
+    /// Whether every write in `queue` certainly fits under the caps as they
+    /// stand, all together: none needs a key slot past the key cap, and
+    /// their summed worst-case growth leaves memory at or below the point
+    /// where eviction starts — so none can evict, be refused for capacity,
+    /// sweep an expired key to make room, or be rolled back. A write with no
+    /// growth bound, or a whole-keyspace one, does not fit. Called with the
+    /// capacity gate held exclusively, so no other capped write, sweep or
+    /// eviction can use up the headroom before the queue has run. Creating
+    /// keys are over-counted (an existing key counted as new), which only
+    /// declines.
+    fn queue_fits_without_eviction(&self, queue: &[Command]) -> bool {
+        let (mut growth, mut new_keys) = (0usize, 0usize);
+        for cmd in queue {
+            match mutation_scope(cmd) {
+                MutationScope::ReadOnly => continue,
+                MutationScope::All => return false,
+                MutationScope::Keys(_) => {}
+            }
+            let Some(bound) = growth_bound(cmd) else {
+                return false;
+            };
+            growth = growth.saturating_add(bound);
+            new_keys = new_keys.saturating_add(creating_key_count(cmd));
+        }
+        if let Some(max) = self.max_keys
+            && self.admission_key_count().saturating_add(new_keys) > max
+        {
+            return false;
+        }
+        if let Some(limit) = self.max_memory_bytes {
+            let target = limit - limit / EVICTION_HEADROOM_DIVISOR;
+            if self.approximate_memory_bytes().saturating_add(growth) > target {
+                return false;
+            }
+        }
+        true
+    }
+
     /// After a write panicked inside a transaction (design P2): rebuild the
     /// size estimate, key count and TTL/eviction indexes from the keyspace,
     /// which the part-applied write's accounting may have skipped, and
     /// remove a collection it left empty.
     ///
-    /// The rebuild needs every write-order stripe. A transaction holding all
-    /// of them (every capped store, a whole-keyspace write) rebuilds in
-    /// place, before releasing anything. One holding a subset (an uncapped
-    /// store, so no gate) must not take the rest out of order, so it leaves
-    /// the scope and releases its stripes, then takes them all in ascending
-    /// order. Readers may see the part-applied write either way:
+    /// The rebuild needs every write-order stripe. When the rest can be taken
+    /// without waiting it rebuilds in place, before releasing anything —
+    /// always for a transaction already holding them all (a capped store
+    /// whose queue might evict, a whole-keyspace write). Otherwise it must
+    /// not take the rest out of order: it leaves the scope and releases its
+    /// stripes (a capped store keeping its gate), then takes them all in
+    /// ascending order. Readers may see the part-applied write either way:
     /// `catch_unwind` cannot undo it.
     fn repair_after_panic(&self, hold: Option<TransactionHold<'_>>) {
         let held = self.scope().map_or([0; STRIPE_WORDS], |scope| scope.held);
@@ -3589,13 +3655,19 @@ impl KeyValueStore {
             (hold, Vec::new())
         } else {
             // Another holder has one of the rest (rare: a writer of an
-            // unrelated key, a locked multi-key read). Release, then take
-            // them all in order: readers may see the part-applied command
-            // unrepaired in between, which the caller already treats as
-            // diverged (design P2).
+            // unrelated key, a locked multi-key read, a restore). Release
+            // the stripes and the scope, then take them all in order:
+            // readers may see the part-applied command unrepaired in
+            // between, which the caller already treats as diverged (design
+            // P2). A capped store keeps its gate (review D-1): it comes
+            // before the stripes in the lock order, and no eviction, sweep
+            // or capped write may change the accounting the rebuild
+            // recomputes.
             rest.clear();
-            drop(hold);
-            (None, self.order_all())
+            let gate = hold.and_then(TransactionHold::release_stripes);
+            let all = self.order_all();
+            drop(gate);
+            (None, all)
         };
         #[cfg(any(test, feature = "test-hooks"))]
         transaction_fault::repairing(self.hook_id(), in_place);
@@ -8329,6 +8401,17 @@ fn mutation_scope<'c>(cmd: &'c Command) -> MutationScope<'c> {
         ),
         Command::FlushDb => MutationScope::All,
         _ => MutationScope::ReadOnly,
+    }
+}
+
+/// How many keys [`creating_keys`] names, without building the list: the
+/// fit check sums it over a whole queue under the exclusive capacity gate,
+/// and a million-pair `MSET` would otherwise allocate for nothing.
+fn creating_key_count(cmd: &Command) -> usize {
+    match cmd {
+        Command::Dedup(_, _, inner) => creating_key_count(inner),
+        Command::MSet(pairs) => pairs.len(),
+        other => creating_keys(other).len(),
     }
 }
 
@@ -15407,6 +15490,9 @@ mod atomicity_tests;
 
 #[cfg(test)]
 mod transaction_tests;
+
+#[cfg(test)]
+mod capped_fit_tests;
 
 #[cfg(test)]
 mod transaction_clock_tests {
