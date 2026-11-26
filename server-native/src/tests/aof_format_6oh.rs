@@ -630,3 +630,55 @@ async fn a_failed_replay_leaves_the_store_as_it_found_it() {
     );
     assert!(!store.is_follower());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replica_restarted_on_a_format_file_leaves_the_format_at_once() {
+    // Review C, R3-1: a primary's file, the node restarted as a replica of
+    // a primary it cannot reach. Its own sweep removes `k` silently; it is
+    // promoted and a client appends to `k`. The record must not replay as
+    // the format's (it would land on the stale entry and expire with it).
+    let dir = Dir::new("r31");
+    {
+        let node = boot(&dir).await;
+        let mut c = Pipe::tcp(&node);
+        c.cmd(&["SET", "k", "old", "PX", "100"]).await;
+        c.cmd(&["SET", "z", "1"]).await;
+    }
+    let node = boot_with(&dir, false, KeyValueStore::new()).await.unwrap();
+    assert_eq!(
+        node.state.aof.as_ref().unwrap().file_mode(),
+        AofFileMode::Legacy
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    sweep_expired_tick(&node.store, &node.state, &node.watch_registry, &node.tx).await;
+    assert_eq!(node.store.key_count(), 1, "swept, silently, as a replica");
+    node.state.promote_to_primary(&node.store).await;
+    let mut c = Pipe::tcp(&node);
+    assert_eq!(c.cmd(&["APPEND", "k", "x"]).await, Value::Integer(1));
+    let recs = records(&dir.aof());
+    assert!(!recs.last().unwrap().0, "written as a push: {recs:?}");
+    drop(node);
+    let node = boot(&dir).await;
+    let mut c = Pipe::tcp(&node);
+    assert_eq!(
+        c.cmd(&["GET", "k"]).await,
+        bulk("x"),
+        "the acknowledged write"
+    );
+    assert_eq!(c.cmd(&["TTL", "k"]).await, Value::Integer(-1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_checkpoint_truncation_leaves_the_file_legacy() {
+    // Review C, R3-2: the truncation's FORMAT write fails; the writer must
+    // not go on writing as the format's into a file without its head.
+    let dir = Dir::new("r32");
+    let aof = AofWriter::open(dir.aof(), AofSync::No).await.unwrap();
+    aof.set_file_mode(AofFileMode::Timeless);
+    aof.inject_fault(AofFault::Fail(std::io::ErrorKind::Other));
+    assert!(aof.truncate_then(true).await.is_err());
+    assert_eq!(aof.file_mode(), AofFileMode::Legacy);
+    aof.append(&push(&["SET", "a", "1"])).await.unwrap();
+    let recs = records(&dir.aof());
+    assert!(recs.iter().all(|(array, _)| !array), "{recs:?}");
+}

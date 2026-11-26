@@ -2156,12 +2156,6 @@ where
         .replicas
         .upstream_dedup
         .store(with_dedup, Ordering::Release);
-    // This primary does not log its expirations (no `expirylog` yet, 6O-H
-    // PR 5): frames applied from it are not expiry-log records, so this
-    // node's AOF stops being written in the format.
-    if let Some(aof) = &state.aof {
-        aof.leave_expiry_log();
-    }
     let mut boundary = [0u8; 8];
     socket.read_exact(&mut boundary).await?;
     let boundary = u64::from_le_bytes(boundary);
