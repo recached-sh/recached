@@ -405,6 +405,35 @@ else
   fail "after SAVE, $OLD_REF is missing the new server's data"
   echo "aof new->old (after SAVE) FAILED" >>"$SUMMARY"
 fi
+
+# Re-upgrade after that downgrade (6O-H). The new server's SAVE began the
+# AOF in the expiry-log format (a FORMAT record the old server ignores). The
+# old server expires a key by its own clock, silently, and recreates it with
+# APPEND; it is then SIGKILLed, so nothing marks where its records begin. Its
+# records are pushes, not the format's arrays, so the new server replays them
+# by the old server's rules: the value it served ("new", permanent), not the
+# APPEND merged onto the expired entry ("oldnew", then gone).
+if grep -aq 'RECACHED-CHECKPOINT' "$RUN_DIR/aof-down/appendonly.aof"; then
+  ok "the new server's SAVE began the AOF in the expiry-log format, and $OLD_REF started on it"
+  echo "aof format new->old ok" >>"$SUMMARY"
+else
+  fail "the new server's AOF after SAVE holds no FORMAT record"
+  echo "aof format new->old FAILED" >>"$SUMMARY"
+fi
+cli "$tcp" SET compat:aof:re old PX 300 >/dev/null
+sleep 0.6
+cli "$tcp" APPEND compat:aof:re new >/dev/null
+kill9_server "$pid"
+# shellcheck disable=SC2046
+pid="$(start_server new aof-down "$tcp" "$ws" $(aof_env aof-down))"
+re_got="$(cli "$tcp" GET compat:aof:re)" re_ttl="$(cli "$tcp" TTL compat:aof:re)"
+if [ "$re_got" = new ] && [ "$re_ttl" = -1 ]; then
+  ok "re-upgraded after a crash, the new server replays $OLD_REF's records by $OLD_REF's rules"
+  echo "aof old->new after a downgrade ok" >>"$SUMMARY"
+else
+  fail "re-upgraded after a crash: got '$re_got' TTL '$re_ttl', want 'new' and -1"
+  echo "aof old->new after a downgrade FAILED" >>"$SUMMARY"
+fi
 stop_server "$pid"
 
 # ── snapshot upgrade ─────────────────────────────────────────────────────────

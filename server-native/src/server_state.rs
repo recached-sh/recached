@@ -239,8 +239,17 @@ impl ServerState {
                 .iter()
                 .map(|(key, held)| (key.clone(), held.keys().cloned().collect()))
                 .collect();
-        store
-            .snapshot()
+        // In the expiry-log format every entry still in the map is kept,
+        // expired or not: only the primary decides expiry, and logs a `DEL`
+        // when it removes one. Filtering by this node's clock was the one
+        // place that clock still decided (6O-H review C, R2-2). Older
+        // binaries drop such entries when they load the file.
+        let entries = if self.writes_expiry_log() {
+            core_engine::store::without_expiry(|| store.snapshot())
+        } else {
+            store.snapshot()
+        };
+        entries
             .into_iter()
             .filter_map(|mut entry| {
                 if ephemeral_keys.contains(&entry.key) {
@@ -267,9 +276,19 @@ impl ServerState {
         let mut keys: Vec<String> = ephemeral_guard(&self.ephemeral).keys().cloned().collect();
         keys.sort_unstable();
         let mut frames = Vec::new();
+        // A key's deadline goes with it: `EXPIRE` does not end ephemeral
+        // status, and a seed without it brought a volatile key back
+        // permanent (6O-H review C, M3; pre-existing).
+        let deadline = |key: &str| match store.execute(Command::PExpireTime(key.to_string())) {
+            Value::Integer(at) if at > 0 => Some(at.to_string()),
+            _ => None,
+        };
         for key in keys {
             if let Value::BulkString(Some(value)) = store.get_current(&key) {
                 frames.push(resp_push(&[b"ESET", key.as_bytes(), value.as_slice()]));
+                if let Some(at) = deadline(&key) {
+                    frames.push(resp_push(&[b"PEXPIREAT", key.as_bytes(), at.as_bytes()]));
+                }
             }
         }
 
@@ -291,6 +310,9 @@ impl ServerState {
             let mut parts: Vec<&[u8]> = vec![b"EADD", key.as_bytes()];
             parts.extend(members.iter().map(String::as_bytes));
             frames.push(resp_push(&parts));
+            if let Some(at) = deadline(&key) {
+                frames.push(resp_push(&[b"PEXPIREAT", key.as_bytes(), at.as_bytes()]));
+            }
         }
         frames
     }
@@ -959,13 +981,31 @@ impl ServerState {
     /// truncated, so no post-snapshot write can be discarded.
     pub(crate) async fn save(&self, store: &KeyValueStore) -> std::io::Result<()> {
         let _save = self.save_lock.lock().await;
-        let started = std::time::Instant::now();
         let _writes = self.replicas.lock_all_writes().await;
+        self.checkpoint_locked(store).await
+    }
+
+    /// Whether this node writes its AOF in the expiry-log format (6O-H):
+    /// it logs every expiration it acts on. A primary always does; a
+    /// replica only while it follows a primary that negotiated `expirylog`.
+    pub(crate) fn writes_expiry_log(&self) -> bool {
+        !self.is_replica() || self.replicas.upstream_expirylog.load(Ordering::Acquire)
+    }
+
+    /// [`save`](Self::save) for a caller that already holds `save_lock`
+    /// and the all-write barrier (a replica's full synchronization, 6O-H).
+    pub(crate) async fn checkpoint_locked(&self, store: &KeyValueStore) -> std::io::Result<()> {
+        let started = std::time::Instant::now();
         let checkpoint_id = self
             .snap
             .checkpoint_id
             .load(Ordering::Acquire)
             .saturating_add(1);
+        if is_control_id(checkpoint_id) {
+            return Err(std::io::Error::other(format!(
+                "checkpoint id {checkpoint_id} is reserved for AOF control records"
+            )));
+        }
         let result = async {
             if let Some(aof) = &self.aof {
                 // The marker must be durable before the snapshot that names it.
@@ -974,6 +1014,14 @@ impl ServerState {
                 // marks below describe durable in the AOF.
                 aof.append(&checkpoint_frame(checkpoint_id)).await?;
                 aof.flush().await?;
+                // Taken now that the marker is durable: should anything
+                // below fail, the next save uses a new id. Reusing this one
+                // after a renamed snapshot and a failed truncation made a
+                // crashed later save skip every write in between (6O-H
+                // review C, L2; pre-existing).
+                self.snap
+                    .checkpoint_id
+                    .store(checkpoint_id, Ordering::Release);
             }
             // The marks before the snapshot, never after. Writes are blocked,
             // so they describe exactly the state being saved. A crash after
@@ -988,7 +1036,10 @@ impl ServerState {
             let entries = self.durable_snapshot(store);
             save_snapshot_entries(entries, &self.snap, checkpoint_id).await?;
             if let Some(aof) = &self.aof {
-                aof.truncate().await?;
+                // The new file begins in the expiry-log format, before the
+                // seed, when this node logs its expirations: `FORMAT` is
+                // queued in the truncation's own batch (6O-H, R2-7b).
+                aof.truncate_then(self.writes_expiry_log()).await?;
                 for frame in self.ephemeral_aof_seed(store) {
                     aof.append(&frame).await?;
                 }

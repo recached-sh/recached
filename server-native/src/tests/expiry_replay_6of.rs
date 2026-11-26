@@ -7,14 +7,15 @@
 //! refers to a key's existing state can find that key expired where the
 //! original command found it live.
 //!
-//! **Known failing baseline (env-gated).** An expiring counter comes back
-//! **permanent**: it propagates as `SET <n> KEEPTTL`, which keeps nothing on
-//! an expired entry. The same holds for partial updates (`APPEND`, `HSET`,
-//! `RPUSH`), and `LSET` on a volatile list makes the replay refuse the file.
-//! These run only with `RECACHED_REPRODUCE_6OF_COUNTER=1` (CI runs ignored
-//! tests too). They fail on `dev` until the expiry-propagation design in
-//! `benchmarks/v0.6.0/6o-f/V0.6O-F-TTL-DESIGN.md` is approved and
-//! implemented.
+//! **The 6O-F reproductions (`reproduce_*`).** An expiring counter came
+//! back **permanent**: it propagates as `SET <n> KEEPTTL`, which keeps
+//! nothing on an expired entry. The same held for partial updates
+//! (`APPEND`, `HSET`, `RPUSH`), and `LSET` on a volatile list made the replay
+//! refuse the file. Fixed by 6O-H (Expiry Option E: the primary logs every
+//! expiration it acts on, and the AOF replay applies the expiry-log format
+//! without evaluating expiry), so the AOF reproductions now always run. The
+//! replica one still runs only with `RECACHED_REPRODUCE_6OF_COUNTER=1`
+//! until replicas apply the log the same way.
 //!
 //! **Regression guards (always run).** A fix that only changes the counter
 //! frame was tried (`SET <n> PXAT <deadline>`, branch
@@ -69,6 +70,10 @@ fn reproducing() -> bool {
 async fn aof_primary(policy: AofSync, name: &str) -> (Shared, Arc<AofWriter>, Scratch) {
     let path = scratch(name, "append.aof");
     let aof = Arc::new(AofWriter::open(path.to_path_buf(), policy).await.unwrap());
+    // As a primary's startup begins a new AOF (6O-H): in the expiry-log
+    // format.
+    aof.set_file_mode(AofFileMode::Empty);
+    aof.begin_expiry_log().await.unwrap();
     (Shared::with_aof(false, Some(Arc::clone(&aof))), aof, path)
 }
 
@@ -199,9 +204,6 @@ async fn replica_state_after(now: u64, key: &'static str, writes: &[&[&str]]) ->
 // ── Known failing baseline: resurrection (env-gated) ────────────────────────
 
 async fn counter_replayed_after_the_deadline(policy: AofSync, name: &str) {
-    if !reproducing() {
-        return;
-    }
     let (shared, aof, path) = aof_primary(policy, name).await;
     let mut c = Pipe::tcp(&shared);
     let key = "6of:a:rate";
@@ -233,9 +235,6 @@ async fn reproduce_a_counter_replayed_after_its_deadline_aof_always() {
 /// The fixed-window idiom: `EXPIRE` on the first hit only.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reproduce_incr_then_expire_once_replayed_after_the_window() {
-    if !reproducing() {
-        return;
-    }
     let (shared, aof, path) = aof_primary(AofSync::Always, "a_fw").await;
     let mut c = Pipe::tcp(&shared);
     let key = "6of:a:window";
@@ -253,9 +252,6 @@ async fn reproduce_incr_then_expire_once_replayed_after_the_window() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reproduce_a_client_set_keepttl_replayed_after_its_deadline() {
-    if !reproducing() {
-        return;
-    }
     let (shared, aof, path) = aof_primary(AofSync::Always, "a_kt").await;
     let mut c = Pipe::tcp(&shared);
     let key = "6of:a:keepttl";
@@ -294,9 +290,6 @@ async fn reproduce_a_replica_applying_a_counter_after_its_deadline() {
 /// Partial updates have the same exposure (`V0.6O-F-ROOT-CAUSE.md` §4).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reproduce_partial_updates_replayed_after_the_deadline() {
-    if !reproducing() {
-        return;
-    }
     let (shared, aof, path) = aof_primary(AofSync::Always, "a_delta").await;
     let mut c = Pipe::tcp(&shared);
     let deadline = now_unix_ms() + HOUR_MS;
@@ -347,9 +340,6 @@ async fn reproduce_partial_updates_replayed_after_the_deadline() {
 /// with `no such key`, and the replay refuses the file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reproduce_lset_of_a_volatile_list_replayed_after_its_deadline() {
-    if !reproducing() {
-        return;
-    }
     let (shared, aof, path) = aof_primary(AofSync::Always, "a_lset").await;
     let mut c = Pipe::tcp(&shared);
     let deadline = now_unix_ms() + HOUR_MS;

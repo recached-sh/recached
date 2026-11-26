@@ -423,7 +423,9 @@ fn always_failure_during_a_checkpoint_stops_and_keeps_acked_writes() {
     let mut server = start(
         &dir,
         Opts {
-            fault: Some("fail:eio@RECACHED-CHECKPOINT"),
+            // The save's own checkpoint record (id 1, one digit), not the
+            // expiry-log FORMAT record a new AOF begins with (6O-H).
+            fault: Some("fail:eio@RECACHED-CHECKPOINT\r\n$1\r\n"),
             ..ALWAYS
         },
     );
@@ -446,7 +448,9 @@ fn always_failure_in_the_shutdown_checkpoint_exits_as_a_fail_stop() {
     let mut server = start(
         &dir,
         Opts {
-            fault: Some("fail:eio@RECACHED-CHECKPOINT"),
+            // The save's own checkpoint record (id 1, one digit), not the
+            // expiry-log FORMAT record a new AOF begins with (6O-H).
+            fault: Some("fail:eio@RECACHED-CHECKPOINT\r\n$1\r\n"),
             ..ALWAYS
         },
     );

@@ -82,6 +82,49 @@ pub fn at_instant<R>(now: u64, f: impl FnOnce() -> R) -> R {
 }
 
 thread_local! {
+    /// Set while [`without_expiry`] applies frames: no entry counts as
+    /// expired (6O-H, Expiry Option E3).
+    static TIMELESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` with expiry not evaluated on this thread: every entry is live,
+/// whatever its deadline, until something removes it (6O-H, Expiry Option
+/// E3).
+///
+/// This is how the AOF replay and an expiry-log replica apply what the
+/// primary logged. The primary logs a `DEL` for every expired entry it
+/// acts on (write-observed and swept), so an entry disappears from the
+/// applier exactly when it disappeared from the primary, never earlier
+/// because the applier runs later or its clock is ahead. Redis does the
+/// same: `keyIsExpired` answers no while loading and to the master link.
+///
+/// Only the answer to "has this entry expired?" changes, in
+/// `Entry::is_expired` and in snapshot restore. The clock does not:
+/// `last_access_ms` (`OBJECT IDLETIME`, LRU) and any relative deadline
+/// still read the real one. (The 6O-F design proposed `at_instant(0)`,
+/// which also answers no, since a deadline is never 0, but it would set
+/// every applied entry's access time to the epoch.)
+///
+/// Per thread, for the synchronous `f` only; nests, and is restored on
+/// return and on unwind. Reads and the sweeper never run inside it.
+pub fn without_expiry<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TIMELESS.with(|timeless| timeless.set(self.0));
+        }
+    }
+    let _restore = Restore(TIMELESS.with(|timeless| timeless.replace(true)));
+    f()
+}
+
+/// Whether [`without_expiry`] is in effect on this thread.
+#[inline]
+fn timeless() -> bool {
+    TIMELESS.with(std::cell::Cell::get)
+}
+
+thread_local! {
     /// The keys a write found expired and removed, while
     /// [`observing_expirations`] collects them (6O-H). `None` outside one.
     static OBSERVED_EXPIRED: std::cell::RefCell<Option<Vec<String>>> =
@@ -1829,7 +1872,11 @@ impl Entry {
     }
 
     fn is_expired(&self, now: u64) -> bool {
-        self.deadline.get().is_some_and(|exp| now >= exp)
+        // The mode is read only for an entry past its deadline: a live or
+        // persistent one pays nothing for it.
+        self.deadline
+            .get()
+            .is_some_and(|exp| now >= exp && !timeless())
     }
 
     /// Mark this entry as just-used so LRU eviction treats it as recent.
@@ -4073,7 +4120,7 @@ impl KeyValueStore {
             Some(e) if e.is_expired(now) => (Value::BulkString(None), None),
             Some(e) => (
                 Self::encode_current_value(&e.value),
-                e.deadline.get().map(|exp| exp - now),
+                e.deadline.get().map(|exp| exp.saturating_sub(now)),
             ),
         }
     }
@@ -4136,7 +4183,7 @@ impl KeyValueStore {
             out.push((
                 key.to_string(),
                 Self::encode_current_value(&entry.value),
-                entry.deadline.get().map(|exp| exp - now),
+                entry.deadline.get().map(|exp| exp.saturating_sub(now)),
             ));
             out.len() < limit
         });
@@ -4816,9 +4863,11 @@ impl KeyValueStore {
 
     fn restore_ordered(&self, entries: Vec<SnapshotEntry>) {
         let now = now_ms();
+        let keep_expired = timeless();
         for e in entries {
             if let Some(exp) = e.expires_at_ms
                 && now >= exp
+                && !keep_expired
             {
                 continue;
             }
