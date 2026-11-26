@@ -23,10 +23,10 @@ fn nil() -> Value {
 }
 
 /// A fresh directory, removed when dropped.
-struct Dir(PathBuf);
+pub(super) struct Dir(pub(super) PathBuf);
 
 impl Dir {
-    fn new(name: &str) -> Dir {
+    pub(super) fn new(name: &str) -> Dir {
         let dir = std::env::temp_dir().join(format!(
             "recached_6oh_aof_{name}_{}_{}",
             std::process::id(),
@@ -35,10 +35,10 @@ impl Dir {
         std::fs::create_dir_all(&dir).unwrap();
         Dir(dir)
     }
-    fn aof(&self) -> PathBuf {
+    pub(super) fn aof(&self) -> PathBuf {
         self.0.join("append.aof")
     }
-    fn snap(&self) -> PathBuf {
+    pub(super) fn snap(&self) -> PathBuf {
         self.0.join("dump.rdb")
     }
 }
@@ -50,7 +50,11 @@ impl Drop for Dir {
 }
 
 /// A node booted on `dir` as `main` boots one.
-async fn boot_with(dir: &Dir, primary: bool, store: KeyValueStore) -> std::io::Result<Shared> {
+pub(super) async fn boot_with(
+    dir: &Dir,
+    primary: bool,
+    store: KeyValueStore,
+) -> std::io::Result<Shared> {
     let loaded = load_snapshot_checkpoint(&store, &dir.snap()).await?;
     let aof = AofWriter::open(dir.aof(), AofSync::Always).await?;
     let replayed = replay_aof_format(&store, &dir.aof(), loaded.aof_checkpoint, primary).await?;
@@ -63,7 +67,7 @@ async fn boot_with(dir: &Dir, primary: bool, store: KeyValueStore) -> std::io::R
     Ok(shared)
 }
 
-async fn boot(dir: &Dir) -> Shared {
+pub(super) async fn boot(dir: &Dir) -> Shared {
     boot_with(dir, true, KeyValueStore::new()).await.unwrap()
 }
 
@@ -91,7 +95,7 @@ fn server_state_for(shared: &Shared, dir: &Dir, checkpoint: u64) -> ServerState 
 }
 
 /// The AOF's records: whether each is an array (`*`), and its words.
-fn records(path: &Path) -> Vec<(bool, Vec<String>)> {
+pub(super) fn records(path: &Path) -> Vec<(bool, Vec<String>)> {
     let bytes = std::fs::read(path).unwrap_or_default();
     let mut out = Vec::new();
     let mut at = 0;
@@ -117,18 +121,21 @@ fn records(path: &Path) -> Vec<(bool, Vec<String>)> {
     out
 }
 
-const FORMAT_ID: &str = "17005593296757587969";
+/// The `FORMAT` this server writes: `expirylog` and, since 6O-I, `txn`.
+const FORMAT_ID: &str = "17005593296757653505";
+/// 6O-H's `FORMAT`, `expirylog` alone.
+const FORMAT_H_ID: &str = "17005593296757587969";
 
 fn is_format(record: &(bool, Vec<String>)) -> bool {
     record.1 == ["RECACHED-CHECKPOINT", FORMAT_ID]
 }
 
-fn push(words: &[&str]) -> Vec<u8> {
+pub(super) fn push(words: &[&str]) -> Vec<u8> {
     let parts: Vec<&[u8]> = words.iter().map(|w| w.as_bytes()).collect();
     resp_push(&parts)
 }
 
-fn array(words: &[&str]) -> Vec<u8> {
+pub(super) fn array(words: &[&str]) -> Vec<u8> {
     let mut frame = push(words);
     frame[0] = b'*';
     frame
@@ -145,8 +152,15 @@ fn control_ids_are_the_designs() {
     let format = Control::Format {
         features: FEATURE_EXPIRY_LOG,
     };
-    assert_eq!(format.id().to_string(), FORMAT_ID);
+    assert_eq!(format.id().to_string(), FORMAT_H_ID);
     assert_eq!(format.id(), 0xec00_0101_0000_0001);
+    // What this server writes since 6O-I: the `txn` bit too (bit 16).
+    let written = Control::Format {
+        features: FORMAT_FEATURES,
+    };
+    assert_eq!(written.id().to_string(), FORMAT_ID);
+    assert_eq!(written.id(), 0xec00_0101_0001_0001);
+    assert_eq!(control_frame(written).len(), 57);
     assert_eq!(Control::of(format.id()), Some(format));
     assert_eq!(control_frame(format).len(), 57);
     // Not a control record: every checkpoint id a save can reach.
@@ -403,7 +417,8 @@ async fn only_a_head_format_with_understood_features_makes_a_file_timeless() {
     let t = past();
     let must = {
         let id = (Control::Format {
-            features: FEATURE_EXPIRY_LOG | 1 << 16,
+            // Bit 16 is `txn` since 6O-I, which this server understands.
+            features: FEATURE_EXPIRY_LOG | 1 << 17,
         })
         .id()
         .to_string();
