@@ -2871,10 +2871,13 @@ impl GroupAssembler {
         bytes: Vec<u8>,
         committed: u64,
     ) -> std::io::Result<Received> {
+        // Checked (review D, D-2): an offset past `u64::MAX` is a protocol
+        // error, never a panic or an offset accepted twice.
         let next = |pending: &Option<PendingGroup>| {
             committed
-                .saturating_add(1)
-                .saturating_add(pending.as_ref().map_or(0, |p| p.frames.len() as u64))
+                .checked_add(1)
+                .and_then(|n| n.checked_add(pending.as_ref().map_or(0, |p| p.frames.len() as u64)))
+                .ok_or_else(|| protocol_error("replication offset overflow"))
         };
         if offset == 0 && self.txn {
             if self.open.is_some() {
@@ -2883,12 +2886,19 @@ impl GroupAssembler {
                 ));
             }
             let group = parse_group_header(&bytes)?;
-            if group.first != next(&self.open) {
+            let expected = next(&self.open)?;
+            if group.first != expected {
                 return Err(protocol_error(format!(
-                    "a transaction group header for offset {}, expected {}",
-                    group.first,
-                    next(&self.open)
+                    "a transaction group header for offset {}, expected {expected}",
+                    group.first
                 )));
+            }
+            if group
+                .first
+                .checked_add(u64::from(group.count) - 1)
+                .is_none()
+            {
+                return Err(protocol_error("replication offset overflow"));
             }
             if group.count > REPL_GROUP_MAX_FRAMES {
                 return Err(protocol_error(format!(
@@ -2915,7 +2925,7 @@ impl GroupAssembler {
             });
             return Ok(Received::Header);
         }
-        let expected = next(&self.open);
+        let expected = next(&self.open)?;
         if offset != expected {
             return Err(protocol_error(format!(
                 "replication offset gap: expected {expected}, received {offset}"

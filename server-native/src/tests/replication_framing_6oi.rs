@@ -522,3 +522,24 @@ async fn every_combination_of_expirylog1_and_txn1_converges() {
         );
     }
 }
+
+/// Review D, D-2: offsets past `u64::MAX` are a protocol error (a full
+/// sync), never a panic of the replication task.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offsets_past_u64_max_are_a_protocol_error() {
+    let fake = FakePrimary::new("expirylog1,txn1").await;
+    let replica = node(true, false).await;
+    follow_reconnecting(&replica, fake.addr());
+    let (mut sock, _, _) = fake.accept().await;
+    FakePrimary::full_sync(&mut sock, u64::MAX - 1).await;
+    let (a, b) = (frame(&["SET", "o:a", "1"]), frame(&["SET", "o:b", "1"]));
+    send_header(&mut sock, 2, u64::MAX, (a.len() + b.len()) as u64).await;
+    send(&mut sock, u64::MAX, &a).await;
+    send(&mut sock, u64::MAX, &b).await;
+    let (_sock, run, offset) = fake.accept().await;
+    assert_eq!(
+        (run.as_str(), offset),
+        ("", 0),
+        "a full sync, after no panic"
+    );
+}
