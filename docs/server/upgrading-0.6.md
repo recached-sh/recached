@@ -89,6 +89,22 @@ browsers no longer need `RECACHED_PASSWORD`, which unlocks the unscoped RESP por
 An empty `RECACHED_PASSWORD` or `RECACHED_REPL_PASSWORD` is treated as **unset** in 0.6. Before,
 it was a password that `AUTH ""` satisfied.
 
+## Expiring keys through restarts
+
+0.6 replays an AOF on the primary's own timeline. Every expiration the primary acts on — a write
+that finds a key expired, and the active expiry sweep — is logged as a `DEL`, and the replay
+applies the log without evaluating expiry: a key disappears when its `DEL` does, never because the
+restart came later. Before, an expiring counter (`INCR` after `SET … PX`) or a partial update
+(`APPEND`, `HSET`, `RPUSH`, …) replayed after its deadline could come back **permanent**, and an
+`LSET` or `RENAME` of a key that had expired by the restart made the server refuse to start.
+
+- A new AOF is written in the format from the first record.
+- An AOF written by 0.5 or an earlier 0.6 build stays in the old format, and replays as before,
+  until the next checkpoint (`SAVE`, autosave, or the shutdown save) starts the new format. Run
+  `SAVE` after upgrading to start it at once. No file is rewritten in place.
+- Expirations add AOF and replication traffic: one `DEL` per expired key the primary removes,
+  batched for the sweeper.
+
 ## Rolling back
 
 0.6 → 0.5.1 is supported with one step first: **run `SAVE` on 0.6, then stop it and start 0.5.1.**
@@ -103,6 +119,13 @@ Without the `SAVE`:
 
 Every other 0.6 write — `GETDEL`, `GETEX`, `RENAMENX`, `ZPOPMIN`/`ZPOPMAX` — is logged and
 replicated as a primitive 0.5.1 already knows (`DEL`, `PEXPIREAT`/`PERSIST`, `RENAME`, `ZREM`).
+
+**The AOF expiry-log format (6O-H).** 0.6 writes its AOF in a format that replays expiring keys
+exactly as they expired on the primary (below). 0.5.1 and 0.4 read it: its `FORMAT` record is a
+checkpoint marker they skip, and its records are ordinary RESP arrays. They replay it with expiry
+evaluated by their own clock, as they always did. Upgrading again after a rollback needs no step:
+0.6 recognises the records the older server appended (they are RESP pushes, not arrays) and
+replays them by the older server's rules, whether or not either server shut down cleanly.
 
 For replicated deployments, roll back the **primary first**: a 0.6 replica follows a 0.5.1
 primary, but a 0.6 primary refuses 0.5.1 replicas unless `RECACHED_REPL_DEDUP=off`.

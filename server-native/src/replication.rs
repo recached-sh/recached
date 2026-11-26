@@ -117,6 +117,9 @@ pub(crate) struct ReplHub {
     /// False while following a pre-0.6 primary, or one with
     /// `RECACHED_REPL_DEDUP=off` — a promoted replica then holds no marks.
     pub(crate) upstream_dedup: AtomicBool,
+    /// Whether this node, a replica, follows a primary that negotiated
+    /// `expirylog` (6O-H): set by its synchronizations.
+    pub(crate) upstream_expirylog: AtomicBool,
     /// Socket flushes by replica senders, summed over replicas (6N-C5). Each
     /// flush is one send burst, so the kernel's share of a replicated write
     /// (the socket send, and the replica's acknowledgement that answers it)
@@ -531,6 +534,7 @@ impl ReplHub {
             stripe_waits: AtomicUsize::new(0),
             dedup: AtomicBool::new(true),
             upstream_dedup: AtomicBool::new(false),
+            upstream_expirylog: AtomicBool::new(false),
             send_flushes: AtomicU64::new(0),
             send_frames: AtomicU64::new(0),
             send_queue_peak: AtomicU64::new(0),
@@ -1522,10 +1526,15 @@ where
         .await;
     let partial_sync = missing.is_some();
     let snapshot = if missing.is_none() {
-        Some(
-            rmp_serde::to_vec(&store.snapshot())
-                .map_err(|e| std::io::Error::other(e.to_string()))?,
-        )
+        // Every entry still in the map when this node logs its expirations:
+        // a capable replica keeps them until this node's `DEL`; any other
+        // drops the expired ones when it loads them (6O-H, R2-2).
+        let entries = if dedup_source.writes_expiry_log() {
+            core_engine::store::without_expiry(|| store.snapshot())
+        } else {
+            store.snapshot()
+        };
+        Some(rmp_serde::to_vec(&entries).map_err(|e| std::io::Error::other(e.to_string()))?)
     } else {
         None
     };
@@ -2147,6 +2156,12 @@ where
         .replicas
         .upstream_dedup
         .store(with_dedup, Ordering::Release);
+    // This primary does not log its expirations (no `expirylog` yet, 6O-H
+    // PR 5): frames applied from it are not expiry-log records, so this
+    // node's AOF stops being written in the format.
+    if let Some(aof) = &state.aof {
+        aof.leave_expiry_log();
+    }
     let mut boundary = [0u8; 8];
     socket.read_exact(&mut boundary).await?;
     let boundary = u64::from_le_bytes(boundary);
@@ -2369,6 +2384,18 @@ async fn apply_repl_frame(
     watches: &WatchRegistry,
     bytes: &[u8],
 ) -> std::io::Result<()> {
+    // The wire carries pushes only (6O-H, R2-1): a frame received as an
+    // array is normalized before this node logs, forwards or backlogs it.
+    // In an AOF an array means "written with expirations logged", and
+    // older replicas copy received bytes into their AOF unchanged.
+    let normalized;
+    let bytes = match bytes.split_first() {
+        Some((b'*', rest)) => {
+            normalized = [b">".as_slice(), rest].concat();
+            normalized.as_slice()
+        }
+        _ => bytes,
+    };
     let (mut value, consumed) = Value::parse(bytes)
         .map_err(|e| std::io::Error::new(ErrorKind::InvalidData, e.to_string()))?;
     // A primary before 6O-F could stream a deadline past `i64::MAX`, bare or

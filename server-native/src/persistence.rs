@@ -174,8 +174,20 @@ pub(crate) async fn load_snapshot_checkpoint(
                 0,
             )
         };
+    if is_control_id(aof_checkpoint) {
+        // Only a corrupt file holds one: replay would take an expiry-log
+        // control record for this snapshot's checkpoint and skip records.
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "snapshot names checkpoint {aof_checkpoint}, an id reserved for AOF control records"
+            ),
+        ));
+    }
     let count = entries.len();
-    store.restore(entries);
+    // Every entry, past its deadline or not: whether the ones that are go
+    // depends on how the AOF after it replays (`replay_aof_format`, 6O-H).
+    core_engine::store::without_expiry(|| store.restore(entries));
     info!("Snapshot loaded: {} entries ← {:?}", count, path);
     Ok(LoadedSnapshot {
         found: true,
@@ -667,6 +679,28 @@ struct AofQueue {
     /// was taken has been performed too — even one whose batch has already
     /// left `batches` and is being written. See [`AofWriter::tail`].
     newest: Option<Arc<AofDone>>,
+    /// What the file holds, for the expiry-log control records (6O-H):
+    /// decided under this lock as appends and truncations are queued, so it
+    /// describes the file as the queue will leave it.
+    mode: AofFileMode,
+}
+
+/// What an AOF file holds, as the expiry-log protocol sees it (6O-H,
+/// `benchmarks/v0.6.0/6o-h/V0.6O-H-PROTOCOL-DESIGN.md` §3–§4).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum AofFileMode {
+    /// No record yet: new, or emptied by a checkpoint. Only such a file can
+    /// begin with `FORMAT`.
+    Empty,
+    /// Begins with `FORMAT`, and every record since was written with
+    /// expirations logged: it replays without evaluating expiry.
+    Timeless,
+    /// Anything else: no `FORMAT` at its head, or records an older server
+    /// appended since. Replays as before 6O-H until the next checkpoint
+    /// starts a new file. The default until replay says otherwise, so
+    /// nothing writes `FORMAT` into the middle of a file.
+    #[default]
+    Legacy,
 }
 
 struct AofBatch {
@@ -679,6 +713,10 @@ struct AofBatch {
     truncate: bool,
     /// No further appends may join (a flush or truncate is anchored to it).
     sealed: bool,
+    /// Frames pushed now go into a file in the expiry-log format: written
+    /// as RESP2 arrays, the format's authorship mark (6O-H, design §2.2).
+    /// Set under the queue lock before each append, from the file's mode.
+    author: bool,
     done: Arc<AofDone>,
 }
 
@@ -729,6 +767,56 @@ impl AofDone {
     }
 }
 
+/// The batch an append joins: the open one, or (when it is sealed, or the
+/// append asks for `fresh`) a new one after it.
+fn open_batch(queue: &mut AofQueue, fresh: bool) -> &mut AofBatch {
+    let reuse = matches!(queue.batches.back(), Some(open) if !open.sealed && !fresh);
+    if !reuse {
+        if let Some(open) = queue.batches.back_mut() {
+            open.sealed = true;
+        }
+        let batch = AofBatch::new();
+        queue.newest = Some(Arc::clone(&batch.done));
+        queue.batches.push_back(batch);
+    }
+    queue
+        .batches
+        .back_mut()
+        .expect("a batch is open or was pushed above")
+}
+
+/// Whether `frame` is exactly one record of bulk strings (`>N` or `*N`, then
+/// `N` × `$len CRLF bytes CRLF`), walked without allocating: the debug check
+/// on every AOF append must not show in the allocation budgets.
+fn is_one_record(frame: &[u8]) -> bool {
+    fn number(bytes: &[u8], at: &mut usize) -> Option<usize> {
+        let end = *at + bytes[*at..].windows(2).position(|w| w == b"\r\n")?;
+        let n = std::str::from_utf8(&bytes[*at..end]).ok()?.parse().ok()?;
+        *at = end + 2;
+        Some(n)
+    }
+    let walk = || -> Option<bool> {
+        if !matches!(frame.first(), Some(b'>' | b'*')) {
+            return Some(false);
+        }
+        let mut at = 1;
+        let count = number(frame, &mut at)?;
+        for _ in 0..count {
+            if frame.get(at) != Some(&b'$') {
+                return Some(false);
+            }
+            at += 1;
+            let len = number(frame, &mut at)?;
+            at = at.checked_add(len)?.checked_add(2)?;
+            if at > frame.len() || &frame[at - 2..at] != b"\r\n" {
+                return Some(false);
+            }
+        }
+        Some(at == frame.len())
+    };
+    walk().unwrap_or(false)
+}
+
 /// Queue `frames` onto `batch` in order (one queue-lock hold).
 fn push_frames(batch: &mut AofBatch, frames: &[&[u8]]) {
     for frame in frames {
@@ -744,15 +832,33 @@ impl AofBatch {
             opened: None,
             truncate: false,
             sealed: false,
+            author: false,
             done: Arc::new(AofDone::default()),
         }
     }
 
     fn push_frame(&mut self, frame: &[u8]) {
+        // One record per call: the authorship re-encoding below rewrites the
+        // first byte only (6O-H, R2-5).
+        debug_assert!(
+            is_one_record(frame),
+            "an AOF append must be exactly one record"
+        );
         if self.opened.is_none() {
             self.opened = Some(std::time::Instant::now());
         }
-        self.bytes.extend_from_slice(frame);
+        // Authorship (6O-H): in an expiry-log file every record this server
+        // writes is an array, `*N`, never the push `>N` every older server
+        // writes, so a record an older server appended later is told apart
+        // after any crash. Only the first byte differs, and the frame is
+        // copied here anyway; replication and sync pushes keep `>`.
+        match frame.split_first() {
+            Some((b'>', rest)) if self.author => {
+                self.bytes.push(b'*');
+                self.bytes.extend_from_slice(rest);
+            }
+            _ => self.bytes.extend_from_slice(frame),
+        }
         self.frames = self.frames.saturating_add(1);
         self.done
             .frames
@@ -1751,24 +1857,87 @@ impl AofWriter {
         {
             let mut queue = self.shared.lock();
             let busy = queue.busy;
-            let batch = match queue.batches.back_mut() {
-                Some(open) if !open.sealed && !fresh => open,
-                open => {
-                    if let Some(open) = open {
-                        open.sealed = true;
-                    }
-                    let batch = AofBatch::new();
-                    queue.newest = Some(Arc::clone(&batch.done));
-                    queue.batches.push_back(batch);
-                    queue
-                        .batches
-                        .back_mut()
-                        .expect("a batch was pushed on the line above")
-                }
-            };
+            let author = queue.mode == AofFileMode::Timeless;
+            let batch = open_batch(&mut queue, fresh);
+            let (frames, truncate) = (batch.frames, batch.truncate);
+            batch.author = author;
             edit(batch);
-            (Arc::clone(&batch.done), busy)
+            let (appended, truncated) = (batch.frames > frames, batch.truncate && !truncate);
+            let done = Arc::clone(&batch.done);
+            // A truncation empties the file; the first record queued after
+            // it, if not `FORMAT` ([`Self::control`]), makes it a legacy one.
+            if truncated {
+                queue.mode = AofFileMode::Empty;
+            } else if appended && queue.mode == AofFileMode::Empty {
+                queue.mode = AofFileMode::Legacy;
+            }
+            (done, busy)
         }
+    }
+
+    /// Append the control record `record` if the file is in mode `from`, and
+    /// then consider it in mode `to`; wait for it like any append. `false`,
+    /// having written nothing, in any other mode. Checked and queued under
+    /// one queue-lock hold, so no other record can slip in between.
+    async fn control(
+        &self,
+        from: AofFileMode,
+        record: Control,
+        to: AofFileMode,
+    ) -> std::io::Result<bool> {
+        let done = {
+            let mut queue = self.shared.lock();
+            if queue.mode != from {
+                return Ok(false);
+            }
+            let batch = open_batch(&mut queue, false);
+            batch.author = to == AofFileMode::Timeless;
+            batch.push_frame(&control_frame(record));
+            let done = Arc::clone(&batch.done);
+            queue.mode = to;
+            done
+        };
+        self.shared.lead();
+        done.wait().await?;
+        Ok(true)
+    }
+
+    /// Begin an empty file in the expiry-log format: `FORMAT`, as its first
+    /// record. Written by a primary at startup on a new or empty AOF, after
+    /// each checkpoint's truncation, and by a replica of a primary that logs
+    /// its expirations. A file that already holds records is left as it is:
+    /// a legacy one stays legacy until its next checkpoint. Returns whether
+    /// it wrote.
+    pub(crate) async fn begin_expiry_log(&self) -> std::io::Result<bool> {
+        self.control(
+            AofFileMode::Empty,
+            Control::Format {
+                features: FEATURE_EXPIRY_LOG,
+            },
+            AofFileMode::Timeless,
+        )
+        .await
+    }
+
+    /// Stop writing the expiry-log format: records appended from here on are
+    /// pushes, which end the file's timeless part on replay (design §2.2),
+    /// so no marker is needed. For a replica whose primary does not log its
+    /// expirations. The file stays legacy until its next checkpoint.
+    pub(crate) fn leave_expiry_log(&self) {
+        let mut queue = self.shared.lock();
+        if queue.mode == AofFileMode::Timeless {
+            queue.mode = AofFileMode::Legacy;
+        }
+    }
+
+    /// Set what the file holds, from the replay at startup.
+    pub(crate) fn set_file_mode(&self, mode: AofFileMode) {
+        self.shared.lock().mode = mode;
+    }
+
+    /// What the file holds, as the queue will leave it.
+    pub(crate) fn file_mode(&self) -> AofFileMode {
+        self.shared.lock().mode
     }
 
     /// Where the AOF queue ends now: the newest batch, unless it has
@@ -1962,12 +2131,37 @@ impl AofWriter {
 
     /// Empty the file after everything appended so far, before anything
     /// appended later.
+    #[cfg(test)]
     pub(crate) async fn truncate(&self) -> std::io::Result<()> {
+        self.truncate_then(false).await
+    }
+
+    /// [`truncate`](Self::truncate), then, if `expiry_log`, `FORMAT` as the
+    /// new file's first record, in the same batch and the same queue-lock
+    /// hold: nothing can be queued between the two (6O-H, R2-7b).
+    pub(crate) async fn truncate_then(&self, expiry_log: bool) -> std::io::Result<()> {
         // A batch of its own, so it cannot erase appends made before it;
         // appends made after it join it and are written after the truncation.
-        self.enqueue(true, |batch| batch.truncate = true)
-            .wait()
-            .await?;
+        let done = {
+            let mut queue = self.shared.lock();
+            let batch = open_batch(&mut queue, true);
+            batch.truncate = true;
+            if expiry_log {
+                batch.author = true;
+                batch.push_frame(&control_frame(Control::Format {
+                    features: FEATURE_EXPIRY_LOG,
+                }));
+            }
+            let done = Arc::clone(&batch.done);
+            queue.mode = if expiry_log {
+                AofFileMode::Timeless
+            } else {
+                AofFileMode::Empty
+            };
+            done
+        };
+        self.shared.lead();
+        done.wait().await?;
         info!("AOF truncated after snapshot save");
         Ok(())
     }
@@ -2051,29 +2245,43 @@ impl ReplayEphemeral {
         }
     }
 
-    fn discard_abandoned(self, store: &KeyValueStore) -> std::io::Result<()> {
-        if !self.keys.is_empty()
-            && let Value::Error(message) =
-                store.execute(Command::Del(self.keys.into_iter().collect()))
-        {
-            return Err(std::io::Error::new(ErrorKind::InvalidData, message));
+    /// Remove what no connection survived to own, and return the removals
+    /// as records for the caller to log (see [`ReplayedAof::discarded`]).
+    fn discard_abandoned(self, store: &KeyValueStore) -> std::io::Result<Vec<Vec<u8>>> {
+        let mut logged = Vec::new();
+        if !self.keys.is_empty() {
+            let mut keys: Vec<String> = self.keys.into_iter().collect();
+            keys.sort_unstable();
+            if let Value::Error(message) = store.execute(Command::Del(keys.clone())) {
+                return Err(std::io::Error::new(ErrorKind::InvalidData, message));
+            }
+            let mut parts: Vec<&[u8]> = vec![b"DEL"];
+            parts.extend(keys.iter().map(String::as_bytes));
+            logged.push(resp_push(&parts));
         }
-        let mut by_key: HashMap<String, Vec<String>> = HashMap::new();
+        let mut by_key: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (key, member) in self.members {
             by_key.entry(key).or_default().push(member);
         }
-        for (key, members) in by_key {
-            if let Value::Error(message) = store.execute(Command::SRem(key.clone(), members)) {
+        for (key, mut members) in by_key {
+            members.sort_unstable();
+            if let Value::Error(message) =
+                store.execute(Command::SRem(key.clone(), members.clone()))
+            {
                 return Err(std::io::Error::new(ErrorKind::InvalidData, message));
             }
+            let mut parts: Vec<&[u8]> = vec![b"SREM", key.as_bytes()];
+            parts.extend(members.iter().map(String::as_bytes));
+            logged.push(resp_push(&parts));
             if matches!(
                 store.execute(Command::SCard(key.clone())),
                 Value::Integer(0)
             ) {
-                let _ = store.execute(Command::Del(vec![key]));
+                let _ = store.execute(Command::Del(vec![key.clone()]));
+                logged.push(resp_push(&[b"DEL", key.as_bytes()]));
             }
         }
-        Ok(())
+        Ok(logged)
     }
 }
 
@@ -2104,14 +2312,79 @@ pub(crate) async fn replay_aof_from_checkpoint(
 /// crash between the snapshot and its dedup sidecar (as servers before 0.5
 /// ordered them) leaves their marks nowhere else. Marks only rise, so taking
 /// them from writes the snapshot holds is always safe.
+#[cfg(test)]
 pub(crate) async fn replay_aof_recovering(
     store: &KeyValueStore,
     path: &std::path::Path,
     snapshot_checkpoint: u64,
 ) -> std::io::Result<(usize, RecoveredDedup)> {
+    replay_aof_format(store, path, snapshot_checkpoint, true)
+        .await
+        .map(|replayed| (replayed.replayed, replayed.recovered))
+}
+
+/// Take over the AOF after its replay, before any write is accepted (6O-H):
+/// record what the file holds, begin an empty one in the expiry-log format
+/// on a primary, and log what the replay removed on its own.
+pub(crate) async fn start_expiry_log(
+    aof: &AofWriter,
+    replayed: &ReplayedAof,
+    starts_as_primary: bool,
+) -> std::io::Result<()> {
+    aof.set_file_mode(replayed.mode);
+    if starts_as_primary {
+        aof.begin_expiry_log().await?;
+    }
+    for frame in &replayed.discarded {
+        aof.append(frame).await?;
+    }
+    aof.flush().await
+}
+
+/// What replaying the AOF found, for the server that goes on writing it.
+pub(crate) struct ReplayedAof {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) replayed: usize,
+    pub(crate) recovered: RecoveredDedup,
+    /// What the file holds: whether this server may continue it in the
+    /// expiry-log format, or must begin one, or keeps it legacy.
+    pub(crate) mode: AofFileMode,
+    /// What the replay removed on its own (ephemeral keys whose owner did not
+    /// survive the restart), as records to append before anything else: the
+    /// next session's writes are made against a keyspace without them, and
+    /// the next replay must rebuild that (6O-H review C, M2; pre-existing).
+    pub(crate) discarded: Vec<Vec<u8>>,
+}
+
+/// [`replay_aof_recovering`], with the expiry-log format (6O-H,
+/// `V0.6O-H-PROTOCOL-DESIGN.md` §3).
+///
+/// A file that begins with `FORMAT` replays **without evaluating expiry**
+/// ([`core_engine::store::without_expiry`]): the primary logged a `DEL` for
+/// every expired entry it acted on, so applying its frames to the state it
+/// had reproduces its timeline, however much later the replay runs. The
+/// store is a follower meanwhile: the file holds the primary's eviction
+/// `DEL`s, so the replay chooses no victims and refuses nothing for
+/// capacity. That holds up to the first record written as a push rather
+/// than an array (an older server's: design §2.2), or the first control
+/// record of a kind this server does not know; from there, and for any file
+/// without `FORMAT`, expiry is evaluated as before.
+///
+/// The snapshot was loaded keeping every entry. When the records it
+/// precedes replay with expiry evaluated, the entries whose deadline has
+/// passed are dropped first, as a load always did. When the file is empty
+/// they are kept only if `empty_is_timeless`: the caller is about to begin
+/// the file in the format (a primary), so later replays will load this
+/// snapshot without evaluating expiry too.
+pub(crate) async fn replay_aof_format(
+    store: &KeyValueStore,
+    path: &std::path::Path,
+    snapshot_checkpoint: u64,
+    empty_is_timeless: bool,
+) -> std::io::Result<ReplayedAof> {
     let mut recovered = RecoveredDedup::default();
     let bytes = match tokio::fs::read(path).await {
-        Err(e) if e.kind() == ErrorKind::NotFound => return Ok((0, recovered)),
+        Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e),
         Ok(b) => b,
     };
@@ -2127,11 +2400,51 @@ pub(crate) async fn replay_aof_recovering(
     let mut refusals: Vec<Option<(String, u64, String)>> = Vec::new();
     let mut refusal_at: HashMap<(String, u64), Vec<usize>> = HashMap::new();
     let mut torn_at = None;
+    // The expiry-log format: whether the file begins with `FORMAT`, and the
+    // offset of the first record to replay with expiry evaluated after all.
+    let mut records = 0usize;
+    let mut timeless_head = false;
+    let mut timeless_end = usize::MAX;
     while offset < bytes.len() {
         match Value::parse(&bytes[offset..]) {
             Ok((value, consumed)) => {
+                let record_at = offset;
                 offset += consumed;
-                if checkpoint_marker(&value) == Some(snapshot_checkpoint) {
+                records += 1;
+                let marker = checkpoint_marker(&value);
+                match (marker, marker.and_then(Control::of)) {
+                    (_, Some(Control::Format { features })) if records == 1 => {
+                        timeless_head = format_is_timeless(features);
+                    }
+                    (_, Some(Control::Format { .. })) => {}
+                    (_, Some(Control::Unknown { ignorable: true })) => {}
+                    (_, Some(Control::Unknown { ignorable: false })) => {
+                        if timeless_head && timeless_end == usize::MAX {
+                            warn!(
+                                "AOF: a control record at offset {record_at} is of a kind this \
+                                 server does not know: what follows replays with expiry evaluated"
+                            );
+                        }
+                        timeless_end = timeless_end.min(record_at);
+                    }
+                    // A checkpoint marker says nothing about who wrote the
+                    // records around it.
+                    (Some(_), None) => {}
+                    (None, _) => {
+                        if matches!(value, Value::Push(_)) && timeless_end == usize::MAX {
+                            if timeless_head {
+                                warn!(
+                                    "AOF: records from offset {record_at} on were appended by a \
+                                     server that does not log its expirations (an older one): \
+                                     they replay with expiry evaluated, and the file stays in \
+                                     the legacy format until the next checkpoint"
+                                );
+                            }
+                            timeless_end = record_at;
+                        }
+                    }
+                }
+                if marker == Some(snapshot_checkpoint) && !is_control_id(snapshot_checkpoint) {
                     replay_start = offset;
                 }
                 match dedup_record(&value) {
@@ -2167,17 +2480,56 @@ pub(crate) async fn replay_aof_recovering(
         }
     }
     recovered.refusals = refusals.into_iter().flatten().collect();
+    // Only complete records count: a torn one is cut off below.
+    let complete = torn_at.unwrap_or(bytes.len());
+    let mode = if records == 0 {
+        AofFileMode::Empty
+    } else if timeless_head && timeless_end == usize::MAX {
+        AofFileMode::Timeless
+    } else {
+        AofFileMode::Legacy
+    };
+    let timeless_at_start = match mode {
+        AofFileMode::Empty => empty_is_timeless,
+        _ => timeless_head && replay_start < timeless_end.min(complete.max(replay_start + 1)),
+    };
+    if !timeless_at_start {
+        // The records the snapshot precedes evaluate expiry: so does it.
+        let dropped = store.sweep_expired_reporting().len();
+        if dropped > 0 {
+            info!("Snapshot: {dropped} entr(ies) past their deadline dropped at load");
+        }
+    }
+    if timeless_head {
+        info!(
+            "AOF is in the expiry-log format{}: replaying without evaluating expiry",
+            if timeless_end == usize::MAX {
+                String::new()
+            } else {
+                format!(" up to offset {timeless_end}")
+            }
+        );
+    }
 
     let mut replayed = 0usize;
     let mut clamped = 0usize;
     let mut ephemeral = ReplayEphemeral::default();
     let mut offset = replay_start;
+    let was_follower = store.is_follower();
+    let mut following = false;
     while offset < bytes.len() {
         match Value::parse(&bytes[offset..]) {
             Ok((value, consumed)) => {
+                let record_at = offset;
                 offset += consumed;
                 if checkpoint_marker(&value).is_some() {
                     continue;
+                }
+                let timeless = timeless_head && record_at < timeless_end;
+                // A follower while replaying the primary's own evictions.
+                if timeless != following {
+                    store.set_follower(timeless || was_follower);
+                    following = timeless;
                 }
                 // Marks and refusals were collected above; these records carry
                 // no data.
@@ -2206,8 +2558,15 @@ pub(crate) async fn replay_aof_recovering(
                         ));
                     }
                 };
-                let claimable = ephemeral.claimable_members(&cmd, store);
-                let response = store.execute(cmd.clone());
+                let apply = || {
+                    let claimable = ephemeral.claimable_members(&cmd, store);
+                    (claimable, store.execute(cmd.clone()))
+                };
+                let (claimable, response) = if timeless {
+                    core_engine::store::without_expiry(apply)
+                } else {
+                    apply()
+                };
                 if let Value::Error(message) = &response {
                     return Err(std::io::Error::new(
                         ErrorKind::InvalidData,
@@ -2225,6 +2584,7 @@ pub(crate) async fn replay_aof_recovering(
                 break;
             }
             Err(e) => {
+                store.set_follower(was_follower);
                 return Err(std::io::Error::new(
                     ErrorKind::InvalidData,
                     format!("AOF corrupted at offset {offset}: {e}"),
@@ -2232,7 +2592,13 @@ pub(crate) async fn replay_aof_recovering(
             }
         }
     }
-    ephemeral.discard_abandoned(store)?;
+    store.set_follower(was_follower);
+    // In the mode the file ended in, as its last records were applied.
+    let discarded = if mode == AofFileMode::Timeless {
+        core_engine::store::without_expiry(|| ephemeral.discard_abandoned(store))?
+    } else {
+        ephemeral.discard_abandoned(store)?
+    };
     if clamped > 0 {
         warn!(
             "AOF replay clamped {clamped} deadline(s) past i64::MAX, written before 6O-F, to i64::MAX"
@@ -2255,7 +2621,12 @@ pub(crate) async fn replay_aof_recovering(
             valid
         );
     }
-    Ok((replayed, recovered))
+    Ok(ReplayedAof {
+        replayed,
+        recovered,
+        mode,
+        discarded,
+    })
 }
 
 /// Clamp a deadline past `i64::MAX` in a record written before 6O-F to
@@ -2413,6 +2784,94 @@ fn checkpoint_marker(value: &Value) -> Option<u64> {
 pub(crate) fn checkpoint_frame(id: u64) -> Vec<u8> {
     let id = id.to_string();
     resp_push(&[b"RECACHED-CHECKPOINT", id.as_bytes()])
+}
+
+// ── Expiry-log control records (6O-H) ────────────────────────────────────────
+//
+// `RECACHED-CHECKPOINT <id>` with `id` in a reserved range: every release
+// since 0.4 replays such a record as a no-op (it moves the replay start only
+// for the snapshot's own id, which never falls in the range), so a file that
+// carries them stays readable by older servers. Layout and evidence:
+// `benchmarks/v0.6.0/6o-h/V0.6O-H-PROTOCOL-DESIGN.md` §2.
+
+/// Top 16 bits of every control record's id. No checkpoint id reaches it:
+/// they count saves from the loaded snapshot's, and `ServerState::save`
+/// refuses one in the range.
+pub(crate) const CONTROL_TAG: u64 = 0xEC00;
+/// The id layout this server writes and understands (bits 39–32).
+const CONTROL_LAYOUT: u64 = 1;
+/// `FORMAT` feature bit 0: every record after it was written with every
+/// expiration the primary acted on logged as a `DEL`, so the file replays
+/// without evaluating expiry.
+pub(crate) const FEATURE_EXPIRY_LOG: u32 = 1;
+/// `FORMAT` feature bits a reader must understand to replay the file in
+/// the format (16–31). Bits 0–15 may be ignored: a feature there must be
+/// defined so that ignoring it replays no worse than a file without it.
+const FEATURES_MUST_UNDERSTAND: u32 = 0xFFFF_0000;
+/// The must-understand features this server knows: none yet.
+const FEATURES_UNDERSTOOD: u32 = 0;
+
+/// One expiry-log control record.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Control {
+    /// The file's first record: the features its records were written with.
+    Format { features: u32 },
+    /// A kind or layout this server does not know (a later server's).
+    /// Kinds `0x80`–`0xFF` are declared ignorable; any other ends the
+    /// timeless part of the file, since what it means is unknown here.
+    Unknown { ignorable: bool },
+}
+
+impl Control {
+    /// The control record a checkpoint id names, if it is one.
+    pub(crate) fn of(id: u64) -> Option<Control> {
+        if id >> 48 != CONTROL_TAG {
+            return None;
+        }
+        if (id >> 32) & 0xFF != CONTROL_LAYOUT {
+            return Some(Control::Unknown { ignorable: false });
+        }
+        let kind = (id >> 40) & 0xFF;
+        Some(match kind {
+            1 => Control::Format {
+                features: (id & 0xFFFF_FFFF) as u32,
+            },
+            _ => Control::Unknown {
+                ignorable: kind >= 0x80,
+            },
+        })
+    }
+
+    pub(crate) fn id(self) -> u64 {
+        let (kind, payload) = match self {
+            Control::Format { features } => (1, u64::from(features)),
+            Control::Unknown { ignorable } => (if ignorable { 0x80 } else { 0x7F }, 0),
+        };
+        (CONTROL_TAG << 48) | (kind << 40) | (CONTROL_LAYOUT << 32) | payload
+    }
+}
+
+/// Whether `id` lies in the range reserved for control records.
+pub(crate) fn is_control_id(id: u64) -> bool {
+    id >> 48 == CONTROL_TAG
+}
+
+pub(crate) fn control_frame(record: Control) -> Vec<u8> {
+    checkpoint_frame(record.id())
+}
+
+/// Whether a `FORMAT` record's features make its file replay without
+/// evaluating expiry here.
+fn format_is_timeless(features: u32) -> bool {
+    let unknown = features & FEATURES_MUST_UNDERSTAND & !FEATURES_UNDERSTOOD;
+    if unknown != 0 {
+        warn!(
+            "AOF begins with an expiry-log FORMAT needing features {unknown:#x} this server \
+             does not understand: replaying it with expiry evaluated, as an older server would"
+        );
+        return false;
+    }
+    features & FEATURE_EXPIRY_LOG != 0
 }
 
 // ── Replication ───────────────────────────────────────────────────────────────

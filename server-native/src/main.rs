@@ -545,19 +545,44 @@ async fn run(
     // Duplicate-suppression marks and refusals the AOF carries, merged into
     // the server state once it exists.
     let mut recovered_dedup = RecoveredDedup::default();
+    // A primary begins an empty AOF in the expiry-log format (6O-H); a
+    // replica's first full synchronization checkpoints it instead.
+    let starts_as_primary = std::env::var_os("RECACHED_REPLICAOF").is_none();
     let aof: Option<Arc<AofWriter>> = if let Some(path) = aof_path {
         match AofWriter::open(path.clone(), aof_sync).await {
             Ok(w) => {
-                let (_, recovered) =
-                    replay_aof_recovering(&store, &path, loaded_snapshot.aof_checkpoint)
-                        .await
-                        .map_err(|e| {
-                            std::io::Error::new(
-                                e.kind(),
-                                format!("failed to replay AOF {}: {e}", path.display()),
-                            )
-                        })?;
-                recovered_dedup = recovered;
+                let replayed = replay_aof_format(
+                    &store,
+                    &path,
+                    loaded_snapshot.aof_checkpoint,
+                    starts_as_primary,
+                )
+                .await
+                .map_err(|e| {
+                    std::io::Error::new(
+                        e.kind(),
+                        format!("failed to replay AOF {}: {e}", path.display()),
+                    )
+                })?;
+                start_expiry_log(&w, &replayed, starts_as_primary)
+                    .await
+                    .map_err(|e| {
+                        std::io::Error::new(
+                            e.kind(),
+                            format!("failed to start the AOF {}: {e}", path.display()),
+                        )
+                    })?;
+                recovered_dedup = replayed.recovered;
+                match w.file_mode() {
+                    AofFileMode::Timeless => {
+                        info!("AOF format: expiry log (replays without evaluating expiry)")
+                    }
+                    _ if starts_as_primary => info!(
+                        "AOF format: legacy (written before 6O-H); the expiry-log format \
+                         begins at the next checkpoint (SAVE, or autosave)"
+                    ),
+                    _ => {}
+                }
                 w.set_coalescing(aof_coalesce);
                 w.set_fanout(aof_fanout);
                 let writer = Arc::new(w);
@@ -596,6 +621,9 @@ async fn run(
             }
         }
     } else {
+        // Snapshot only: the load keeps every entry (see the AOF case);
+        // with no records after it, the expired ones go, as they always did.
+        store.sweep_expired_reporting();
         None
     };
 

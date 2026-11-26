@@ -6304,7 +6304,15 @@ async fn failed_checkpoint_keeps_dirty_state_and_aof_until_recovery() {
     state.save(&store).await.unwrap();
     assert_eq!(store.dirty_count(), 0);
     assert!(state.persistence_is_healthy());
-    assert_eq!(tokio::fs::metadata(&aof_path).await.unwrap().len(), 0);
+    // Truncated: what remains is the new file's expiry-log FORMAT record
+    // (6O-H), a primary's.
+    assert_eq!(tokio::fs::read(&aof_path).await.unwrap(), {
+        let mut format = control_frame(Control::Format {
+            features: FEATURE_EXPIRY_LOG,
+        });
+        format[0] = b'*';
+        format
+    });
 
     let _ = tokio::fs::remove_dir_all(&missing_dir).await;
     let _ = tokio::fs::remove_file(&aof_path).await;
@@ -6811,6 +6819,7 @@ mod sweep_notification {
 }
 
 mod aof_fail_stop;
+mod aof_format_6oh;
 mod sync_reliability;
 
 mod coalesced_fanout;
