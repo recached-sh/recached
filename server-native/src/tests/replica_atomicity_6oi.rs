@@ -45,7 +45,6 @@ impl Drop for Following {
     }
 }
 
-
 /// Follow `primary_addr`, reconnecting, as `run_repl_client` does, on a
 /// thread of its own: a group stopped inside its synchronous apply then
 /// blocks no worker that other tasks are queued on (6O-G lesson).
