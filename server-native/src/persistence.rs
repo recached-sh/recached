@@ -880,44 +880,53 @@ fn push_frames(batch: &mut AofBatch, frames: &[&[u8]]) {
     }
 }
 
-/// [`push_transaction`] when `transaction`, else [`push_frames`].
-fn push_batch(batch: &mut AofBatch, frames: &[&[u8]], transaction: bool) {
-    if transaction {
-        push_transaction(batch, frames);
-    } else {
-        push_frames(batch, frames);
-    }
+/// A transaction's group markers, `TXN-BEGIN n` and `TXN-COMMIT n`, built
+/// before the queue lock is taken (review B F4): nothing in them depends on
+/// the queue.
+pub(crate) struct GroupMarkers {
+    begin: Vec<u8>,
+    commit: Vec<u8>,
 }
 
-/// Queue a transaction's `frames` onto `batch` (one queue-lock hold): as a
-/// group, `TXN-BEGIN n`, the frames unchanged, `TXN-COMMIT n`, when the
-/// file groups transactions and there are two or more of them; otherwise
-/// as [`push_frames`]. One record needs no group: a torn record is cut, so
-/// it replays whole or not at all (6O-I design §2.2).
-fn push_transaction(batch: &mut AofBatch, frames: &[&[u8]]) {
-    if !batch.grouping || frames.len() < 2 {
-        push_frames(batch, frames);
-        return;
+/// The markers for a transaction's `frames`, if they can form a group: two
+/// or more, each exactly one record, and no more than a `u32` counts. `n`
+/// must be the records the group holds, or the file reads as corrupt later,
+/// so each frame is checked here in every build (review A L6). Neither
+/// failure can happen with `broadcast_for_at`'s frames; if one did, the
+/// records go ungrouped, as before 6O-I, rather than into a group the replay
+/// would refuse. One record needs no group: a torn record is cut, so it
+/// replays whole or not at all (design §2.2).
+fn group_markers(frames: &[&[u8]]) -> Option<GroupMarkers> {
+    if frames.len() < 2 {
+        return None;
     }
-    // `n` must be the records the group holds, or the file reads as corrupt
-    // later: each frame must be exactly one record, checked here in every
-    // build for a group (review A L6). Neither failure can happen (frames
-    // come from `broadcast_for_at`); if one did, the records go ungrouped,
-    // as before 6O-I, rather than into a group the replay would refuse.
-    let count = match u32::try_from(frames.len()) {
-        Ok(count) if frames.iter().all(|frame| is_one_record(frame)) => count,
+    match u32::try_from(frames.len()) {
+        Ok(count) if frames.iter().all(|frame| is_one_record(frame)) => Some(GroupMarkers {
+            begin: control_frame(Control::TxnBegin { count }),
+            commit: control_frame(Control::TxnCommit { count }),
+        }),
         _ => {
             error!(
                 frames = frames.len(),
                 "a transaction's records cannot be framed as one group; written ungrouped"
             );
-            push_frames(batch, frames);
-            return;
+            None
         }
-    };
-    batch.push_frame(&control_frame(Control::TxnBegin { count }));
-    push_frames(batch, frames);
-    batch.push_frame(&control_frame(Control::TxnCommit { count }));
+    }
+}
+
+/// Queue `frames` onto `batch` (one queue-lock hold): between `group`'s
+/// markers when there is one and the file groups transactions (a `txn`
+/// file, 6O-I), else as [`push_frames`].
+fn push_batch(batch: &mut AofBatch, frames: &[&[u8]], group: Option<&GroupMarkers>) {
+    match group {
+        Some(markers) if batch.grouping => {
+            batch.push_frame(&markers.begin);
+            push_frames(batch, frames);
+            batch.push_frame(&markers.commit);
+        }
+        _ => push_frames(batch, frames),
+    }
 }
 
 impl AofBatch {
@@ -2129,13 +2138,14 @@ impl AofWriter {
     /// [`append_frames`](Self::append_frames) for a transaction's frames
     /// (6O-I): in a `txn` file, two or more are written as a group between
     /// `TXN-BEGIN` and `TXN-COMMIT`, so a replay applies all of them or none
-    /// (`push_transaction`).
+    /// (`group_markers`, `push_batch`).
     pub(crate) async fn append_transaction(&self, frames: &[&[u8]]) -> std::io::Result<()> {
         self.append_batch(frames, true).await
     }
 
     async fn append_batch(&self, frames: &[&[u8]], transaction: bool) -> std::io::Result<()> {
-        self.enqueue(false, |batch| push_batch(batch, frames, transaction))
+        let group = transaction.then(|| group_markers(frames)).flatten();
+        self.enqueue(false, |batch| push_batch(batch, frames, group.as_ref()))
             .wait()
             .await
     }
@@ -2211,8 +2221,9 @@ impl AofWriter {
         // The last frame's position in its batch: 1 if it opened the batch
         // alone.
         let mut position = 0;
+        let group = transaction.then(|| group_markers(frames)).flatten();
         let (done, busy) = self.queue_only_busy(false, |batch| {
-            push_batch(batch, frames, transaction);
+            push_batch(batch, frames, group.as_ref());
             position = batch.frames;
         });
         let shared = &self.shared;
@@ -2296,7 +2307,9 @@ impl AofWriter {
         let deferred = AOF_DEFERRED.try_with(Arc::clone).ok();
         match deferred {
             Some(deferred) => {
-                let done = self.queue_only(false, |batch| push_batch(batch, frames, transaction));
+                let group = transaction.then(|| group_markers(frames)).flatten();
+                let done =
+                    self.queue_only(false, |batch| push_batch(batch, frames, group.as_ref()));
                 deferred.push(&self.shared, done);
                 Ok(())
             }
@@ -2377,6 +2390,10 @@ impl AofWriter {
             // The file is not what the mode says (the truncation, or the
             // FORMAT after it, failed): nothing more is written as the
             // format's until a checkpoint succeeds (review C, R3-2).
+            // Batches queued since the truncation was queued still carry
+            // `grouping` from then; none holds a group, because the caller
+            // holds the all-write barrier, which every `EXEC` waits for
+            // (review B F7).
             let mut queue = self.shared.lock();
             queue.mode = AofFileMode::Legacy;
             queue.grouped = false;
@@ -2661,6 +2678,9 @@ pub(crate) async fn replay_aof_format(
     let mut group: Option<OpenGroup> = None;
     let mut discard_from: Option<(usize, OpenGroup)> = None;
     let mut abandoned = 0usize;
+    // The last record holding a nested aggregate (6O-I design §3.1): one
+    // at or after the replay start refuses the start.
+    let mut last_nested: Option<usize> = None;
     let corrupt = |at: usize, why: &str| {
         std::io::Error::new(
             ErrorKind::InvalidData,
@@ -2685,12 +2705,12 @@ pub(crate) async fn replay_aof_format(
                 // record another record was appended after (v0.4.0 leaves a
                 // torn tail in place): refused, never applied as if whole
                 // (6O-I design §3.6, review A M3).
+                // Only one the replay applies counts: the part of the file
+                // the snapshot already holds is never applied (review B
+                // F3), and its replay start is known only at the end of
+                // this pass.
                 if !is_flat_record(&value) {
-                    return Err(corrupt(
-                        record_at,
-                        "a record holding another record (a torn record something was \
-                         appended after)",
-                    ));
+                    last_nested = Some(record_at);
                 }
                 // Groups are recognized in a `txn` file up to where its
                 // timeless part ends; after that, `TXN-*` records are the
@@ -2871,6 +2891,12 @@ pub(crate) async fn replay_aof_format(
             }
         }
     }
+    if let Some(at) = last_nested.filter(|at| *at >= replay_start) {
+        return Err(corrupt(
+            at,
+            "a record holding another record (a torn record something was appended after)",
+        ));
+    }
     // A group still open here is this format's own torn tail: everything
     // from its `TXN-BEGIN` on is its arrays (a push would have closed it
     // above), at most one record torn. None of it is applied (§3.2).
@@ -3049,16 +3075,31 @@ pub(crate) async fn replay_aof_format(
         // Written under a temporary name and renamed once synced, so a copy
         // that fails part-way never leaves a file that looks whole; the
         // partial one is removed (review A R3-L1).
+        // A crash during the copy can leave the temporary file behind
+        // (`*.partial.<pid>.<n>.tmp`, never under the `.cut-` name); it is
+        // not removed automatically (review B F6).
         let partial = temp_sibling(&cut, "partial");
-        let kept = async {
+        let renamed = async {
             write_private(&partial, &bytes[valid..]).await?;
-            tokio::fs::rename(&partial, &cut).await?;
-            sync_parent_dir(&cut).await
+            tokio::fs::rename(&partial, &cut).await
         }
         .await;
-        if kept.is_err() {
+        if renamed.is_err() {
             let _ = tokio::fs::remove_file(&partial).await;
         }
+        // Renamed but its directory entry not synced: the copy exists, and
+        // says so, but may not survive a power loss.
+        let kept = match renamed {
+            Ok(()) => sync_parent_dir(&cut).await.map_err(|e| {
+                warn!(
+                    "AOF: the copy of the cut tail at {} exists but its directory could not \
+                     be synced ({e})",
+                    cut.display()
+                );
+                e
+            }),
+            Err(e) => Err(e),
+        };
         match &kept {
             Ok(()) => warn!(
                 "AOF: the {removed} byte(s) about to be cut from offset {valid} were saved to {} \
