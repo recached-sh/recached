@@ -11,8 +11,11 @@ pub(crate) struct ReplFrame {
     bytes: Arc<Vec<u8>>,
     /// The transaction group this frame belongs to, if any (6O-I): a
     /// capable replica is sent a header before the group's first frame, and
-    /// a partial resynchronization never resumes inside one.
-    group: Option<ReplGroup>,
+    /// a partial resynchronization never resumes inside one. One allocation
+    /// shared by the group's frames: 8 bytes per backlogged frame, not 32
+    /// (measured: +13 MiB of primary RSS over a full 16 MiB backlog of small
+    /// frames, `V0.6O-I-PERFORMANCE.md`).
+    group: Option<Arc<ReplGroup>>,
 }
 
 /// A transaction's frames on the replication stream (6O-I design §6): the
@@ -51,7 +54,7 @@ impl QueuedReplFrame {
 
     /// The transaction group the frame belongs to (6O-I), for tests.
     pub(crate) fn group(&self) -> Option<ReplGroup> {
-        self.frame.group
+        self.frame.group.as_deref().copied()
     }
 }
 
@@ -535,10 +538,12 @@ impl ReplHub {
         let group = u32::try_from(count)
             .ok()
             .filter(|count| *count >= 2)
-            .map(|count| ReplGroup {
-                first,
-                count,
-                bytes: total,
+            .map(|count| {
+                Arc::new(ReplGroup {
+                    first,
+                    count,
+                    bytes: total,
+                })
             });
         let frames: Vec<ReplFrame> = frames
             .into_iter()
@@ -546,7 +551,7 @@ impl ReplHub {
             .map(|(bytes, offset)| ReplFrame {
                 offset,
                 bytes: Arc::new(bytes),
-                group,
+                group: group.clone(),
             })
             .collect();
         let backlog_limit = self.backlog_bytes.load(Ordering::Acquire);
@@ -1146,7 +1151,7 @@ impl ReplHub {
             .collect();
         if txn
             && let Some(next) = missing.first()
-            && let Some(group) = next.group
+            && let Some(group) = next.group.as_deref().copied()
             && group.first < next.offset
         {
             warn!(
@@ -2131,7 +2136,7 @@ where
     S: AsyncWrite + Unpin,
 {
     if txn
-        && let Some(group) = frame.group
+        && let Some(group) = frame.group.as_deref().copied()
         && group.first == frame.offset
     {
         socket.write_all(&group_header(group)).await?;
