@@ -31,10 +31,25 @@ async fn exec(client: &mut WsClient, writes: &[&[&str]]) {
     assert!(matches!(reply, Value::Array(Some(_))), "{reply:?}");
 }
 
+/// Stops its follow loop when dropped (review D round 2, R2-1): a loop that
+/// outlived its test reconnected to whatever later bound its primary's port,
+/// such as another test's fake primary.
+#[must_use = "the replica stops following when this is dropped"]
+struct Following(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Following {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+
 /// Follow `primary_addr` on a thread of its own, reconnecting with the
 /// resume state kept across links and cleared after a protocol error, as
 /// `run_repl_client` does.
-fn follow(replica: &Node, primary_addr: std::net::SocketAddr) {
+fn follow(replica: &Node, primary_addr: std::net::SocketAddr) -> Following {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = Arc::clone(&stop);
     let (store, state, tx, watches) = (
         Arc::clone(&replica.store),
         Arc::clone(&replica.state),
@@ -49,6 +64,9 @@ fn follow(replica: &Node, primary_addr: std::net::SocketAddr) {
             .block_on(async move {
                 let mut resume = ReplResume::default();
                 loop {
+                    if stopped.load(Ordering::Relaxed) {
+                        return;
+                    }
                     if !state.is_replica() {
                         return;
                     }
@@ -71,6 +89,7 @@ fn follow(replica: &Node, primary_addr: std::net::SocketAddr) {
                 }
             });
     });
+    Following(stop)
 }
 
 /// Every key of `keys` reads the same on `node` as on `primary`.
@@ -193,7 +212,7 @@ async fn a_replica_whose_queue_overflows_on_groups_resumes_and_converges() {
     let primary = node(false, true).await;
     primary.state.replicas.configure_queue_bytes(4 * 1024);
     let replica = node(true, true).await;
-    follow(&replica, serve_replicas(&primary).await);
+    let _following = follow(&replica, serve_replicas(&primary).await);
     let mut client = WsClient::connect(primary.ws).await;
     client.cmd(&["SET", "sl:sentinel", "0"]).await;
     wait_for(&replica.store, "sl:sentinel", bulk("0")).await;
@@ -270,7 +289,7 @@ async fn fake_accept(listener: &TcpListener) -> (TcpStream, String, u64) {
 async fn a_replica_that_applied_a_group_resumes_after_it() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let replica = node(true, false).await;
-    follow(&replica, listener.local_addr().unwrap());
+    let _following = follow(&replica, listener.local_addr().unwrap());
     let (mut sock, _, _) = fake_accept(&listener).await;
     sock.write_all(b"F").await.unwrap();
     sock.write_all(&10u64.to_le_bytes()).await.unwrap();
@@ -316,8 +335,8 @@ async fn a_middle_replicas_full_sync_resets_its_sub_replicas_and_they_converge()
     let a = node(false, true).await;
     let b = node(true, true).await;
     let c = node(true, true).await;
-    follow(&b, serve_replicas(&a).await);
-    follow(&c, serve_replicas(&b).await);
+    let _following = follow(&b, serve_replicas(&a).await);
+    let _following = follow(&c, serve_replicas(&b).await);
     let mut client = WsClient::connect(a.ws).await;
     let keys: Vec<String> = ["ch:a", "ch:b", "ch:c"]
         .iter()
@@ -342,8 +361,8 @@ async fn a_promoted_middle_replica_keeps_grouping_for_its_sub_replicas() {
     let a = node(false, true).await;
     let b = node(true, true).await;
     let c = node(true, true).await;
-    follow(&b, serve_replicas(&a).await);
-    follow(&c, serve_replicas(&b).await);
+    let _following = follow(&b, serve_replicas(&a).await);
+    let _following = follow(&c, serve_replicas(&b).await);
     let mut client = WsClient::connect(a.ws).await;
     client.cmd(&["SET", "pm:a", "0"]).await;
     wait_for(&c.store, "pm:a", bulk("0")).await;
