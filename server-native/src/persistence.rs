@@ -1653,6 +1653,11 @@ pub(crate) struct QueuedFrames<'a> {
 }
 
 impl QueuedFrames<'_> {
+    /// Start the write now (lead the queue), without waiting for it.
+    pub(crate) fn start(&self) {
+        self.shared.lead();
+    }
+
     /// Lead the batch (or find it led) and wait for its outcome, as
     /// [`AofWriter::append_frames`] does.
     pub(crate) async fn wait(self) -> std::io::Result<()> {
