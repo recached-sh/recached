@@ -895,14 +895,29 @@ fn push_batch(batch: &mut AofBatch, frames: &[&[u8]], transaction: bool) {
 /// as [`push_frames`]. One record needs no group: a torn record is cut, so
 /// it replays whole or not at all (6O-I design §2.2).
 fn push_transaction(batch: &mut AofBatch, frames: &[&[u8]]) {
-    match u32::try_from(frames.len()) {
-        Ok(count) if batch.grouping && count >= 2 => {
-            batch.push_frame(&control_frame(Control::TxnBegin { count }));
-            push_frames(batch, frames);
-            batch.push_frame(&control_frame(Control::TxnCommit { count }));
-        }
-        _ => push_frames(batch, frames),
+    if !batch.grouping || frames.len() < 2 {
+        push_frames(batch, frames);
+        return;
     }
+    // `n` must be the records the group holds, or the file reads as corrupt
+    // later: each frame must be exactly one record, checked here in every
+    // build for a group (review A L6). Neither failure can happen (frames
+    // come from `broadcast_for_at`); if one did, the records go ungrouped,
+    // as before 6O-I, rather than into a group the replay would refuse.
+    let count = match u32::try_from(frames.len()) {
+        Ok(count) if frames.iter().all(|frame| is_one_record(frame)) => count,
+        _ => {
+            error!(
+                frames = frames.len(),
+                "a transaction's records cannot be framed as one group; written ungrouped"
+            );
+            push_frames(batch, frames);
+            return;
+        }
+    };
+    batch.push_frame(&control_frame(Control::TxnBegin { count }));
+    push_frames(batch, frames);
+    batch.push_frame(&control_frame(Control::TxnCommit { count }));
 }
 
 impl AofBatch {
@@ -2552,6 +2567,16 @@ pub(crate) async fn start_expiry_log(
     aof.flush().await
 }
 
+/// Where the bytes cut from the AOF's tail at `offset` are kept: beside
+/// it, named for the offset and the time, so later cuts never overwrite one.
+fn aof_cut_path(path: &std::path::Path, offset: usize) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "appendonly.aof".into());
+    path.with_file_name(format!("{name}.cut-{offset}-{}", now_unix_ms()))
+}
+
 /// A transaction group pass 1 is inside (6O-I): where its `TXN-BEGIN` is,
 /// how many records it declares, and how many it has found.
 #[derive(Clone, Copy)]
@@ -2655,27 +2680,59 @@ pub(crate) async fn replay_aof_format(
                 {
                     grouped_head = format_is_grouped(features);
                 }
-                if grouped_head {
+                // Every writer writes a record as one flat array or push
+                // of bulk strings. One holding a nested aggregate is a torn
+                // record another record was appended after (v0.4.0 leaves a
+                // torn tail in place): refused, never applied as if whole
+                // (6O-I design §3.6, review A M3).
+                if !is_flat_record(&value) {
+                    return Err(corrupt(
+                        record_at,
+                        "a record holding another record (a torn record something was \
+                         appended after)",
+                    ));
+                }
+                // Groups are recognized in a `txn` file up to where its
+                // timeless part ends; after that, `TXN-*` records are the
+                // ignorable no-ops they are to 6O-H (review A M1).
+                if grouped_head && (group.is_some() || timeless_end == usize::MAX) {
                     let push = matches!(value, Value::Push(_));
                     match (&mut group, control) {
-                        // Another server took the file over after this one
-                        // left a group open (a crash, then an older binary
-                        // started on the file): it applied the members it
-                        // found one by one and served that state, so they
-                        // replay as it replayed them. The push itself is
-                        // handled below, as any push (§2.4, §3.2).
-                        (Some(open), _) if push => {
+                        // Authorship first (review A M2): a push inside an
+                        // open group, of any kind, means another server took
+                        // the file over after this one left the group open
+                        // (a crash, then an older binary started on the
+                        // file). It applied the members it found one by one
+                        // and built on that state, so they replay one by one
+                        // too. So does a control record of a non-ignorable
+                        // kind this server does not know: a later writer's.
+                        // The record itself is then handled below as any
+                        // (§2.4, §3.2).
+                        (Some(open), _)
+                            if push
+                                || matches!(
+                                    control,
+                                    Some(Control::Unknown { ignorable: false })
+                                ) =>
+                        {
                             warn!(
                                 "AOF: the transaction at offset {} was left incomplete, and \
-                                 another server appended records after it from offset \
-                                 {record_at}: its {} record(s) replay one by one, as that \
-                                 server replayed them (transaction atomicity was lost when it \
-                                 recovered the file without a SAVE)",
+                                 records another server wrote follow it from offset \
+                                 {record_at}: its {} record(s) replay one by one (transaction \
+                                 atomicity was lost when that server took the file over \
+                                 without a SAVE)",
                                 open.begin, open.seen
                             );
                             abandoned += 1;
                             group = None;
                         }
+                        // Ignorable to any reader, so not a member (6O-H
+                        // §9): an ignorable kind, or a `FORMAT` not at the
+                        // head.
+                        (
+                            Some(_),
+                            Some(Control::Unknown { ignorable: true } | Control::Format { .. }),
+                        ) => {}
                         (Some(open), Some(Control::TxnCommit { count }))
                             if count == open.count && open.seen == open.count =>
                         {
@@ -2687,10 +2744,13 @@ pub(crate) async fn replay_aof_format(
                                 "a transaction group opened inside another",
                             ));
                         }
-                        (Some(_), Some(_)) => {
+                        (Some(open), Some(_)) => {
                             return Err(corrupt(
                                 record_at,
-                                "a control record inside a transaction group that does not close it",
+                                &format!(
+                                    "a transaction group of {} records closed after {}",
+                                    open.count, open.seen
+                                ),
                             ));
                         }
                         (Some(_), None) if marker.is_some() => {
@@ -2718,12 +2778,6 @@ pub(crate) async fn replay_aof_format(
                                     ),
                                 ));
                             }
-                        }
-                        (None, Some(c)) if c.is_txn() && timeless_end != usize::MAX => {
-                            return Err(corrupt(
-                                record_at,
-                                "a transaction group after records another server appended",
-                            ));
                         }
                         (None, Some(Control::TxnBegin { count })) if count >= 2 => {
                             group = Some(OpenGroup {
@@ -2981,6 +3035,19 @@ pub(crate) async fn replay_aof_format(
         counter!("recached_aof_incomplete_transactions_total").increment(1);
     }
     if let Some(valid) = discard_from.map(|(at, _)| at).or(torn_at) {
+        // Kept before it is cut (review A M3): a record that does not
+        // parse to its end looks like a torn tail, but a length corrupted in
+        // the middle of the file does too, and cutting there would drop every
+        // record after it. The cut bytes are written, synced, to a file
+        // beside the AOF, and named in the log, so nothing is lost silently.
+        let cut = aof_cut_path(path, valid);
+        write_private(&cut, &bytes[valid..]).await?;
+        sync_parent_dir(&cut).await?;
+        warn!(
+            "AOF: the {} byte(s) about to be cut from offset {valid} were saved to {}",
+            bytes.len().saturating_sub(valid),
+            cut.display()
+        );
         let file = tokio::fs::OpenOptions::new().write(true).open(path).await?;
         file.set_len(valid as u64).await?;
         file.sync_all().await?;
@@ -3241,11 +3308,6 @@ impl Control {
         };
         (CONTROL_TAG << 48) | (kind << 40) | (CONTROL_LAYOUT << 32) | payload
     }
-
-    /// Whether this is one of a transaction group's markers.
-    fn is_txn(self) -> bool {
-        matches!(self, Control::TxnBegin { .. } | Control::TxnCommit { .. })
-    }
 }
 
 /// Whether `id` lies in the range reserved for control records.
@@ -3258,9 +3320,23 @@ pub(crate) fn control_frame(record: Control) -> Vec<u8> {
 }
 
 /// Whether a `FORMAT` record's features make its file group transactions
-/// here: the `txn` bit, and no must-understand bit this server lacks.
+/// here: a timeless file (`expirylog`, no must-understand bit this server
+/// lacks) with the `txn` bit (review A N1).
 fn format_is_grouped(features: u32) -> bool {
-    features & FEATURES_MUST_UNDERSTAND & !FEATURES_UNDERSTOOD == 0 && features & FEATURE_TXN != 0
+    features & FEATURES_MUST_UNDERSTAND & !FEATURES_UNDERSTOOD == 0
+        && features & FEATURE_EXPIRY_LOG != 0
+        && features & FEATURE_TXN != 0
+}
+
+/// Whether an AOF record holds no aggregate inside it: every writer writes a
+/// command as one array or push of bulk strings (6O-I, review A M3).
+fn is_flat_record(value: &Value) -> bool {
+    match value {
+        Value::Push(items) | Value::Array(Some(items)) => items
+            .iter()
+            .all(|item| !matches!(item, Value::Array(_) | Value::Push(_) | Value::Map(_))),
+        _ => true,
+    }
 }
 
 /// Whether a `FORMAT` record's features make its file replay without

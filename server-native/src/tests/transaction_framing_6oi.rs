@@ -423,13 +423,14 @@ async fn malformed_groups_refuse_the_start() {
             .concat(),
         ),
         (
-            "a group after another server's records",
+            // Review A M3: v0.4.0 kept a torn member and appended its
+            // acknowledged write after it; the two parse as one record.
+            "a torn member with another server's record inside it",
             [
-                push(&["SET", "p", "1"]),
                 begin(2),
-                set("a", "1"),
-                set("b", "1"),
-                commit(2),
+                set("a", "new"),
+                b"*3\r\n$3\r\nSET\r\n$1\r\nb\r\n".to_vec(),
+                push(&["SET", "d", "1"]),
             ]
             .concat(),
         ),
@@ -609,4 +610,139 @@ async fn restarts_and_checkpoints_keep_grouping() {
             assert_eq!(get(&again.store, "r:n"), bulk("2"));
         }
     }
+}
+
+// ── Review A, round 1 ────────────────────────────────────────────────────
+
+/// M1: kinds any reader may skip are skipped inside a group too, and a
+/// non-ignorable kind this server does not know (a later writer's) abandons
+/// it; after the timeless part ends, group records are no-ops.
+#[tokio::test]
+async fn later_writers_control_kinds_follow_the_6oh_rules_inside_groups() {
+    let unknown = |kind: u64| {
+        let id = (CONTROL_TAG << 48) | (kind << 40) | (1 << 32) | 7;
+        array(&["RECACHED-CHECKPOINT", &id.to_string()])
+    };
+    // An ignorable kind between members: not a member.
+    let bytes = [
+        format_txn(),
+        begin(2),
+        set("a", "1"),
+        unknown(0x83),
+        set("b", "1"),
+        commit(2),
+    ]
+    .concat();
+    let (store, _) = replay(&bytes).await;
+    let store = store.unwrap();
+    assert_eq!((get(&store, "a"), get(&store, "b")), (bulk("1"), bulk("1")));
+    // A non-ignorable unknown kind: abandoned, its members one by one, and
+    // what follows replays as 6O-H replays it.
+    let bytes = [
+        format_txn(),
+        begin(3),
+        set("a", "1"),
+        unknown(0x05),
+        set("b", "1"),
+    ]
+    .concat();
+    let (store, after) = replay(&bytes).await;
+    let store = store.unwrap();
+    assert_eq!((get(&store, "a"), get(&store, "b")), (bulk("1"), bulk("1")));
+    assert_eq!(after, bytes, "not a tail to cut");
+    // Group records after the timeless part ended: no-ops.
+    let bytes = [
+        format_txn(),
+        push(&["SET", "p", "1"]),
+        begin(2),
+        set("a", "2"),
+        commit(5),
+    ]
+    .concat();
+    let (store, _) = replay(&bytes).await;
+    assert_eq!(get(&store.unwrap(), "a"), bulk("2"));
+}
+
+/// M2: authorship first. Whatever a push is (a DEDUP-wrapped write, as
+/// every browser write is, or an older server's checkpoint marker from a
+/// SAVE that crashed before truncating), inside an open group it abandons
+/// the group.
+#[tokio::test]
+async fn any_push_inside_an_open_group_abandons_it_first() {
+    let dangling = [format_txn(), set("a", "0"), begin(2), set("a", "1")].concat();
+    // (a) v0.5.2 and later wrap a WebSocket write in its DEDUP envelope.
+    let bytes = [
+        dangling.clone(),
+        push(&["DEDUP", "cl", "7", "SET", "k", "v"]),
+    ]
+    .concat();
+    let (store, after) = replay(&bytes).await;
+    let store = store.unwrap();
+    assert_eq!((get(&store, "a"), get(&store, "k")), (bulk("1"), bulk("v")));
+    assert_eq!(after, bytes);
+    // (b) Its SAVE wrote `RECACHED-CHECKPOINT 3` and crashed after renaming
+    // snapshot 3: the replay starts after the marker, and starts.
+    let dir = Dir::new("6oi_push_marker");
+    let bytes = [dangling, push(&["RECACHED-CHECKPOINT", "3"])].concat();
+    std::fs::write(dir.aof(), &bytes).unwrap();
+    let store = KeyValueStore::new();
+    let replayed = replay_aof_format(&store, &dir.aof(), 3, true)
+        .await
+        .unwrap();
+    assert_eq!(get(&store, "a"), nil(), "before the snapshot's marker");
+    // The marker does not end the timeless part (6O-H): the file stays a
+    // `txn` file, and the abandoned group is classified the same way on
+    // every later replay.
+    assert_eq!(replayed.mode, AofFileMode::Timeless);
+    assert!(replayed.grouped);
+}
+
+/// M3: the bytes a tail cut removes are kept, synced, beside the file.
+#[tokio::test]
+async fn the_bytes_a_tail_cut_removes_are_kept_beside_the_file() {
+    let dir = Dir::new("6oi_cut_kept");
+    let head = [format_txn(), set("a", "0")].concat();
+    let tail = [begin(2), set("a", "1")].concat();
+    std::fs::write(dir.aof(), [head.clone(), tail.clone()].concat()).unwrap();
+    replay_aof_format(&KeyValueStore::new(), &dir.aof(), 0, true)
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(dir.aof()).unwrap(), head);
+    let kept: Vec<_> = std::fs::read_dir(&dir.0)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.to_string_lossy().contains(".cut-"))
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert!(
+        kept[0]
+            .to_string_lossy()
+            .contains(&format!("append.aof.cut-{}-", head.len())),
+        "{kept:?}"
+    );
+    assert_eq!(std::fs::read(&kept[0]).unwrap(), tail);
+}
+
+/// L1: 6O-I never appends after an open group. A replica restarted on its
+/// own `txn` file (it leaves the format at startup and writes pushes) cuts
+/// the incomplete tail before its first append.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replica_restarted_on_an_incomplete_tail_cuts_it_before_appending() {
+    let dir = Dir::new("6oi_replica_tail");
+    let head = [format_txn(), set("a", "0")].concat();
+    std::fs::write(dir.aof(), [head.clone(), begin(2), set("a", "1")].concat()).unwrap();
+    let node = super::aof_format_6oh::boot_with(&dir, false, KeyValueStore::new())
+        .await
+        .unwrap();
+    assert_eq!(get(&node.store, "a"), bulk("0"));
+    node.state
+        .aof
+        .as_ref()
+        .unwrap()
+        .append(&push(&["SET", "r", "1"]))
+        .await
+        .unwrap();
+    let bytes = std::fs::read(dir.aof()).unwrap();
+    assert_eq!(&bytes[..head.len()], head.as_slice());
+    assert_eq!(&bytes[head.len()..], push(&["SET", "r", "1"]).as_slice());
 }
