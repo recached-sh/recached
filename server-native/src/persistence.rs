@@ -3040,14 +3040,34 @@ pub(crate) async fn replay_aof_format(
         // the middle of the file does too, and cutting there would drop every
         // record after it. The cut bytes are written, synced, to a file
         // beside the AOF, and named in the log, so nothing is lost silently.
+        // Best effort (review A R2-M1): a copy that cannot be written (a
+        // full disk, a quota, a read-only directory) must not stop a start
+        // that 6O-H made by cutting in place. The cut then goes ahead as it
+        // always did, logged as an error with what was lost.
         let cut = aof_cut_path(path, valid);
-        write_private(&cut, &bytes[valid..]).await?;
-        sync_parent_dir(&cut).await?;
-        warn!(
-            "AOF: the {} byte(s) about to be cut from offset {valid} were saved to {}",
-            bytes.len().saturating_sub(valid),
-            cut.display()
-        );
+        let removed = bytes.len().saturating_sub(valid);
+        let kept = match write_private(&cut, &bytes[valid..]).await {
+            Ok(()) => sync_parent_dir(&cut).await,
+            Err(e) => Err(e),
+        };
+        match &kept {
+            Ok(()) => warn!(
+                "AOF: the {removed} byte(s) about to be cut from offset {valid} were saved to {} \
+                 (remove it once inspected)",
+                cut.display()
+            ),
+            Err(e) => error!(
+                "AOF: the {removed} byte(s) about to be cut from offset {valid} could not be saved \
+                 to {} ({e}); cutting them without a copy, as before 6O-I",
+                cut.display()
+            ),
+        }
+        counter!(
+            "recached_aof_tail_cuts_total",
+            "kept" => if kept.is_ok() { "true" } else { "false" }
+        )
+        .increment(1);
+        counter!("recached_aof_tail_cut_bytes_total").increment(removed as u64);
         let file = tokio::fs::OpenOptions::new().write(true).open(path).await?;
         file.set_len(valid as u64).await?;
         file.sync_all().await?;
