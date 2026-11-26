@@ -501,8 +501,12 @@ pub(crate) async fn run_transaction_queue(
                     }
                 }
                 if expiry.routed {
+                    // As for a write outside EXEC (review B, B-1): with the
+                    // writer's origin when the write's own frame follows,
+                    // which the writer never receives; else to everyone.
+                    let origin = if write.effective() { conn_id } else { 0 };
                     tx.send(Arc::new(SyncPush::for_command(
-                        0,
+                        origin,
                         &expiry.deletion,
                         push_keys(&expiry.deletion),
                         expiry.frame.clone(),

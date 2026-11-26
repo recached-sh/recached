@@ -740,6 +740,27 @@ impl ServerState {
         }
     }
 
+    /// The sweeper's `DEL` frames for one chunk (6O-H): one AOF batch, so
+    /// one `write(2)` and, under `always`, one `fdatasync` for the chunk,
+    /// without the coalescer's yield (every writer is held by the sweep's
+    /// barrier, so nothing could join), then replicated in order (review B,
+    /// B-3).
+    pub(crate) async fn on_sweep_logged(&self, frames: &[&[u8]]) {
+        if frames.is_empty() {
+            return;
+        }
+        if let Some(aof) = &self.aof
+            && let Err(e) = aof.append_frames(frames).await
+        {
+            self.record_persistence_failure("aof_append", &e);
+        }
+        if self.replicas.is_enabled() {
+            for frame in frames {
+                self.replicas.fan_out(frame.to_vec()).await;
+            }
+        }
+    }
+
     /// [`on_write_logged`](Self::on_write_logged) for a transaction's
     /// frames, in command order (6O-G): the AOF takes them as one batch
     /// (never split by the coalescer: they are queued in one step), then
