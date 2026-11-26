@@ -6842,6 +6842,7 @@ mod repl_sender_batching;
 mod replica_6l;
 mod replica_expirylog_6oh;
 mod replication_dedup;
+mod replication_framing_6oi;
 mod reply_coalesce_6ob;
 mod reply_coalesce_6oc;
 mod request_path;

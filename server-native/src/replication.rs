@@ -9,6 +9,26 @@ use std::hash::{Hash, Hasher};
 pub(crate) struct ReplFrame {
     offset: u64,
     bytes: Arc<Vec<u8>>,
+    /// The transaction group this frame belongs to, if any (6O-I): a
+    /// capable replica is sent a header before the group's first frame, and
+    /// a partial resynchronization never resumes inside one.
+    group: Option<ReplGroup>,
+}
+
+/// A transaction's frames on the replication stream (6O-I design §6): the
+/// consecutive offsets `first .. first + count`, `bytes` long in all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct ReplGroup {
+    pub(crate) first: u64,
+    pub(crate) count: u32,
+    pub(crate) bytes: u64,
+}
+
+impl ReplGroup {
+    /// The offset of the group's last frame.
+    pub(crate) fn last(self) -> u64 {
+        self.first + u64::from(self.count) - 1
+    }
 }
 
 pub(crate) struct QueuedReplFrame {
@@ -27,6 +47,11 @@ impl QueuedReplFrame {
     /// The frame's replication offset, for tests outside this module.
     pub(crate) fn offset(&self) -> u64 {
         self.frame.offset
+    }
+
+    /// The transaction group the frame belongs to (6O-I), for tests.
+    pub(crate) fn group(&self) -> Option<ReplGroup> {
+        self.frame.group
     }
 }
 
@@ -123,6 +148,9 @@ pub(crate) struct ReplHub {
     /// Test-only: advertise no `expirylog`, as a primary before 6O-H.
     #[cfg(test)]
     pub(crate) test_old_primary: AtomicBool,
+    /// Test-only: advertise no `txn1`, as a primary before 6O-I.
+    #[cfg(test)]
+    pub(crate) test_without_txn: AtomicBool,
     /// Test-only: milliseconds a replica's full-sync install sleeps before
     /// its checkpoint, as a slow disk would.
     #[cfg(test)]
@@ -367,6 +395,27 @@ pub(crate) const REPL_CAP_DEDUP: &str = "dedup1";
 /// are limited to 128 bytes by every release, so tokens stay short.
 pub(crate) const REPL_CAP_EXPIRYLOG: &str = "expirylog1";
 
+/// Capability (6O-I): this node's stream marks each transaction's frames as
+/// a group, with a header frame at offset 0 before its first frame, and a
+/// replica that accepts it applies a group all at once. A framing
+/// capability, independent of `expirylog1`; advertised by every node, and
+/// never inferred from a version. Headers go only to a replica that
+/// accepted it: an older one sees today's stream.
+pub(crate) const REPL_CAP_TXN: &str = "txn1";
+
+/// Payload length of a group header (6O-I design §6.2): version, kind,
+/// reserved, count, first offset, bytes.
+const REPL_GROUP_HEADER_LEN: usize = 24;
+const REPL_GROUP_HEADER_VERSION: u8 = 1;
+const REPL_GROUP_HEADER_KIND: u8 = 1;
+
+/// The most a replica buffers of one group, charged as the sum of its
+/// frames' lengths plus [`REPL_QUEUE_FRAME_OVERHEAD`] each (the charge the
+/// primary's queue uses): the largest payload a link already accepts. A
+/// larger group is refused, and the replica takes a full synchronization,
+/// which carries the transaction's effects atomically (6O-I design §8).
+pub(crate) const REPL_GROUP_MAX_BYTES: usize = MAX_REPL_FRAME_BYTES;
+
 /// Mode byte: full synchronization followed by the DEDUP table.
 const SYNC_MODE_FULL_DEDUP: u8 = b'D';
 /// Mode byte: the primary refuses this replica; a length-prefixed reason
@@ -443,26 +492,60 @@ impl ReplHub {
     /// up. Increments each surviving replica's sent counter, which is one half
     /// of the lag calculation.
     pub(crate) async fn fan_out(&self, bytes: Vec<u8>) {
-        if !self.is_enabled() {
+        self.publish(vec![bytes]);
+    }
+
+    /// Replicate a transaction's frames, in order (6O-I design §6.3): one
+    /// hold of the stream lock gives them consecutive offsets — no other
+    /// writer's frame can take one between them — and, when there are two
+    /// or more, marks them as one group, so a capable replica applies them
+    /// all at once and never resumes inside them.
+    pub(crate) async fn fan_out_group(&self, frames: Vec<Vec<u8>>) {
+        self.publish(frames);
+    }
+
+    fn publish(&self, frames: Vec<Vec<u8>>) {
+        if !self.is_enabled() || frames.is_empty() {
             return;
         }
-        let bytes = Arc::new(bytes);
-        // Keep the backlog guard until every replica queue has accepted this
-        // frame. Independent-key writes can propagate concurrently; without
+        let count = frames.len();
+        let total: u64 = frames
+            .iter()
+            .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            .fold(0, u64::saturating_add);
+        // Keep the backlog guard until every replica queue has accepted these
+        // frames. Independent-key writes can propagate concurrently; without
         // this serialization offset 2 could be queued before offset 1.
         let mut stream = self.stream();
         let ReplStream {
             backlog,
             senders: reg,
         } = &mut *stream;
-        let offset = self.offset.fetch_add(1, Ordering::AcqRel) + 1;
-        let frame = ReplFrame {
-            offset,
-            bytes: Arc::clone(&bytes),
-        };
+        let first = self.offset.fetch_add(count as u64, Ordering::AcqRel) + 1;
+        // A group of more frames than a `u32` counts (it cannot fit in
+        // memory) would go ungrouped rather than wrap.
+        let group = u32::try_from(count)
+            .ok()
+            .filter(|count| *count >= 2)
+            .map(|count| ReplGroup {
+                first,
+                count,
+                bytes: total,
+            });
+        let frames: Vec<ReplFrame> = frames
+            .into_iter()
+            .zip(first..)
+            .map(|(bytes, offset)| ReplFrame {
+                offset,
+                bytes: Arc::new(bytes),
+                group,
+            })
+            .collect();
         let backlog_limit = self.backlog_bytes.load(Ordering::Acquire);
-        backlog.bytes = backlog.bytes.saturating_add(bytes.len());
-        backlog.frames.push_back(frame.clone());
+        for frame in &frames {
+            backlog.bytes = backlog.bytes.saturating_add(frame.bytes.len());
+            backlog.frames.push_back(frame.clone());
+        }
         while backlog.bytes > backlog_limit {
             let Some(expired) = backlog.frames.pop_front() else {
                 break;
@@ -472,43 +555,45 @@ impl ReplHub {
         let backlog_bytes = backlog.bytes;
 
         reg.retain(|r| {
-            let charged_bytes = repl_queue_charge(bytes.len());
-            let reserved = r
-                .pending_bytes
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
-                    pending
-                        .checked_add(charged_bytes)
-                        .filter(|next| *next <= r.max_queue_bytes)
-                })
-                .is_ok();
-            if !reserved {
-                warn!("Replica byte queue full — disconnecting so it can resync");
-                self.queue_disconnects.fetch_add(1, Ordering::Relaxed);
-                counter!("recached_replication_disconnects_total", "reason" => "queue_bytes")
-                    .increment(1);
-                return false;
-            }
-            let queued = QueuedReplFrame {
-                frame: frame.clone(),
-                charged_bytes,
-                pending_bytes: Arc::clone(&r.pending_bytes),
-            };
-            match r.tx.try_send(queued) {
-            Ok(()) => {
-                r.sent.store(offset, Ordering::Release);
-                true
-            }
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                warn!(
-                    "Replica fell too far behind (channel full) — disconnecting so it can resync"
-                );
-                self.queue_disconnects.fetch_add(1, Ordering::Relaxed);
-                counter!("recached_replication_disconnects_total", "reason" => "queue_items")
-                    .increment(1);
-                false
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => false,
-            }
+            frames.iter().all(|frame| {
+                let charged_bytes = repl_queue_charge(frame.bytes.len());
+                let reserved = r
+                    .pending_bytes
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                        pending
+                            .checked_add(charged_bytes)
+                            .filter(|next| *next <= r.max_queue_bytes)
+                    })
+                    .is_ok();
+                if !reserved {
+                    warn!("Replica byte queue full — disconnecting so it can resync");
+                    self.queue_disconnects.fetch_add(1, Ordering::Relaxed);
+                    counter!("recached_replication_disconnects_total", "reason" => "queue_bytes")
+                        .increment(1);
+                    return false;
+                }
+                let queued = QueuedReplFrame {
+                    frame: frame.clone(),
+                    charged_bytes,
+                    pending_bytes: Arc::clone(&r.pending_bytes),
+                };
+                match r.tx.try_send(queued) {
+                    Ok(()) => {
+                        r.sent.store(frame.offset, Ordering::Release);
+                        true
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        warn!(
+                            "Replica fell too far behind (channel full) — disconnecting so it can resync"
+                        );
+                        self.queue_disconnects.fetch_add(1, Ordering::Relaxed);
+                        counter!("recached_replication_disconnects_total", "reason" => "queue_items")
+                            .increment(1);
+                        false
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => false,
+                }
+            })
         });
         self.count.store(reg.len(), Ordering::Relaxed);
         drop(stream);
@@ -578,6 +663,8 @@ impl ReplHub {
             upstream_expirylog: AtomicBool::new(false),
             #[cfg(test)]
             test_old_primary: AtomicBool::new(false),
+            #[cfg(test)]
+            test_without_txn: AtomicBool::new(false),
             #[cfg(test)]
             test_checkpoint_delay_ms: AtomicU64::new(0),
             #[cfg(test)]
@@ -689,9 +776,13 @@ impl ReplHub {
         let run_id = self.run_id();
         #[cfg(test)]
         let expirylog = expirylog && !self.test_old_primary.load(Ordering::Relaxed);
+        let txn = true;
+        #[cfg(test)]
+        let txn = txn && !self.test_without_txn.load(Ordering::Relaxed);
         let caps: Vec<&str> = [
             self.streams_dedup().then_some(REPL_CAP_DEDUP),
             expirylog.then_some(REPL_CAP_EXPIRYLOG),
+            txn.then_some(REPL_CAP_TXN),
         ]
         .into_iter()
         .flatten()
@@ -1553,6 +1644,13 @@ where
     let requested = HandshakeId::parse(&requested_raw);
     let requested_run_id = requested.run_id.to_string();
     let with_dedup = requested.has("accept", REPL_CAP_DEDUP);
+    // Group headers only to a replica that accepted them (6O-I): an older
+    // one reads an offset-0 frame as a gap.
+    #[cfg(test)]
+    let offered_txn = !replicas.test_without_txn.load(Ordering::Relaxed);
+    #[cfg(not(test))]
+    let offered_txn = true;
+    let with_txn = offered_txn && requested.has("accept", REPL_CAP_TXN);
     if replicas.streams_dedup() && !with_dedup {
         // A replica that cannot read DEDUP identities would fail on the first
         // envelope frame — or, worse, a future frame could be misread. Refuse
@@ -1694,8 +1792,10 @@ where
             )
         })?;
         socket.write_all(&count.to_le_bytes()).await?;
+        // `count` counts data frames; a capable replica also gets each
+        // group's header before its first frame.
         for frame in &missing {
-            write_repl_frame(&mut socket, frame).await?;
+            write_repl_frame_to(&mut socket, frame, with_txn).await?;
         }
     }
     socket.flush().await?;
@@ -1780,7 +1880,7 @@ where
                     break;
                 };
                 replicas.record_wake(rx.len() + 1, pending_bytes.load(Ordering::Relaxed));
-                write_repl_frame(&mut wr, &queued.frame).await?;
+                write_repl_frame_to(&mut wr, &queued.frame, with_txn).await?;
                 unflushed += 1;
                 // Everything already queued goes into the buffer too. Frames
                 // leave the queue only once written, as before, so the byte
@@ -1788,7 +1888,7 @@ where
                 while unflushed < REPL_SEND_BATCH_FRAMES {
                     match rx.try_recv() {
                         Ok(queued) => {
-                            write_repl_frame(&mut wr, &queued.frame).await?;
+                            write_repl_frame_to(&mut wr, &queued.frame, with_txn).await?;
                             unflushed += 1;
                         }
                         Err(_) => break,
@@ -1995,6 +2095,37 @@ where
     Ok((run_id, u64::from_le_bytes(offset)))
 }
 
+/// [`write_repl_frame`], preceded, on a link that negotiated `txn1`, by
+/// the group header when `frame` is its group's first (6O-I design §6.2).
+async fn write_repl_frame_to<S>(socket: &mut S, frame: &ReplFrame, txn: bool) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    if txn
+        && let Some(group) = frame.group
+        && group.first == frame.offset
+    {
+        socket.write_all(&group_header(group)).await?;
+    }
+    write_repl_frame(socket, frame).await
+}
+
+/// A group header as it goes on the wire: a frame at offset 0 (no data
+/// frame has it; offsets start at 1), 24 bytes long: version 1, kind 1
+/// (GROUP), two reserved zero bytes, `count` (u32), `first` (u64), `bytes`
+/// (u64), little-endian.
+pub(crate) fn group_header(group: ReplGroup) -> [u8; 12 + REPL_GROUP_HEADER_LEN] {
+    let mut out = [0u8; 12 + REPL_GROUP_HEADER_LEN];
+    // offset 0: already zero
+    out[8..12].copy_from_slice(&(REPL_GROUP_HEADER_LEN as u32).to_le_bytes());
+    out[12] = REPL_GROUP_HEADER_VERSION;
+    out[13] = REPL_GROUP_HEADER_KIND;
+    out[16..20].copy_from_slice(&group.count.to_le_bytes());
+    out[20..28].copy_from_slice(&group.first.to_le_bytes());
+    out[28..36].copy_from_slice(&group.bytes.to_le_bytes());
+    out
+}
+
 async fn write_repl_frame<S>(socket: &mut S, frame: &ReplFrame) -> std::io::Result<()>
 where
     S: AsyncWrite + Unpin,
@@ -2193,6 +2324,8 @@ where
     let with_dedup = advertised.has("caps", REPL_CAP_DEDUP);
     // And the expiry log, likewise (6O-H): never inferred from a version.
     let with_expirylog = advertised.has("caps", REPL_CAP_EXPIRYLOG);
+    // And transaction groups (6O-I).
+    let with_txn = advertised.has("caps", REPL_CAP_TXN);
 
     // A stream resumes partially only in the mode its frames were applied
     // in: frames applied with expiry evaluated built a keyspace a timeless
@@ -2207,6 +2340,7 @@ where
     let accepted: Vec<&str> = [
         with_dedup.then_some(REPL_CAP_DEDUP),
         with_expirylog.then_some(REPL_CAP_EXPIRYLOG),
+        with_txn.then_some(REPL_CAP_TXN),
     ]
     .into_iter()
     .flatten()
@@ -2383,19 +2517,35 @@ where
         let mut count = [0u8; 4];
         socket.read_exact(&mut count).await?;
         let count = u32::from_le_bytes(count);
-        for _ in 0..count {
-            let expected = resume.offset.checked_add(1).ok_or_else(|| {
+        // `count` data frames; group headers come on top of them (6O-I).
+        let mut groups = GroupAssembler::new(with_txn);
+        let mut data = 0u32;
+        while data < count {
+            resume.offset.checked_add(1).ok_or_else(|| {
                 std::io::Error::new(ErrorKind::InvalidData, "replication offset overflow")
             })?;
             let (offset, bytes) = read_repl_frame(socket).await?;
-            if offset != expected {
-                return Err(std::io::Error::new(
-                    ErrorKind::InvalidData,
-                    format!("replication offset gap: expected {expected}, received {offset}"),
-                ));
+            match groups.receive(offset, bytes, resume.offset)? {
+                Received::Header => {}
+                Received::Member => data += 1,
+                Received::Frame(bytes) => {
+                    data += 1;
+                    apply_repl_frame(store, state, tx, watches, &bytes).await?;
+                    resume.offset = offset;
+                }
+                Received::Group(frames, last) => {
+                    data += 1;
+                    apply_repl_group(store, state, tx, watches, frames).await?;
+                    resume.offset = last;
+                }
             }
-            apply_repl_frame(store, state, tx, watches, &bytes).await?;
-            resume.offset = offset;
+        }
+        if groups.is_open() {
+            // The boundary is never inside a group (design §7.2 rule 4).
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "partial synchronization ended inside a transaction group",
+            ));
         }
         if resume.offset != boundary {
             return Err(std::io::Error::new(
@@ -2458,16 +2608,24 @@ where
     let mut rd = ChunkReader::new(read_ahead, received);
     let apply = async {
         let mut since_yield = 0u32;
+        let mut groups = GroupAssembler::new(with_txn);
         loop {
             let (offset, cmd_bytes) = read_repl_frame(&mut rd).await?;
-            let expected = resume.offset.saturating_add(1);
-            if offset != expected {
-                return Err(std::io::Error::new(
-                    ErrorKind::InvalidData,
-                    format!("replication offset gap: expected {expected}, received {offset}"),
-                ));
-            }
-            apply_repl_frame(store, state, tx, watches, &cmd_bytes).await?;
+            // A group's members are buffered until its last arrives, then
+            // applied together; nothing of it is applied or acknowledged
+            // before (6O-I design §6.4). A link that ends meanwhile drops
+            // them, and the resume point is still before the group.
+            let offset = match groups.receive(offset, cmd_bytes, resume.offset)? {
+                Received::Header | Received::Member => continue,
+                Received::Frame(bytes) => {
+                    apply_repl_frame(store, state, tx, watches, &bytes).await?;
+                    offset
+                }
+                Received::Group(frames, last) => {
+                    apply_repl_group(store, state, tx, watches, frames).await?;
+                    last
+                }
+            };
             resume.offset = offset;
             #[cfg(test)]
             {
@@ -2643,6 +2801,184 @@ where
     let mut bytes = vec![0u8; len];
     socket.read_exact(&mut bytes).await?;
     Ok((u64::from_le_bytes(offset), bytes))
+}
+
+/// What [`GroupAssembler::receive`] made of a frame.
+enum Received {
+    /// A group header: nothing to apply yet.
+    Header,
+    /// A member of the open group, buffered.
+    Member,
+    /// A frame outside any group, to apply alone, as before 6O-I.
+    Frame(Vec<u8>),
+    /// A whole group, its members in order, and its last offset.
+    Group(Vec<Vec<u8>>, u64),
+}
+
+/// A replica's view of the transaction groups on its link (6O-I design
+/// §6.4): at most one open group, its members buffered until the last one
+/// arrives. Every rule a frame breaks is a protocol error (`InvalidData`),
+/// which ends the link, clears the resume point and forces a full
+/// synchronization.
+struct GroupAssembler {
+    /// Whether this link negotiated `txn1`: without it a header is a gap.
+    txn: bool,
+    open: Option<PendingGroup>,
+}
+
+struct PendingGroup {
+    group: ReplGroup,
+    frames: Vec<Vec<u8>>,
+    /// The members' lengths so far, against `group.bytes`.
+    received: u64,
+}
+
+fn protocol_error(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(ErrorKind::InvalidData, message.into())
+}
+
+impl GroupAssembler {
+    fn new(txn: bool) -> Self {
+        GroupAssembler { txn, open: None }
+    }
+
+    fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
+    /// Take the frame at `offset`, given `committed`, the last offset
+    /// applied (the resume point).
+    fn receive(
+        &mut self,
+        offset: u64,
+        bytes: Vec<u8>,
+        committed: u64,
+    ) -> std::io::Result<Received> {
+        let next = |pending: &Option<PendingGroup>| {
+            committed
+                .saturating_add(1)
+                .saturating_add(pending.as_ref().map_or(0, |p| p.frames.len() as u64))
+        };
+        if offset == 0 && self.txn {
+            if self.open.is_some() {
+                return Err(protocol_error(
+                    "a transaction group header inside an open group",
+                ));
+            }
+            let group = parse_group_header(&bytes)?;
+            if group.first != next(&self.open) {
+                return Err(protocol_error(format!(
+                    "a transaction group header for offset {}, expected {}",
+                    group.first,
+                    next(&self.open)
+                )));
+            }
+            let charge = group.bytes.saturating_add(
+                u64::from(group.count).saturating_mul(REPL_QUEUE_FRAME_OVERHEAD as u64),
+            );
+            if charge > REPL_GROUP_MAX_BYTES as u64 {
+                return Err(protocol_error(format!(
+                    "a transaction group of {} frames and {} bytes exceeds the {REPL_GROUP_MAX_BYTES}-byte \
+                     group limit; resynchronizing in full",
+                    group.count, group.bytes
+                )));
+            }
+            self.open = Some(PendingGroup {
+                group,
+                // Grown as members arrive, not from the header's claim.
+                frames: Vec::with_capacity((group.count as usize).min(1024)),
+                received: 0,
+            });
+            return Ok(Received::Header);
+        }
+        let expected = next(&self.open);
+        if offset != expected {
+            return Err(protocol_error(format!(
+                "replication offset gap: expected {expected}, received {offset}"
+            )));
+        }
+        let Some(pending) = &mut self.open else {
+            return Ok(Received::Frame(bytes));
+        };
+        pending.received = pending
+            .received
+            .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        if pending.received > pending.group.bytes {
+            return Err(protocol_error(
+                "a transaction group's frames are longer than its header says",
+            ));
+        }
+        pending.frames.push(bytes);
+        if pending.frames.len() < pending.group.count as usize {
+            return Ok(Received::Member);
+        }
+        let pending = self.open.take().expect("open: checked above");
+        if pending.received != pending.group.bytes {
+            return Err(protocol_error(
+                "a transaction group's frames are shorter than its header says",
+            ));
+        }
+        Ok(Received::Group(pending.frames, pending.group.last()))
+    }
+}
+
+/// Parse and check a group header's payload (design §6.2).
+fn parse_group_header(bytes: &[u8]) -> std::io::Result<ReplGroup> {
+    let Ok(header) = <&[u8; REPL_GROUP_HEADER_LEN]>::try_from(bytes) else {
+        return Err(protocol_error(format!(
+            "a transaction group header of {} bytes, expected {REPL_GROUP_HEADER_LEN}",
+            bytes.len()
+        )));
+    };
+    if header[0] != REPL_GROUP_HEADER_VERSION
+        || header[1] != REPL_GROUP_HEADER_KIND
+        || header[2..4] != [0, 0]
+    {
+        return Err(protocol_error(format!(
+            "a transaction group header of an unknown version, kind or layout: {:02x?}",
+            &header[..4]
+        )));
+    }
+    let count = u32::from_le_bytes(header[4..8].try_into().expect("4 bytes"));
+    let first = u64::from_le_bytes(header[8..16].try_into().expect("8 bytes"));
+    let bytes = u64::from_le_bytes(header[16..24].try_into().expect("8 bytes"));
+    if count < 2 {
+        return Err(protocol_error(format!(
+            "a transaction group of {count} frame(s)"
+        )));
+    }
+    Ok(ReplGroup {
+        first,
+        count,
+        bytes,
+    })
+}
+
+/// Apply a whole transaction group received from the primary (6O-I).
+///
+/// Every member is checked before any is applied: none may be a DEDUP
+/// record (an `EXEC` never carries one), and each must parse. The members
+/// are then applied in order, each as [`apply_repl_frame`] applies a frame.
+async fn apply_repl_group(
+    store: &KeyValueStore,
+    state: &ServerState,
+    tx: &SyncTx,
+    watches: &WatchRegistry,
+    frames: Vec<Vec<u8>>,
+) -> std::io::Result<()> {
+    for bytes in &frames {
+        let body = bytes.get(1..).unwrap_or_default();
+        let value = Value::parse(&[b">".as_slice(), body].concat())
+            .map_err(|e| protocol_error(e.to_string()))?
+            .0;
+        if dedup_record(&value).is_some() || is_dedup_mark_only(&value) {
+            return Err(protocol_error("a DEDUP record inside a transaction group"));
+        }
+    }
+    for bytes in &frames {
+        apply_repl_frame(store, state, tx, watches, bytes).await?;
+    }
+    Ok(())
 }
 
 /// Refuse a replicated write once this node has been promoted.
