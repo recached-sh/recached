@@ -81,6 +81,79 @@ pub fn at_instant<R>(now: u64, f: impl FnOnce() -> R) -> R {
     f()
 }
 
+thread_local! {
+    /// The keys a write found expired and removed, while
+    /// [`observing_expirations`] collects them (6O-H). `None` outside one.
+    static OBSERVED_EXPIRED: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f`, one write's store call, and return the keys it found expired
+/// and removed before it ran (6O-H, Expiry Option E1).
+///
+/// The primary logs an explicit `DEL` for every expired entry a write acts
+/// on, so that the AOF replay and replicas, which apply frames without
+/// evaluating expiry, never see a frame land on an entry the primary had
+/// already treated as gone. Inside this scope, before a write runs, the
+/// store removes every expired entry among the keys the write names
+/// ([`mutation_scope`]: what it writes and what it reads, such as a
+/// `*STORE`'s sources) under the stripes the write holds, and reports each
+/// one here. The write then runs as it always did; it can find no expired
+/// entry among its keys, so no command's own expiry handling (the
+/// `typed_entry!` reset, `SET … NX`, the `RENAME` source check, …) can
+/// remove or reset one without it being reported.
+///
+/// - **One instant.** The clock is fixed at its current value for `f` (or
+///   stays at a transaction's, inside [`at_instant`]), so the removal and
+///   the command agree on what has expired.
+/// - **Reported even when the write fails or changes nothing.** The removal
+///   happened, and the caller must log it: a `RENAME` of an expired source
+///   answers `no such key` and produces no frame, but the source is gone.
+/// - **Not reported for `DEL`/`UNLINK`.** Their own frame deletes every key
+///   they name, the expired ones included, so a second `DEL` would only
+///   duplicate it.
+/// - **Scoped.** Only writes run inside `f`, on this thread, report here; a
+///   scope nested inside another collects its own keys. The outer list is
+///   restored on return and on unwind.
+/// - **No allocation** unless something has expired.
+///
+/// Outside this scope nothing is removed early: an embedder, the AOF replay
+/// and a replica applying frames see the store behave as before.
+pub fn observing_expirations<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
+    struct Restore(Option<Option<Vec<String>>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some(outer) = self.0.take() {
+                OBSERVED_EXPIRED.with(|observed| *observed.borrow_mut() = outer);
+            }
+        }
+    }
+    let restore = Restore(Some(
+        OBSERVED_EXPIRED.with(|observed| observed.borrow_mut().replace(Vec::new())),
+    ));
+    let out = at_instant(now_ms(), f);
+    let keys = OBSERVED_EXPIRED
+        .with(|observed| observed.borrow_mut().take())
+        .unwrap_or_default();
+    drop(restore);
+    (out, keys)
+}
+
+/// Whether [`observing_expirations`] is collecting on this thread.
+#[inline]
+fn observing() -> bool {
+    OBSERVED_EXPIRED.with(|observed| observed.borrow().is_some())
+}
+
+/// Report a key a write found expired and removed, to the collecting scope.
+fn report_expired(key: &str) {
+    OBSERVED_EXPIRED.with(|observed| {
+        if let Some(keys) = observed.borrow_mut().as_mut() {
+            keys.push(key.to_owned());
+        }
+    });
+}
+
 // ── ZSet inner ────────────────────────────────────────────────────────────────
 
 /// A sorted-set score, ordered totally so it can be a `BTreeSet` key.
@@ -4980,7 +5053,7 @@ impl KeyValueStore {
             && !enforce
             && probe_eligible(cmd.borrow())
         {
-            return (self.run_probed_write(key.as_ref(), cmd, exec), Vec::new());
+            return (self.run_probed_command(key.as_ref(), cmd, exec), Vec::new());
         }
         let (cmd, exec) = if enforce && gate.is_none() {
             match self.try_reserved_write(cmd, exec) {
@@ -5022,6 +5095,13 @@ impl KeyValueStore {
                 keys.sort_unstable();
                 keys.dedup();
                 let order = self.order_keys(&keys, several_steps);
+                // Expired entries among the keys go first, reported, while
+                // the stripes (and on a capped store the gate) are held: the
+                // accounting below then starts from the state the command
+                // really acts on (6O-H).
+                if observing() {
+                    self.purge_expired_for_write(&keys, cmd.borrow());
+                }
                 if let Some(max) = self.max_keys.filter(|_| enforce) {
                     // Capped stores only: victim selection compares owned keys.
                     let touched: Vec<String> =
@@ -5236,6 +5316,66 @@ impl KeyValueStore {
         self.run_probed_write_ordered(key, cmd, exec)
     }
 
+    /// [`run_probed_write`](Self::run_probed_write) for an owned or borrowed
+    /// [`Command`], removing (and reporting) an expired entry for `key`
+    /// first when [`observing_expirations`] collects (6O-H). The borrowed
+    /// fast path (`execute_ref_into`) runs only where nothing observes
+    /// writes, so it keeps the plain form.
+    fn run_probed_command<C>(
+        &self,
+        key: &str,
+        cmd: C,
+        exec: impl FnOnce(&Self, C, Option<&KeyProbe>) -> Value,
+    ) -> Value
+    where
+        C: std::borrow::Borrow<Command>,
+    {
+        let _order = self.order_keys(std::slice::from_ref(&key), false);
+        if observing() {
+            self.purge_expired_for_write(std::slice::from_ref(&key), cmd.borrow());
+        }
+        self.run_probed_write_ordered(key, cmd, exec)
+    }
+
+    /// Remove, and report to [`observing_expirations`], every expired entry
+    /// among `keys`, for the write `cmd` about to run on them (6O-H).
+    ///
+    /// The caller holds the keys' write-order stripes (or a transaction's
+    /// scope that holds them) and, on a capped store, the capacity gate, as
+    /// for any removal: the sweeper's own removal does exactly this. Keys
+    /// are visited in the order given; each is removed and reported once
+    /// even if the command names it twice, since a removed key is no longer
+    /// expired.
+    fn purge_expired_for_write<K: AsRef<str>>(&self, keys: &[K], cmd: &Command) {
+        let now = now_ms();
+        let report = !matches!(cmd, Command::Del(_) | Command::Unlink(_))
+            && !matches!(
+                cmd,
+                Command::Dedup(_, _, inner) if matches!(**inner, Command::Del(_) | Command::Unlink(_))
+            );
+        for key in keys {
+            let key = key.as_ref();
+            let Some((removed, entry)) = self.data.remove_if(key, |_, entry| entry.is_expired(now))
+            else {
+                continue;
+            };
+            self.adjust_memory(entry_size(&removed, &entry), 0);
+            drop(entry);
+            self.sync_key_metadata(key);
+            if report {
+                report_expired(key);
+            }
+        }
+    }
+
+    /// Whether `key` holds an entry that has expired.
+    fn holds_expired(&self, key: &str) -> bool {
+        let now = now_ms();
+        self.data
+            .get(key)
+            .is_some_and(|entry| entry.is_expired(now))
+    }
+
     /// [`run_probed_write`](Self::run_probed_write) for a caller already
     /// holding `key`'s write-order stripe.
     fn run_probed_write_ordered<C>(
@@ -5320,6 +5460,15 @@ impl KeyValueStore {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let order = self.order_keys(std::slice::from_ref(&key), false);
+        // An expired entry to remove first (6O-H) changes the key count and
+        // memory under the gate held shared: leave it to the gated path,
+        // which removes it under the gate held exclusively, as the sweeper
+        // does.
+        if observing() && self.holds_expired(&key) {
+            drop(order);
+            drop(shared);
+            return Err((cmd, exec));
+        }
         let creates =
             !creating_keys(cmd.borrow()).is_empty() && !self.data.contains_key(key.as_str());
         let Some(reservation) = Reservation::try_new(self, bound, usize::from(creates)) else {
@@ -15493,6 +15642,9 @@ mod transaction_tests;
 
 #[cfg(test)]
 mod capped_fit_tests;
+
+#[cfg(test)]
+mod observed_expiry_tests;
 
 #[cfg(test)]
 mod transaction_clock_tests {
