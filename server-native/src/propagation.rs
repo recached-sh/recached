@@ -690,9 +690,9 @@ pub(crate) async fn sweep_expired_tick(
             // primary's stream is what its AOF and sub-replicas follow.
             if !expired.is_empty() && !state.is_replica() {
                 if state.needs_write_log() {
-                    for frame in expiry_del_frames(&expired) {
-                        state.on_write(&frame).await;
-                    }
+                    let frames = expiry_del_frames(&expired);
+                    let frames: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+                    state.on_sweep_logged(&frames).await;
                 }
                 // One push per key: a frame naming several keys reaches only
                 // a socket allowed to read them all, which a tenant-scoped
@@ -1698,6 +1698,8 @@ async fn apply_write_effects_identified(
             if has_watch {
                 notify_removed(watch_registry, expired).await;
             }
+            // No frame of the write follows it: every client, the writer's
+            // too, learns the key is gone (origin 0, as for an eviction).
             if expiry_ws && let Some((del, frame)) = expiry {
                 tx.send(Arc::new(SyncPush::for_command(
                     0,
@@ -1733,11 +1735,12 @@ async fn apply_write_effects_identified(
         notify_removed(watch_registry, expired).await;
         notify_write(watch_registry, cmd, store).await;
     }
-    // The server's deletion, not the writer's (origin 0), as for an
-    // eviction: the writer's own browser holds the expired entry too.
+    // With the writer's origin, as its frame: the writer's own copy has
+    // already applied the write, and never receives the frame that follows,
+    // so a DEL alone would leave it without the key (6O-H review B, B-1).
     if expiry_ws && let Some((del, frame)) = expiry {
         tx.send(Arc::new(SyncPush::for_command(
-            0,
+            origin,
             &del,
             push_keys(&del),
             frame,

@@ -603,3 +603,194 @@ async fn a_del_logs_its_expired_keys_once_and_a_refused_one_still_logs_them() {
     assert_eq!(c.cmd(&["DEL", "dk:b", "dk:c"]).await, Value::Integer(1));
     assert_eq!(log.aof().await[start..], [rec(&["DEL", "dk:b", "dk:c"])]);
 }
+
+// ── Review B ─────────────────────────────────────────────────────────────
+
+/// A WebSocket sync client, as a browser SDK connects.
+struct Ws {
+    ws: tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>,
+}
+
+impl Ws {
+    async fn connect(shared: &Shared) -> Ws {
+        let (client, server) = tokio::io::duplex(1 << 20);
+        tokio::spawn(shared.serve_ws(server));
+        let (ws, _) = tokio_tungstenite::client_async("ws://localhost/", client)
+            .await
+            .expect("handshake");
+        Ws { ws }
+    }
+
+    async fn send(&mut self, args: &[&str]) {
+        use futures_util::SinkExt;
+        let mut req = format!("*{}\r\n", args.len());
+        for a in args {
+            req.push_str(&format!("${}\r\n{a}\r\n", a.len()));
+        }
+        self.ws
+            .send(tokio_tungstenite::tungstenite::Message::Text(req.into()))
+            .await
+            .expect("send");
+    }
+
+    /// Every frame until `ms` of silence: pushes as their records, replies
+    /// as `["reply", …]`.
+    async fn drain(&mut self, ms: u64) -> Vec<Vec<String>> {
+        use futures_util::StreamExt;
+        let mut out = Vec::new();
+        loop {
+            let next = tokio::time::timeout(Duration::from_millis(ms), self.ws.next()).await;
+            let raw = match next {
+                Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(t)))) => {
+                    t.as_bytes().to_vec()
+                }
+                Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(b)))) => b.to_vec(),
+                Ok(Some(Ok(_))) => continue,
+                _ => return out,
+            };
+            match Value::parse(&raw) {
+                Ok((Value::Push(_), _)) => out.extend(records(&raw)),
+                Ok((other, _)) => out.push(vec!["reply".into(), format!("{other:?}")]),
+                Err(_) => {}
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_writer_gets_no_del_of_its_own_write_and_everyone_else_both() {
+    // Review B, B-1: the writer's copy applied INCR itself, and never gets
+    // its own `SET c 1 KEEPTTL`; a DEL alone would leave it without `c`.
+    for in_tx in [false, true] {
+        let shared = Shared::new(false);
+        let mut writer = Ws::connect(&shared).await;
+        let mut other = Ws::connect(&shared).await;
+        let mut tcp = Pipe::tcp(&shared);
+        tcp.cmd(&["SET", "wb:c", "5"]).await;
+        expire(&mut tcp, "wb:c").await;
+        let _ = writer.drain(300).await;
+        let _ = other.drain(300).await;
+        if in_tx {
+            writer.send(&["MULTI"]).await;
+            writer.send(&["INCR", "wb:c"]).await;
+            writer.send(&["EXEC"]).await;
+        } else {
+            writer.send(&["INCR", "wb:c"]).await;
+        }
+        let mine = writer.drain(400).await;
+        assert!(
+            !mine.iter().any(|r| r[0] == "DEL"),
+            "in_tx={in_tx}: the writer was pushed a DEL of its own write: {mine:?}"
+        );
+        assert_eq!(
+            other.drain(400).await,
+            vec![rec(&["DEL", "wb:c"]), rec(&["SET", "wb:c", "1", "KEEPTTL"])],
+            "in_tx={in_tx}: another client gets both, in order"
+        );
+        assert_eq!(tcp.cmd(&["GET", "wb:c"]).await, bulk("1"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_writes_del_reaches_every_client_the_writer_too() {
+    // No frame follows it, so nobody's copy is left without a key the
+    // server holds: every client, the writer included, drops the expired one.
+    let shared = Shared::new(false);
+    let mut writer = Ws::connect(&shared).await;
+    let mut other = Ws::connect(&shared).await;
+    let mut tcp = Pipe::tcp(&shared);
+    tcp.cmd(&["RPUSH", "wf:l", "a"]).await;
+    expire(&mut tcp, "wf:l").await;
+    let _ = writer.drain(300).await;
+    let _ = other.drain(300).await;
+    writer.send(&["LSET", "wf:l", "0", "x"]).await;
+    let mine = writer.drain(400).await;
+    assert!(mine.contains(&rec(&["DEL", "wf:l"])), "{mine:?}");
+    assert_eq!(other.drain(400).await, vec![rec(&["DEL", "wf:l"])]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deferred_aof_wait_keeps_the_del_before_the_frame() {
+    // Review B, B-2 (M1): with no replication, a TCP client's write defers
+    // its AOF wait to its reply (`append_client_writes`).
+    for fanout in [AofFanout::Inline, AofFanout::Coalesced] {
+        let path = std::env::temp_dir().join(format!(
+            "recached_6oh_deferred_{}_{}.aof",
+            std::process::id(),
+            next_conn_id()
+        ));
+        let aof = Arc::new(
+            AofWriter::open(path.clone(), AofSync::Always)
+                .await
+                .unwrap(),
+        );
+        aof.set_fanout(fanout);
+        let shared = Shared::with_aof(false, Some(Arc::clone(&aof)));
+        assert!(!shared.state.replicas.is_enabled());
+        let mut c = Pipe::tcp(&shared);
+        c.cmd(&["SET", "df:c", "5"]).await;
+        expire(&mut c, "df:c").await;
+        assert_eq!(c.cmd(&["INCR", "df:c"]).await, Value::Integer(1));
+        aof.flush().await.unwrap();
+        let recs = records(&std::fs::read(&path).unwrap());
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            recs[recs.len() - 2..],
+            [rec(&["DEL", "df:c"]), rec(&["SET", "df:c", "1", "KEEPTTL"])],
+            "{fanout:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_observed_expiry_forgets_the_ephemeral_claim() {
+    // Review B, B-2 (M2): ESET's key expires and another connection writes
+    // it afresh. The owner's disconnect must not delete the new key.
+    let shared = Shared::new(false);
+    let mut owner = Pipe::tcp(&shared);
+    let mut other = Pipe::tcp(&shared);
+    let _watch = {
+        // Something observes writes, so the write runs in a scope.
+        let mut w = Pipe::tcp(&shared);
+        assert_eq!(w.cmd(&["WATCH", "ec:unrelated"]).await, ok());
+        w
+    };
+    assert_eq!(owner.cmd(&["ESET", "ec:k", "v"]).await, ok());
+    expire(&mut other, "ec:k").await;
+    other.cmd(&["RPUSH", "ec:k", "a"]).await;
+    drop(owner);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        other.cmd(&["LRANGE", "ec:k", "0", "-1"]).await,
+        Value::Array(Some(vec![bulk("a")])),
+        "the new list was released with the expired claim"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_set_then_found_expired_in_exec_invalidates_a_watch_of_it() {
+    // Review B, B-2 (M3): `k` absent at WATCH. In another connection's
+    // EXEC, `SET k v PXAT 1` creates it (already expired) and `LSET k` then
+    // removes it: a set happened, so the watcher must abort, as in Redis.
+    let shared = Shared::new(false);
+    let mut w = Pipe::tcp(&shared);
+    let mut t = Pipe::tcp(&shared);
+    assert_eq!(w.cmd(&["WATCH", "sx:k"]).await, ok());
+    t.cmd(&["MULTI"]).await;
+    t.cmd(&["SET", "sx:k", "v", "PXAT", "1"]).await;
+    t.cmd(&["LSET", "sx:k", "0", "x"]).await;
+    t.cmd(&["EXEC"]).await;
+    w.cmd(&["MULTI"]).await;
+    w.cmd(&["SET", "sx:out", "1"]).await;
+    assert_eq!(w.cmd(&["EXEC"]).await, Value::Array(None));
+}
+
+#[test]
+fn sweeper_frames_split_exactly_at_the_bound() {
+    // Review B, N-1: exactly 64 KiB of keys is one frame, a byte more two.
+    let half = EXPIRY_DEL_FRAME_KEY_BYTES / 2;
+    let exact = vec!["a".repeat(half), "b".repeat(half)];
+    assert_eq!(expiry_del_frames(&exact).len(), 1);
+    let over = vec!["a".repeat(half), "b".repeat(half + 1)];
+    assert_eq!(expiry_del_frames(&over).len(), 2);
+}
