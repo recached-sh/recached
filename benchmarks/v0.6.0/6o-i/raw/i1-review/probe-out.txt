@@ -1,0 +1,7 @@
+P1 v0.4.0 takeover: (True, ['new', 'old', '1'], '2026-11-26T12:21:22.091423Z  INFO recached_server: WebSocket server listening on 127.0.0.1:41677')
+P1 file tail: b'*3\r\n$3\r\nSET\r\n$1\r\nb\r\n>3\r\n$3\r\nSET\r\n$1\r\nd\r\n$1\r\n1\r\n'
+P1 6O-H on result: (True, ['new', '', None], '2026-11-26T12:21:22.446795Z  INFO recached_server: WebSocket server listening on 127.0.0.1:48049')
+P4 6O-H appends: (True, ['new'], '2026-11-26T12:21:22.538345Z  INFO recached_server: WebSocket server listening on 127.0.0.1:49843') b'*3\r\n$3\r\nSET\r\n$1\r'
+P5 6O-H with 0x83 inside group: (True, ['new', 'new'], '2026-11-26T12:21:22.713526Z  INFO recached_server: WebSocket server listening on 127.0.0.1:58861')
+P6 after 6O-H SAVE: b'*2\r\n$19\r\nRECACHED-CHECKPOINT\r\n$20\r\n17005593296757587969\r\n'
+P7 6O-H mid-file length corruption: up True got ['1', None, None, None] file 1555 -> 84

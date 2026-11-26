@@ -1,0 +1,9 @@
+Q1 torn  6O-H: started=True size 151->142 | 2026-11-26T12:40:06.187120Z  INFO recached_server: WebSocket server listening on 127.0.0.1:54465
+Q1 torn  6O-I: started=False size 151->151 | Error: Custom { kind: PermissionDenied, error: "failed to replay AOF /home/dennispaler/recached-6oi-bench/tmp/review-a3-ninq0pmn/q1-torn-6O-I/aof/appe
+Q1 group 6O-H: started=True size 201->201 | 2026-11-26T12:40:06.345246Z  INFO recached_server: WebSocket server listening on 127.0.0.1:37531
+Q1 group 6O-I: started=False size 201->201 | Error: Custom { kind: PermissionDenied, error: "failed to replay AOF /home/dennispaler/recached-6oi-bench/tmp/review-a3-ninq0pmn/q1-group-6O-I/aof/app
+Q2 P1 on 6O-I: (False, None, 'AOF corrupted at offset 201: a record holding another record (a torn record something was appended after)" }')
+Q3 DEDUP push abandons: (True, ['new', 'old', 'v'], '2026-11-26T12:40:06.537462Z  INFO recached_server: TCP server listening on 127.0.0.1:34857 (6 accept loop(s)) | 2026-11-26T12:40:06.537507Z  INFO recached_serve')
+Q4 0x83 inside group: (True, ['new', 'new'], '2026-11-26T12:40:06.595870Z  INFO recached_server: TCP server listening on 127.0.0.1:41035 (6 accept loop(s)) | 2026-11-26T12:40:06.595909Z  INFO recached_serve')
+Q5 after abandoned-by-marker, 6O-I appends: True b'*3\r\n$3\r\nSET\r\n$1\r\nx\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\ny\r\n$1\r\n1\r\n'
+Q5 restart: (True, ['new', 'old', '1', '1'], '2026-11-26T12:40:06.837349Z  INFO recached_server: TCP server listening on 127.0.0.1:39263 (6 accept loop(s)) | 2026-11-26T12:40:06.837387Z  INFO recached_serve')
