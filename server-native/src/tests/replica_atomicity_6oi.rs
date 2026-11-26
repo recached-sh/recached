@@ -33,10 +33,25 @@ async fn exec(client: &mut WsClient, writes: &[&[&str]]) {
     assert!(matches!(reply, Value::Array(Some(_))), "{reply:?}");
 }
 
+/// Stops its follow loop when dropped (review D round 2, R2-1): a loop that
+/// outlived its test reconnected to whatever later bound its primary's port,
+/// such as another test's fake primary.
+#[must_use = "the replica stops following when this is dropped"]
+struct Following(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Following {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+
 /// Follow `primary_addr`, reconnecting, as `run_repl_client` does, on a
 /// thread of its own: a group stopped inside its synchronous apply then
 /// blocks no worker that other tasks are queued on (6O-G lesson).
-fn follow_on_own_thread(replica: &Node, primary_addr: std::net::SocketAddr) {
+fn follow_on_own_thread(replica: &Node, primary_addr: std::net::SocketAddr) -> Following {
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = Arc::clone(&stop);
     let (store, state, tx, watches) = (
         Arc::clone(&replica.store),
         Arc::clone(&replica.state),
@@ -51,6 +66,9 @@ fn follow_on_own_thread(replica: &Node, primary_addr: std::net::SocketAddr) {
             .block_on(async move {
                 let mut resume = ReplResume::default();
                 loop {
+                    if stopped.load(Ordering::Relaxed) {
+                        return;
+                    }
                     // As `run_repl_client`: a promoted node stops following
                     // (review C round 2, R2-L1).
                     if !state.is_replica() {
@@ -75,6 +93,7 @@ fn follow_on_own_thread(replica: &Node, primary_addr: std::net::SocketAddr) {
                 }
             });
     });
+    Following(stop)
 }
 
 // ── Readers wait for the whole group ─────────────────────────────────────
@@ -87,7 +106,7 @@ fn follow_on_own_thread(replica: &Node, primary_addr: std::net::SocketAddr) {
 async fn readers_of_a_replica_wait_for_the_whole_group() {
     let primary = node(false, true).await;
     let replica = node(true, true).await;
-    follow_on_own_thread(&replica, serve_replicas(&primary).await);
+    let _following = follow_on_own_thread(&replica, serve_replicas(&primary).await);
     let mut client = WsClient::connect(primary.ws).await;
     type Read = (&'static str, fn(&str, &str) -> Command, Value);
     let reads: [Read; 6] = [
@@ -153,7 +172,7 @@ async fn readers_of_a_replica_wait_for_the_whole_group() {
 async fn a_replica_reader_never_sees_part_of_an_exec() {
     let primary = node(false, true).await;
     let replica = node(true, true).await;
-    follow_on_own_thread(&replica, serve_replicas(&primary).await);
+    let _following = follow_on_own_thread(&replica, serve_replicas(&primary).await);
     let mut client = WsClient::connect(primary.ws).await;
     client.cmd(&["MSET", "acct:a", "0", "acct:b", "0"]).await;
     wait_for(&replica.store, "acct:b", bulk("0")).await;
@@ -237,7 +256,7 @@ async fn a_replica_logs_each_group_as_one_group_and_restarts_whole() {
     let dir = files("6oi_replica_group");
     let primary = node(false, true).await;
     let replica = replica_with_files(&dir).await;
-    follow_on_own_thread(&replica, serve_replicas(&primary).await);
+    let _following = follow_on_own_thread(&replica, serve_replicas(&primary).await);
     let mut client = WsClient::connect(primary.ws).await;
     client.cmd(&["SET", "rg:x", "gone", "PX", "1"]).await;
     tokio::time::sleep(Duration::from_millis(5)).await;
@@ -298,9 +317,9 @@ async fn a_replica_relays_each_group_to_its_sub_replicas_as_a_group() {
     let a = node(false, true).await;
     let b = node(true, true).await;
     let c = node(true, true).await;
-    follow_on_own_thread(&b, serve_replicas(&a).await);
+    let _following = follow_on_own_thread(&b, serve_replicas(&a).await);
     let b_addr = serve_replicas(&b).await;
-    follow_on_own_thread(&c, b_addr);
+    let _following = follow_on_own_thread(&c, b_addr);
     let mut client = WsClient::connect(a.ws).await;
     client.cmd(&["SET", "ch:a", "0"]).await;
     wait_for(&c.store, "ch:a", bulk("0")).await;
@@ -403,7 +422,7 @@ async fn send_group(sock: &mut TcpStream, first: u64, frames: &[Vec<u8>]) {
 async fn a_member_that_fails_stops_the_group_and_forces_a_full_sync() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let replica = node(true, false).await;
-    follow_on_own_thread(&replica, listener.local_addr().unwrap());
+    let _following = follow_on_own_thread(&replica, listener.local_addr().unwrap());
     let (mut sock, _) = fake_primary_link(&listener).await;
     full_sync(&mut sock, 10).await;
     send(&mut sock, 11, &frame(&["SET", "f:s", "text"])).await;
@@ -434,7 +453,7 @@ async fn a_member_that_panics_is_contained_and_forces_a_full_sync() {
     let dir = files("6oi_replica_panic");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let replica = replica_with_files(&dir).await;
-    follow_on_own_thread(&replica, listener.local_addr().unwrap());
+    let _following = follow_on_own_thread(&replica, listener.local_addr().unwrap());
     let (mut sock, _) = fake_primary_link(&listener).await;
     full_sync(&mut sock, 10).await;
     let armed = transaction_fault::panic_during_mutation_of("6oi:panic:b");
@@ -494,7 +513,7 @@ fn text(v: &Value) -> String {
 async fn a_delta_live_query_on_a_replica_converges_after_a_group() {
     let primary = node(false, true).await;
     let replica = node(true, true).await;
-    follow_on_own_thread(&replica, serve_replicas(&primary).await);
+    let _following = follow_on_own_thread(&replica, serve_replicas(&primary).await);
     let mut client = WsClient::connect(primary.ws).await;
     client.cmd(&["SET", "dl:seed", "x"]).await;
     wait_for(&replica.store, "dl:seed", bulk("x")).await;
@@ -549,7 +568,7 @@ async fn a_delta_live_query_on_a_replica_converges_after_a_group() {
 async fn a_group_that_sets_then_removes_a_key_invalidates_a_replica_watch() {
     let primary = node(false, true).await;
     let replica = node(true, true).await;
-    follow_on_own_thread(&replica, serve_replicas(&primary).await);
+    let _following = follow_on_own_thread(&replica, serve_replicas(&primary).await);
     let mut client = WsClient::connect(primary.ws).await;
     client.cmd(&["SADD", "ws:src", "m"]).await;
     for _ in 0..200 {
@@ -598,8 +617,8 @@ async fn a_failed_group_on_a_middle_replica_resets_its_sub_replicas() {
     let a = node(false, true).await;
     let b = node(true, true).await;
     let c = node(true, true).await;
-    follow_on_own_thread(&b, serve_replicas(&a).await);
-    follow_on_own_thread(&c, serve_replicas(&b).await);
+    let _following = follow_on_own_thread(&b, serve_replicas(&a).await);
+    let _following = follow_on_own_thread(&c, serve_replicas(&b).await);
     let mut client = WsClient::connect(a.ws).await;
     client.cmd(&["SET", "fg:pre", "0"]).await;
     wait_for(&c.store, "fg:pre", bulk("0")).await;
@@ -635,7 +654,7 @@ async fn a_failed_group_with_an_aof_latches_and_keeps_its_prefix_until_the_full_
     let dir = files("6oi_replica_fail_aof");
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let replica = replica_with_files(&dir).await;
-    follow_on_own_thread(&replica, listener.local_addr().unwrap());
+    let _following = follow_on_own_thread(&replica, listener.local_addr().unwrap());
     let (mut sock, _) = fake_primary_link(&listener).await;
     full_sync(&mut sock, 10).await;
     send(&mut sock, 11, &frame(&["SET", "fa:s", "text"])).await;
