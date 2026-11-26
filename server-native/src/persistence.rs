@@ -3046,10 +3046,19 @@ pub(crate) async fn replay_aof_format(
         // always did, logged as an error with what was lost.
         let cut = aof_cut_path(path, valid);
         let removed = bytes.len().saturating_sub(valid);
-        let kept = match write_private(&cut, &bytes[valid..]).await {
-            Ok(()) => sync_parent_dir(&cut).await,
-            Err(e) => Err(e),
-        };
+        // Written under a temporary name and renamed once synced, so a copy
+        // that fails part-way never leaves a file that looks whole; the
+        // partial one is removed (review A R3-L1).
+        let partial = temp_sibling(&cut, "partial");
+        let kept = async {
+            write_private(&partial, &bytes[valid..]).await?;
+            tokio::fs::rename(&partial, &cut).await?;
+            sync_parent_dir(&cut).await
+        }
+        .await;
+        if kept.is_err() {
+            let _ = tokio::fs::remove_file(&partial).await;
+        }
         match &kept {
             Ok(()) => warn!(
                 "AOF: the {removed} byte(s) about to be cut from offset {valid} were saved to {} \

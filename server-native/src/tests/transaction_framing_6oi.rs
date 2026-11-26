@@ -721,6 +721,18 @@ async fn the_bytes_a_tail_cut_removes_are_kept_beside_the_file() {
         "{kept:?}"
     );
     assert_eq!(std::fs::read(&kept[0]).unwrap(), tail);
+    // Written under a temporary name and renamed (review A R3-L1): none left.
+    let temporary = std::fs::read_dir(&dir.0)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .path()
+                .to_string_lossy()
+                .ends_with(".tmp")
+        })
+        .count();
+    assert_eq!(temporary, 0);
 }
 
 /// L1: 6O-I never appends after an open group. A replica restarted on its
