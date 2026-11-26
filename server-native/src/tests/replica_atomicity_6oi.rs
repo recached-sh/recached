@@ -679,3 +679,35 @@ async fn a_failed_group_with_an_aof_latches_and_keeps_its_prefix_until_the_full_
     );
     assert!(!replica.state.persistence_is_healthy());
 }
+
+/// A group applies under its replication-order stripes, so promotion (the
+/// all-write barrier) waits for the whole group: the node is never promoted
+/// with part of a group applied (mutant M14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn promotion_waits_for_a_group_being_applied() {
+    let primary = node(false, true).await;
+    let replica = node(true, true).await;
+    let _following = follow_on_own_thread(&replica, serve_replicas(&primary).await);
+    let mut client = WsClient::connect(primary.ws).await;
+    client.cmd(&["SET", "pw:a", "0"]).await;
+    wait_for(&replica.store, "pw:a", bulk("0")).await;
+    let pause = write_pause::after_transaction_write_of(&replica.store, "pw:a", &[]);
+    exec(&mut client, &[&["SET", "pw:a", "1"], &["SET", "pw:b", "1"]]).await;
+    assert!(pause.wait_reached(Duration::from_secs(5)));
+    let promotion = {
+        let (store, state) = (Arc::clone(&replica.store), Arc::clone(&replica.state));
+        tokio::spawn(async move { state.promote_to_primary(&store).await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        replica.state.is_replica() && !promotion.is_finished(),
+        "promoted with part of a group applied"
+    );
+    drop(pause);
+    promotion.await.unwrap();
+    assert!(!replica.state.is_replica());
+    assert_eq!(
+        replica.store.execute(Command::Get("pw:b".into())),
+        bulk("1")
+    );
+}
