@@ -609,3 +609,24 @@ async fn a_failed_save_does_not_reuse_its_checkpoint_id() {
     node.state.save(&node.store).await.unwrap();
     assert_eq!(node.state.snap.checkpoint_id.load(Ordering::SeqCst), 2);
 }
+
+#[tokio::test]
+async fn a_failed_replay_leaves_the_store_as_it_found_it() {
+    // A record the store refuses ends the replay with an error; the
+    // follower mode of the timeless part is still undone.
+    let dir = Dir::new("failed");
+    let bytes = [
+        format_record(),
+        array(&["RPUSH", "l", "a"]),
+        array(&["INCR", "l"]), // WRONGTYPE: the replay refuses the file
+    ]
+    .concat();
+    std::fs::write(dir.aof(), &bytes).unwrap();
+    let store = KeyValueStore::with_config(Some(10), None, EvictionPolicy::AllKeysLru);
+    assert!(
+        replay_aof_format(&store, &dir.aof(), 0, true)
+            .await
+            .is_err()
+    );
+    assert!(!store.is_follower());
+}

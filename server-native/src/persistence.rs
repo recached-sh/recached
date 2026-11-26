@@ -2515,7 +2515,15 @@ pub(crate) async fn replay_aof_format(
     let mut clamped = 0usize;
     let mut ephemeral = ReplayEphemeral::default();
     let mut offset = replay_start;
+    // Restored on every return, an error included.
+    struct Follower<'s>(&'s KeyValueStore, bool);
+    impl Drop for Follower<'_> {
+        fn drop(&mut self) {
+            self.0.set_follower(self.1);
+        }
+    }
     let was_follower = store.is_follower();
+    let _restore = Follower(store, was_follower);
     let mut following = false;
     while offset < bytes.len() {
         match Value::parse(&bytes[offset..]) {
@@ -2584,7 +2592,6 @@ pub(crate) async fn replay_aof_format(
                 break;
             }
             Err(e) => {
-                store.set_follower(was_follower);
                 return Err(std::io::Error::new(
                     ErrorKind::InvalidData,
                     format!("AOF corrupted at offset {offset}: {e}"),
