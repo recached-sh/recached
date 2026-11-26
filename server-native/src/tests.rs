@@ -6818,6 +6818,7 @@ mod commands_v06;
 mod dedup_ack_order;
 mod exec_cost_6og;
 mod exec_isolation;
+mod expiry_log_6oh;
 mod expiry_replay_6of;
 mod frame_encoding_6oa;
 mod integration_6nc;
