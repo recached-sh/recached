@@ -1,0 +1,4 @@
+marker-abandoned exec: b'+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n+OK\r\n+OK\r\n' | appended starts: b'*2\r\n$19\r\nRECACHED-CHECKPOINT\r\n$20\r\n17005734034245943298\r\n*3\r'
+marker-abandoned restart after cutting inside the new group: (True, ['new', 'old', None, None], '2026-11-26T12:40:23.686673Z  INFO recached_server: WebSocket server listening on 127.0.0.1:48291')
+clean exec: b'+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n+OK\r\n+OK\r\n' | appended starts: b'*2\r\n$19\r\nRECACHED-CHECKPOINT\r\n$20\r\n17005734034245943298\r\n*3\r'
+clean restart after cutting inside the new group: (True, ['old', 'old', None, None], '2026-11-26T12:40:24.303525Z  INFO recached_server: WebSocket server listening on 127.0.0.1:59881')

@@ -1,0 +1,110 @@
+//! 6O-I: transaction atomicity across the AOF and replicas.
+//!
+//! The two reproductions of `benchmarks/v0.6.0/6o-i/V0.6O-I-BASELINE.md`:
+//! - an `EXEC` whose AOF tail is cut part-way replays a prefix of it;
+//! - a replica applies an `EXEC`'s frames one at a time, and a reader of
+//!   the replica sees some of them without the rest.
+//! Both assert the property 6O-I sets out to provide, so they fail on the
+//! baseline and pass once it holds.
+
+use super::aof_format_6oh::{Dir, boot};
+use super::mset_atomicity::Pipe;
+use super::replication_dedup::{follow, node, serve_replicas, wait_for};
+use super::*;
+use core_engine::resp::Value;
+use std::sync::atomic::AtomicBool;
+
+fn bulk(s: &str) -> Value {
+    Value::BulkString(Some(s.as_bytes().to_vec()))
+}
+
+/// Every cut of the file inside an `EXEC`'s records replays all of the
+/// transaction or none of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_exec_cut_anywhere_in_its_records_replays_all_or_nothing() {
+    let dir = Dir::new("6oi_cut");
+    let node = boot(&dir).await;
+    let mut c = Pipe::tcp(&node);
+    c.cmd(&["SET", "acct:a", "old"]).await;
+    c.cmd(&["SET", "acct:b", "old"]).await;
+    let before = std::fs::read(dir.aof()).unwrap();
+    c.cmd(&["MULTI"]).await;
+    c.cmd(&["SET", "acct:a", "new"]).await;
+    c.cmd(&["SET", "acct:b", "new"]).await;
+    let exec = c.cmd(&["EXEC"]).await;
+    assert!(matches!(exec, Value::Array(Some(_))), "{exec:?}");
+    let full = std::fs::read(dir.aof()).unwrap();
+    drop(c);
+    drop(node);
+    let mut partial = Vec::new();
+    for cut in before.len()..full.len() {
+        let copy = Dir::new("6oi_cut_copy");
+        std::fs::write(copy.aof(), &full[..cut]).unwrap();
+        let restarted = boot(&copy).await;
+        let a = restarted.store.execute(Command::Get("acct:a".into()));
+        let b = restarted.store.execute(Command::Get("acct:b".into()));
+        if a != b {
+            partial.push((cut, a, b));
+        }
+    }
+    assert!(
+        partial.is_empty(),
+        "{} of {} cut(s) replayed part of the transaction, e.g. {:?}",
+        partial.len(),
+        full.len() - before.len(),
+        partial.first()
+    );
+}
+
+/// A reader of a replica never sees part of an `EXEC`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replica_reader_never_sees_part_of_an_exec() {
+    let primary = node(false, true).await;
+    let replica = node(true, true).await;
+    follow(&replica, serve_replicas(&primary).await);
+    let mut client = WsClient::connect(primary.ws).await;
+    client.cmd(&["SET", "acct:a", "0"]).await;
+    client.cmd(&["SET", "acct:b", "0"]).await;
+    wait_for(&replica.store, "acct:b", bulk("0")).await;
+    // A replica slower than its link: it pauses after each frame it applies,
+    // which is where a reader would find the transaction part-applied.
+    replica
+        .state
+        .replicas
+        .test_apply_delay_us
+        .store(100_000, Ordering::Relaxed);
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader = {
+        let (store, stop) = (Arc::clone(&replica.store), Arc::clone(&stop));
+        tokio::task::spawn_blocking(move || {
+            let mut mixed = Vec::new();
+            while !stop.load(Ordering::Relaxed) {
+                let got = store.execute(Command::MGet(vec!["acct:a".into(), "acct:b".into()]));
+                if let Value::Array(Some(items)) = &got
+                    && items[0] != items[1]
+                {
+                    mixed.push(got);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            mixed
+        })
+    };
+    for round in 1..=3 {
+        let v = round.to_string();
+        client.cmd(&["MULTI"]).await;
+        client.cmd(&["SET", "acct:a", &v]).await;
+        client.cmd(&["SET", "acct:b", &v]).await;
+        client.cmd(&["EXEC"]).await;
+        wait_for(&replica.store, "acct:b", bulk(&v)).await;
+        wait_for(&replica.store, "acct:a", bulk(&v)).await;
+    }
+    stop.store(true, Ordering::Relaxed);
+    let mixed = reader.await.unwrap();
+    assert!(
+        mixed.is_empty(),
+        "the replica's reader saw {} part-applied state(s), e.g. {:?}",
+        mixed.len(),
+        mixed.first()
+    );
+}
