@@ -826,9 +826,10 @@ impl ServerState {
             }
         }
         if self.replicas.is_enabled() {
-            for frame in frames {
-                self.replicas.fan_out(frame.to_vec()).await;
-            }
+            // Consecutive offsets, one group when two or more (6O-I).
+            self.replicas
+                .fan_out_group(frames.iter().map(|frame| frame.to_vec()).collect())
+                .await;
         }
     }
 
