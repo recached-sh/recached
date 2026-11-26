@@ -1,0 +1,40 @@
+"""Review E round 2: recompute paired per-rep ratios from i-tx.sh logs.
+usage: python3 -I an2.py tx.log.txt base,i,p3[,p3nc]"""
+import re, sys, statistics as st
+from collections import defaultdict
+path, labels = sys.argv[1], sys.argv[2].split(',')
+cells = defaultdict(lambda: defaultdict(dict)); order = []
+f = lambda kv, k: float(kv[k]) if kv.get(k) not in (None, '') else float('nan')
+for line in open(path):
+    if not line.startswith('label='): continue
+    kv = dict(re.findall(r"(\w+)=(\S*)", line))
+    cell = f"w{kv['workers']} {kv['mode']} {kv.get('txenv','')} {kv.get('srvenv') or 'noaof'} c{kv['clients']}"
+    if cell not in order: order.append(cell)
+    tx = float(kv['tx'])
+    d = dict(tps=f(kv,'tx_per_s'), cpu=f(kv,'oncpu_s')*1e6/tx, p50=f(kv,'p50_us'), p99=f(kv,'p99_us'), mx=f(kv,'max_us'),
+             hwm=f(kv,'hwm_kb')/1024, rhwm=f(kv,'replica_hwm_kb')/1024, rcpu=f(kv,'replica_oncpu_s')*1e6/tx,
+             wus=f(kv,'aof_write_usec')/tx, wcalls=f(kv,'aof_write_calls')/tx, bytes=f(kv,'aof_bytes')/tx,
+             fs=f(kv,'aof_fsyncs'), fsms=f(kv,'aof_fsync_usec')/max(f(kv,'aof_fsyncs'),1)/1e3,
+             wops=f(kv,'writer_ops_per_s'), wp99=f(kv,'w_p99_us'), fo=f(kv,'foreign_cpus'), psi=f(kv,'io_psi10'),
+             full=f(kv,'repl_syncs_full'), qd=f(kv,'repl_queue_disconnects'), lag=f(kv,'repl_lag_frames'),
+             rdb=kv.get('replica_dbsize'), pdb=kv.get('primary_dbsize'), srv=f(kv,'oncpu_s')/f(kv,'secs'))
+    cells[cell][kv['label']][int(kv['rep'])] = d
+def fmt(v): return '[' + ' '.join(f'{x:.3f}' for x in v) + ']'
+for c in order:
+    print('==', c)
+    for l in labels:
+        rows = cells[c].get(l, {})
+        if not rows: continue
+        m = lambda k: st.median([r[k] for r in rows.values()])
+        print(f"  {l:5s} n={len(rows)} tps {m('tps'):.0f} cpu {m('cpu'):.2f} srvbusy {m('srv'):.2f} p50 {m('p50'):.0f} p99 {m('p99'):.0f} hwm {fmt([rows[r]['hwm'] for r in sorted(rows)])} rhwm {fmt([rows[r]['rhwm'] for r in sorted(rows)])}"
+              f" bytes/tx {m('bytes'):.1f} wcalls/tx {m('wcalls'):.3f} wus/tx {fmt([rows[r]['wus'] for r in sorted(rows)])} fsyncs {m('fs'):.0f} ms/fsync {fmt([rows[r]['fsms'] for r in sorted(rows)])}"
+              f" rcpu {m('rcpu'):.2f} wops {fmt([rows[r]['wops'] for r in sorted(rows)])} wp99 {m('wp99'):.0f} full {[rows[r]['full'] for r in sorted(rows)]} qd {[rows[r]['qd'] for r in sorted(rows)]} lag {[rows[r]['lag'] for r in sorted(rows)]} db {[ (rows[r]['rdb'],rows[r]['pdb']) for r in sorted(rows)]} fo {m('fo'):.2f} psi {fmt([rows[r]['psi'] for r in sorted(rows)])}")
+    b = cells[c][labels[0]]
+    for l in labels[1:]:
+        x = cells[c].get(l)
+        if not x: continue
+        rs = sorted(set(b) & set(x))
+        for k in ('tps', 'cpu', 'p50', 'wus', 'rcpu', 'wops'):
+            v = [x[r][k]/b[r][k] for r in rs if b[r][k] and b[r][k] == b[r][k]]
+            if v and all(vv == vv for vv in v):
+                print(f"    {l}/{labels[0]} {k:5s} med {st.median(v):.3f} range [{min(v):.3f}-{max(v):.3f}] per-rep {fmt(v)}")

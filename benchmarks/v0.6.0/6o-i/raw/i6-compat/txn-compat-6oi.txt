@@ -1,0 +1,14 @@
+# txn_compat.py, 2026-11-26T14:24:50Z, kernel 7.3.4-300.fc45.x86_64; 6oi-0a1f95e sha256 f835dfb6b4b61cb95408885197c90a888eae76e9233112b33c2f3436e93d4a9f
+ok    6oi-0a1f95e    T1 complete group replays; markers are no-ops              up=True got=['new', 'new', '1'] dbsize=3 
+ok    6oi-0a1f95e    T2 incomplete tail group: what it replays                  up=True got=['old', 'old'] (['new','old'] = the prefix applied) 
+ok    6oi-0a1f95e    T2b incomplete group, member torn: replay and cut          up=True got=['old', 'old'] file=115 (torn record cut: False)
+ok    6oi-0a1f95e    T3 SAVE, write, SIGKILL, restart (downgrade procedure)     save=OK got=['new', 'new', '1'] group_markers_after_save=False
+ok    6oi-0a1f95e    T4 (6O-I) cuts the dangling group, then appends            up=True appended=b''
+ok    6oi-0a1f95e    T5 FORMAT expirylog only: replay mode                      up=True k=[None] -> timeless 
+ok    6oi-0a1f95e    T5b FORMAT expirylog + txn: replay mode                    up=True k=[None] -> timeless 
+ok    6oi-0a1f95e    T5c appends to a txn-bit file as                           up=True first_byte=b'*' ('>' = push, '*' = array)
+ok    6oi-0a1f95e    T6 replay starts after the snapshot's marker, not a group's got=['s', None, 'y', 'y'] 
+ok    6oi-0a1f95e    T7 option C, MULTI/EXEC records (rejected)                 started=False got=None AOF command failed at offset 188: ERR EXEC without MULTI" }
+ok    6oi-0a1f95e    T8 option B, one composite record (rejected)               started=False got=None AOF command failed at offset 115: ERR unknown command 'RECACHED-TXN'" }
+ok    6oi-0a1f95e    T9 malformed groups (empty, huge count)                    started=False got=None AOF corrupted at offset 114: a transaction group of 4294967295 records closed after 0" }
+12/12 checks as expected

@@ -1,0 +1,19 @@
+# redis_tx_diff.py 2026-11-26T14:28:03Z; Redis server v=7.2.5 sha=00000000:0 mall; rc-6oi-0a1f95e
+ok    two SETs                           reply=['OK', 'OK'] keys=2 restart_same=True 
+ok    SET then GET                       reply=['OK', '1'] keys=1 restart_same=True 
+ok    MSET then SET                      reply=['OK', 'OK'] keys=2 restart_same=True 
+ok    repeated writes to one key         reply=['OK', 2, 1, 2] keys=2 restart_same=True 
+ok    duplicate keys                     reply=['OK', 1] keys=0 restart_same=True 
+ok    RENAME                             reply=['OK', 'OK'] keys=2 restart_same=True 
+ok    COPY                               reply=[1, 2] keys=2 restart_same=True 
+ok    DEL                                reply=[1, 1] keys=0 restart_same=True 
+ok    expiration and PERSIST             reply=['OK', 1, 'OK', 1] keys=2 restart_same=True 
+ok    a failing command inside EXEC      reply=['OK', 'ERR:ERR', 'OK'] keys=3 restart_same=True 
+ok    SET NX                             reply=[None, 'OK'] keys=2 restart_same=True 
+ok    WRONGTYPE                          reply=['OK', 'ERR:WRONGTYPE', 'OK'] keys=3 restart_same=True 
+ok    FLUSHDB                            reply=['OK', 'OK', 'OK'] keys=1 restart_same=True 
+ok    read-only EXEC                     reply=['1', 1] keys=1 restart_same=True 
+ok    PUBLISH-only EXEC                  reply=[0] keys=0 restart_same=True 
+ok    no generated writes                reply=[0, None] keys=0 restart_same=True 
+ok    lists, sets, hashes                reply=[2, 1, 1, '1'] keys=3 restart_same=True 
+17/17 scenarios identical to Redis 7.2.5 (reply, state, state after AOF restart)

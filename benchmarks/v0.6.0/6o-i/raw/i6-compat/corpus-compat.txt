@@ -1,0 +1,16 @@
+# corpus_compat.py, 2026-11-26T14:24:57Z; NEW rc-6oi-0a1f95e sha256 f835dfb6b4b61cb95408885197c90a888eae76e9233112b33c2f3436e93d4a9f
+ok    NEW            corpus, one by one                       keys=30 refused-by-older=6 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    NEW            corpus in MULTI/EXEC                     keys=24 refused-by-older=0 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    v0.4.0         corpus, one by one                       keys=30 refused-by-older=11 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    v0.4.0         corpus in MULTI/EXEC                     keys=16 refused-by-older=0 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    v0.5.1         corpus, one by one                       keys=30 refused-by-older=11 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    v0.5.1         corpus in MULTI/EXEC                     keys=14 refused-by-older=0 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    v0.5.2         corpus, one by one                       keys=30 refused-by-older=11 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    v0.5.2         corpus in MULTI/EXEC                     keys=14 refused-by-older=0 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    6of-410235b    corpus, one by one                       keys=30 refused-by-older=6 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    6of-410235b    corpus in MULTI/EXEC                     keys=24 refused-by-older=0 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    6og-f9a364d    corpus, one by one                       keys=30 refused-by-older=6 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    6og-f9a364d    corpus in MULTI/EXEC                     keys=24 refused-by-older=0 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    6oh-6068337    corpus, one by one                       keys=30 refused-by-older=6 6O-I up=True 6O-I==older's own restart: True differing=[] 
+ok    6oh-6068337    corpus in MULTI/EXEC                     keys=24 refused-by-older=0 6O-I up=True 6O-I==older's own restart: True differing=[] 
+14/14 as expected
