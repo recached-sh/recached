@@ -1,0 +1,11 @@
+# verify negative check, rc-p (54ff38a), 2026-11-27T05:38:52Z
+$ i8bench prefill; i8bench paced 300 tx/s 1.5 s; i8bench verify (expect ok=true)
+prefill keys=100000
+verify port=24941 keys=100000 dbsize=100000 missing=0 mismatched=0 ttl_set=0 digest=21591db9968e76fe ok=true secs=0.11 examples=
+$ SET key:000000000042 tampered (expect mismatched=1, ok=false)
+OK
+verify port=24941 keys=100000 dbsize=100000 missing=0 mismatched=1 ttl_set=0 digest=80d6b36de117bf5a ok=false secs=0.11 examples=key:000000000042:tampered!=init:42:pppppppppppppppppppppppp
+$ PEXPIRE key:000000000007 999999; DEL key:000000000099 (expect missing=1, ttl_set>=1, dbsize 99999, digest changes)
+1
+1
+verify port=24941 keys=100000 dbsize=99999 missing=1 mismatched=2 ttl_set=2 digest=4002050ee459bc7f ok=false secs=0.11 examples=key:000000000042:tampered!=init:42:pppppppppppppppppppppppp|key:000000000099:<nil>!=init:99:pppppppppppppppppppppppp

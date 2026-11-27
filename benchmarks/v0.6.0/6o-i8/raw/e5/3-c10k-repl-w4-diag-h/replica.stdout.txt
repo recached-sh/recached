@@ -1,0 +1,64 @@
+[2m2026-11-27T02:44:41.144095Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 1 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-27T02:44:41.144120Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-27T02:44:41.144132Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-27T02:44:41.144136Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-27T02:44:41.144139Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-27T02:44:41.144141Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 22144 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-27T02:44:41.144149Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 22144 to untrusted clients.
+[2m2026-11-27T02:44:41.144365Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m No snapshot at "/home/dennispaler/recached-6oi8-bench/runs/e5/3-c10k-repl-w4-diag-h/data/dump-22143.rdb", starting fresh
+[2m2026-11-27T02:44:41.144383Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+[2m2026-11-27T02:44:41.144386Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Max connections: 1024
+[2m2026-11-27T02:44:41.144390Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Replication to the primary is PLAINTEXT — the password and the entire keyspace cross the network unencrypted, and the primary's identity is not verified. Set RECACHED_REPL_TLS_CA, or keep replication on a private network.
+[2m2026-11-27T02:44:41.144392Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication server DISABLED — port 6381 is not bound. Set RECACHED_REPL_ENABLE=1 on any node that serves replicas (including a replica serving sub-replicas).
+[2m2026-11-27T02:44:41.144437Z[0m [32m INFO[0m [2mrecached_server::server_state[0m[2m:[0m Restored 0 dedup high-water mark(s)
+[2m2026-11-27T02:44:41.144446Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Autosave disabled (RECACHED_SAVE=0 or RECACHED_SAVE_INTERVAL=0). Use SAVE or BGSAVE manually.
+[2m2026-11-27T02:44:41.144480Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:44:41.144573Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Running as replica — writes are rejected until manually promoted with REPLICAOF NO ONE
+[2m2026-11-27T02:44:41.144712Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m TCP server listening on 127.0.0.1:22143 (1 accept loop(s))
+[2m2026-11-27T02:44:41.144726Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m WebSocket server listening on 127.0.0.1:22144
+[2m2026-11-27T02:44:41.145619Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (0 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:44:53.237453Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:44:55.238533Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:44:55.345908Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:45:03.106180Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:45:05.107789Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:45:05.216179Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:45:12.512405Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:45:14.513515Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:45:14.620788Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:45:21.987412Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:45:23.989553Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:45:24.103550Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:45:31.452067Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:45:33.453901Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:45:33.563408Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:45:41.196298Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:45:43.197577Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:45:43.312522Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:45:51.083230Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:45:53.085454Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:45:53.202993Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:46:01.226055Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:46:03.227581Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:46:03.347245Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:46:11.634540Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:46:13.635762Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:46:13.756232Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:46:22.059878Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:46:24.060549Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:46:24.173443Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:46:32.848301Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:46:34.849141Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:46:34.962101Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:46:43.840627Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:46:45.841951Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:46:45.955723Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:46:54.882447Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:46:56.883608Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:46:56.996773Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:47:05.843719Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:47:07.844566Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22142
+[2m2026-11-27T02:47:07.938599Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:48:08.293463Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Shutdown signal received, saving final snapshot...
+[2m2026-11-27T02:48:08.805472Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved: 100000 entries → "/home/dennispaler/recached-6oi8-bench/runs/e5/3-c10k-repl-w4-diag-h/data/dump-22143.rdb"
+[2m2026-11-27T02:48:08.805813Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Done. Goodbye.

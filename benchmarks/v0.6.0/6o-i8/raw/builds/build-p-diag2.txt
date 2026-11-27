@@ -1,0 +1,22 @@
+== build p-diag2 54ff38ade18bc3da3254f4bc8977783af0bda181 dirty=5 2026-11-27T05:33:59Z
+rustc 1.98.0 (88d9e12ae 2026-08-18)
+binary: rustc
+commit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea
+commit-date: 2026-08-18
+host: x86_64-unknown-linux-gnu
+release: 1.98.0
+LLVM version: 22.1.8
+RUSTFLAGS='-C force-frame-pointers=yes' profile overrides: CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_DEBUG=line-tables-only
+warning: method `inc` is never used
+  --> server-native/src/i8diag.rs:55:19
+   |
+29 | impl Stat {
+   | --------- method in this implementation
+...
+55 |     pub(crate) fn inc(&self) {
+   |                   ^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+76f47fc3ed1db89d4f2ea6aa5515aa5c3b20442897b0045e901a3d69fb348569  /home/dennispaler/recached-6oi8-bench/bin/rc-p-diag2
+== done 2026-11-27T05:36:16Z

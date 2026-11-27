@@ -1,0 +1,26 @@
+2026-11-27T06:20:51Z campaign et start: 3 reps x 2 cells x ['h', 'p']
+2026-11-27T06:20:51Z run rep=1 cell=c10k-tcache-default label=h port=30310 attempt=0
+2026-11-27T06:24:17Z   valid=True why=[] load={'tx_per_s': 100.48, 'accepted_per_s': None, 'writer_ops_per_s': 443.0}
+2026-11-27T06:24:17Z run rep=1 cell=c10k-tcache-default label=p port=30320 attempt=0
+2026-11-27T06:27:42Z   valid=True why=[] load={'tx_per_s': 95.82, 'accepted_per_s': None, 'writer_ops_per_s': 422.2}
+2026-11-27T06:27:42Z run rep=1 cell=c10k-tcache-16k label=h port=30330 attempt=0
+2026-11-27T06:31:08Z   valid=True why=[] load={'tx_per_s': 102.22, 'accepted_per_s': None, 'writer_ops_per_s': 449.2}
+2026-11-27T06:31:08Z run rep=1 cell=c10k-tcache-16k label=p port=30340 attempt=0
+2026-11-27T06:34:33Z   valid=True why=[] load={'tx_per_s': 96.54, 'accepted_per_s': None, 'writer_ops_per_s': 419.3}
+2026-11-27T06:34:33Z run rep=2 cell=c10k-tcache-default label=p port=30350 attempt=0
+2026-11-27T06:37:59Z   valid=True why=[] load={'tx_per_s': 96.0, 'accepted_per_s': None, 'writer_ops_per_s': 430.5}
+2026-11-27T06:37:59Z run rep=2 cell=c10k-tcache-default label=h port=30360 attempt=0
+2026-11-27T06:41:24Z   valid=True why=[] load={'tx_per_s': 102.51, 'accepted_per_s': None, 'writer_ops_per_s': 487.6}
+2026-11-27T06:41:24Z run rep=2 cell=c10k-tcache-16k label=p port=30370 attempt=0
+2026-11-27T06:44:50Z   valid=True why=[] load={'tx_per_s': 96.79, 'accepted_per_s': None, 'writer_ops_per_s': 456.4}
+2026-11-27T06:44:50Z run rep=2 cell=c10k-tcache-16k label=h port=30380 attempt=0
+2026-11-27T06:48:15Z   valid=True why=[] load={'tx_per_s': 103.64, 'accepted_per_s': None, 'writer_ops_per_s': 511.4}
+2026-11-27T06:48:15Z run rep=3 cell=c10k-tcache-default label=h port=30390 attempt=0
+2026-11-27T06:51:41Z   valid=True why=[] load={'tx_per_s': 103.39, 'accepted_per_s': None, 'writer_ops_per_s': 519.5}
+2026-11-27T06:51:41Z run rep=3 cell=c10k-tcache-default label=p port=30400 attempt=0
+2026-11-27T06:55:06Z   valid=True why=[] load={'tx_per_s': 96.24, 'accepted_per_s': None, 'writer_ops_per_s': 445.9}
+2026-11-27T06:55:06Z run rep=3 cell=c10k-tcache-16k label=h port=30410 attempt=0
+2026-11-27T06:58:32Z   valid=True why=[] load={'tx_per_s': 106.54, 'accepted_per_s': None, 'writer_ops_per_s': 540.4}
+2026-11-27T06:58:32Z run rep=3 cell=c10k-tcache-16k label=p port=30420 attempt=0
+2026-11-27T07:01:57Z   valid=True why=[] load={'tx_per_s': 96.96, 'accepted_per_s': None, 'writer_ops_per_s': 429.0}
+2026-11-27T07:01:57Z campaign done

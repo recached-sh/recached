@@ -1,0 +1,30 @@
+{
+ "name": "e2",
+ "out": "~/recached-6oi8-bench/runs/e2",
+ "labels": [
+  "h",
+  "i",
+  "p"
+ ],
+ "reps": 2,
+ "port_base": 25000,
+ "cells": [
+  {
+   "name": "c10k-norepl-w4",
+   "primary": {
+    "workers": 3,
+    "cpus": "0-2"
+   },
+   "load": {
+    "kind": "contend",
+    "tx_n": 10000,
+    "clients": 2,
+    "writers": 4
+   },
+   "warm": 20,
+   "measure": 120,
+   "post": 60,
+   "perf_stat": true
+  }
+ ]
+}

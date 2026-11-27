@@ -1,0 +1,41 @@
+{
+ "name": "r6",
+ "out": "~/recached-6oi8-bench/runs/r6",
+ "labels": [
+  "p",
+  "i"
+ ],
+ "reps": 1,
+ "rotate": false,
+ "port_base": 31700,
+ "cells": [
+  {
+   "name": "raof-1840-soak2",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec",
+    "env": {
+     "RECACHED_SAVE_INTERVAL": "900"
+    }
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 1840,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 1800,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true,
+   "restart_wait": 900
+  }
+ ]
+}

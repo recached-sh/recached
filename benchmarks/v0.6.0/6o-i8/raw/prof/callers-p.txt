@@ -1,0 +1,31 @@
+     2.73%  [.] _rjem_je_arena_cache_bin_fill_small  -      -            
+            ---start_thread
+               |--1.37%--<core_engine::request::CommandRef>::to_command
+               |          |--0.74%--to_owned (inlined)
+               |          |           --0.40%--arena_slab_reg_alloc_batch (inlined)
+               |           --0.63%--to_vec<u8> (inlined)
+               |                      --0.62%--_rjem_je_tcache_alloc_small_hard
+               |                                 --0.31%--arena_slab_reg_alloc_batch (inlined)
+                --1.35%--recached_server::transaction::run_transaction_queue::{closure#0}
+                          |--0.97%--{async_fn#0} (inlined)
+                          |           --0.83%--{async_fn#0} (inlined)
+                          |                      --0.80%--collect<core::iter::adapters::map::Map<core::iter::adapters::zip::Zip<smallvec::IntoIter<[al
+                           --0.38%--apply_transaction<recached_server::transaction::run_transaction_queue::{async_fn#0}::{closure_env#0}> (inlined)
+     1.61%  [.] pthread_mutex_trylock@@GLIBC_2.34    -      -            
+            ---start_thread
+                --1.59%--tokio::runtime::task::raw::poll::<core::pin::Pin<alloc::boxed::Box<recached_server::run::{closure#0}::{closure#28}::{closure#
+                          |--0.88%--recached_server::transaction::run_transaction_queue::{closure#0}
+                          |           --0.71%--{async_fn#0} (inlined)
+                          |                      --0.65%--{async_fn#0} (inlined)
+                          |                                 --0.57%--collect<core::iter::adapters::map::Map<core::iter::adapters::zip::Zip<smallvec::I
+                          |                                            --0.51%--_rjem_je_arena_cache_bin_fill_small
+                           --0.68%--<core_engine::request::CommandRef>::to_command
+                                     |--0.35%--to_vec<u8> (inlined)
+                                      --0.33%--to_owned (inlined)
+     1.39%  [.] _rjem_je_tcache_bin_flush_small      -      -            
+            ---start_thread
+                --1.35%--tokio::runtime::task::raw::poll::<core::pin::Pin<alloc::boxed::Box<recached_server::run::{closure#0}::{closure#28}::{closure#
+                           --1.09%--recached_server::transaction::run_transaction_queue::{closure#0}
+                                     |--0.47%--core::ptr::drop_glue::<alloc::vec::Vec<core_engine::cmd::Command>>
+                                      --0.43%--{async_fn#0} (inlined)
+                                                 --0.42%--drop_glue<recached_server::replication::ReplFrame> (inlined)

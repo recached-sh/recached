@@ -1,0 +1,27 @@
+     1.76%  [.] _rjem_je_arena_cache_bin_fill_small  -      -            
+            ---start_thread
+               |--1.34%--<core_engine::request::CommandRef>::to_command
+               |          |--0.76%--to_owned (inlined)
+               |          |           --0.76%--_rjem_je_tcache_alloc_small_hard
+               |          |                      --0.41%--arena_slab_reg_alloc_batch (inlined)
+               |           --0.58%--to_vec<u8> (inlined)
+               |                      --0.58%--_rjem_je_tcache_alloc_small_hard
+                --0.39%--recached_server::transaction::run_transaction_queue::{closure#0}
+                           --0.38%--apply_transaction<recached_server::transaction::run_transaction_queue::{async_fn#0}::{closure_env#0}> (inlined)
+     1.10%  [.] _rjem_je_tcache_bin_flush_small      -      -            
+            ---start_thread
+                --1.07%--tokio::runtime::task::raw::poll::<core::pin::Pin<alloc::boxed::Box<recached_server::run::{closure#0}::{closure#28}::{closure#
+                           --0.84%--recached_server::transaction::run_transaction_queue::{closure#0}
+                                     |--0.48%--core::ptr::drop_glue::<alloc::vec::Vec<core_engine::cmd::Command>>
+                                     |           --0.31%--core::ptr::drop_glue::<core_engine::cmd::Command>
+                                     |                      --0.31%--_rjem_je_sdallocx_default
+                                      --0.35%--drop_glue<alloc::vec::Vec<recached_server::transaction::AppliedWrite, alloc::alloc::Global>> (inlined)
+                                                 --0.34%--isfree (inlined)
+                                                            --0.34%--tcache_bin_flush_bottom (inlined)
+     0.90%  [.] pthread_mutex_trylock@@GLIBC_2.34    -      -            
+            ---start_thread
+                --0.89%--tokio::runtime::task::raw::poll::<core::pin::Pin<alloc::boxed::Box<recached_server::run::{closure#0}::{closure#28}::{closure#
+                           --0.67%--<core_engine::request::CommandRef>::to_command
+                                      --0.44%--to_vec<u8> (inlined)
+                                                 --0.35%--_rjem_je_arena_cache_bin_fill_small
+                                                            --0.34%--pthread_mutex_trylock@@GLIBC_2.34

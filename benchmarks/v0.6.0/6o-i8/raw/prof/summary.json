@@ -1,0 +1,1010 @@
+[
+ {
+  "rep": 1,
+  "cell": "c10k-repl-w4-fp",
+  "label": "h",
+  "valid": true,
+  "why": [],
+  "measure_s": 59.998000144958496,
+  "tx_per_s": 104.87,
+  "p50_us": 15258.3,
+  "p99_us": 23734.1,
+  "max_us": 32172.3,
+  "writer_ops_per_s": 571.2,
+  "w_p50_us": 8892.0,
+  "w_p99_us": 18021.8,
+  "w_max_us": 28100.1,
+  "aborts": 0,
+  "errors": 0,
+  "n_tx": 6292,
+  "primary_cpu_us_per_tx": 12267.87943079067,
+  "primary_cpus": 1.2865345043508247,
+  "primary_VmRSS": {
+   "at_load_start": 58.86328125,
+   "at_measure_start": 83.171875,
+   "window_mean": 81.70397135416667,
+   "window_max": 83.171875,
+   "load_max": 84.4921875,
+   "at_load_end": 81.15234375,
+   "post_end": 63.96875,
+   "post_min": 63.96875,
+   "slope_mib_per_min": -1.7104028578469703,
+   "w30_means": [
+    82.1,
+    81.3
+   ]
+  },
+  "primary_RssAnon": {
+   "at_load_start": 51.32421875,
+   "at_measure_start": 75.5703125,
+   "window_mean": 74.10240885416667,
+   "window_max": 75.5703125,
+   "load_max": 76.953125,
+   "at_load_end": 73.55078125,
+   "post_end": 56.3671875,
+   "post_min": 56.3671875,
+   "slope_mib_per_min": -1.7104028578469703,
+   "w30_means": [
+    74.5,
+    73.7
+   ]
+  },
+  "primary_hwm_mib": 84.31640625,
+  "primary_vcsw_per_tx": 5.880723797509568,
+  "primary_ivcsw_per_tx": 1.4945575396725121,
+  "primary_utime_per_tx": 11634.507355080694,
+  "primary_stime_per_tx": 632.4141793241944,
+  "primary_minflt_per_tx": 0.3841385886840432,
+  "primary_majflt_per_tx": 0.0,
+  "primary_threads_max": 9,
+  "replica_cpu_us_per_tx": 8735.270230974107,
+  "replica_cpus": 0.9160692049817841,
+  "replica_VmRSS": {
+   "at_load_start": 25.81640625,
+   "at_measure_start": 25.84765625,
+   "window_mean": 25.710677083333334,
+   "window_max": 25.9140625,
+   "load_max": 25.9140625,
+   "at_load_end": 25.625,
+   "post_end": 24.48828125,
+   "post_min": 24.48828125,
+   "slope_mib_per_min": -0.4395763902402945,
+   "w30_means": [
+    25.8,
+    25.6
+   ]
+  },
+  "replica_RssAnon": {
+   "at_load_start": 18.375,
+   "at_measure_start": 18.28125,
+   "window_mean": 18.144270833333334,
+   "window_max": 18.34765625,
+   "load_max": 18.4375,
+   "at_load_end": 18.05859375,
+   "post_end": 16.921875,
+   "post_min": 16.921875,
+   "slope_mib_per_min": -0.4395763902402945,
+   "w30_means": [
+    18.3,
+    18.0
+   ]
+  },
+  "replica_hwm_mib": 25.94140625,
+  "replica_vcsw_per_tx": 0.3551536883734929,
+  "replica_ivcsw_per_tx": 0.28325175041615847,
+  "replica_utime_per_tx": 8623.386873459254,
+  "replica_stime_per_tx": 112.8210429545049,
+  "replica_minflt_per_tx": 0.039574062301335027,
+  "replica_majflt_per_tx": 0.0,
+  "replica_threads_max": 6,
+  "foreign_cpus": 0.8434296636977682,
+  "qdepth_max": 10000,
+  "lag_max": 190117,
+  "qbytes_peak_max": 2031064,
+  "disconnects_load": 0.0,
+  "disconnects_measure": 0.0,
+  "disconnects_after_prefill_total": 0,
+  "full_syncs_load": 0.0,
+  "full_syncs_measure": 0.0,
+  "full_syncs_after_prefill_total": 0,
+  "partial_syncs_load": 0.0,
+  "partial_syncs_measure": 0.0,
+  "partial_syncs_after_prefill_total": 0,
+  "catchup_s": 0.25,
+  "converged": true,
+  "digest_equal": true,
+  "verify_primary": {
+   "ok": "false",
+   "mismatched": "na",
+   "missing": 0,
+   "ttl_set": 0,
+   "dbsize": 100000,
+   "digest": "05ece49f3930d915"
+  },
+  "verify_replica": {
+   "ok": "false",
+   "mismatched": "na",
+   "missing": 0,
+   "ttl_set": 0,
+   "dbsize": 100000,
+   "digest": "05ece49f3930d915"
+  },
+  "restart_s": null,
+  "disk_util": 0.01756878768202097,
+  "disk_mb_per_s": 0.12247756257923012,
+  "psi_io_mean": 0.8408333333333333,
+  "load_at_start": 1.38,
+  "mhz_before": [
+   3997,
+   3986,
+   3909,
+   3894,
+   3997,
+   3901
+  ],
+  "swapfree_mib": 2550.515625,
+  "gen_cpus": 0.39928202758547543,
+  "foreign_cpus_net": 0.44414763611229274,
+  "checks_failed": [],
+  "comparable": true,
+  "events_primary": [
+   [
+    "2026-11-27T03:34:13.134783Z",
+    "INFO",
+    "Replica connected from 127.0.0.1:38808"
+   ]
+  ],
+  "events_replica": [
+   [
+    "2026-11-27T03:34:13.134662Z",
+    "INFO",
+    "Replica: connecting to primary at 127.0.0.1:28012"
+   ],
+   [
+    "2026-11-27T03:34:13.135066Z",
+    "INFO",
+    "Replica: full snapshot loaded (0 entries, 0 DEDUP client(s))"
+   ]
+  ]
+ },
+ {
+  "rep": 1,
+  "cell": "c10k-repl-w4-fp",
+  "label": "i",
+  "valid": true,
+  "why": [],
+  "measure_s": 60.00200009346008,
+  "tx_per_s": 94.93,
+  "p50_us": 17229.9,
+  "p99_us": 25554.9,
+  "max_us": 31093.9,
+  "writer_ops_per_s": 420.5,
+  "w_p50_us": 9524.1,
+  "w_p99_us": 20851.5,
+  "w_max_us": 34372.3,
+  "aborts": 0,
+  "errors": 0,
+  "n_tx": 5696,
+  "primary_cpu_us_per_tx": 12787.473114516168,
+  "primary_cpus": 1.2139169818811257,
+  "primary_VmRSS": {
+   "at_load_start": 70.91015625,
+   "at_measure_start": 133.04660136066377,
+   "window_mean": 120.28385416666667,
+   "window_max": 139.19921875,
+   "load_max": 139.19921875,
+   "at_load_end": 116.6682528713718,
+   "post_end": 75.69140625,
+   "post_min": 75.69140625,
+   "slope_mib_per_min": -12.489758515902597,
+   "w30_means": [
+    122.6,
+    118.0
+   ]
+  },
+  "primary_RssAnon": {
+   "at_load_start": 63.82421875,
+   "at_measure_start": 125.83566386066377,
+   "window_mean": 113.08723958333333,
+   "window_max": 131.98828125,
+   "load_max": 131.98828125,
+   "at_load_end": 109.4963778713718,
+   "post_end": 68.51953125,
+   "post_min": 68.51953125,
+   "slope_mib_per_min": -12.435321861088198,
+   "w30_means": [
+    115.3,
+    110.8
+   ]
+  },
+  "primary_hwm_mib": 140.0703125,
+  "primary_vcsw_per_tx": 7.029115003858054,
+  "primary_ivcsw_per_tx": 1.2153239135912965,
+  "primary_utime_per_tx": 12146.692433384027,
+  "primary_stime_per_tx": 642.4209981989325,
+  "primary_minflt_per_tx": 4.744396778807212,
+  "primary_majflt_per_tx": 0.0,
+  "primary_threads_max": 9,
+  "replica_cpu_us_per_tx": 7035.967749238094,
+  "replica_cpus": 0.6679256064337157,
+  "replica_VmRSS": {
+   "at_load_start": 25.31640625,
+   "at_measure_start": 27.86328125,
+   "window_mean": 27.769856770833332,
+   "window_max": 28.75390625,
+   "load_max": 29.140625,
+   "at_load_end": 28.75390625,
+   "post_end": 24.44921875,
+   "post_min": 24.44921875,
+   "slope_mib_per_min": -0.15679166991340723,
+   "w30_means": [
+    27.9,
+    27.7
+   ]
+  },
+  "replica_RssAnon": {
+   "at_load_start": 18.32421875,
+   "at_measure_start": 20.68359375,
+   "window_mean": 20.615559895833332,
+   "window_max": 21.640625,
+   "load_max": 22.078125,
+   "at_load_end": 21.640625,
+   "post_end": 17.3359375,
+   "post_min": 17.3359375,
+   "slope_mib_per_min": -0.062478221537884966,
+   "w30_means": [
+    20.7,
+    20.5
+   ]
+  },
+  "replica_hwm_mib": 29.1171875,
+  "replica_vcsw_per_tx": 5.439945231997565,
+  "replica_ivcsw_per_tx": 0.5836444880938931,
+  "replica_utime_per_tx": 6901.839897873696,
+  "replica_stime_per_tx": 131.67134831460675,
+  "replica_minflt_per_tx": 0.11762640449438203,
+  "replica_majflt_per_tx": 0.0,
+  "replica_threads_max": 4,
+  "foreign_cpus": 0.7373451089945898,
+  "qdepth_max": 10000,
+  "lag_max": 20004,
+  "qbytes_peak_max": 2031064,
+  "disconnects_load": 0.0,
+  "disconnects_measure": 0.0,
+  "disconnects_after_prefill_total": 0,
+  "full_syncs_load": 0.0,
+  "full_syncs_measure": 0.0,
+  "full_syncs_after_prefill_total": 0,
+  "partial_syncs_load": 0.0,
+  "partial_syncs_measure": 0.0,
+  "partial_syncs_after_prefill_total": 0,
+  "catchup_s": 0.25,
+  "converged": true,
+  "digest_equal": true,
+  "verify_primary": {
+   "ok": "false",
+   "mismatched": "na",
+   "missing": 0,
+   "ttl_set": 0,
+   "dbsize": 100000,
+   "digest": "311b279ddb019435"
+  },
+  "verify_replica": {
+   "ok": "false",
+   "mismatched": "na",
+   "missing": 0,
+   "ttl_set": 0,
+   "dbsize": 100000,
+   "digest": "311b279ddb019435"
+  },
+  "restart_s": null,
+  "disk_util": 0.05284135999215057,
+  "disk_mb_per_s": 0.1867800692959415,
+  "psi_io_mean": 0.2375,
+  "load_at_start": 2.76,
+  "mhz_before": [
+   3999,
+   4100,
+   4002,
+   4001,
+   3999,
+   4100
+  ],
+  "swapfree_mib": 2536.2421875,
+  "gen_cpus": 0.36201429131544616,
+  "foreign_cpus_net": 0.37533081767914367,
+  "checks_failed": [],
+  "comparable": true,
+  "events_primary": [
+   [
+    "2026-11-27T03:35:53.663136Z",
+    "INFO",
+    "Replica connected from 127.0.0.1:37834"
+   ]
+  ],
+  "events_replica": [
+   [
+    "2026-11-27T03:35:53.663027Z",
+    "INFO",
+    "Replica: connecting to primary at 127.0.0.1:28022"
+   ],
+   [
+    "2026-11-27T03:35:53.663529Z",
+    "INFO",
+    "Replica: full snapshot loaded (0 entries, 0 DEDUP client(s))"
+   ]
+  ]
+ },
+ {
+  "rep": 1,
+  "cell": "c10k-repl-w4-fp",
+  "label": "p",
+  "valid": true,
+  "why": [],
+  "measure_s": 60.003000020980835,
+  "tx_per_s": 95.75,
+  "p50_us": 16964.2,
+  "p99_us": 25529.9,
+  "max_us": 32160.2,
+  "writer_ops_per_s": 444.0,
+  "w_p50_us": 9456.0,
+  "w_p99_us": 19555.9,
+  "w_max_us": 28394.2,
+  "aborts": 0,
+  "errors": 0,
+  "n_tx": 5745,
+  "primary_cpu_us_per_tx": 12732.112544861,
+  "primary_cpus": 1.2190388238029763,
+  "primary_VmRSS": {
+   "at_load_start": 94.1796875,
+   "at_measure_start": 120.28975355159491,
+   "window_mean": 114.91022135416667,
+   "window_max": 133.32421875,
+   "load_max": 133.32421875,
+   "at_load_end": 109.95997758209705,
+   "post_end": 66.0390625,
+   "post_min": 66.0390625,
+   "slope_mib_per_min": -20.731588829894843,
+   "w30_means": [
+    120.2,
+    109.6
+   ]
+  },
+  "primary_RssAnon": {
+   "at_load_start": 87.0625,
+   "at_measure_start": 113.04756605159491,
+   "window_mean": 107.66803385416667,
+   "window_max": 126.08203125,
+   "load_max": 126.08203125,
+   "at_load_end": 102.71779008209705,
+   "post_end": 58.796875,
+   "post_min": 58.796875,
+   "slope_mib_per_min": -20.731588829894843,
+   "w30_means": [
+    113.0,
+    102.4
+   ]
+  },
+  "primary_hwm_mib": 133.41015625,
+  "primary_vcsw_per_tx": 7.0527465714072015,
+  "primary_ivcsw_per_tx": 1.2525232392253827,
+  "primary_utime_per_tx": 12070.999145507812,
+  "primary_stime_per_tx": 661.31070596016,
+  "primary_minflt_per_tx": 7.522851203772376,
+  "primary_majflt_per_tx": 0.0,
+  "primary_threads_max": 9,
+  "replica_cpu_us_per_tx": 6994.110565345554,
+  "replica_cpus": 0.6696526037674839,
+  "replica_VmRSS": {
+   "at_load_start": 27.69921875,
+   "at_measure_start": 27.8984375,
+   "window_mean": 28.020768229166666,
+   "window_max": 28.1953125,
+   "load_max": 28.1953125,
+   "at_load_end": 28.10546875,
+   "post_end": 24.5625,
+   "post_min": 24.5625,
+   "slope_mib_per_min": 0.2063450400644174,
+   "w30_means": [
+    27.9,
+    28.1
+   ]
+  },
+  "replica_RssAnon": {
+   "at_load_start": 20.5234375,
+   "at_measure_start": 20.66015625,
+   "window_mean": 20.782486979166666,
+   "window_max": 20.95703125,
+   "load_max": 20.95703125,
+   "at_load_end": 20.8671875,
+   "post_end": 17.32421875,
+   "post_min": 17.32421875,
+   "slope_mib_per_min": 0.2063450400644174,
+   "w30_means": [
+    20.7,
+    20.9
+   ]
+  },
+  "replica_hwm_mib": 28.09765625,
+  "replica_vcsw_per_tx": 5.804241608784861,
+  "replica_ivcsw_per_tx": 0.6155662322480124,
+  "replica_utime_per_tx": 6862.158407637926,
+  "replica_stime_per_tx": 132.26979996869625,
+  "replica_minflt_per_tx": 0.22732811140121845,
+  "replica_majflt_per_tx": 0.0,
+  "replica_threads_max": 4,
+  "foreign_cpus": 0.7438171157818351,
+  "qdepth_max": 10000,
+  "lag_max": 20004,
+  "qbytes_peak_max": 2031064,
+  "disconnects_load": 0.0,
+  "disconnects_measure": 0.0,
+  "disconnects_after_prefill_total": 0,
+  "full_syncs_load": 0.0,
+  "full_syncs_measure": 0.0,
+  "full_syncs_after_prefill_total": 0,
+  "partial_syncs_load": 0.0,
+  "partial_syncs_measure": 0.0,
+  "partial_syncs_after_prefill_total": 0,
+  "catchup_s": 0.25,
+  "converged": true,
+  "digest_equal": true,
+  "verify_primary": {
+   "ok": "false",
+   "mismatched": "na",
+   "missing": 0,
+   "ttl_set": 0,
+   "dbsize": 100000,
+   "digest": "531cbda96c175db5"
+  },
+  "verify_replica": {
+   "ok": "false",
+   "mismatched": "na",
+   "missing": 0,
+   "ttl_set": 0,
+   "dbsize": 100000,
+   "digest": "531cbda96c175db5"
+  },
+  "restart_s": null,
+  "disk_util": 0.002210656179242518,
+  "disk_mb_per_s": 0.04872644696139449,
+  "psi_io_mean": 0.48583333333333334,
+  "load_at_start": 2.66,
+  "mhz_before": [
+   3902,
+   3899,
+   3899,
+   3905,
+   3899,
+   3900
+  ],
+  "swapfree_mib": 2409.23046875,
+  "gen_cpus": 0.36526195211841095,
+  "foreign_cpus_net": 0.3785551636634241,
+  "checks_failed": [],
+  "comparable": true,
+  "events_primary": [
+   [
+    "2026-11-27T03:37:30.813954Z",
+    "INFO",
+    "Replica connected from 127.0.0.1:59448"
+   ]
+  ],
+  "events_replica": [
+   [
+    "2026-11-27T03:37:30.813845Z",
+    "INFO",
+    "Replica: connecting to primary at 127.0.0.1:28032"
+   ],
+   [
+    "2026-11-27T03:37:30.814284Z",
+    "INFO",
+    "Replica: full snapshot loaded (0 entries, 0 DEDUP client(s))"
+   ]
+  ]
+ },
+ {
+  "rep": 2,
+  "cell": "c10k-repl-w4-fp",
+  "label": "i",
+  "valid": true,
+  "why": [],
+  "measure_s": 60.0,
+  "tx_per_s": 94.57,
+  "p50_us": 17391.3,
+  "p99_us": 26743.1,
+  "max_us": 41944.5,
+  "writer_ops_per_s": 431.2,
+  "w_p50_us": 9423.7,
+  "w_p99_us": 20416.1,
+  "w_max_us": 29571.1,
+  "aborts": 0,
+  "errors": 0,
+  "n_tx": 5674,
+  "primary_cpu_us_per_tx": 12744.791427095131,
+  "primary_cpus": 1.2052324426222965,
+  "primary_VmRSS": {
+   "at_load_start": 73.97265625,
+   "at_measure_start": 129.62436322774738,
+   "window_mean": 129.02024739583334,
+   "window_max": 153.0390625,
+   "load_max": 153.0390625,
+   "at_load_end": 114.7657673554495,
+   "post_end": 73.23828125,
+   "post_min": 73.23828125,
+   "slope_mib_per_min": -21.219162606340646,
+   "w30_means": [
+    136.1,
+    122.0
+   ]
+  },
+  "primary_RssAnon": {
+   "at_load_start": 66.63671875,
+   "at_measure_start": 122.22592572774738,
+   "window_mean": 121.62180989583334,
+   "window_max": 145.640625,
+   "load_max": 145.640625,
+   "at_load_end": 107.3673298554495,
+   "post_end": 65.83984375,
+   "post_min": 65.83984375,
+   "slope_mib_per_min": -21.219162606340646,
+   "w30_means": [
+    128.7,
+    114.6
+   ]
+  },
+  "primary_hwm_mib": 156.33203125,
+  "primary_vcsw_per_tx": 7.014755385628796,
+  "primary_ivcsw_per_tx": 1.3469621096440592,
+  "primary_utime_per_tx": 12077.449787911035,
+  "primary_stime_per_tx": 667.8427925486358,
+  "primary_minflt_per_tx": 15.161646480286336,
+  "primary_majflt_per_tx": 0.0,
+  "primary_threads_max": 9,
+  "replica_cpu_us_per_tx": 7027.987798683497,
+  "replica_cpus": 0.6646133794955027,
+  "replica_VmRSS": {
+   "at_load_start": 25.5078125,
+   "at_measure_start": 27.953125,
+   "window_mean": 28.126171875,
+   "window_max": 28.3359375,
+   "load_max": 28.3359375,
+   "at_load_end": 28.33203125,
+   "post_end": 24.65234375,
+   "post_min": 24.65234375,
+   "slope_mib_per_min": 0.3718362175118669,
+   "w30_means": [
+    28.0,
+    28.2
+   ]
+  },
+  "replica_RssAnon": {
+   "at_load_start": 18.375,
+   "at_measure_start": 20.6953125,
+   "window_mean": 20.868359375,
+   "window_max": 21.078125,
+   "load_max": 21.078125,
+   "at_load_end": 21.07421875,
+   "post_end": 17.39453125,
+   "post_min": 17.39453125,
+   "slope_mib_per_min": 0.3718362175118669,
+   "w30_means": [
+    20.8,
+    21.0
+   ]
+  },
+  "replica_hwm_mib": 28.328125,
+  "replica_vcsw_per_tx": 5.5613244710188745,
+  "replica_ivcsw_per_tx": 0.6934154043325371,
+  "replica_utime_per_tx": 6893.345092777471,
+  "replica_stime_per_tx": 133.92492083541768,
+  "replica_minflt_per_tx": 0.2349312654212196,
+  "replica_majflt_per_tx": 0.0,
+  "replica_threads_max": 6,
+  "foreign_cpus": 0.7275908496551176,
+  "qdepth_max": 10000,
+  "lag_max": 20008,
+  "qbytes_peak_max": 2031064,
+  "disconnects_load": 0.0,
+  "disconnects_measure": 0.0,
+  "disconnects_after_prefill_total": 0,
+  "full_syncs_load": 0.0,
+  "full_syncs_measure": 0.0,
+  "full_syncs_after_prefill_total": 0,
+  "partial_syncs_load": 0.0,
+  "partial_syncs_measure": 0.0,
+  "partial_syncs_after_prefill_total": 0,
+  "catchup_s": 0.25,
+  "converged": true,
+  "digest_equal": true,
+  "verify_primary": {
+   "ok": "false",
+   "mismatched": "na",
+   "missing": 0,
+   "ttl_set": 0,
+   "dbsize": 100000,
+   "digest": "97813883380fe875"
+  },
+  "verify_replica": {
+   "ok": "false",
+   "mismatched": "na",
+   "missing": 0,
+   "ttl_set": 0,
+   "dbsize": 100000,
+   "digest": "97813883380fe875"
+  },
+  "restart_s": null,
+  "disk_util": 0.06622965015172959,
+  "disk_mb_per_s": 0.46052693333333333,
+  "psi_io_mean": 1.27,
+  "load_at_start": 2.42,
+  "mhz_before": [
+   3968,
+   3899,
+   3968,
+   3900,
+   3996,
+   3996
+  ],
+  "swapfree_mib": 2420.26171875,
+  "gen_cpus": 0.359705813155215,
+  "foreign_cpus_net": 0.36788503649990256,
+  "checks_failed": [],
+  "comparable": true,
+  "events_primary": [
+   [
+    "2026-11-27T03:39:06.408592Z",
+    "INFO",
+    "Replica connected from 127.0.0.1:48220"
+   ]
+  ],
+  "events_replica": [
+   [
+    "2026-11-27T03:39:06.408435Z",
+    "INFO",
+    "Replica: connecting to primary at 127.0.0.1:28042"
+   ],
+   [
+    "2026-11-27T03:39:06.408886Z",
+    "INFO",
+    "Replica: full snapshot loaded (0 entries, 0 DEDUP client(s))"
+   ]
+  ]
+ },
+ {
+  "rep": 2,
+  "cell": "c10k-repl-w4-fp",
+  "label": "p",
+  "valid": true,
+  "why": [],
+  "measure_s": 59.99900007247925,
+  "tx_per_s": 96.13,
+  "p50_us": 16933.5,
+  "p99_us": 25192.2,
+  "max_us": 33517.2,
+  "writer_ops_per_s": 431.2,
+  "w_p50_us": 9438.6,
+  "w_p99_us": 20794.6,
+  "w_max_us": 33325.8,
+  "aborts": 0,
+  "errors": 0,
+  "n_tx": 5768,
+  "primary_cpu_us_per_tx": 12663.756316131128,
+  "primary_cpus": 1.2174293962100364,
+  "primary_VmRSS": {
+   "at_load_start": 100.84375,
+   "at_measure_start": 125.65092758819878,
+   "window_mean": 122.665234375,
+   "window_max": 146.81640625,
+   "load_max": 146.81640625,
+   "at_load_end": 109.21230768461837,
+   "post_end": 66.3828125,
+   "post_min": 66.3828125,
+   "slope_mib_per_min": -18.172231182262305,
+   "w30_means": [
+    128.3,
+    117.0
+   ]
+  },
+  "primary_RssAnon": {
+   "at_load_start": 93.74609375,
+   "at_measure_start": 118.42827133819878,
+   "window_mean": 115.442578125,
+   "window_max": 139.59375,
+   "load_max": 139.59375,
+   "at_load_end": 101.98965143461837,
+   "post_end": 59.16015625,
+   "post_min": 59.16015625,
+   "slope_mib_per_min": -18.172231182262305,
+   "w30_means": [
+    121.1,
+    109.8
+   ]
+  },
+  "primary_hwm_mib": 149.328125,
+  "primary_vcsw_per_tx": 7.011799564836159,
+  "primary_ivcsw_per_tx": 1.1772416192300394,
+  "primary_utime_per_tx": 12010.480835423747,
+  "primary_stime_per_tx": 651.7269128694843,
+  "primary_minflt_per_tx": 13.232205710371206,
+  "primary_majflt_per_tx": 0.0,
+  "primary_threads_max": 9,
+  "replica_cpu_us_per_tx": 6974.412989126745,
+  "replica_cpus": 0.6704847426238243,
+  "replica_VmRSS": {
+   "at_load_start": 27.32421875,
+   "at_measure_start": 28.293343377932505,
+   "window_mean": 28.018294270833334,
+   "window_max": 28.3828125,
+   "load_max": 28.3828125,
+   "at_load_end": 27.82421875,
+   "post_end": 24.5390625,
+   "post_min": 24.5390625,
+   "slope_mib_per_min": -0.6954073249246825,
+   "w30_means": [
+    28.2,
+    27.8
+   ]
+  },
+  "replica_RssAnon": {
+   "at_load_start": 20.29296875,
+   "at_measure_start": 21.074593377932505,
+   "window_mean": 20.799544270833334,
+   "window_max": 21.1640625,
+   "load_max": 21.1640625,
+   "at_load_end": 20.60546875,
+   "post_end": 17.3203125,
+   "post_min": 17.3203125,
+   "slope_mib_per_min": -0.6954073249246825,
+   "w30_means": [
+    21.0,
+    20.6
+   ]
+  },
+  "replica_hwm_mib": 28.34765625,
+  "replica_vcsw_per_tx": 5.528023287642949,
+  "replica_ivcsw_per_tx": 0.5577872191539859,
+  "replica_utime_per_tx": 6858.905648728642,
+  "replica_stime_per_tx": 116.13732993439632,
+  "replica_minflt_per_tx": 0.13261166699883473,
+  "replica_majflt_per_tx": 0.0,
+  "replica_threads_max": 4,
+  "foreign_cpus": 0.7475015761559648,
+  "qdepth_max": 10000,
+  "lag_max": 20004,
+  "qbytes_peak_max": 2031064,
+  "disconnects_load": 0.0,
+  "disconnects_measure": 0.0,
+  "disconnects_after_prefill_total": 0,
+  "full_syncs_load": 0.0,
+  "full_syncs_measure": 0.0,
+  "full_syncs_after_prefill_total": 0,
+  "partial_syncs_load": 0.0,
+  "partial_syncs_measure": 0.0,
+  "partial_syncs_after_prefill_total": 0,
+  "catchup_s": 0.25,
+  "converged": true,
+  "digest_equal": true,
+  "verify_primary": {
+   "ok": "false",
+   "mismatched": "na",
+   "missing": 0,
+   "ttl_set": 0,
+   "dbsize": 100000,
+   "digest": "73c1d812a9fd6ed5"
+  },
+  "verify_replica": {
+   "ok": "false",
+   "mismatched": "na",
+   "missing": 0,
+   "ttl_set": 0,
+   "dbsize": 100000,
+   "digest": "73c1d812a9fd6ed5"
+  },
+  "restart_s": null,
+  "disk_util": 0.008300271534155067,
+  "disk_mb_per_s": 0.13346267410783452,
+  "psi_io_mean": 0.16333333333333333,
+  "load_at_start": 2.55,
+  "mhz_before": [
+   3908,
+   3899,
+   3997,
+   3997,
+   3905,
+   3908
+  ],
+  "swapfree_mib": 2384.37890625,
+  "gen_cpus": 0.3655974367050815,
+  "foreign_cpus_net": 0.3819041394508833,
+  "checks_failed": [],
+  "comparable": true,
+  "events_primary": [
+   [
+    "2026-11-27T03:40:42.269942Z",
+    "INFO",
+    "Replica connected from 127.0.0.1:37202"
+   ]
+  ],
+  "events_replica": [
+   [
+    "2026-11-27T03:40:42.269790Z",
+    "INFO",
+    "Replica: connecting to primary at 127.0.0.1:28052"
+   ],
+   [
+    "2026-11-27T03:40:42.270260Z",
+    "INFO",
+    "Replica: full snapshot loaded (0 entries, 0 DEDUP client(s))"
+   ]
+  ]
+ },
+ {
+  "rep": 2,
+  "cell": "c10k-repl-w4-fp",
+  "label": "h",
+  "valid": true,
+  "why": [],
+  "measure_s": 59.998000144958496,
+  "tx_per_s": 98.49,
+  "p50_us": 16442.1,
+  "p99_us": 25077.6,
+  "max_us": 30371.5,
+  "writer_ops_per_s": 473.8,
+  "w_p50_us": 9211.1,
+  "w_p99_us": 19891.4,
+  "w_max_us": 33624.7,
+  "aborts": 0,
+  "errors": 0,
+  "n_tx": 5909,
+  "primary_cpu_us_per_tx": 12506.465945878015,
+  "primary_cpus": 1.2317195089110469,
+  "primary_VmRSS": {
+   "at_load_start": 58.7890625,
+   "at_measure_start": 81.328125,
+   "window_mean": 81.08802083333333,
+   "window_max": 82.83984375,
+   "load_max": 84.38671875,
+   "at_load_end": 81.65307616814971,
+   "post_end": 67.83984375,
+   "post_min": 67.83984375,
+   "slope_mib_per_min": -0.8724252946671661,
+   "w30_means": [
+    81.4,
+    80.7
+   ]
+  },
+  "primary_RssAnon": {
+   "at_load_start": 51.3359375,
+   "at_measure_start": 73.8125,
+   "window_mean": 73.57239583333333,
+   "window_max": 75.32421875,
+   "load_max": 76.93359375,
+   "at_load_end": 74.13745116814971,
+   "post_end": 60.32421875,
+   "post_min": 60.32421875,
+   "slope_mib_per_min": -0.8724252946671661,
+   "w30_means": [
+    73.9,
+    73.2
+   ]
+  },
+  "primary_hwm_mib": 84.1796875,
+  "primary_vcsw_per_tx": 6.261591491854157,
+  "primary_ivcsw_per_tx": 1.362929094501469,
+  "primary_utime_per_tx": 11866.014584770339,
+  "primary_stime_per_tx": 641.2320210457978,
+  "primary_minflt_per_tx": 1.3003892367574885,
+  "primary_majflt_per_tx": 0.0,
+  "primary_threads_max": 9,
+  "replica_cpu_us_per_tx": 8627.650216492195,
+  "replica_cpus": 0.8497080737037898,
+  "replica_VmRSS": {
+   "at_load_start": 26.19140625,
+   "at_measure_start": 25.812546874396503,
+   "window_mean": 25.640494791666665,
+   "window_max": 25.81640625,
+   "load_max": 27.89453125,
+   "at_load_end": 25.421875,
+   "post_end": 24.2578125,
+   "post_min": 24.2578125,
+   "slope_mib_per_min": -0.10167367414845806,
+   "w30_means": [
+    25.7,
+    25.6
+   ]
+  },
+  "replica_RssAnon": {
+   "at_load_start": 18.77734375,
+   "at_measure_start": 18.335984374396503,
+   "window_mean": 18.163932291666665,
+   "window_max": 18.33984375,
+   "load_max": 20.48046875,
+   "at_load_end": 17.9453125,
+   "post_end": 16.78125,
+   "post_min": 16.78125,
+   "slope_mib_per_min": -0.10167367414845806,
+   "w30_means": [
+    18.2,
+    18.1
+   ]
+  },
+  "replica_hwm_mib": 27.7890625,
+  "replica_vcsw_per_tx": 0.6407547827843463,
+  "replica_ivcsw_per_tx": 0.47242579219667696,
+  "replica_utime_per_tx": 8515.850420348394,
+  "replica_stime_per_tx": 109.98138459044718,
+  "replica_minflt_per_tx": 0.03316771029861148,
+  "replica_majflt_per_tx": 0.0,
+  "replica_threads_max": 4,
+  "foreign_cpus": 0.7683227463059938,
+  "qdepth_max": 10000,
+  "lag_max": 40038,
+  "qbytes_peak_max": 2031064,
+  "disconnects_load": 0.0,
+  "disconnects_measure": 0.0,
+  "disconnects_after_prefill_total": 0,
+  "full_syncs_load": 0.0,
+  "full_syncs_measure": 0.0,
+  "full_syncs_after_prefill_total": 0,
+  "partial_syncs_load": 0.0,
+  "partial_syncs_measure": 0.0,
+  "partial_syncs_after_prefill_total": 0,
+  "catchup_s": 0.25,
+  "converged": true,
+  "digest_equal": true,
+  "verify_primary": {
+   "ok": "false",
+   "mismatched": "na",
+   "missing": 0,
+   "ttl_set": 0,
+   "dbsize": 100000,
+   "digest": "04a1d1fd2175cd95"
+  },
+  "verify_replica": {
+   "ok": "false",
+   "mismatched": "na",
+   "missing": 0,
+   "ttl_set": 0,
+   "dbsize": 100000,
+   "digest": "04a1d1fd2175cd95"
+  },
+  "restart_s": null,
+  "disk_util": 0.0074670488898201295,
+  "disk_mb_per_s": 0.20057333591177315,
+  "psi_io_mean": 0.18633333333333332,
+  "load_at_start": 2.76,
+  "mhz_before": [
+   3997,
+   3997,
+   3935,
+   3999,
+   3922,
+   3958
+  ],
+  "swapfree_mib": 2342.81640625,
+  "gen_cpus": 0.37397791506592665,
+  "foreign_cpus_net": 0.3943448312400672,
+  "checks_failed": [],
+  "comparable": true,
+  "events_primary": [
+   [
+    "2026-11-27T03:42:17.989037Z",
+    "INFO",
+    "Replica connected from 127.0.0.1:54248"
+   ]
+  ],
+  "events_replica": [
+   [
+    "2026-11-27T03:42:17.988949Z",
+    "INFO",
+    "Replica: connecting to primary at 127.0.0.1:28062"
+   ],
+   [
+    "2026-11-27T03:42:17.989355Z",
+    "INFO",
+    "Replica: full snapshot loaded (0 entries, 0 DEDUP client(s))"
+   ]
+  ]
+ }
+]

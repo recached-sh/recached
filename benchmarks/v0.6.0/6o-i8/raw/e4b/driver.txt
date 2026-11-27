@@ -1,0 +1,10 @@
+2026-11-27T15:35:39Z campaign e4b start: 2 reps x 1 cells x ['h', 'p']
+2026-11-27T15:35:39Z run rep=1 cell=c1000-repl-w4-300s label=h port=31910 attempt=0
+2026-11-27T15:42:04Z   valid=True why=[] load={'tx_per_s': 909.15, 'accepted_per_s': None, 'writer_ops_per_s': 4450.2}
+2026-11-27T15:42:04Z run rep=1 cell=c1000-repl-w4-300s label=p port=31920 attempt=0
+2026-11-27T15:48:29Z   valid=True why=[] load={'tx_per_s': 981.3, 'accepted_per_s': None, 'writer_ops_per_s': 4595.4}
+2026-11-27T15:48:29Z run rep=2 cell=c1000-repl-w4-300s label=p port=31930 attempt=0
+2026-11-27T15:54:55Z   valid=True why=[] load={'tx_per_s': 980.11, 'accepted_per_s': None, 'writer_ops_per_s': 4590.6}
+2026-11-27T15:54:55Z run rep=2 cell=c1000-repl-w4-300s label=h port=31940 attempt=0
+2026-11-27T16:01:20Z   valid=True why=[] load={'tx_per_s': 915.44, 'accepted_per_s': None, 'writer_ops_per_s': 4506.0}
+2026-11-27T16:01:20Z campaign done

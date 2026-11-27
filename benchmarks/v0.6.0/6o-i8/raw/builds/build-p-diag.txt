@@ -1,0 +1,11 @@
+== build p-diag 54ff38ade18bc3da3254f4bc8977783af0bda181 dirty=5 2026-11-26T23:30:47Z
+rustc 1.98.0 (88d9e12ae 2026-08-18)
+binary: rustc
+commit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea
+commit-date: 2026-08-18
+host: x86_64-unknown-linux-gnu
+release: 1.98.0
+LLVM version: 22.1.8
+RUSTFLAGS='-C force-frame-pointers=yes' profile overrides: CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_DEBUG=line-tables-only
+375790ff4b45cd7a3646cdef460204acca0b1e3445e82d09b4d70e570b994cc3  /home/dennispaler/recached-6oi8-bench/bin/rc-p-diag
+== done 2026-11-26T23:33:59Z

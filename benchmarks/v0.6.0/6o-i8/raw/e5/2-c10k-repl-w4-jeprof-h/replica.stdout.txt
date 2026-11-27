@@ -1,0 +1,37 @@
+[2m2026-11-27T02:39:28.788792Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 1 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-27T02:39:28.788819Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-27T02:39:28.788831Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-27T02:39:28.788835Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-27T02:39:28.788837Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-27T02:39:28.788840Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 22124 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-27T02:39:28.788849Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 22124 to untrusted clients.
+[2m2026-11-27T02:39:28.789018Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m No snapshot at "/home/dennispaler/recached-6oi8-bench/runs/e5/2-c10k-repl-w4-jeprof-h/data/dump-22123.rdb", starting fresh
+[2m2026-11-27T02:39:28.789036Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+[2m2026-11-27T02:39:28.789039Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Max connections: 1024
+[2m2026-11-27T02:39:28.789043Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Replication to the primary is PLAINTEXT — the password and the entire keyspace cross the network unencrypted, and the primary's identity is not verified. Set RECACHED_REPL_TLS_CA, or keep replication on a private network.
+[2m2026-11-27T02:39:28.789046Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication server DISABLED — port 6381 is not bound. Set RECACHED_REPL_ENABLE=1 on any node that serves replicas (including a replica serving sub-replicas).
+[2m2026-11-27T02:39:28.789165Z[0m [32m INFO[0m [2mrecached_server::server_state[0m[2m:[0m Restored 0 dedup high-water mark(s)
+[2m2026-11-27T02:39:28.789171Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Autosave disabled (RECACHED_SAVE=0 or RECACHED_SAVE_INTERVAL=0). Use SAVE or BGSAVE manually.
+[2m2026-11-27T02:39:28.789194Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Running as replica — writes are rejected until manually promoted with REPLICAOF NO ONE
+[2m2026-11-27T02:39:28.789316Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m TCP server listening on 127.0.0.1:22123 (1 accept loop(s))
+[2m2026-11-27T02:39:28.789330Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m WebSocket server listening on 127.0.0.1:22124
+[2m2026-11-27T02:39:28.789386Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22122
+[2m2026-11-27T02:39:28.789783Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (0 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:39:46.910768Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:39:48.911805Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22122
+[2m2026-11-27T02:39:49.024072Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:40:02.129062Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:40:04.130550Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22122
+[2m2026-11-27T02:40:04.242271Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:40:18.442096Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:40:20.443495Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22122
+[2m2026-11-27T02:40:20.553454Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:40:34.941484Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:40:36.942191Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22122
+[2m2026-11-27T02:40:37.063822Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:40:51.926537Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:40:53.927515Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:22122
+[2m2026-11-27T02:40:54.021656Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:41:14.455608Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Shutdown signal received, saving final snapshot...
+[2m2026-11-27T02:41:14.913150Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved: 100000 entries → "/home/dennispaler/recached-6oi8-bench/runs/e5/2-c10k-repl-w4-jeprof-h/data/dump-22123.rdb"
+[2m2026-11-27T02:41:14.913507Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Done. Goodbye.

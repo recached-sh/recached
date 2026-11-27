@@ -1,0 +1,59 @@
+{
+ "name": "et",
+ "out": "~/recached-6oi8-bench/runs/et",
+ "labels": [
+  "h",
+  "p"
+ ],
+ "reps": 3,
+ "port_base": 30300,
+ "cells": [
+  {
+   "name": "c10k-tcache-default",
+   "primary": {
+    "workers": 3,
+    "cpus": "0-2"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1"
+   },
+   "load": {
+    "kind": "contend",
+    "tx_n": 10000,
+    "clients": 2,
+    "writers": 4
+   },
+   "warm": 20,
+   "measure": 120,
+   "post": 60,
+   "drain_max": 120,
+   "perf_stat": true
+  },
+  {
+   "name": "c10k-tcache-16k",
+   "primary": {
+    "workers": 3,
+    "cpus": "0-2",
+    "env": {
+     "_RJEM_MALLOC_CONF": "lg_tcache_nslots_mul:6,tcache_nslots_small_max:16000"
+    }
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1"
+   },
+   "load": {
+    "kind": "contend",
+    "tx_n": 10000,
+    "clients": 2,
+    "writers": 4
+   },
+   "warm": 20,
+   "measure": 120,
+   "post": 60,
+   "drain_max": 120,
+   "perf_stat": true
+  }
+ ]
+}

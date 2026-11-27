@@ -1,0 +1,14 @@
+2026-11-27T14:09:15Z campaign e3 start: 2 reps x 1 cells x ['h', 'i', 'p']
+2026-11-27T14:09:15Z run rep=1 cell=c10k-repl-w0 label=h port=26010 attempt=0
+2026-11-27T14:12:40Z   valid=True why=[] load={'tx_per_s': 109.87, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T14:12:40Z run rep=1 cell=c10k-repl-w0 label=i port=26020 attempt=0
+2026-11-27T14:16:05Z   valid=True why=[] load={'tx_per_s': 105.22, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T14:16:05Z run rep=1 cell=c10k-repl-w0 label=p port=26030 attempt=0
+2026-11-27T14:19:31Z   valid=True why=[] load={'tx_per_s': 105.35, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T14:19:31Z run rep=2 cell=c10k-repl-w0 label=i port=26040 attempt=0
+2026-11-27T14:22:56Z   valid=True why=[] load={'tx_per_s': 105.35, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T14:22:56Z run rep=2 cell=c10k-repl-w0 label=p port=26050 attempt=0
+2026-11-27T14:26:22Z   valid=True why=[] load={'tx_per_s': 105.41, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T14:26:22Z run rep=2 cell=c10k-repl-w0 label=h port=26060 attempt=0
+2026-11-27T14:29:47Z   valid=True why=[] load={'tx_per_s': 110.3, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T14:29:47Z campaign done

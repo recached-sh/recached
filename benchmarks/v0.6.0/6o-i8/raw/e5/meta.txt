@@ -1,0 +1,8 @@
+host 7.3.4-300.fc45.x86_64 6 cpus
+h-diag ['81f776af090bd2b29143d6ebe15e0c3237cf05b2b485038d6aaa623445f2c158'] /home/dennispaler/recached-6oi8-bench/bin/rc-h-diag
+h-diag ['81f776af090bd2b29143d6ebe15e0c3237cf05b2b485038d6aaa623445f2c158'] /home/dennispaler/recached-6oi8-bench/bin/rc-h-diag
+i-diag ['04dacf54b72bcf605a1de28855d7fdd13ee7086f733159527dc0bb961a5d8aa4'] /home/dennispaler/recached-6oi8-bench/bin/rc-i-diag
+i-diag ['04dacf54b72bcf605a1de28855d7fdd13ee7086f733159527dc0bb961a5d8aa4'] /home/dennispaler/recached-6oi8-bench/bin/rc-i-diag
+p-diag ['375790ff4b45cd7a3646cdef460204acca0b1e3445e82d09b4d70e570b994cc3'] /home/dennispaler/recached-6oi8-bench/bin/rc-p-diag
+p-diag ['375790ff4b45cd7a3646cdef460204acca0b1e3445e82d09b4d70e570b994cc3'] /home/dennispaler/recached-6oi8-bench/bin/rc-p-diag
+i8bench ['2927590163b084776c0312be9a1455ce36145bec6a80d63839766cbee6dfe97e']

@@ -1,0 +1,60 @@
+{
+ "name": "e6",
+ "out": "~/recached-6oi8-bench/runs/e6",
+ "labels": [
+  "h",
+  "p",
+  "px"
+ ],
+ "reps": 3,
+ "port_base": 30800,
+ "cells": [
+  {
+   "name": "c10k-repl-cpu5-w4",
+   "primary": {
+    "workers": 3,
+    "cpus": "0-2"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "5"
+   },
+   "load": {
+    "kind": "contend",
+    "tx_n": 10000,
+    "clients": 2,
+    "writers": 4
+   },
+   "warm": 20,
+   "measure": 120,
+   "post": 60,
+   "drain_max": 120,
+   "perf_stat": true,
+   "gen_cpus": "3-4"
+  },
+  {
+   "name": "c10k-repl-cpu5-w4-diag2",
+   "primary": {
+    "workers": 3,
+    "cpus": "0-2"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "5"
+   },
+   "load": {
+    "kind": "contend",
+    "tx_n": 10000,
+    "clients": 2,
+    "writers": 4
+   },
+   "warm": 20,
+   "measure": 120,
+   "post": 60,
+   "drain_max": 120,
+   "gen_cpus": "3-4",
+   "bin_suffix": "-diag2",
+   "replica_bin_suffix": ""
+  }
+ ]
+}

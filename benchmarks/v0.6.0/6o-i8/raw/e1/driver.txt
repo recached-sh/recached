@@ -1,0 +1,32 @@
+2026-11-26T23:38:45Z campaign e1 start: 5 reps x 1 cells x ['h', 'i', 'p']
+2026-11-26T23:38:45Z run rep=1 cell=c10k-repl-w4 label=h port=21010 attempt=0
+2026-11-26T23:43:06Z   valid=True why=[] load={'tx_per_s': 93.99, 'accepted_per_s': None, 'writer_ops_per_s': 519.1}
+2026-11-26T23:43:06Z run rep=1 cell=c10k-repl-w4 label=i port=21020 attempt=0
+2026-11-26T23:46:41Z   valid=True why=[] load={'tx_per_s': 86.34, 'accepted_per_s': None, 'writer_ops_per_s': 434.7}
+2026-11-26T23:46:41Z run rep=1 cell=c10k-repl-w4 label=p port=21030 attempt=0
+2026-11-26T23:50:07Z   valid=True why=[] load={'tx_per_s': 85.14, 'accepted_per_s': None, 'writer_ops_per_s': 430.7}
+2026-11-26T23:50:07Z run rep=2 cell=c10k-repl-w4 label=i port=21040 attempt=0
+2026-11-26T23:53:33Z   valid=True why=[] load={'tx_per_s': 86.69, 'accepted_per_s': None, 'writer_ops_per_s': 392.0}
+2026-11-26T23:53:33Z run rep=2 cell=c10k-repl-w4 label=p port=21050 attempt=0
+2026-11-26T23:56:59Z   valid=True why=[] load={'tx_per_s': 87.43, 'accepted_per_s': None, 'writer_ops_per_s': 385.6}
+2026-11-26T23:56:59Z run rep=2 cell=c10k-repl-w4 label=h port=21060 attempt=0
+2026-11-27T00:00:25Z   valid=True why=[] load={'tx_per_s': 89.63, 'accepted_per_s': None, 'writer_ops_per_s': 525.7}
+2026-11-27T00:00:25Z run rep=3 cell=c10k-repl-w4 label=p port=21070 attempt=0
+2026-11-27T00:03:50Z   valid=True why=[] load={'tx_per_s': 86.27, 'accepted_per_s': None, 'writer_ops_per_s': 398.7}
+2026-11-27T00:03:50Z run rep=3 cell=c10k-repl-w4 label=h port=21080 attempt=0
+2026-11-27T00:07:17Z   valid=True why=[] load={'tx_per_s': 91.08, 'accepted_per_s': None, 'writer_ops_per_s': 458.7}
+2026-11-27T00:07:17Z run rep=3 cell=c10k-repl-w4 label=i port=21090 attempt=0
+2026-11-27T00:10:42Z   valid=True why=[] load={'tx_per_s': 86.79, 'accepted_per_s': None, 'writer_ops_per_s': 380.1}
+2026-11-27T00:10:42Z run rep=4 cell=c10k-repl-w4 label=h port=21100 attempt=0
+2026-11-27T00:14:08Z   valid=True why=[] load={'tx_per_s': 90.63, 'accepted_per_s': None, 'writer_ops_per_s': 508.0}
+2026-11-27T00:14:08Z run rep=4 cell=c10k-repl-w4 label=i port=21110 attempt=0
+2026-11-27T00:17:35Z   valid=True why=[] load={'tx_per_s': 84.57, 'accepted_per_s': None, 'writer_ops_per_s': 495.9}
+2026-11-27T00:17:35Z run rep=4 cell=c10k-repl-w4 label=p port=21120 attempt=0
+2026-11-27T00:21:01Z   valid=True why=[] load={'tx_per_s': 86.69, 'accepted_per_s': None, 'writer_ops_per_s': 388.4}
+2026-11-27T00:21:01Z run rep=5 cell=c10k-repl-w4 label=i port=21130 attempt=0
+2026-11-27T00:24:26Z   valid=True why=[] load={'tx_per_s': 89.33, 'accepted_per_s': None, 'writer_ops_per_s': 378.3}
+2026-11-27T00:24:26Z run rep=5 cell=c10k-repl-w4 label=p port=21140 attempt=0
+2026-11-27T00:27:52Z   valid=True why=[] load={'tx_per_s': 86.03, 'accepted_per_s': None, 'writer_ops_per_s': 427.2}
+2026-11-27T00:27:52Z run rep=5 cell=c10k-repl-w4 label=h port=21150 attempt=0
+2026-11-27T00:31:19Z   valid=True why=[] load={'tx_per_s': 90.78, 'accepted_per_s': None, 'writer_ops_per_s': 410.4}
+2026-11-27T00:31:19Z campaign done

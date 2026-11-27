@@ -1,0 +1,79 @@
+{
+ "name": "ex2",
+ "out": "~/recached-6oi8-bench/runs/ex2",
+ "labels": [
+  "h",
+  "p",
+  "px"
+ ],
+ "reps": 2,
+ "port_base": 20500,
+ "cells": [
+  {
+   "name": "ord-w50-repl",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1"
+   },
+   "load": {
+    "kind": "contend",
+    "tx_n": 2,
+    "clients": 0,
+    "writers": 50
+   },
+   "warm": 15,
+   "measure": 60,
+   "post": 20,
+   "drain_max": 120,
+   "perf_stat": true
+  },
+  {
+   "name": "setset-c50-repl",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1"
+   },
+   "load": {
+    "kind": "contend",
+    "tx_n": 2,
+    "clients": 50,
+    "writers": 0
+   },
+   "warm": 15,
+   "measure": 60,
+   "post": 20,
+   "drain_max": 120,
+   "perf_stat": true
+  },
+  {
+   "name": "c1000-repl-w4",
+   "primary": {
+    "workers": 3,
+    "cpus": "0-2"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1"
+   },
+   "load": {
+    "kind": "contend",
+    "tx_n": 1000,
+    "clients": 2,
+    "writers": 4
+   },
+   "warm": 15,
+   "measure": 60,
+   "post": 20,
+   "drain_max": 120,
+   "perf_stat": true
+  }
+ ]
+}

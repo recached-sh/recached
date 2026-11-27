@@ -1,0 +1,196 @@
+diff --git a/server-native/Cargo.toml b/server-native/Cargo.toml
+index 3704779..371c6a0 100644
+--- a/server-native/Cargo.toml
++++ b/server-native/Cargo.toml
+@@ -63,7 +63,7 @@ tikv-jemallocator.workspace        = true
+ # yes`). A compile-time default only: `_RJEM_MALLOC_CONF=background_thread:false`
+ # turns it off at run time.
+ [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+-tikv-jemallocator = { workspace = true, features = ["background_threads"] }
++tikv-jemallocator = { workspace = true, features = ["background_threads", "stats", "profiling"] }
+ 
+ [lints]
+ workspace = true
+diff --git a/server-native/src/main.rs b/server-native/src/main.rs
+index 8e8a736..96a9b2d 100644
+--- a/server-native/src/main.rs
++++ b/server-native/src/main.rs
+@@ -39,6 +39,7 @@
+ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+ 
+ mod aof_stats;
++mod i8diag;
+ mod clients;
+ mod config;
+ mod connection;
+@@ -136,6 +137,7 @@ fn now_unix_ms() -> u64 {
+ /// This is a hand-rolled `#[tokio::main]`: the macro can only take a worker
+ /// count as a literal, and `RECACHED_WORKER_THREADS` has to be read at startup.
+ fn main() -> Result<(), Box<dyn std::error::Error>> {
++    i8diag::start_reporter();
+     // All runtime configuration is via RECACHED_* env vars; the only flags are
+     // --version/-V (required by e.g. the Homebrew formula's install test).
+     // Answered before the runtime is built so `--version` costs no threads.
+diff --git a/server-native/src/replication.rs b/server-native/src/replication.rs
+index eb4925f..be3026b 100644
+--- a/server-native/src/replication.rs
++++ b/server-native/src/replication.rs
+@@ -328,6 +328,7 @@ impl UnorderedGate {
+     /// Those writes are synchronous and hold nothing a closer holds, so the
+     /// wait is bounded by one command's execution.
+     pub(crate) async fn close(&self) -> GateClosed<'_> {
++        let __i8_t = std::time::Instant::now();
+         self.closed.fetch_add(1, Ordering::SeqCst);
+         let closed = GateClosed { gate: self };
+         for slot in &self.in_flight {
+@@ -335,6 +336,7 @@ impl UnorderedGate {
+                 tokio::task::yield_now().await;
+             }
+         }
++        crate::i8diag::GATE_CLOSE.since(__i8_t);
+         closed
+     }
+ 
+@@ -450,7 +452,7 @@ impl ReplHub {
+         // Keep the backlog guard until every replica queue has accepted this
+         // frame. Independent-key writes can propagate concurrently; without
+         // this serialization offset 2 could be queued before offset 1.
+-        let mut stream = self.stream();
++        let (mut stream, __i8_t) = crate::i8diag::lock_stream(&self.stream, false);
+         let ReplStream {
+             backlog,
+             senders: reg,
+@@ -511,6 +513,7 @@ impl ReplHub {
+             }
+         });
+         self.count.store(reg.len(), Ordering::Relaxed);
++        crate::i8diag::stream_released(__i8_t, false);
+         drop(stream);
+         // Outside the lock: a metrics update is a registry lookup, and every
+         // replicated write would otherwise wait out another's.
+@@ -938,6 +941,9 @@ impl ReplHub {
+     ) -> OrderGuards<'a> {
+         stripes.sort_unstable();
+         stripes.dedup();
++        let __i8_t = std::time::Instant::now();
++        let __i8_big = stripes.len() > 8;
++        if !__i8_big { crate::i8diag::SMALL_WAITING.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+ 
+         let mut guards = SmallVec::with_capacity(stripes.len());
+         for stripe in stripes {
+@@ -950,9 +956,12 @@ impl ReplHub {
+             }
+             guards.push(self.write_order[stripe].lock().await);
+         }
++        (if __i8_big { &crate::i8diag::STRIPE_WAIT_BIG } else { &crate::i8diag::STRIPE_WAIT_SMALL }).since(__i8_t);
++        if !__i8_big { crate::i8diag::SMALL_WAITING.fetch_sub(1, std::sync::atomic::Ordering::Relaxed); }
+         OrderGuards {
+             _stripes: guards,
+             _closed: closed,
++            _i8: crate::i8diag::Hold::new(if __i8_big { &crate::i8diag::STRIPE_HOLD_BIG } else { &crate::i8diag::STRIPE_HOLD_SMALL }),
+         }
+     }
+ 
+@@ -988,13 +997,17 @@ impl ReplHub {
+     }
+ 
+     async fn lock_every_stripe<'a>(&'a self, closed: GateClosed<'a>) -> OrderGuards<'a> {
++        let __i8_t = std::time::Instant::now();
+         let mut guards = SmallVec::with_capacity(WRITE_ORDER_STRIPES);
+         for lock in &self.write_order {
+             guards.push(lock.lock().await);
+         }
++        crate::i8diag::STRIPE_WAIT_ALL.since(__i8_t);
++        crate::i8diag::all_acquired();
+         OrderGuards {
+             _stripes: guards,
+             _closed: Some(closed),
++            _i8: crate::i8diag::Hold::new(&crate::i8diag::STRIPE_HOLD_ALL),
+         }
+     }
+ 
+@@ -1176,6 +1189,7 @@ pub(crate) const DEFAULT_REPL_CHANNEL_CAPACITY: usize =
+ pub(crate) struct OrderGuards<'a> {
+     _stripes: SmallVec<[tokio::sync::MutexGuard<'a, ()>; 2]>,
+     _closed: Option<GateClosed<'a>>,
++    _i8: crate::i8diag::Hold,
+ }
+ 
+ pub(crate) const DEFAULT_REPL_BACKLOG_BYTES: usize = 16 * 1024 * 1024;
+@@ -2437,13 +2451,14 @@ where
+     let (chunks, received) = mpsc::channel(REPL_RECV_QUEUE_CHUNKS);
+     let reader = async move {
+         let mut buf = vec![0u8; REPL_RECV_BUFFER_BYTES];
++        let mut __i8_last = std::time::Instant::now();
+         loop {
+             let chunk = match rd.read(&mut buf).await {
+                 Ok(0) => Err(std::io::Error::new(
+                     ErrorKind::UnexpectedEof,
+                     "the primary closed the replication link",
+                 )),
+-                Ok(n) => Ok(buf[..n].to_vec()),
++                Ok(n) => { crate::i8diag::R_READ_GAP.since(__i8_last); __i8_last = std::time::Instant::now(); crate::i8diag::R_READ_BYTES.record(n as u64); Ok(buf[..n].to_vec()) }
+                 Err(error) => Err(error),
+             };
+             let last = chunk.is_err();
+@@ -2458,6 +2473,8 @@ where
+     let mut rd = ChunkReader::new(read_ahead, received);
+     let apply = async {
+         let mut since_yield = 0u32;
++        let mut __i8_run = std::time::Instant::now();
++        let mut __i8_off0 = resume.offset;
+         loop {
+             let (offset, cmd_bytes) = read_repl_frame(&mut rd).await?;
+             let expected = resume.offset.saturating_add(1);
+@@ -2489,7 +2506,11 @@ where
+             since_yield += 1;
+             if since_yield >= REPL_APPLY_YIELD_FRAMES {
+                 since_yield = 0;
++                crate::i8diag::R_APPLY_RUN.since(__i8_run);
++                crate::i8diag::R_APPLY_RUN_FRAMES.record(offset.saturating_sub(__i8_off0));
+                 tokio::task::yield_now().await;
++                __i8_run = std::time::Instant::now();
++                __i8_off0 = offset;
+             }
+         }
+     };
+@@ -2681,6 +2702,7 @@ async fn apply_repl_frame(
+     watches: &WatchRegistry,
+     bytes: &[u8],
+ ) -> std::io::Result<()> {
++    let _i8_hold = crate::i8diag::one_in_16().then(|| crate::i8diag::Hold::new(&crate::i8diag::R_FRAME_APPLY16));
+     // The wire carries pushes only (6O-H, R2-1): a frame received as an
+     // array is normalized before this node logs, forwards or backlogs it.
+     // In an AOF an array means "written with expirations logged", and
+diff --git a/server-native/src/transaction.rs b/server-native/src/transaction.rs
+index 4902a5b..e189006 100644
+--- a/server-native/src/transaction.rs
++++ b/server-native/src/transaction.rs
+@@ -337,6 +337,7 @@ pub(crate) async fn run_transaction_queue(
+         || !watch_registry.is_empty()
+         || state.replicas.unordered.has_push_receivers();
+ 
++    let __i8_p1 = std::time::Instant::now();
+     // ── Phase 1: apply ──────────────────────────────────────────────────
+     let mut replies: Vec<Value> = Vec::with_capacity(queue.len());
+     let mut writes: Vec<AppliedWrite<'_>> = Vec::new();
+@@ -372,6 +373,7 @@ pub(crate) async fn run_transaction_queue(
+         replies.extend((failed + 1..queue.len()).map(|_| Value::Error(NOT_RUN.to_string())));
+         fail_closed(state, &queue[failed], applied);
+     }
++    crate::i8diag::TX_APPLY.since(__i8_p1);
+     // ── Phase 2: effects, in command order ──────────────────────────────
+     let needs_log = state.needs_write_log();
+     // The writer's half of the WATCH registration handshake, after every
+@@ -471,9 +473,11 @@ pub(crate) async fn run_transaction_queue(
+             }
+             frames.extend(victims.iter().map(|eviction| eviction.frame.as_slice()));
+         }
++        let __i8_l = std::time::Instant::now();
+         state
+             .on_transaction_logged(&frames, !has_ws && !has_watch)
+             .await;
++        crate::i8diag::TX_LOG.since(__i8_l);
+     }
+     let plan = if has_watch {
+         NotificationPlan::new(&writes)

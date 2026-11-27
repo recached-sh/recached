@@ -1,0 +1,9 @@
+2026-11-27T05:39:06Z campaign e7 start: 3 reps x 1 cells x ['h', 'p', 'px']
+2026-11-27T05:39:06Z run rep=1 cell=c10k-repl-w4-diag2 label=h port=30110 attempt=0
+2026-11-27T05:42:32Z   valid=True why=[] load={'tx_per_s': 110.55, 'accepted_per_s': None, 'writer_ops_per_s': 1283.7}
+2026-11-27T05:42:32Z run rep=1 cell=c10k-repl-w4-diag2 label=p port=30120 attempt=0
+2026-11-27T05:45:58Z   valid=True why=[] load={'tx_per_s': 95.82, 'accepted_per_s': None, 'writer_ops_per_s': 465.8}
+2026-11-27T05:45:58Z run rep=1 cell=c10k-repl-w4-diag2 label=px port=30130 attempt=0
+2026-11-27T05:49:23Z   valid=True why=[] load={'tx_per_s': 100.67, 'accepted_per_s': None, 'writer_ops_per_s': 525.2}
+2026-11-27T05:49:23Z run rep=2 cell=c10k-repl-w4-diag2 label=p port=30140 attempt=0
+2026-11-27T05:50:00Z signal 15: stopping every child group

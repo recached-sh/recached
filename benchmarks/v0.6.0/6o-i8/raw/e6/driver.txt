@@ -1,0 +1,38 @@
+2026-11-27T12:47:17Z campaign e6 start: 3 reps x 2 cells x ['h', 'p', 'px']
+2026-11-27T12:47:17Z run rep=1 cell=c10k-repl-cpu5-w4 label=h port=30810 attempt=0
+2026-11-27T12:50:42Z   valid=True why=[] load={'tx_per_s': 111.32, 'accepted_per_s': None, 'writer_ops_per_s': 457.9}
+2026-11-27T12:50:42Z run rep=1 cell=c10k-repl-cpu5-w4 label=p port=30820 attempt=0
+2026-11-27T12:54:07Z   valid=True why=[] load={'tx_per_s': 107.49, 'accepted_per_s': None, 'writer_ops_per_s': 420.5}
+2026-11-27T12:54:07Z run rep=1 cell=c10k-repl-cpu5-w4 label=px port=30830 attempt=0
+2026-11-27T12:57:33Z   valid=True why=[] load={'tx_per_s': 113.23, 'accepted_per_s': None, 'writer_ops_per_s': 446.1}
+2026-11-27T12:57:33Z run rep=1 cell=c10k-repl-cpu5-w4-diag2 label=h port=30840 attempt=0
+2026-11-27T13:00:58Z   valid=True why=[] load={'tx_per_s': 109.3, 'accepted_per_s': None, 'writer_ops_per_s': 589.6}
+2026-11-27T13:00:58Z run rep=1 cell=c10k-repl-cpu5-w4-diag2 label=p port=30850 attempt=0
+2026-11-27T13:04:23Z   valid=True why=[] load={'tx_per_s': 105.67, 'accepted_per_s': None, 'writer_ops_per_s': 423.8}
+2026-11-27T13:04:23Z run rep=1 cell=c10k-repl-cpu5-w4-diag2 label=px port=30860 attempt=0
+2026-11-27T13:07:49Z   valid=True why=[] load={'tx_per_s': 111.53, 'accepted_per_s': None, 'writer_ops_per_s': 457.3}
+2026-11-27T13:07:49Z run rep=2 cell=c10k-repl-cpu5-w4 label=p port=30870 attempt=0
+2026-11-27T13:11:14Z   valid=True why=[] load={'tx_per_s': 107.49, 'accepted_per_s': None, 'writer_ops_per_s': 424.5}
+2026-11-27T13:11:14Z run rep=2 cell=c10k-repl-cpu5-w4 label=px port=30880 attempt=0
+2026-11-27T13:14:39Z   valid=True why=[] load={'tx_per_s': 113.24, 'accepted_per_s': None, 'writer_ops_per_s': 443.8}
+2026-11-27T13:14:39Z run rep=2 cell=c10k-repl-cpu5-w4 label=h port=30890 attempt=0
+2026-11-27T13:18:04Z   valid=True why=[] load={'tx_per_s': 110.95, 'accepted_per_s': None, 'writer_ops_per_s': 456.3}
+2026-11-27T13:18:04Z run rep=2 cell=c10k-repl-cpu5-w4-diag2 label=p port=30900 attempt=0
+2026-11-27T13:21:30Z   valid=True why=[] load={'tx_per_s': 105.96, 'accepted_per_s': None, 'writer_ops_per_s': 430.6}
+2026-11-27T13:21:30Z run rep=2 cell=c10k-repl-cpu5-w4-diag2 label=px port=30910 attempt=0
+2026-11-27T13:24:55Z   valid=True why=[] load={'tx_per_s': 111.92, 'accepted_per_s': None, 'writer_ops_per_s': 465.8}
+2026-11-27T13:24:55Z run rep=2 cell=c10k-repl-cpu5-w4-diag2 label=h port=30920 attempt=0
+2026-11-27T13:28:20Z   valid=True why=[] load={'tx_per_s': 109.12, 'accepted_per_s': None, 'writer_ops_per_s': 649.2}
+2026-11-27T13:28:20Z run rep=3 cell=c10k-repl-cpu5-w4 label=px port=30930 attempt=0
+2026-11-27T13:31:45Z   valid=True why=[] load={'tx_per_s': 112.96, 'accepted_per_s': None, 'writer_ops_per_s': 441.3}
+2026-11-27T13:31:45Z run rep=3 cell=c10k-repl-cpu5-w4 label=h port=30940 attempt=0
+2026-11-27T13:35:11Z   valid=True why=[] load={'tx_per_s': 110.68, 'accepted_per_s': None, 'writer_ops_per_s': 450.6}
+2026-11-27T13:35:11Z run rep=3 cell=c10k-repl-cpu5-w4 label=p port=30950 attempt=0
+2026-11-27T13:38:36Z   valid=True why=[] load={'tx_per_s': 107.35, 'accepted_per_s': None, 'writer_ops_per_s': 417.3}
+2026-11-27T13:38:36Z run rep=3 cell=c10k-repl-cpu5-w4-diag2 label=px port=30960 attempt=0
+2026-11-27T13:42:01Z   valid=True why=[] load={'tx_per_s': 111.69, 'accepted_per_s': None, 'writer_ops_per_s': 452.2}
+2026-11-27T13:42:01Z run rep=3 cell=c10k-repl-cpu5-w4-diag2 label=h port=30970 attempt=0
+2026-11-27T13:45:27Z   valid=True why=[] load={'tx_per_s': 109.37, 'accepted_per_s': None, 'writer_ops_per_s': 462.5}
+2026-11-27T13:45:27Z run rep=3 cell=c10k-repl-cpu5-w4-diag2 label=p port=30980 attempt=0
+2026-11-27T13:48:52Z   valid=True why=[] load={'tx_per_s': 105.93, 'accepted_per_s': None, 'writer_ops_per_s': 445.6}
+2026-11-27T13:48:52Z campaign done

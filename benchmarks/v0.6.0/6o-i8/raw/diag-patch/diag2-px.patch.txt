@@ -1,0 +1,397 @@
+diff --git a/server-native/Cargo.toml b/server-native/Cargo.toml
+index 3704779..371c6a0 100644
+--- a/server-native/Cargo.toml
++++ b/server-native/Cargo.toml
+@@ -63,7 +63,7 @@ tikv-jemallocator.workspace        = true
+ # yes`). A compile-time default only: `_RJEM_MALLOC_CONF=background_thread:false`
+ # turns it off at run time.
+ [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+-tikv-jemallocator = { workspace = true, features = ["background_threads"] }
++tikv-jemallocator = { workspace = true, features = ["background_threads", "stats", "profiling"] }
+ 
+ [lints]
+ workspace = true
+diff --git a/server-native/src/main.rs b/server-native/src/main.rs
+index 8e8a736..96a9b2d 100644
+--- a/server-native/src/main.rs
++++ b/server-native/src/main.rs
+@@ -39,6 +39,7 @@
+ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+ 
+ mod aof_stats;
++mod i8diag;
+ mod clients;
+ mod config;
+ mod connection;
+@@ -136,6 +137,7 @@ fn now_unix_ms() -> u64 {
+ /// This is a hand-rolled `#[tokio::main]`: the macro can only take a worker
+ /// count as a literal, and `RECACHED_WORKER_THREADS` has to be read at startup.
+ fn main() -> Result<(), Box<dyn std::error::Error>> {
++    i8diag::start_reporter();
+     // All runtime configuration is via RECACHED_* env vars; the only flags are
+     // --version/-V (required by e.g. the Homebrew formula's install test).
+     // Answered before the runtime is built so `--version` costs no threads.
+diff --git a/server-native/src/replication.rs b/server-native/src/replication.rs
+index 79239c4..60d4481 100644
+--- a/server-native/src/replication.rs
++++ b/server-native/src/replication.rs
+@@ -371,6 +371,7 @@ impl UnorderedGate {
+     /// Those writes are synchronous and hold nothing a closer holds, so the
+     /// wait is bounded by one command's execution.
+     pub(crate) async fn close(&self) -> GateClosed<'_> {
++        let __i8_t = std::time::Instant::now();
+         self.closed.fetch_add(1, Ordering::SeqCst);
+         let closed = GateClosed { gate: self };
+         for slot in &self.in_flight {
+@@ -378,6 +379,7 @@ impl UnorderedGate {
+                 tokio::task::yield_now().await;
+             }
+         }
++        crate::i8diag::GATE_CLOSE.since(__i8_t);
+         closed
+     }
+ 
+@@ -515,85 +517,79 @@ impl ReplHub {
+     /// up. Increments each surviving replica's sent counter, which is one half
+     /// of the lag calculation.
+     pub(crate) async fn fan_out(&self, bytes: Vec<u8>) {
+-        // Inline: a single write allocates nothing more than before 6O-I
+-        // (review E, H2).
+-        self.publish(smallvec::smallvec![bytes]);
++        // 6O-I8 experiment `px` (never merged): one frame at a time.
++        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
++        self.publish_iter(1, len, std::iter::once(bytes));
+     }
+ 
+     /// Replicate a transaction's frames, in order (6O-I design §6.3): one
+-    /// hold of the stream lock gives them consecutive offsets — no other
+-    /// writer's frame can take one between them — and, when there are two
+-    /// or more, records them as one group, so a capable replica applies them
+-    /// all at once and never resumes inside them.
++    /// hold of the stream lock gives them consecutive offsets.
+     pub(crate) async fn fan_out_group(&self, frames: Vec<Vec<u8>>) {
+-        self.publish(frames.into());
++        let total = frames
++            .iter()
++            .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
++            .fold(0, u64::saturating_add);
++        self.publish_iter(frames.len(), total, frames.into_iter());
++    }
++
++    /// 6O-I8 experiment `px`: [`fan_out_group`](Self::fan_out_group) from
++    /// borrowed frames, each copied when it is published.
++    pub(crate) async fn fan_out_group_refs(&self, frames: &[&[u8]]) {
++        let total = frames
++            .iter()
++            .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
++            .fold(0, u64::saturating_add);
++        self.publish_iter(frames.len(), total, frames.iter().map(|frame| frame.to_vec()));
+     }
+ 
+-    fn publish(&self, frames: smallvec::SmallVec<[Vec<u8>; 1]>) {
+-        if !self.is_enabled() || frames.is_empty() {
++    /// 6O-I8 experiment `px`: the same state as 6O-I's `publish`, one lock
++    /// hold and consecutive offsets, but each frame is allocated, pushed,
++    /// the backlog trimmed, and the frame queued to every replica before the
++    /// next frame, so an allocation follows a free as in 6O-H.
++    fn publish_iter<I>(&self, count: usize, total_bytes: u64, frames: I)
++    where
++        I: Iterator<Item = Vec<u8>>,
++    {
++        if !self.is_enabled() || count == 0 {
+             return;
+         }
+-        let count = frames.len();
+-        // Keep the backlog guard until every replica queue has accepted these
+-        // frames. Independent-key writes can propagate concurrently; without
+-        // this serialization offset 2 could be queued before offset 1.
+-        let mut stream = self.stream();
++        if count >= 2 { crate::i8diag::GROUP_FRAMES.record(count as u64); }
++        let (mut stream, __i8_t) = crate::i8diag::lock_stream(&self.stream, count >= 2);
+         let ReplStream {
+             backlog,
+             senders: reg,
+         } = &mut *stream;
+         let first = self.offset.fetch_add(count as u64, Ordering::AcqRel) + 1;
+-        // A group of more frames than a `u32` counts cannot fit in memory;
+-        // `u32::try_from` failing would only leave it ungrouped.
+         let group = u32::try_from(count)
+             .ok()
+             .filter(|count| *count >= 2)
+             .map(|count| ReplGroup {
+                 first,
+                 count,
+-                bytes: frames
+-                    .iter()
+-                    .map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+-                    .fold(0, u64::saturating_add),
++                bytes: total_bytes,
+             });
+-        let frames: smallvec::SmallVec<[ReplFrame; 1]> = frames
+-            .into_iter()
+-            .zip(first..)
+-            .map(|(bytes, offset)| ReplFrame {
+-                offset,
+-                bytes: Arc::new(bytes),
+-            })
+-            .collect();
+-        let backlog_limit = self.backlog_bytes.load(Ordering::Acquire);
+-        for frame in &frames {
+-            backlog.bytes = backlog.bytes.saturating_add(frame.bytes.len());
+-            backlog.frames.push_back(frame.clone());
+-        }
+         if let Some(group) = group {
+             backlog.groups.push_back(group);
+         }
+-        while backlog.bytes > backlog_limit {
+-            let Some(expired) = backlog.frames.pop_front() else {
+-                break;
++        let backlog_limit = self.backlog_bytes.load(Ordering::Acquire);
++        let mut dropped: SmallVec<[bool; 4]> = SmallVec::from_elem(false, reg.len());
++        for (bytes, offset) in frames.zip(first..) {
++            let frame = ReplFrame {
++                offset,
++                bytes: Arc::new(bytes),
+             };
+-            backlog.bytes = backlog.bytes.saturating_sub(expired.bytes.len());
+-        }
+-        // Groups none of whose frames is still retained.
+-        let oldest = backlog
+-            .frames
+-            .front()
+-            .map_or(u64::MAX, |frame| frame.offset);
+-        while backlog
+-            .groups
+-            .front()
+-            .is_some_and(|group| group.last() < oldest)
+-        {
+-            backlog.groups.pop_front();
+-        }
+-        let backlog_bytes = backlog.bytes;
+-
+-        reg.retain(|r| {
+-            frames.iter().all(|frame| {
++            backlog.bytes = backlog.bytes.saturating_add(frame.bytes.len());
++            backlog.frames.push_back(frame.clone());
++            while backlog.bytes > backlog_limit {
++                let Some(expired) = backlog.frames.pop_front() else {
++                    break;
++                };
++                backlog.bytes = backlog.bytes.saturating_sub(expired.bytes.len());
++            }
++            for (r, gone) in reg.iter().zip(dropped.iter_mut()) {
++                if *gone {
++                    continue;
++                }
+                 let charged_bytes = repl_queue_charge(frame.bytes.len());
+                 let reserved = r
+                     .pending_bytes
+@@ -608,7 +604,8 @@ impl ReplHub {
+                     self.queue_disconnects.fetch_add(1, Ordering::Relaxed);
+                     counter!("recached_replication_disconnects_total", "reason" => "queue_bytes")
+                         .increment(1);
+-                    return false;
++                    *gone = true;
++                    continue;
+                 }
+                 let queued = QueuedReplFrame {
+                     frame: frame.clone(),
+@@ -617,10 +614,7 @@ impl ReplHub {
+                     pending_bytes: Arc::clone(&r.pending_bytes),
+                 };
+                 match r.tx.try_send(queued) {
+-                    Ok(()) => {
+-                        r.sent.store(frame.offset, Ordering::Release);
+-                        true
+-                    }
++                    Ok(()) => r.sent.store(frame.offset, Ordering::Release),
+                     Err(mpsc::error::TrySendError::Full(_)) => {
+                         warn!(
+                             "Replica fell too far behind (channel full) — disconnecting so it can resync"
+@@ -628,16 +622,34 @@ impl ReplHub {
+                         self.queue_disconnects.fetch_add(1, Ordering::Relaxed);
+                         counter!("recached_replication_disconnects_total", "reason" => "queue_items")
+                             .increment(1);
+-                        false
++                        *gone = true;
+                     }
+-                    Err(mpsc::error::TrySendError::Closed(_)) => false,
++                    Err(mpsc::error::TrySendError::Closed(_)) => *gone = true,
+                 }
+-            })
++            }
++        }
++        // Groups none of whose frames is still retained.
++        let oldest = backlog
++            .frames
++            .front()
++            .map_or(u64::MAX, |frame| frame.offset);
++        while backlog
++            .groups
++            .front()
++            .is_some_and(|group| group.last() < oldest)
++        {
++            backlog.groups.pop_front();
++        }
++        let backlog_bytes = backlog.bytes;
++        let mut at = 0;
++        reg.retain(|_| {
++            let keep = !dropped[at];
++            at += 1;
++            keep
+         });
+         self.count.store(reg.len(), Ordering::Relaxed);
++        crate::i8diag::stream_released(__i8_t, count >= 2);
+         drop(stream);
+-        // Outside the lock: a metrics update is a registry lookup, and every
+-        // replicated write would otherwise wait out another's.
+         gauge!("recached_replication_backlog_bytes").set(backlog_bytes as f64);
+     }
+ 
+@@ -1068,6 +1080,9 @@ impl ReplHub {
+     ) -> OrderGuards<'a> {
+         stripes.sort_unstable();
+         stripes.dedup();
++        let __i8_t = std::time::Instant::now();
++        let __i8_big = stripes.len() > 8;
++        if !__i8_big { crate::i8diag::SMALL_WAITING.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+ 
+         let mut guards = SmallVec::with_capacity(stripes.len());
+         for stripe in stripes {
+@@ -1080,9 +1095,12 @@ impl ReplHub {
+             }
+             guards.push(self.write_order[stripe].lock().await);
+         }
++        (if __i8_big { &crate::i8diag::STRIPE_WAIT_BIG } else { &crate::i8diag::STRIPE_WAIT_SMALL }).since(__i8_t);
++        if !__i8_big { crate::i8diag::SMALL_WAITING.fetch_sub(1, std::sync::atomic::Ordering::Relaxed); }
+         OrderGuards {
+             _stripes: guards,
+             _closed: closed,
++            _i8: crate::i8diag::Hold::new(if __i8_big { &crate::i8diag::STRIPE_HOLD_BIG } else { &crate::i8diag::STRIPE_HOLD_SMALL }),
+         }
+     }
+ 
+@@ -1118,13 +1136,17 @@ impl ReplHub {
+     }
+ 
+     async fn lock_every_stripe<'a>(&'a self, closed: GateClosed<'a>) -> OrderGuards<'a> {
++        let __i8_t = std::time::Instant::now();
+         let mut guards = SmallVec::with_capacity(WRITE_ORDER_STRIPES);
+         for lock in &self.write_order {
+             guards.push(lock.lock().await);
+         }
++        crate::i8diag::STRIPE_WAIT_ALL.since(__i8_t);
++        crate::i8diag::all_acquired();
+         OrderGuards {
+             _stripes: guards,
+             _closed: Some(closed),
++            _i8: crate::i8diag::Hold::new(&crate::i8diag::STRIPE_HOLD_ALL),
+         }
+     }
+ 
+@@ -1333,6 +1355,7 @@ pub(crate) const DEFAULT_REPL_CHANNEL_CAPACITY: usize =
+ pub(crate) struct OrderGuards<'a> {
+     _stripes: SmallVec<[tokio::sync::MutexGuard<'a, ()>; 2]>,
+     _closed: Option<GateClosed<'a>>,
++    _i8: crate::i8diag::Hold,
+ }
+ 
+ pub(crate) const DEFAULT_REPL_BACKLOG_BYTES: usize = 16 * 1024 * 1024;
+@@ -2666,13 +2689,14 @@ where
+     let (chunks, received) = mpsc::channel(REPL_RECV_QUEUE_CHUNKS);
+     let reader = async move {
+         let mut buf = vec![0u8; REPL_RECV_BUFFER_BYTES];
++        let mut __i8_last = std::time::Instant::now();
+         loop {
+             let chunk = match rd.read(&mut buf).await {
+                 Ok(0) => Err(std::io::Error::new(
+                     ErrorKind::UnexpectedEof,
+                     "the primary closed the replication link",
+                 )),
+-                Ok(n) => Ok(buf[..n].to_vec()),
++                Ok(n) => { crate::i8diag::R_READ_GAP.since(__i8_last); __i8_last = std::time::Instant::now(); crate::i8diag::R_READ_BYTES.record(n as u64); Ok(buf[..n].to_vec()) }
+                 Err(error) => Err(error),
+             };
+             let last = chunk.is_err();
+@@ -2687,6 +2711,8 @@ where
+     let mut rd = ChunkReader::new(read_ahead, received);
+     let apply = async {
+         let mut since_yield = 0u32;
++        let mut __i8_run = std::time::Instant::now();
++        let mut __i8_off0 = resume.offset;
+         let mut groups = GroupAssembler::new(with_txn);
+         loop {
+             let (offset, cmd_bytes) = read_repl_frame(&mut rd).await?;
+@@ -2726,7 +2752,11 @@ where
+             since_yield += 1;
+             if since_yield >= REPL_APPLY_YIELD_FRAMES {
+                 since_yield = 0;
++                crate::i8diag::R_APPLY_RUN.since(__i8_run);
++                crate::i8diag::R_APPLY_RUN_FRAMES.record(offset.saturating_sub(__i8_off0));
+                 tokio::task::yield_now().await;
++                __i8_run = std::time::Instant::now();
++                __i8_off0 = offset;
+             }
+         }
+     };
+@@ -3081,6 +3111,7 @@ async fn apply_repl_group(
+     watches: &WatchRegistry,
+     frames: Vec<Vec<u8>>,
+ ) -> std::io::Result<()> {
++    let _i8_hold = crate::i8diag::Hold::new(&crate::i8diag::R_GROUP_APPLY);
+     let mut members = Vec::with_capacity(frames.len());
+     let mut commands = Vec::with_capacity(frames.len());
+     for bytes in frames {
+@@ -3246,6 +3277,7 @@ async fn apply_repl_frame(
+     watches: &WatchRegistry,
+     bytes: &[u8],
+ ) -> std::io::Result<()> {
++    let _i8_hold = crate::i8diag::one_in_16().then(|| crate::i8diag::Hold::new(&crate::i8diag::R_FRAME_APPLY16));
+     // The wire carries pushes only (6O-H, R2-1): a frame received as an
+     // array is normalized before this node logs, forwards or backlogs it.
+     // In an AOF an array means "written with expirations logged", and
+diff --git a/server-native/src/server_state.rs b/server-native/src/server_state.rs
+index df2b008..2fe1ef9 100644
+--- a/server-native/src/server_state.rs
++++ b/server-native/src/server_state.rs
+@@ -828,7 +828,7 @@ impl ServerState {
+         if self.replicas.is_enabled() {
+             // Consecutive offsets, one group when two or more (6O-I).
+             self.replicas
+-                .fan_out_group(frames.iter().map(|frame| frame.to_vec()).collect())
++                .fan_out_group_refs(frames)
+                 .await;
+         }
+     }
+diff --git a/server-native/src/transaction.rs b/server-native/src/transaction.rs
+index 3595eaf..71f4121 100644
+--- a/server-native/src/transaction.rs
++++ b/server-native/src/transaction.rs
+@@ -337,6 +337,7 @@ pub(crate) async fn run_transaction_queue(
+         || !watch_registry.is_empty()
+         || state.replicas.unordered.has_push_receivers();
+ 
++    let __i8_p1 = std::time::Instant::now();
+     // ── Phase 1: apply ──────────────────────────────────────────────────
+     let mut replies: Vec<Value> = Vec::with_capacity(queue.len());
+     let mut writes: Vec<AppliedWrite<'_>> = Vec::new();
+@@ -372,6 +373,7 @@ pub(crate) async fn run_transaction_queue(
+         replies.extend((failed + 1..queue.len()).map(|_| Value::Error(NOT_RUN.to_string())));
+         fail_closed(state, &queue[failed], applied);
+     }
++    crate::i8diag::TX_APPLY.since(__i8_p1);
+     // ── Phase 2: effects, in command order ──────────────────────────────
+     let needs_log = state.needs_write_log();
+     // The writer's half of the WATCH registration handshake, after every
+@@ -471,9 +473,11 @@ pub(crate) async fn run_transaction_queue(
+             }
+             frames.extend(victims.iter().map(|eviction| eviction.frame.as_slice()));
+         }
++        let __i8_l = std::time::Instant::now();
+         state
+             .on_transaction_logged(&frames, !has_ws && !has_watch)
+             .await;
++        crate::i8diag::TX_LOG.since(__i8_l);
+     }
+     let plan = if has_watch {
+         NotificationPlan::new(&writes)
