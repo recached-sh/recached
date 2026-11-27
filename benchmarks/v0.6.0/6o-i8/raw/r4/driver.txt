@@ -1,0 +1,8 @@
+2026-11-27T09:26:39Z campaign r4 start: 1 reps x 1 cells x ['h', 'i', 'p']
+2026-11-27T09:26:39Z run rep=1 cell=raof-1840-soak label=h port=31510 attempt=0
+2026-11-27T09:58:18Z   valid=True why=['restart: replica-restart: no PONG'] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T09:58:18Z run rep=1 cell=raof-1840-soak label=i port=31520 attempt=0
+2026-11-27T10:29:55Z   valid=True why=['restart: replica-restart: no PONG'] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T10:29:55Z run rep=1 cell=raof-1840-soak label=p port=31530 attempt=0
+2026-11-27T11:01:30Z   valid=True why=['restart: replica-restart: no PONG'] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T11:01:30Z campaign done

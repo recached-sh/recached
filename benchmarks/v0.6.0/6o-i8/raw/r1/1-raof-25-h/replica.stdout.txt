@@ -1,0 +1,32 @@
+[2m2026-11-27T01:19:24.081085Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 1 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-27T01:19:24.081115Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-27T01:19:24.081127Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-27T01:19:24.081130Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-27T01:19:24.081133Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-27T01:19:24.081135Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 24074 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-27T01:19:24.081145Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 24074 to untrusted clients.
+[2m2026-11-27T01:19:24.081342Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m No snapshot at "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-25-h/data/dump-24073.rdb", starting fresh
+[2m2026-11-27T01:19:24.133097Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m AOF enabled: "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-25-h/data/append-24073.aof" (sync=everysec, coalesce=on, fanout=inline)
+[2m2026-11-27T01:19:24.133139Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+[2m2026-11-27T01:19:24.133145Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Max connections: 1024
+[2m2026-11-27T01:19:24.133151Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Replication to the primary is PLAINTEXT — the password and the entire keyspace cross the network unencrypted, and the primary's identity is not verified. Set RECACHED_REPL_TLS_CA, or keep replication on a private network.
+[2m2026-11-27T01:19:24.133155Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication server DISABLED — port 6381 is not bound. Set RECACHED_REPL_ENABLE=1 on any node that serves replicas (including a replica serving sub-replicas).
+[2m2026-11-27T01:19:24.133240Z[0m [32m INFO[0m [2mrecached_server::server_state[0m[2m:[0m Restored 0 dedup high-water mark(s)
+[2m2026-11-27T01:19:24.133290Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Autosave disabled (RECACHED_SAVE=0 or RECACHED_SAVE_INTERVAL=0). Use SAVE or BGSAVE manually.
+[2m2026-11-27T01:19:24.133331Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24072
+[2m2026-11-27T01:19:24.133475Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Running as replica — writes are rejected until manually promoted with REPLICAOF NO ONE
+[2m2026-11-27T01:19:24.133825Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m TCP server listening on 127.0.0.1:24073 (1 accept loop(s))
+[2m2026-11-27T01:19:24.133844Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m WebSocket server listening on 127.0.0.1:24074
+[2m2026-11-27T01:19:24.491468Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-25-h/data/dump-24073.rdb"
+[2m2026-11-27T01:19:24.533143Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T01:19:24.566465Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (0 entries, 0 DEDUP client(s))
+[2m2026-11-27T01:20:14.752659Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T01:20:16.754197Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24072
+[2m2026-11-27T01:20:17.254945Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-25-h/data/dump-24073.rdb"
+[2m2026-11-27T01:20:17.429969Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T01:20:17.471624Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T01:20:46.326918Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T01:20:48.328130Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24072
+[2m2026-11-27T01:20:48.869732Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-25-h/data/dump-24073.rdb"
+[2m2026-11-27T01:20:48.994748Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T01:20:49.028022Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))

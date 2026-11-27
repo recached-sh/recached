@@ -1,0 +1,23 @@
+[2m2026-11-27T05:13:23.177584Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 1 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-27T05:13:23.177612Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-27T05:13:23.177622Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-27T05:13:23.177626Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-27T05:13:23.177629Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-27T05:13:23.177631Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 24604 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-27T05:13:23.177641Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 24604 to untrusted clients.
+[2m2026-11-27T05:13:23.177860Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot loaded: 0 entries ← "/home/dennispaler/recached-6oi8-bench/runs/r2/3-raof-1610-i/data/dump-24603.rdb"
+[2m2026-11-27T05:13:27.475966Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF is in the expiry-log format: replaying without evaluating expiry
+[2m2026-11-27T05:13:40.647774Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF replayed: 21736100 commands ← "/home/dennispaler/recached-6oi8-bench/runs/r2/3-raof-1610-i/data/append-24603.aof"
+[2m2026-11-27T05:13:40.756411Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m AOF format: expiry log (replays without evaluating expiry)
+[2m2026-11-27T05:13:40.756427Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m AOF enabled: "/home/dennispaler/recached-6oi8-bench/runs/r2/3-raof-1610-i/data/append-24603.aof" (sync=everysec, coalesce=on, fanout=inline)
+[2m2026-11-27T05:13:40.756433Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+[2m2026-11-27T05:13:40.756436Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Max connections: 1024
+[2m2026-11-27T05:13:40.756446Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication server DISABLED — port 6381 is not bound. Set RECACHED_REPL_ENABLE=1 on any node that serves replicas (including a replica serving sub-replicas).
+[2m2026-11-27T05:13:40.756540Z[0m [32m INFO[0m [2mrecached_server::server_state[0m[2m:[0m Restored 0 dedup high-water mark(s)
+[2m2026-11-27T05:13:40.756577Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Autosave disabled (RECACHED_SAVE=0 or RECACHED_SAVE_INTERVAL=0). Use SAVE or BGSAVE manually.
+[2m2026-11-27T05:13:40.756746Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m TCP server listening on 127.0.0.1:24603 (1 accept loop(s))
+[2m2026-11-27T05:13:40.756762Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m WebSocket server listening on 127.0.0.1:24604
+[2m2026-11-27T05:13:41.064000Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Shutdown signal received, saving final snapshot...
+[2m2026-11-27T05:13:41.423043Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved: 100000 entries → "/home/dennispaler/recached-6oi8-bench/runs/r2/3-raof-1610-i/data/dump-24603.rdb"
+[2m2026-11-27T05:13:41.689642Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T05:13:41.706348Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Done. Goodbye.

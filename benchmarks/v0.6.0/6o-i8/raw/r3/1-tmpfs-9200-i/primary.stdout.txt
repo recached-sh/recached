@@ -1,0 +1,146 @@
+[2m2026-11-27T08:10:38.974021Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 1 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-27T08:10:38.974041Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-27T08:10:38.974050Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-27T08:10:38.974053Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-27T08:10:38.974056Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-27T08:10:38.974058Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 25611 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-27T08:10:38.974068Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 25611 to untrusted clients.
+[2m2026-11-27T08:10:38.974250Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m No snapshot at "/home/dennispaler/recached-6oi8-bench/runs/r3/1-tmpfs-9200-i/data/dump-25610.rdb", starting fresh
+[2m2026-11-27T08:10:38.974269Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+[2m2026-11-27T08:10:38.974272Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Max connections: 1024
+[2m2026-11-27T08:10:38.974276Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Replication server ENABLED on port 25612 WITHOUT a password, on loopback only. It serves the entire keyspace to whoever connects — set RECACHED_REPL_PASSWORD before binding any other interface.
+[2m2026-11-27T08:10:38.974297Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication carries DEDUP state: a promoted replica answers retried writes it already applied with +DUP. Replicas must run 0.6 or later.
+[2m2026-11-27T08:10:38.974301Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication buffers: backlog=16777216 bytes, per-replica queue=8388608 bytes / 65536 frames (derived from the byte budget)
+[2m2026-11-27T08:10:38.974329Z[0m [32m INFO[0m [2mrecached_server::server_state[0m[2m:[0m Restored 0 dedup high-water mark(s)
+[2m2026-11-27T08:10:38.974334Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Autosave disabled (RECACHED_SAVE=0 or RECACHED_SAVE_INTERVAL=0). Use SAVE or BGSAVE manually.
+[2m2026-11-27T08:10:38.974383Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replication server listening on 127.0.0.1:25612 (plaintext)
+[2m2026-11-27T08:10:38.974568Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m TCP server listening on 127.0.0.1:25610 (1 accept loop(s))
+[2m2026-11-27T08:10:38.974586Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m WebSocket server listening on 127.0.0.1:25611
+[2m2026-11-27T08:10:39.225996Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42452
+[2m2026-11-27T08:12:31.082553Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T08:12:31.084733Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:42452 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T08:12:33.217821Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:45782
+[2m2026-11-27T08:12:33.327936Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:45782 disconnected: Connection reset by peer (os error 104)
+[2m2026-11-27T08:12:35.329056Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:45796
+[2m2026-11-27T08:12:37.440888Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:55958
+[2m2026-11-27T08:12:37.543185Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:55958 disconnected: Connection reset by peer (os error 104)
+[2m2026-11-27T08:12:39.544975Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:55964
+[2m2026-11-27T08:12:39.647672Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:55964 disconnected: Connection reset by peer (os error 104)
+[2m2026-11-27T08:12:41.648819Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:55972
+[2m2026-11-27T08:12:41.753089Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:55972 disconnected: Connection reset by peer (os error 104)
+[2m2026-11-27T08:12:43.753835Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:55978
+[2m2026-11-27T08:12:45.862359Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:55990
+[2m2026-11-27T08:12:47.968900Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:53096
+[2m2026-11-27T08:12:50.076633Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:53112
+[2m2026-11-27T08:12:50.179392Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:53112 disconnected: Connection reset by peer (os error 104)
+[2m2026-11-27T08:12:52.179917Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:53116
+[2m2026-11-27T08:12:54.285229Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:53118
+[2m2026-11-27T08:12:54.387110Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:53118 disconnected: Connection reset by peer (os error 104)
+[2m2026-11-27T08:12:56.389180Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42684
+[2m2026-11-27T08:12:56.489794Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:42684 disconnected: Connection reset by peer (os error 104)
+[2m2026-11-27T08:12:58.490888Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42692
+[2m2026-11-27T08:12:58.597496Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:42692 disconnected: Connection reset by peer (os error 104)
+[2m2026-11-27T08:13:00.599412Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42704
+[2m2026-11-27T08:13:00.704098Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:42704 disconnected: Connection reset by peer (os error 104)
+[2m2026-11-27T08:13:02.705743Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42708
+[2m2026-11-27T08:13:02.805585Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:42708 disconnected: Connection reset by peer (os error 104)
+[2m2026-11-27T08:13:04.807406Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42716
+[2m2026-11-27T08:13:06.911549Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50594
+[2m2026-11-27T08:13:07.014760Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:50594 disconnected: Connection reset by peer (os error 104)
+[2m2026-11-27T08:13:09.016146Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50606
+[2m2026-11-27T08:13:09.118148Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:50606 disconnected: Connection reset by peer (os error 104)
+[2m2026-11-27T08:13:11.118633Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50620
+[2m2026-11-27T08:13:13.218770Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50626
+[2m2026-11-27T08:13:15.314752Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50640
+[2m2026-11-27T08:13:17.406452Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47004
+[2m2026-11-27T08:13:19.501247Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47016
+[2m2026-11-27T08:13:21.594709Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47024
+[2m2026-11-27T08:13:23.686109Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47034
+[2m2026-11-27T08:13:25.777533Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47044
+[2m2026-11-27T08:13:27.871751Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50474
+[2m2026-11-27T08:13:29.962666Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50486
+[2m2026-11-27T08:13:32.054404Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50492
+[2m2026-11-27T08:13:34.149700Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50504
+[2m2026-11-27T08:13:36.244993Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47982
+[2m2026-11-27T08:13:38.337820Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47988
+[2m2026-11-27T08:13:40.433309Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47992
+[2m2026-11-27T08:13:42.526746Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47996
+[2m2026-11-27T08:13:44.619758Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:48000
+[2m2026-11-27T08:13:46.711428Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:41972
+[2m2026-11-27T08:13:48.805695Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:41988
+[2m2026-11-27T08:13:50.901869Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42000
+[2m2026-11-27T08:13:52.989289Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42004
+[2m2026-11-27T08:13:55.086645Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42006
+[2m2026-11-27T08:13:57.179138Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42192
+[2m2026-11-27T08:13:59.270433Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42206
+[2m2026-11-27T08:14:01.363161Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42216
+[2m2026-11-27T08:14:03.456773Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42220
+[2m2026-11-27T08:14:05.552823Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:42232
+[2m2026-11-27T08:14:07.643386Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:52612
+[2m2026-11-27T08:14:09.736683Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:52614
+[2m2026-11-27T08:14:11.829968Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:52628
+[2m2026-11-27T08:14:13.924266Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:52640
+[2m2026-11-27T08:14:16.016624Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:58946
+[2m2026-11-27T08:14:18.111849Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:58948
+[2m2026-11-27T08:14:20.204764Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:58954
+[2m2026-11-27T08:14:22.295773Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:58968
+[2m2026-11-27T08:14:24.389249Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:58974
+[2m2026-11-27T08:14:26.483357Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47008
+[2m2026-11-27T08:14:28.572460Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47022
+[2m2026-11-27T08:14:30.670830Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47024
+[2m2026-11-27T08:14:32.763471Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47032
+[2m2026-11-27T08:14:34.854860Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47046
+[2m2026-11-27T08:14:36.946412Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:55716
+[2m2026-11-27T08:14:39.040565Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:55718
+[2m2026-11-27T08:14:41.135700Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:55720
+[2m2026-11-27T08:14:43.225182Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:55726
+[2m2026-11-27T08:14:45.320753Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:55728
+[2m2026-11-27T08:14:47.412773Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:45396
+[2m2026-11-27T08:14:49.504470Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:45402
+[2m2026-11-27T08:14:51.596479Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:45404
+[2m2026-11-27T08:14:53.690983Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:45412
+[2m2026-11-27T08:14:55.783219Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:45428
+[2m2026-11-27T08:14:57.876704Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:46204
+[2m2026-11-27T08:14:59.969680Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:46212
+[2m2026-11-27T08:15:02.064453Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:46228
+[2m2026-11-27T08:15:04.154701Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:46238
+[2m2026-11-27T08:15:06.249339Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:40420
+[2m2026-11-27T08:15:08.343142Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:40432
+[2m2026-11-27T08:15:10.437034Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:40436
+[2m2026-11-27T08:15:12.527325Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:40438
+[2m2026-11-27T08:15:14.619389Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:40452
+[2m2026-11-27T08:15:16.712937Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50418
+[2m2026-11-27T08:15:18.802333Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50428
+[2m2026-11-27T08:15:20.898731Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50432
+[2m2026-11-27T08:15:22.989765Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50440
+[2m2026-11-27T08:15:25.083446Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50446
+[2m2026-11-27T08:15:27.174070Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:51060
+[2m2026-11-27T08:15:29.269618Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:51074
+[2m2026-11-27T08:15:31.363016Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:51090
+[2m2026-11-27T08:15:33.453189Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:51094
+[2m2026-11-27T08:15:35.548296Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:51110
+[2m2026-11-27T08:15:37.638353Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:52486
+[2m2026-11-27T08:15:39.732839Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:52500
+[2m2026-11-27T08:15:41.825101Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:52506
+[2m2026-11-27T08:15:43.920321Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:52516
+[2m2026-11-27T08:15:46.013783Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:48146
+[2m2026-11-27T08:15:48.104771Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:48158
+[2m2026-11-27T08:15:50.202525Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:48168
+[2m2026-11-27T08:15:52.294059Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:48176
+[2m2026-11-27T08:15:54.386286Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:48186
+[2m2026-11-27T08:15:56.478721Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50220
+[2m2026-11-27T08:15:58.572368Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50236
+[2m2026-11-27T08:16:00.665456Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50252
+[2m2026-11-27T08:16:02.758123Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50258
+[2m2026-11-27T08:16:04.853604Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:50264
+[2m2026-11-27T08:16:06.944741Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47408
+[2m2026-11-27T08:16:09.037352Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47416
+[2m2026-11-27T08:16:11.130593Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47424
+[2m2026-11-27T08:16:13.226191Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47438
+[2m2026-11-27T08:16:15.318912Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47454
+[2m2026-11-27T08:16:17.410698Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:43382
+[2m2026-11-27T08:16:19.505217Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:43392
+[2m2026-11-27T08:16:21.598026Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:43396
+[2m2026-11-27T08:17:45.025086Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Shutdown signal received, saving final snapshot...
+[2m2026-11-27T08:17:45.276566Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved: 100000 entries → "/home/dennispaler/recached-6oi8-bench/runs/r3/1-tmpfs-9200-i/data/dump-25610.rdb"
+[2m2026-11-27T08:17:45.276868Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Done. Goodbye.

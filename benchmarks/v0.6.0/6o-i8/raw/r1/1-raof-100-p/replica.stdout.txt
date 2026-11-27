@@ -1,0 +1,126 @@
+[2m2026-11-27T02:05:58.687872Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 1 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-27T02:05:58.687897Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-27T02:05:58.687911Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-27T02:05:58.687915Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-27T02:05:58.687918Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-27T02:05:58.687921Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 24244 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-27T02:05:58.687932Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 24244 to untrusted clients.
+[2m2026-11-27T02:05:58.688119Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m No snapshot at "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb", starting fresh
+[2m2026-11-27T02:05:58.715510Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m AOF enabled: "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/append-24243.aof" (sync=everysec, coalesce=on, fanout=inline)
+[2m2026-11-27T02:05:58.715537Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+[2m2026-11-27T02:05:58.715541Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Max connections: 1024
+[2m2026-11-27T02:05:58.715547Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Replication to the primary is PLAINTEXT — the password and the entire keyspace cross the network unencrypted, and the primary's identity is not verified. Set RECACHED_REPL_TLS_CA, or keep replication on a private network.
+[2m2026-11-27T02:05:58.715550Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication server DISABLED — port 6381 is not bound. Set RECACHED_REPL_ENABLE=1 on any node that serves replicas (including a replica serving sub-replicas).
+[2m2026-11-27T02:05:58.715637Z[0m [32m INFO[0m [2mrecached_server::server_state[0m[2m:[0m Restored 0 dedup high-water mark(s)
+[2m2026-11-27T02:05:58.715650Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Autosave disabled (RECACHED_SAVE=0 or RECACHED_SAVE_INTERVAL=0). Use SAVE or BGSAVE manually.
+[2m2026-11-27T02:05:58.715677Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Running as replica — writes are rejected until manually promoted with REPLICAOF NO ONE
+[2m2026-11-27T02:05:58.715840Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m TCP server listening on 127.0.0.1:24243 (1 accept loop(s))
+[2m2026-11-27T02:05:58.715858Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m WebSocket server listening on 127.0.0.1:24244
+[2m2026-11-27T02:05:58.715914Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:05:59.007118Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:05:59.040485Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:05:59.065472Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (0 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:06:04.969733Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:06:06.971299Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:06:07.682021Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:06:07.748326Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:06:07.773349Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:06:12.927867Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:06:14.929658Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:06:16.031125Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:06:16.414451Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:06:16.539424Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:06:18.859550Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: Connection reset by peer (os error 104)
+[2m2026-11-27T02:06:20.860751Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:06:21.481132Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:06:21.531149Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:06:21.614130Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:06:24.258458Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:06:26.259563Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:06:26.888791Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:06:26.963805Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:06:27.113779Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:06:29.358017Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:06:31.359594Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:06:31.921826Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:06:32.030202Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:06:32.063463Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:06:33.520801Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:06:35.522390Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:06:36.196978Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:06:36.263294Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:06:36.354945Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:06:38.473219Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:06:40.474298Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:06:41.129585Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:06:41.271295Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:06:41.362908Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:06:43.718232Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:06:45.719631Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:06:47.070935Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:06:47.120958Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:06:47.154490Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:06:50.078170Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: Connection reset by peer (os error 104)
+[2m2026-11-27T02:06:52.079515Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:06:52.737203Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:06:52.846007Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:06:52.878909Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:06:58.549116Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:07:00.550562Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:07:01.111746Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:07:01.170090Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:07:01.253398Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:07:02.620099Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:07:04.621559Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:07:05.269823Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:07:05.394886Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:07:05.544828Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:07:06.599912Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:07:08.601340Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:07:09.277902Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:07:09.394612Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:07:09.427916Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:07:12.252453Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:07:14.253558Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:07:14.852587Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:07:14.994257Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:07:15.044255Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:07:16.530693Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:07:18.531245Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:07:19.811135Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:07:19.918978Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:07:19.960630Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:07:20.686522Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: Connection reset by peer (os error 104)
+[2m2026-11-27T02:07:22.687461Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:07:24.718666Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:07:24.835342Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:07:24.869153Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: primary closed the link during a full synchronization
+[2m2026-11-27T02:07:26.870759Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:07:27.451806Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:07:27.485225Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:07:27.568694Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:07:28.435791Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:07:30.437055Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:07:31.184943Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:07:31.293268Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:07:31.326580Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:07:36.196097Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:07:38.197074Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:07:39.117765Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:07:39.176153Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:07:39.259495Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:07:41.571838Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:07:43.573576Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:07:44.342496Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:07:44.392475Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:07:44.484160Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:07:47.033913Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: the primary closed the replication link
+[2m2026-11-27T02:07:49.035042Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:07:51.875362Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:07:51.992049Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:07:52.025369Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))
+[2m2026-11-27T02:07:55.479336Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica: sync ended: Connection reset by peer (os error 104)
+[2m2026-11-27T02:07:57.480555Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:24242
+[2m2026-11-27T02:07:58.124990Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r1/1-raof-100-p/data/dump-24243.rdb"
+[2m2026-11-27T02:07:58.175006Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T02:07:58.258322Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))

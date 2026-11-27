@@ -1,0 +1,205 @@
+{
+ "name": "r1",
+ "out": "~/recached-6oi8-bench/runs/r1",
+ "labels": [
+  "h",
+  "i",
+  "p"
+ ],
+ "reps": 1,
+ "port_base": 24000,
+ "cells": [
+  {
+   "name": "raof-10",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 920,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 90,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  },
+  {
+   "name": "raof-15",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 1380,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 90,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  },
+  {
+   "name": "raof-25",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 2300,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 90,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  },
+  {
+   "name": "raof-40",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 3680,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 90,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  },
+  {
+   "name": "raof-55",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 5060,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 90,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  },
+  {
+   "name": "raof-70",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 6440,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 90,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  },
+  {
+   "name": "raof-85",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 7820,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 90,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  },
+  {
+   "name": "raof-100",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 9200,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 90,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  }
+ ]
+}

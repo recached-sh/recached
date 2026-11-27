@@ -1,0 +1,62 @@
+2026-11-27T07:43:09Z campaign r3 start: 2 reps x 5 cells x ['h', 'i', 'p']
+2026-11-27T07:43:09Z run rep=1 cell=noaof-2300 label=h port=25510 attempt=0
+2026-11-27T07:45:39Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2299.9, 'writer_ops_per_s': None}
+2026-11-27T07:45:39Z run rep=1 cell=noaof-2300 label=i port=25520 attempt=0
+2026-11-27T07:48:09Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2300.0, 'writer_ops_per_s': None}
+2026-11-27T07:48:09Z run rep=1 cell=noaof-2300 label=p port=25530 attempt=0
+2026-11-27T07:50:39Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2299.9, 'writer_ops_per_s': None}
+2026-11-27T07:50:39Z run rep=1 cell=noaof-9200 label=h port=25540 attempt=0
+2026-11-27T07:53:27Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 8104.2, 'writer_ops_per_s': None}
+2026-11-27T07:53:27Z run rep=1 cell=noaof-9200 label=i port=25550 attempt=0
+2026-11-27T07:56:14Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 8158.2, 'writer_ops_per_s': None}
+2026-11-27T07:56:14Z run rep=1 cell=noaof-9200 label=p port=25560 attempt=0
+2026-11-27T07:59:03Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 8029.8, 'writer_ops_per_s': None}
+2026-11-27T07:59:03Z run rep=1 cell=tmpfs-2300 label=h port=25570 attempt=0
+2026-11-27T08:02:00Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2300.0, 'writer_ops_per_s': None}
+2026-11-27T08:02:00Z run rep=1 cell=tmpfs-2300 label=i port=25580 attempt=0
+2026-11-27T08:04:58Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2300.0, 'writer_ops_per_s': None}
+2026-11-27T08:04:58Z run rep=1 cell=tmpfs-2300 label=p port=25590 attempt=0
+2026-11-27T08:07:56Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2300.0, 'writer_ops_per_s': None}
+2026-11-27T08:07:56Z run rep=1 cell=tmpfs-9200 label=h port=25600 attempt=0
+2026-11-27T08:10:38Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 8637.1, 'writer_ops_per_s': None}
+2026-11-27T08:10:38Z run rep=1 cell=tmpfs-9200 label=i port=25610 attempt=0
+2026-11-27T08:17:45Z   valid=True why=['replica not converged within drain window', 'restart: replica-restart: no PONG'] load={'tx_per_s': None, 'accepted_per_s': 8327.3, 'writer_ops_per_s': None}
+2026-11-27T08:17:45Z run rep=1 cell=tmpfs-9200 label=p port=25620 attempt=0
+2026-11-27T08:33:15Z   valid=True why=['replica not converged within drain window', 'restart: replica-restart: no PONG'] load={'tx_per_s': None, 'accepted_per_s': 8172.2, 'writer_ops_per_s': None}
+2026-11-27T08:33:15Z run rep=1 cell=raof-2300-diag label=h port=25630 attempt=0
+2026-11-27T08:36:15Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2300.0, 'writer_ops_per_s': None}
+2026-11-27T08:36:15Z run rep=1 cell=raof-2300-diag label=i port=25640 attempt=0
+2026-11-27T08:39:15Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2299.9, 'writer_ops_per_s': None}
+2026-11-27T08:39:15Z run rep=1 cell=raof-2300-diag label=p port=25650 attempt=0
+2026-11-27T08:42:13Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2300.0, 'writer_ops_per_s': None}
+2026-11-27T08:42:13Z run rep=2 cell=noaof-2300 label=i port=25660 attempt=0
+2026-11-27T08:44:43Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2299.9, 'writer_ops_per_s': None}
+2026-11-27T08:44:43Z run rep=2 cell=noaof-2300 label=p port=25670 attempt=0
+2026-11-27T08:47:14Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2300.0, 'writer_ops_per_s': None}
+2026-11-27T08:47:14Z run rep=2 cell=noaof-2300 label=h port=25680 attempt=0
+2026-11-27T08:49:44Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2300.0, 'writer_ops_per_s': None}
+2026-11-27T08:49:44Z run rep=2 cell=noaof-9200 label=i port=25690 attempt=0
+2026-11-27T08:52:32Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 8088.3, 'writer_ops_per_s': None}
+2026-11-27T08:52:32Z run rep=2 cell=noaof-9200 label=p port=25700 attempt=0
+2026-11-27T08:55:21Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 8080.3, 'writer_ops_per_s': None}
+2026-11-27T08:55:21Z run rep=2 cell=noaof-9200 label=h port=25710 attempt=0
+2026-11-27T08:58:09Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 8096.8, 'writer_ops_per_s': None}
+2026-11-27T08:58:09Z run rep=2 cell=tmpfs-2300 label=i port=25720 attempt=0
+2026-11-27T09:01:06Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2300.0, 'writer_ops_per_s': None}
+2026-11-27T09:01:06Z run rep=2 cell=tmpfs-2300 label=p port=25730 attempt=0
+2026-11-27T09:04:03Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2300.0, 'writer_ops_per_s': None}
+2026-11-27T09:04:03Z run rep=2 cell=tmpfs-2300 label=h port=25740 attempt=0
+2026-11-27T09:06:59Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2299.9, 'writer_ops_per_s': None}
+2026-11-27T09:06:59Z run rep=2 cell=tmpfs-9200 label=i port=25750 attempt=0
+2026-11-27T09:10:48Z   valid=True why=['restart: replica-restart: no PONG'] load={'tx_per_s': None, 'accepted_per_s': 8186.5, 'writer_ops_per_s': None}
+2026-11-27T09:10:48Z run rep=2 cell=tmpfs-9200 label=p port=25760 attempt=0
+2026-11-27T09:14:41Z   valid=True why=['restart: replica-restart: no PONG'] load={'tx_per_s': None, 'accepted_per_s': 7984.0, 'writer_ops_per_s': None}
+2026-11-27T09:14:41Z run rep=2 cell=tmpfs-9200 label=h port=25770 attempt=0
+2026-11-27T09:17:24Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 8635.7, 'writer_ops_per_s': None}
+2026-11-27T09:17:24Z run rep=2 cell=raof-2300-diag label=i port=25780 attempt=0
+2026-11-27T09:20:39Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2299.9, 'writer_ops_per_s': None}
+2026-11-27T09:20:39Z run rep=2 cell=raof-2300-diag label=p port=25790 attempt=0
+2026-11-27T09:23:38Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2299.9, 'writer_ops_per_s': None}
+2026-11-27T09:23:38Z run rep=2 cell=raof-2300-diag label=h port=25800 attempt=0
+2026-11-27T09:26:36Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2300.0, 'writer_ops_per_s': None}
+2026-11-27T09:26:36Z campaign done

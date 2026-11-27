@@ -1,0 +1,9 @@
+[2m2026-11-27T08:32:14.671186Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 1 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-27T08:32:14.671207Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-27T08:32:14.671217Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-27T08:32:14.671221Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-27T08:32:14.671223Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-27T08:32:14.671226Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 25624 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-27T08:32:14.671234Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 25624 to untrusted clients.
+[2m2026-11-27T08:32:14.671425Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot loaded: 0 entries ← "/tmp/i8-aof/1-tmpfs-9200-p/dump-25623.rdb"
+[2m2026-11-27T08:32:34.670658Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF is in the expiry-log format: replaying without evaluating expiry

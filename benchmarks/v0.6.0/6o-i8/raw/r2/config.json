@@ -1,0 +1,109 @@
+{
+ "name": "r2",
+ "out": "~/recached-6oi8-bench/runs/r2",
+ "labels": [
+  "h",
+  "i",
+  "p"
+ ],
+ "reps": 3,
+ "port_base": 24300,
+ "cells": [
+  {
+   "name": "raof-1380",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 1380,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 120,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  },
+  {
+   "name": "raof-1610",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 1610,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 120,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  },
+  {
+   "name": "raof-1840",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 1840,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 120,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  },
+  {
+   "name": "raof-2070",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 2070,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 120,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  }
+ ]
+}

@@ -1,0 +1,14 @@
+2026-11-27T11:01:31Z campaign r5 start: 1 reps x 2 cells x ['h', 'i', 'p']
+2026-11-27T11:01:31Z run rep=1 cell=raof-1840-bounce label=h port=27010 attempt=0
+2026-11-27T11:12:19Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T11:12:19Z run rep=1 cell=raof-1840-bounce label=i port=27020 attempt=0
+2026-11-27T11:23:08Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T11:23:08Z run rep=1 cell=raof-1840-bounce label=p port=27030 attempt=0
+2026-11-27T11:33:56Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T11:33:56Z run rep=1 cell=raof-1380-bounce label=h port=27040 attempt=0
+2026-11-27T11:44:37Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1380.0, 'writer_ops_per_s': None}
+2026-11-27T11:44:37Z run rep=1 cell=raof-1380-bounce label=i port=27050 attempt=0
+2026-11-27T11:55:22Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1380.0, 'writer_ops_per_s': None}
+2026-11-27T11:55:22Z run rep=1 cell=raof-1380-bounce label=p port=27060 attempt=0
+2026-11-27T12:06:07Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1380.0, 'writer_ops_per_s': None}
+2026-11-27T12:06:07Z campaign done
