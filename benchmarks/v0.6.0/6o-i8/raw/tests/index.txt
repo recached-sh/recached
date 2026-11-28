@@ -1,0 +1,58 @@
+2026-11-27T17:50:26Z gate2 start
+2026-11-27T17:50:29Z == p 54ff38ade18bc3da3254f4bc8977783af0bda181 dirty=0
+2026-11-27T17:53:30Z p inline exit=0 test result: ok. 858 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; finished in 56.68s
+2026-11-27T17:54:26Z p coalesced exit=0 test result: ok. 858 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; finished in 56.30s
+2026-11-27T17:55:23Z p load-and-chaos exit=0 test result: ok. 865 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 56.20s
+2026-11-27T17:55:25Z == px 54ff38ade18bc3da3254f4bc8977783af0bda181 dirty=2
+2026-11-27T17:57:41Z px inline exit=0 test result: ok. 859 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; finished in 55.93s
+2026-11-27T17:58:37Z px coalesced exit=0 test result: ok. 859 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; finished in 55.45s
+2026-11-27T17:59:33Z px load-and-chaos exit=0 test result: ok. 866 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 55.74s
+2026-11-27T17:59:33Z p flaky test binary /home/dennispaler/recached-6oi8-bench/target-test-p/debug/deps/recached_server-13106527e3828413
+2026-11-27T17:59:50Z p flaky alone 1 exit=0 secs=16.9
+2026-11-27T18:00:07Z p flaky alone 2 exit=0 secs=16.8
+2026-11-27T18:00:24Z p flaky alone 3 exit=0 secs=16.9
+2026-11-27T18:00:41Z p flaky alone 4 exit=0 secs=17.0
+2026-11-27T18:00:58Z p flaky alone 5 exit=0 secs=17.0
+2026-11-27T18:01:14Z p flaky alone 6 exit=0 secs=16.9
+2026-11-27T18:01:31Z p flaky alone 7 exit=0 secs=16.9
+2026-11-27T18:01:48Z p flaky alone 8 exit=0 secs=17.0
+2026-11-27T18:02:05Z p flaky alone 9 exit=0 secs=17.0
+2026-11-27T18:02:22Z p flaky alone 10 exit=0 secs=17.0
+2026-11-27T18:02:48Z p flaky starved 1 exit=0 secs=25.3
+2026-11-27T18:03:13Z p flaky starved 2 exit=0 secs=25.3
+2026-11-27T18:03:38Z p flaky starved 3 exit=0 secs=25.1
+2026-11-27T18:04:04Z p flaky starved 4 exit=0 secs=26.3
+2026-11-27T18:04:30Z p flaky starved 5 exit=0 secs=25.3
+2026-11-27T18:04:55Z p flaky starved 6 exit=0 secs=25.0
+2026-11-27T18:05:13Z p flaky starved 7 exit=0 secs=18.1
+2026-11-27T18:05:38Z p flaky starved 8 exit=0 secs=24.9
+2026-11-27T18:06:03Z p flaky starved 9 exit=0 secs=24.8
+2026-11-27T18:06:27Z p flaky starved 10 exit=0 secs=24.8
+2026-11-27T18:08:54Z p chaos on 2 CPUs 1 exit=0 secs=147.0 test result: ok. 865 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 146.99s failed: 
+2026-11-27T18:11:21Z p chaos on 2 CPUs 2 exit=0 secs=147.0 test result: ok. 865 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 147.01s failed: 
+2026-11-27T18:13:48Z p chaos on 2 CPUs 3 exit=0 secs=147.1 test result: ok. 865 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 147.06s failed: 
+2026-11-27T18:15:06Z h flaky test binary /home/dennispaler/recached-6oi8-bench/target-test-h/debug/deps/recached_server-13106527e3828413
+2026-11-27T18:15:23Z h flaky alone 1 exit=0 secs=16.9
+2026-11-27T18:15:40Z h flaky alone 2 exit=0 secs=17.0
+2026-11-27T18:15:57Z h flaky alone 3 exit=0 secs=16.9
+2026-11-27T18:16:14Z h flaky alone 4 exit=0 secs=16.8
+2026-11-27T18:16:31Z h flaky alone 5 exit=0 secs=16.9
+2026-11-27T18:16:48Z h flaky alone 6 exit=0 secs=16.9
+2026-11-27T18:17:05Z h flaky alone 7 exit=0 secs=16.9
+2026-11-27T18:17:22Z h flaky alone 8 exit=0 secs=16.9
+2026-11-27T18:17:38Z h flaky alone 9 exit=0 secs=16.9
+2026-11-27T18:17:55Z h flaky alone 10 exit=0 secs=16.9
+2026-11-27T18:18:20Z h flaky starved 1 exit=0 secs=24.8
+2026-11-27T18:18:45Z h flaky starved 2 exit=0 secs=24.7
+2026-11-27T18:19:03Z h flaky starved 3 exit=0 secs=18.0
+2026-11-27T18:19:28Z h flaky starved 4 exit=0 secs=24.7
+2026-11-27T18:19:52Z h flaky starved 5 exit=0 secs=24.8
+2026-11-27T18:20:17Z h flaky starved 6 exit=0 secs=24.8
+2026-11-27T18:20:42Z h flaky starved 7 exit=0 secs=24.7
+2026-11-27T18:21:00Z h flaky starved 8 exit=0 secs=18.1
+2026-11-27T18:21:18Z h flaky starved 9 exit=0 secs=18.0
+2026-11-27T18:21:43Z h flaky starved 10 exit=0 secs=24.7
+2026-11-27T18:24:07Z h chaos on 2 CPUs 1 exit=0 secs=143.8 test result: ok. 812 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 143.82s failed: 
+2026-11-27T18:26:31Z h chaos on 2 CPUs 2 exit=0 secs=144.8 test result: ok. 812 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 144.84s failed: 
+2026-11-27T18:28:56Z h chaos on 2 CPUs 3 exit=0 secs=144.2 test result: ok. 812 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 144.16s failed: 
+2026-11-27T18:28:56Z gate2 tests done
