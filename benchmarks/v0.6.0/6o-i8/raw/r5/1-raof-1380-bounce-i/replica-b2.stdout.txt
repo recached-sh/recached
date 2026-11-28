@@ -1,0 +1,24 @@
+[2m2026-11-27T11:48:56.369767Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 1 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-27T11:48:56.369791Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-27T11:48:56.369800Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-27T11:48:56.369803Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-27T11:48:56.369806Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-27T11:48:56.369809Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 27054 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-27T11:48:56.369818Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 27054 to untrusted clients.
+[2m2026-11-27T11:48:56.430724Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot loaded: 100000 entries ← "/home/dennispaler/recached-6oi8-bench/runs/r5/1-raof-1380-bounce-i/data/dump-27053.rdb"
+[2m2026-11-27T11:48:59.304660Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF is in the expiry-log format: replaying without evaluating expiry
+[2m2026-11-27T11:49:08.306528Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF replayed: 14418700 commands ← "/home/dennispaler/recached-6oi8-bench/runs/r5/1-raof-1380-bounce-i/data/append-27053.aof"
+[2m2026-11-27T11:49:08.449247Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m AOF enabled: "/home/dennispaler/recached-6oi8-bench/runs/r5/1-raof-1380-bounce-i/data/append-27053.aof" (sync=everysec, coalesce=on, fanout=inline)
+[2m2026-11-27T11:49:08.449268Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+[2m2026-11-27T11:49:08.449272Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Max connections: 1024
+[2m2026-11-27T11:49:08.449278Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Replication to the primary is PLAINTEXT — the password and the entire keyspace cross the network unencrypted, and the primary's identity is not verified. Set RECACHED_REPL_TLS_CA, or keep replication on a private network.
+[2m2026-11-27T11:49:08.449281Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication server DISABLED — port 6381 is not bound. Set RECACHED_REPL_ENABLE=1 on any node that serves replicas (including a replica serving sub-replicas).
+[2m2026-11-27T11:49:08.449361Z[0m [32m INFO[0m [2mrecached_server::server_state[0m[2m:[0m Restored 0 dedup high-water mark(s)
+[2m2026-11-27T11:49:08.449404Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Autosave active → "/home/dennispaler/recached-6oi8-bench/runs/r5/1-raof-1380-bounce-i/data/dump-27053.rdb"
+[2m2026-11-27T11:49:08.449430Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:27052
+[2m2026-11-27T11:49:08.449524Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Running as replica — writes are rejected until manually promoted with REPLICAOF NO ONE
+[2m2026-11-27T11:49:08.449674Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m TCP server listening on 127.0.0.1:27053 (1 accept loop(s))
+[2m2026-11-27T11:49:08.449688Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m WebSocket server listening on 127.0.0.1:27054
+[2m2026-11-27T11:49:08.907554Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved from a full synchronization → "/home/dennispaler/recached-6oi8-bench/runs/r5/1-raof-1380-bounce-i/data/dump-27053.rdb"
+[2m2026-11-27T11:49:09.124293Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m AOF truncated after snapshot save
+[2m2026-11-27T11:49:09.165878Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (100000 entries, 0 DEDUP client(s))

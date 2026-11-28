@@ -1,0 +1,74 @@
+2026-11-27T03:43:53Z campaign r2 start: 3 reps x 4 cells x ['h', 'i', 'p']
+2026-11-27T03:43:53Z run rep=1 cell=raof-1380 label=h port=24310 attempt=0
+2026-11-27T03:47:16Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1379.9, 'writer_ops_per_s': None}
+2026-11-27T03:47:16Z run rep=1 cell=raof-1380 label=i port=24320 attempt=0
+2026-11-27T03:51:05Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1380.0, 'writer_ops_per_s': None}
+2026-11-27T03:51:05Z run rep=1 cell=raof-1380 label=p port=24330 attempt=0
+2026-11-27T03:53:53Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1380.0, 'writer_ops_per_s': None}
+2026-11-27T03:53:53Z run rep=1 cell=raof-1610 label=h port=24340 attempt=0
+2026-11-27T03:56:45Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1610.0, 'writer_ops_per_s': None}
+2026-11-27T03:56:45Z run rep=1 cell=raof-1610 label=i port=24350 attempt=0
+2026-11-27T03:59:35Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1609.9, 'writer_ops_per_s': None}
+2026-11-27T03:59:35Z run rep=1 cell=raof-1610 label=p port=24360 attempt=0
+2026-11-27T04:02:25Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1610.0, 'writer_ops_per_s': None}
+2026-11-27T04:02:25Z run rep=1 cell=raof-1840 label=h port=24370 attempt=0
+2026-11-27T04:05:17Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T04:05:17Z run rep=1 cell=raof-1840 label=i port=24380 attempt=0
+2026-11-27T04:08:11Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T04:08:11Z run rep=1 cell=raof-1840 label=p port=24390 attempt=0
+2026-11-27T04:11:35Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T04:11:35Z run rep=1 cell=raof-2070 label=h port=24400 attempt=0
+2026-11-27T04:15:03Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2070.0, 'writer_ops_per_s': None}
+2026-11-27T04:15:03Z run rep=1 cell=raof-2070 label=i port=24410 attempt=0
+2026-11-27T04:18:22Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2070.0, 'writer_ops_per_s': None}
+2026-11-27T04:18:22Z run rep=1 cell=raof-2070 label=p port=24420 attempt=0
+2026-11-27T04:21:40Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2070.0, 'writer_ops_per_s': None}
+2026-11-27T04:21:40Z run rep=2 cell=raof-1380 label=i port=24430 attempt=0
+2026-11-27T04:25:29Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1380.0, 'writer_ops_per_s': None}
+2026-11-27T04:25:29Z run rep=2 cell=raof-1380 label=p port=24440 attempt=0
+2026-11-27T04:28:16Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1380.0, 'writer_ops_per_s': None}
+2026-11-27T04:28:16Z run rep=2 cell=raof-1380 label=h port=24450 attempt=0
+2026-11-27T04:31:03Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1380.0, 'writer_ops_per_s': None}
+2026-11-27T04:31:03Z run rep=2 cell=raof-1610 label=i port=24460 attempt=0
+2026-11-27T04:33:53Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1610.0, 'writer_ops_per_s': None}
+2026-11-27T04:33:53Z run rep=2 cell=raof-1610 label=p port=24470 attempt=0
+2026-11-27T04:36:43Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1610.0, 'writer_ops_per_s': None}
+2026-11-27T04:36:43Z run rep=2 cell=raof-1610 label=h port=24480 attempt=0
+2026-11-27T04:39:33Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1609.9, 'writer_ops_per_s': None}
+2026-11-27T04:39:33Z run rep=2 cell=raof-1840 label=i port=24490 attempt=0
+2026-11-27T04:42:26Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1839.9, 'writer_ops_per_s': None}
+2026-11-27T04:42:26Z run rep=2 cell=raof-1840 label=p port=24500 attempt=0
+2026-11-27T04:45:19Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1839.9, 'writer_ops_per_s': None}
+2026-11-27T04:45:19Z run rep=2 cell=raof-1840 label=h port=24510 attempt=0
+2026-11-27T04:48:11Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T04:48:11Z run rep=2 cell=raof-2070 label=i port=24520 attempt=0
+2026-11-27T04:51:03Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2069.9, 'writer_ops_per_s': None}
+2026-11-27T04:51:03Z run rep=2 cell=raof-2070 label=p port=24530 attempt=0
+2026-11-27T04:53:57Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2070.0, 'writer_ops_per_s': None}
+2026-11-27T04:53:57Z run rep=2 cell=raof-2070 label=h port=24540 attempt=0
+2026-11-27T04:56:48Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2069.9, 'writer_ops_per_s': None}
+2026-11-27T04:56:48Z run rep=3 cell=raof-1380 label=p port=24550 attempt=0
+2026-11-27T04:59:36Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1380.0, 'writer_ops_per_s': None}
+2026-11-27T04:59:36Z run rep=3 cell=raof-1380 label=h port=24560 attempt=0
+2026-11-27T05:02:23Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1379.9, 'writer_ops_per_s': None}
+2026-11-27T05:02:23Z run rep=3 cell=raof-1380 label=i port=24570 attempt=0
+2026-11-27T05:05:11Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1380.0, 'writer_ops_per_s': None}
+2026-11-27T05:05:11Z run rep=3 cell=raof-1610 label=p port=24580 attempt=0
+2026-11-27T05:08:02Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1610.0, 'writer_ops_per_s': None}
+2026-11-27T05:08:02Z run rep=3 cell=raof-1610 label=h port=24590 attempt=0
+2026-11-27T05:10:51Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1610.0, 'writer_ops_per_s': None}
+2026-11-27T05:10:51Z run rep=3 cell=raof-1610 label=i port=24600 attempt=0
+2026-11-27T05:13:41Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1609.9, 'writer_ops_per_s': None}
+2026-11-27T05:13:41Z run rep=3 cell=raof-1840 label=p port=24610 attempt=0
+2026-11-27T05:16:35Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T05:16:35Z run rep=3 cell=raof-1840 label=h port=24620 attempt=0
+2026-11-27T05:19:27Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T05:19:27Z run rep=3 cell=raof-1840 label=i port=24630 attempt=0
+2026-11-27T05:22:19Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T05:22:19Z run rep=3 cell=raof-2070 label=p port=24640 attempt=0
+2026-11-27T05:25:15Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2070.0, 'writer_ops_per_s': None}
+2026-11-27T05:25:15Z run rep=3 cell=raof-2070 label=h port=24650 attempt=0
+2026-11-27T05:28:10Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2070.0, 'writer_ops_per_s': None}
+2026-11-27T05:28:10Z run rep=3 cell=raof-2070 label=i port=24660 attempt=0
+2026-11-27T05:31:05Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 2069.9, 'writer_ops_per_s': None}
+2026-11-27T05:31:05Z campaign done

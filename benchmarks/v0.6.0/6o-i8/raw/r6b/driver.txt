@@ -1,0 +1,4 @@
+2026-11-27T17:19:35Z campaign r6b start: 1 reps x 1 cells x ['i']
+2026-11-27T17:19:35Z run rep=1 cell=raof-1840-soak2 label=i port=31760 attempt=0
+2026-11-27T17:50:09Z   valid=True why=[] load={'tx_per_s': None, 'accepted_per_s': 1840.0, 'writer_ops_per_s': None}
+2026-11-27T17:50:09Z campaign done
