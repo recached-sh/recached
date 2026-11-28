@@ -1,0 +1,20 @@
+2026-11-27T16:01:20Z campaign ex3 start: 3 reps x 1 cells x ['h', 'i', 'p']
+2026-11-27T16:01:20Z run rep=1 cell=setset-c50-repl-120s label=h port=20810 attempt=0
+2026-11-27T16:04:15Z   valid=True why=[] load={'tx_per_s': 81408.56, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T16:04:15Z run rep=1 cell=setset-c50-repl-120s label=i port=20820 attempt=0
+2026-11-27T16:07:11Z   valid=True why=[] load={'tx_per_s': 80930.42, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T16:07:11Z run rep=1 cell=setset-c50-repl-120s label=p port=20830 attempt=0
+2026-11-27T16:10:06Z   valid=True why=[] load={'tx_per_s': 81988.54, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T16:10:06Z run rep=2 cell=setset-c50-repl-120s label=i port=20840 attempt=0
+2026-11-27T16:13:01Z   valid=True why=[] load={'tx_per_s': 80772.73, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T16:13:01Z run rep=2 cell=setset-c50-repl-120s label=p port=20850 attempt=0
+2026-11-27T16:15:57Z   valid=True why=[] load={'tx_per_s': 82547.71, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T16:15:57Z run rep=2 cell=setset-c50-repl-120s label=h port=20860 attempt=0
+2026-11-27T16:18:52Z   valid=True why=[] load={'tx_per_s': 83334.65, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T16:18:52Z run rep=3 cell=setset-c50-repl-120s label=p port=20870 attempt=0
+2026-11-27T16:21:47Z   valid=True why=[] load={'tx_per_s': 80652.56, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T16:21:47Z run rep=3 cell=setset-c50-repl-120s label=h port=20880 attempt=0
+2026-11-27T16:24:42Z   valid=True why=[] load={'tx_per_s': 82192.11, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T16:24:42Z run rep=3 cell=setset-c50-repl-120s label=i port=20890 attempt=0
+2026-11-27T16:27:37Z   valid=True why=[] load={'tx_per_s': 81490.62, 'accepted_per_s': None, 'writer_ops_per_s': 0.0}
+2026-11-27T16:27:37Z campaign done

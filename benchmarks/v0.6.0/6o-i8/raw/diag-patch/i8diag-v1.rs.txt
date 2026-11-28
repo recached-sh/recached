@@ -1,0 +1,292 @@
+//! 6O-I8 temporary instrumentation. NEVER MERGED: compiled only into the
+//! `*-diag` investigation builds (benchmarks/v0.6.0/6o-i8, raw/diag-patch/).
+//!
+//! Lock wait and hold times, phase times, and jemalloc's own statistics,
+//! printed by a reporter thread to stderr once a second:
+//!
+//!   I8DIAG <unix_ms> <name>=<count>,<total_ns>,<max_ns_since_last>,<log2 buckets b:n;...> ...
+//!   I8MEM <unix_ms> allocated=.. active=.. metadata=.. resident=.. mapped=.. retained=.. \
+//!         small_nmalloc=.. small_ndalloc=.. large_nmalloc=.. large_ndalloc=..
+//!
+//! Counters are cumulative since start (the max is per interval); a
+//! post-processor takes deltas. Bucket `b` counts samples with
+//! `2^b <= ns < 2^(b+1)`.
+#![allow(unsafe_code)] // The jemalloc statistics FFI (temporary diagnostics only).
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
+const BUCKETS: usize = 40;
+
+pub(crate) struct Stat {
+    name: &'static str,
+    count: AtomicU64,
+    total: AtomicU64,
+    max: AtomicU64,
+    buckets: [AtomicU64; BUCKETS],
+}
+
+impl Stat {
+    pub(crate) const fn new(name: &'static str) -> Stat {
+        Stat {
+            name,
+            count: AtomicU64::new(0),
+            total: AtomicU64::new(0),
+            max: AtomicU64::new(0),
+            buckets: [const { AtomicU64::new(0) }; BUCKETS],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn record(&self, value: u64) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.total.fetch_add(value, Ordering::Relaxed);
+        self.max.fetch_max(value, Ordering::Relaxed);
+        let b = (63 - (value | 1).leading_zeros()) as usize;
+        self.buckets[b.min(BUCKETS - 1)].fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub(crate) fn since(&self, t: Instant) {
+        self.record(t.elapsed().as_nanos() as u64);
+    }
+
+    #[inline]
+    pub(crate) fn inc(&self) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn render(&self, out: &mut String) {
+        use std::fmt::Write;
+        let _ = write!(
+            out,
+            " {}={},{},{},",
+            self.name,
+            self.count.load(Ordering::Relaxed),
+            self.total.load(Ordering::Relaxed),
+            self.max.swap(0, Ordering::Relaxed)
+        );
+        let mut first = true;
+        for (b, n) in self.buckets.iter().enumerate() {
+            let n = n.load(Ordering::Relaxed);
+            if n != 0 {
+                let _ = write!(out, "{}{b}:{n}", if first { "" } else { ";" });
+                first = false;
+            }
+        }
+    }
+}
+
+// The replication stream lock (`ReplHub::stream`), from `publish` (6O-I) or
+// `fan_out` (6O-H). `_g` = a group of two or more frames, `_s` = one frame.
+pub(crate) static STREAM_FREE_G: Stat = Stat::new("stream_free_g");
+pub(crate) static STREAM_FREE_S: Stat = Stat::new("stream_free_s");
+pub(crate) static STREAM_WAIT_G: Stat = Stat::new("stream_wait_g");
+pub(crate) static STREAM_WAIT_S: Stat = Stat::new("stream_wait_s");
+pub(crate) static STREAM_HOLD_G: Stat = Stat::new("stream_hold_g");
+/// One single-frame hold in 16, per thread (timing every one would cost the
+/// 6O-H transaction path two clock reads per member).
+pub(crate) static STREAM_HOLD_S16: Stat = Stat::new("stream_hold_s16");
+/// Frames per group published (a value, not a time).
+pub(crate) static GROUP_FRAMES: Stat = Stat::new("group_frames");
+// Replication-order stripes (`write_order`): the wait in `lock_stripe_list`
+// by size (≤ 8 stripes: an ordinary write; more: a transaction), the
+// all-stripe barrier, and how long each kind of guard set is held.
+pub(crate) static STRIPE_WAIT_SMALL: Stat = Stat::new("stripe_wait_small");
+pub(crate) static STRIPE_WAIT_BIG: Stat = Stat::new("stripe_wait_big");
+pub(crate) static STRIPE_WAIT_ALL: Stat = Stat::new("stripe_wait_all");
+pub(crate) static STRIPE_HOLD_SMALL: Stat = Stat::new("stripe_hold_small");
+pub(crate) static STRIPE_HOLD_BIG: Stat = Stat::new("stripe_hold_big");
+pub(crate) static STRIPE_HOLD_ALL: Stat = Stat::new("stripe_hold_all");
+pub(crate) static GATE_CLOSE: Stat = Stat::new("gate_close");
+// EXEC phases (`run_transaction_queue`): phase 1 (store apply, all store
+// stripes held) and the AOF + replication call of phase 2.
+pub(crate) static TX_APPLY: Stat = Stat::new("tx_apply");
+pub(crate) static TX_LOG: Stat = Stat::new("tx_log");
+// Replica side: a group's apply (6O-I), one frame's apply (all builds; one
+// in 16), and the replica's link reader: the time between two completed
+// socket reads, and the bytes of each.
+pub(crate) static R_GROUP_APPLY: Stat = Stat::new("r_group_apply");
+pub(crate) static R_FRAME_APPLY16: Stat = Stat::new("r_frame_apply16");
+pub(crate) static R_READ_GAP: Stat = Stat::new("r_read_gap");
+pub(crate) static R_READ_BYTES: Stat = Stat::new("r_read_bytes");
+/// The applier's run between two yields to the link reader (6O-H/6O-I
+/// `REPL_APPLY_YIELD_FRAMES`), wall time.
+pub(crate) static R_APPLY_RUN: Stat = Stat::new("r_apply_run");
+/// Frames applied between two such yields (a value).
+pub(crate) static R_APPLY_RUN_FRAMES: Stat = Stat::new("r_apply_run_frames");
+
+static ALL: &[&Stat] = &[
+    &STREAM_FREE_G,
+    &STREAM_FREE_S,
+    &STREAM_WAIT_G,
+    &STREAM_WAIT_S,
+    &STREAM_HOLD_G,
+    &STREAM_HOLD_S16,
+    &GROUP_FRAMES,
+    &STRIPE_WAIT_SMALL,
+    &STRIPE_WAIT_BIG,
+    &STRIPE_WAIT_ALL,
+    &STRIPE_HOLD_SMALL,
+    &STRIPE_HOLD_BIG,
+    &STRIPE_HOLD_ALL,
+    &GATE_CLOSE,
+    &TX_APPLY,
+    &TX_LOG,
+    &R_GROUP_APPLY,
+    &R_FRAME_APPLY16,
+    &R_READ_GAP,
+    &R_READ_BYTES,
+    &R_APPLY_RUN,
+    &R_APPLY_RUN_FRAMES,
+];
+
+/// Take the stream lock, timing the wait only when it is contended.
+pub(crate) fn lock_stream<T>(
+    mutex: &std::sync::Mutex<T>,
+    group: bool,
+) -> (std::sync::MutexGuard<'_, T>, Option<Instant>) {
+    let guard = match mutex.try_lock() {
+        Ok(guard) => {
+            (if group { &STREAM_FREE_G } else { &STREAM_FREE_S }).inc();
+            guard
+        }
+        Err(std::sync::TryLockError::WouldBlock) => {
+            let t = Instant::now();
+            let guard = mutex.lock().unwrap_or_else(|p| p.into_inner());
+            (if group { &STREAM_WAIT_G } else { &STREAM_WAIT_S }).since(t);
+            guard
+        }
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+    };
+    thread_local! { static N: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+    let timed = group
+        || N.with(|n| {
+            let v = n.get().wrapping_add(1);
+            n.set(v);
+            v % 16 == 0
+        });
+    (guard, timed.then(Instant::now))
+}
+
+pub(crate) fn stream_released(t: Option<Instant>, group: bool) {
+    if let Some(t) = t {
+        (if group { &STREAM_HOLD_G } else { &STREAM_HOLD_S16 }).since(t);
+    }
+}
+
+/// One in 16 per thread.
+pub(crate) fn one_in_16() -> bool {
+    thread_local! { static N: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+    N.with(|n| {
+        let v = n.get().wrapping_add(1);
+        n.set(v);
+        v % 16 == 0
+    })
+}
+
+/// Records how long a guard set was held, on drop.
+pub(crate) struct Hold {
+    start: Instant,
+    stat: &'static Stat,
+}
+
+impl Hold {
+    pub(crate) fn new(stat: &'static Stat) -> Hold {
+        Hold {
+            start: Instant::now(),
+            stat,
+        }
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        self.stat.since(self.start);
+    }
+}
+
+unsafe extern "C" {
+    fn _rjem_mallctl(
+        name: *const std::ffi::c_char,
+        oldp: *mut std::ffi::c_void,
+        oldlenp: *mut usize,
+        newp: *mut std::ffi::c_void,
+        newlen: usize,
+    ) -> std::ffi::c_int;
+}
+
+fn mallctl_u64(name: &str) -> Option<u64> {
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut value: u64 = 0;
+    let mut len = std::mem::size_of::<u64>();
+    // SAFETY: a jemalloc read-only statistic of `size_t`/`uint64_t` width.
+    let rc = unsafe {
+        _rjem_mallctl(
+            name.as_ptr(),
+            (&raw mut value).cast(),
+            &raw mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (rc == 0).then_some(value)
+}
+
+fn advance_epoch() {
+    let name = c"epoch";
+    let mut epoch: u64 = 1;
+    let mut len = std::mem::size_of::<u64>();
+    // SAFETY: writing `epoch` refreshes jemalloc's statistics snapshot.
+    unsafe {
+        _rjem_mallctl(
+            name.as_ptr(),
+            (&raw mut epoch).cast(),
+            &raw mut len,
+            (&raw mut epoch).cast(),
+            len,
+        );
+    }
+}
+
+/// Start the reporter (once, from `main`).
+pub(crate) fn start_reporter() {
+    std::thread::Builder::new()
+        .name("i8diag".into())
+        .spawn(|| {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                let ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                let mut line = format!("I8DIAG {ms}");
+                for stat in ALL {
+                    stat.render(&mut line);
+                }
+                advance_epoch();
+                let mut mem = format!("I8MEM {ms}");
+                for (key, name) in [
+                    ("allocated", "stats.allocated"),
+                    ("active", "stats.active"),
+                    ("metadata", "stats.metadata"),
+                    ("resident", "stats.resident"),
+                    ("mapped", "stats.mapped"),
+                    ("retained", "stats.retained"),
+                    ("small_nmalloc", "stats.arenas.4096.small.nmalloc"),
+                    ("small_ndalloc", "stats.arenas.4096.small.ndalloc"),
+                    ("large_nmalloc", "stats.arenas.4096.large.nmalloc"),
+                    ("large_ndalloc", "stats.arenas.4096.large.ndalloc"),
+                    ("pdirty", "stats.arenas.4096.pdirty"),
+                    ("pmuzzy", "stats.arenas.4096.pmuzzy"),
+                ] {
+                    match mallctl_u64(name) {
+                        Some(v) => mem.push_str(&format!(" {key}={v}")),
+                        None => mem.push_str(&format!(" {key}=na")),
+                    }
+                }
+                eprintln!("{line}\n{mem}");
+            }
+        })
+        .expect("i8diag reporter");
+}

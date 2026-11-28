@@ -1,0 +1,38 @@
+2026-11-27T02:08:17Z campaign e5 start: 3 reps x 2 cells x ['h', 'i', 'p']
+2026-11-27T02:08:17Z run rep=1 cell=c10k-repl-w4-diag label=h port=22010 attempt=0
+2026-11-27T02:12:28Z   valid=True why=[] load={'tx_per_s': 103.91, 'accepted_per_s': None, 'writer_ops_per_s': 837.9}
+2026-11-27T02:12:28Z run rep=1 cell=c10k-repl-w4-diag label=i port=22020 attempt=0
+2026-11-27T02:15:54Z   valid=True why=[] load={'tx_per_s': 92.43, 'accepted_per_s': None, 'writer_ops_per_s': 436.5}
+2026-11-27T02:15:54Z run rep=1 cell=c10k-repl-w4-diag label=p port=22030 attempt=0
+2026-11-27T02:19:20Z   valid=True why=[] load={'tx_per_s': 93.2, 'accepted_per_s': None, 'writer_ops_per_s': 424.3}
+2026-11-27T02:19:20Z run rep=1 cell=c10k-repl-w4-jeprof label=h port=22040 attempt=0
+2026-11-27T02:21:06Z   valid=True why=[] load={'tx_per_s': 96.36, 'accepted_per_s': None, 'writer_ops_per_s': 754.2}
+2026-11-27T02:21:06Z run rep=1 cell=c10k-repl-w4-jeprof label=i port=22050 attempt=0
+2026-11-27T02:22:52Z   valid=True why=[] load={'tx_per_s': 88.89, 'accepted_per_s': None, 'writer_ops_per_s': 388.0}
+2026-11-27T02:22:52Z run rep=1 cell=c10k-repl-w4-jeprof label=p port=22060 attempt=0
+2026-11-27T02:25:09Z   valid=True why=[] load={'tx_per_s': 89.83, 'accepted_per_s': None, 'writer_ops_per_s': 413.2}
+2026-11-27T02:25:09Z run rep=2 cell=c10k-repl-w4-diag label=i port=22070 attempt=0
+2026-11-27T02:28:55Z   valid=True why=[] load={'tx_per_s': 92.6, 'accepted_per_s': None, 'writer_ops_per_s': 405.1}
+2026-11-27T02:28:55Z run rep=2 cell=c10k-repl-w4-diag label=p port=22080 attempt=0
+2026-11-27T02:32:20Z   valid=True why=[] load={'tx_per_s': 93.04, 'accepted_per_s': None, 'writer_ops_per_s': 427.0}
+2026-11-27T02:32:20Z run rep=2 cell=c10k-repl-w4-diag label=h port=22090 attempt=0
+2026-11-27T02:35:47Z   valid=True why=[] load={'tx_per_s': 103.21, 'accepted_per_s': None, 'writer_ops_per_s': 868.7}
+2026-11-27T02:35:47Z run rep=2 cell=c10k-repl-w4-jeprof label=i port=22100 attempt=0
+2026-11-27T02:37:32Z   valid=True why=[] load={'tx_per_s': 83.97, 'accepted_per_s': None, 'writer_ops_per_s': 637.1}
+2026-11-27T02:37:32Z run rep=2 cell=c10k-repl-w4-jeprof label=p port=22110 attempt=0
+2026-11-27T02:39:28Z   valid=True why=[] load={'tx_per_s': 90.0, 'accepted_per_s': None, 'writer_ops_per_s': 388.7}
+2026-11-27T02:39:28Z run rep=2 cell=c10k-repl-w4-jeprof label=h port=22120 attempt=0
+2026-11-27T02:41:15Z   valid=True why=[] load={'tx_per_s': 103.67, 'accepted_per_s': None, 'writer_ops_per_s': 985.2}
+2026-11-27T02:41:15Z run rep=3 cell=c10k-repl-w4-diag label=p port=22130 attempt=0
+2026-11-27T02:44:40Z   valid=True why=[] load={'tx_per_s': 95.74, 'accepted_per_s': None, 'writer_ops_per_s': 447.6}
+2026-11-27T02:44:40Z run rep=3 cell=c10k-repl-w4-diag label=h port=22140 attempt=0
+2026-11-27T02:48:09Z   valid=True why=[] load={'tx_per_s': 109.43, 'accepted_per_s': None, 'writer_ops_per_s': 1241.8}
+2026-11-27T02:48:09Z run rep=3 cell=c10k-repl-w4-diag label=i port=22150 attempt=0
+2026-11-27T02:51:34Z   valid=True why=[] load={'tx_per_s': 94.55, 'accepted_per_s': None, 'writer_ops_per_s': 413.1}
+2026-11-27T02:51:34Z run rep=3 cell=c10k-repl-w4-jeprof label=p port=22160 attempt=0
+2026-11-27T02:53:20Z   valid=True why=[] load={'tx_per_s': 91.77, 'accepted_per_s': None, 'writer_ops_per_s': 399.1}
+2026-11-27T02:53:20Z run rep=3 cell=c10k-repl-w4-jeprof label=h port=22170 attempt=0
+2026-11-27T02:55:06Z   valid=True why=[] load={'tx_per_s': 95.78, 'accepted_per_s': None, 'writer_ops_per_s': 781.7}
+2026-11-27T02:55:06Z run rep=3 cell=c10k-repl-w4-jeprof label=i port=22180 attempt=0
+2026-11-27T02:56:52Z   valid=True why=[] load={'tx_per_s': 90.97, 'accepted_per_s': None, 'writer_ops_per_s': 379.9}
+2026-11-27T02:56:52Z campaign done

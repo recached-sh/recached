@@ -1,0 +1,351 @@
+//! 6O-I8 temporary instrumentation, version 2 (after reviews A and B). NEVER MERGED: compiled only into the
+//! `*-diag` investigation builds (benchmarks/v0.6.0/6o-i8, raw/diag-patch/).
+//!
+//! Lock wait and hold times, phase times, and jemalloc's own statistics,
+//! printed by a reporter thread to stderr once a second:
+//!
+//!   I8DIAG <unix_ms> <name>=<count>,<total_ns>,<max_ns_since_last>,<log2 buckets b:n;...> ...
+//!   I8MEM <unix_ms> allocated=.. active=.. metadata=.. resident=.. mapped=.. retained=.. \
+//!         small_nmalloc=.. small_ndalloc=.. large_nmalloc=.. large_ndalloc=..
+//!
+//! Counters are cumulative since start (the max is per interval); a
+//! post-processor takes deltas. Bucket `b` counts samples with
+//! `2^b <= ns < 2^(b+1)`.
+#![allow(unsafe_code)] // The jemalloc statistics FFI (temporary diagnostics only).
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
+const BUCKETS: usize = 40;
+
+pub(crate) struct Stat {
+    name: &'static str,
+    count: AtomicU64,
+    total: AtomicU64,
+    max: AtomicU64,
+    buckets: [AtomicU64; BUCKETS],
+}
+
+impl Stat {
+    pub(crate) const fn new(name: &'static str) -> Stat {
+        Stat {
+            name,
+            count: AtomicU64::new(0),
+            total: AtomicU64::new(0),
+            max: AtomicU64::new(0),
+            buckets: [const { AtomicU64::new(0) }; BUCKETS],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn record(&self, value: u64) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.total.fetch_add(value, Ordering::Relaxed);
+        self.max.fetch_max(value, Ordering::Relaxed);
+        let b = (63 - (value | 1).leading_zeros()) as usize;
+        self.buckets[b.min(BUCKETS - 1)].fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub(crate) fn since(&self, t: Instant) {
+        self.record(t.elapsed().as_nanos() as u64);
+    }
+
+    #[inline]
+    pub(crate) fn inc(&self) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn render(&self, out: &mut String) {
+        use std::fmt::Write;
+        let _ = write!(
+            out,
+            " {}={},{},{},",
+            self.name,
+            self.count.load(Ordering::Relaxed),
+            self.total.load(Ordering::Relaxed),
+            self.max.swap(0, Ordering::Relaxed)
+        );
+        let mut first = true;
+        for (b, n) in self.buckets.iter().enumerate() {
+            let n = n.load(Ordering::Relaxed);
+            if n != 0 {
+                let _ = write!(out, "{}{b}:{n}", if first { "" } else { ";" });
+                first = false;
+            }
+        }
+    }
+}
+
+// The replication stream lock (`ReplHub::stream`), from `publish` (6O-I) or
+// `fan_out` (6O-H). `_g` = a group of two or more frames, `_s` = one frame.
+pub(crate) static STREAM_FREE_G: Stat = Stat::new("stream_free_g");
+pub(crate) static STREAM_FREE_S: Stat = Stat::new("stream_free_s");
+pub(crate) static STREAM_WAIT_G: Stat = Stat::new("stream_wait_g");
+pub(crate) static STREAM_WAIT_S: Stat = Stat::new("stream_wait_s");
+pub(crate) static STREAM_HOLD_G: Stat = Stat::new("stream_hold_g");
+/// One single-frame hold in 16, per thread (timing every one would cost the
+/// 6O-H transaction path two clock reads per member).
+pub(crate) static STREAM_HOLD_S16: Stat = Stat::new("stream_hold_s16");
+/// Frames per group published (a value, not a time).
+pub(crate) static GROUP_FRAMES: Stat = Stat::new("group_frames");
+// Replication-order stripes (`write_order`): the wait in `lock_stripe_list`
+// by size (≤ 8 stripes: an ordinary write; more: a transaction), the
+// all-stripe barrier, and how long each kind of guard set is held.
+pub(crate) static STRIPE_WAIT_SMALL: Stat = Stat::new("stripe_wait_small");
+pub(crate) static STRIPE_WAIT_BIG: Stat = Stat::new("stripe_wait_big");
+pub(crate) static STRIPE_WAIT_ALL: Stat = Stat::new("stripe_wait_all");
+pub(crate) static STRIPE_HOLD_SMALL: Stat = Stat::new("stripe_hold_small");
+pub(crate) static STRIPE_HOLD_BIG: Stat = Stat::new("stripe_hold_big");
+pub(crate) static STRIPE_HOLD_ALL: Stat = Stat::new("stripe_hold_all");
+pub(crate) static GATE_CLOSE: Stat = Stat::new("gate_close");
+/// v2: from one all-stripe guard's release to the next all-stripe
+/// acquisition's completion (the gap outside writers get in), and the
+/// outside writers' stripe acquisitions completed while no all-stripe
+/// guard was held (a value of 1 per acquisition).
+pub(crate) static STRIPE_GAP: Stat = Stat::new("stripe_gap");
+static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+static LAST_ALL_RELEASE_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static ALL_HELD: AtomicU64 = AtomicU64::new(0);
+/// Outside writers (≤ 8 stripes) inside `lock_stripe_list`, waiting; and its
+/// value each time an all-stripe guard is released: how many writers are
+/// ready to use the gap that opens.
+pub(crate) static SMALL_WAITING: AtomicU64 = AtomicU64::new(0);
+pub(crate) static WAITERS_AT_RELEASE: Stat = Stat::new("waiters_at_release");
+fn now_ns() -> u64 {
+    EPOCH.get_or_init(Instant::now).elapsed().as_nanos() as u64
+}
+pub(crate) fn all_acquired() {
+    ALL_HELD.fetch_add(1, Ordering::Relaxed);
+    let last = LAST_ALL_RELEASE_NS.load(Ordering::Relaxed);
+    if last != 0 {
+        STRIPE_GAP.record(now_ns().saturating_sub(last));
+    }
+}
+pub(crate) fn all_released() {
+    ALL_HELD.fetch_sub(1, Ordering::Relaxed);
+    WAITERS_AT_RELEASE.record(SMALL_WAITING.load(Ordering::Relaxed));
+    LAST_ALL_RELEASE_NS.store(now_ns(), Ordering::Relaxed);
+}
+// EXEC phases (`run_transaction_queue`): phase 1 (store apply, all store
+// stripes held) and the AOF + replication call of phase 2.
+pub(crate) static TX_APPLY: Stat = Stat::new("tx_apply");
+pub(crate) static TX_LOG: Stat = Stat::new("tx_log");
+// Replica side: a group's apply (6O-I), one frame's apply (all builds; one
+// in 16), and the replica's link reader: the time between two completed
+// socket reads, and the bytes of each.
+pub(crate) static R_GROUP_APPLY: Stat = Stat::new("r_group_apply");
+pub(crate) static R_FRAME_APPLY16: Stat = Stat::new("r_frame_apply16");
+pub(crate) static R_READ_GAP: Stat = Stat::new("r_read_gap");
+pub(crate) static R_READ_BYTES: Stat = Stat::new("r_read_bytes");
+/// The applier's run between two yields to the link reader (6O-H/6O-I
+/// `REPL_APPLY_YIELD_FRAMES`), wall time.
+pub(crate) static R_APPLY_RUN: Stat = Stat::new("r_apply_run");
+/// Frames applied between two such yields (a value).
+pub(crate) static R_APPLY_RUN_FRAMES: Stat = Stat::new("r_apply_run_frames");
+
+static ALL: &[&Stat] = &[
+    &STREAM_FREE_G,
+    &STREAM_FREE_S,
+    &STREAM_WAIT_G,
+    &STREAM_WAIT_S,
+    &STREAM_HOLD_G,
+    &STREAM_HOLD_S16,
+    &GROUP_FRAMES,
+    &STRIPE_WAIT_SMALL,
+    &STRIPE_WAIT_BIG,
+    &STRIPE_WAIT_ALL,
+    &STRIPE_HOLD_SMALL,
+    &STRIPE_HOLD_BIG,
+    &STRIPE_HOLD_ALL,
+    &GATE_CLOSE,
+    &STRIPE_GAP,
+    &WAITERS_AT_RELEASE,
+    &TX_APPLY,
+    &TX_LOG,
+    &R_GROUP_APPLY,
+    &R_FRAME_APPLY16,
+    &R_READ_GAP,
+    &R_READ_BYTES,
+    &R_APPLY_RUN,
+    &R_APPLY_RUN_FRAMES,
+];
+
+/// Take the stream lock, timing the wait only when it is contended. v2:
+/// nothing shared is touched on the uncontended path (v1 counted every
+/// acquisition in a shared counter, which cost 6O-H's per-frame path far
+/// more than 6O-I's per-group one: review A H1, review B F1). A group's
+/// hold is timed (one per transaction in every build that has groups).
+pub(crate) fn lock_stream<T>(
+    mutex: &std::sync::Mutex<T>,
+    group: bool,
+) -> (std::sync::MutexGuard<'_, T>, Option<Instant>) {
+    let guard = match mutex.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::WouldBlock) => {
+            let t = Instant::now();
+            let guard = mutex.lock().unwrap_or_else(|p| p.into_inner());
+            (if group { &STREAM_WAIT_G } else { &STREAM_WAIT_S }).since(t);
+            guard
+        }
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+    };
+    (guard, group.then(Instant::now))
+}
+
+pub(crate) fn stream_released(t: Option<Instant>, _group: bool) {
+    if let Some(t) = t {
+        STREAM_HOLD_G.since(t);
+    }
+}
+
+/// One in 16 per thread.
+pub(crate) fn one_in_16() -> bool {
+    thread_local! { static N: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
+    N.with(|n| {
+        let v = n.get().wrapping_add(1);
+        n.set(v);
+        v % 16 == 0
+    })
+}
+
+/// Records how long a guard set was held, on drop.
+pub(crate) struct Hold {
+    start: Instant,
+    stat: &'static Stat,
+}
+
+impl Hold {
+    pub(crate) fn new(stat: &'static Stat) -> Hold {
+        Hold {
+            start: Instant::now(),
+            stat,
+        }
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        self.stat.since(self.start);
+        if std::ptr::eq(self.stat, &STRIPE_HOLD_ALL) {
+            all_released();
+        }
+    }
+}
+
+unsafe extern "C" {
+    fn _rjem_mallctl(
+        name: *const std::ffi::c_char,
+        oldp: *mut std::ffi::c_void,
+        oldlenp: *mut usize,
+        newp: *mut std::ffi::c_void,
+        newlen: usize,
+    ) -> std::ffi::c_int;
+}
+
+fn mallctl_u64(name: &str) -> Option<u64> {
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut value: u64 = 0;
+    let mut len = std::mem::size_of::<u64>();
+    // SAFETY: a jemalloc read-only statistic of `size_t`/`uint64_t` width.
+    let rc = unsafe {
+        _rjem_mallctl(
+            name.as_ptr(),
+            (&raw mut value).cast(),
+            &raw mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (rc == 0).then_some(value)
+}
+
+fn mallctl_u32(name: &str) -> Option<u32> {
+    let name = std::ffi::CString::new(name).ok()?;
+    let mut value: u32 = 0;
+    let mut len = std::mem::size_of::<u32>();
+    // SAFETY: a jemalloc read-only value of `unsigned` width.
+    let rc = unsafe {
+        _rjem_mallctl(
+            name.as_ptr(),
+            (&raw mut value).cast(),
+            &raw mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (rc == 0).then_some(value)
+}
+
+fn advance_epoch() {
+    let name = c"epoch";
+    let mut epoch: u64 = 1;
+    let mut len = std::mem::size_of::<u64>();
+    // SAFETY: writing `epoch` refreshes jemalloc's statistics snapshot.
+    unsafe {
+        _rjem_mallctl(
+            name.as_ptr(),
+            (&raw mut epoch).cast(),
+            &raw mut len,
+            (&raw mut epoch).cast(),
+            len,
+        );
+    }
+}
+
+/// Start the reporter (once, from `main`).
+pub(crate) fn start_reporter() {
+    std::thread::Builder::new()
+        .name("i8diag".into())
+        .spawn(|| {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                let ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                let mut line = format!("I8DIAG {ms}");
+                for stat in ALL {
+                    stat.render(&mut line);
+                }
+                advance_epoch();
+                let mut mem = format!("I8MEM {ms}");
+                for (key, name) in [
+                    ("allocated", "stats.allocated"),
+                    ("active", "stats.active"),
+                    ("metadata", "stats.metadata"),
+                    ("resident", "stats.resident"),
+                    ("mapped", "stats.mapped"),
+                    ("retained", "stats.retained"),
+                    ("small_nmalloc", "stats.arenas.4096.small.nmalloc"),
+                    ("small_ndalloc", "stats.arenas.4096.small.ndalloc"),
+                    ("large_nmalloc", "stats.arenas.4096.large.nmalloc"),
+                    ("large_ndalloc", "stats.arenas.4096.large.ndalloc"),
+                    ("pdirty", "stats.arenas.4096.pdirty"),
+                    ("pmuzzy", "stats.arenas.4096.pmuzzy"),
+                    ("small_nrequests", "stats.arenas.4096.small.nrequests"),
+                    ("small_nfills", "stats.arenas.4096.small.nfills"),
+                    ("small_nflushes", "stats.arenas.4096.small.nflushes"),
+                    ("large_nrequests", "stats.arenas.4096.large.nrequests"),
+                    ("large_nfills", "stats.arenas.4096.large.nfills"),
+                    ("large_nflushes", "stats.arenas.4096.large.nflushes"),
+                ] {
+                    match mallctl_u64(name) {
+                        Some(v) => mem.push_str(&format!(" {key}={v}")),
+                        None => mem.push_str(&format!(" {key}=na")),
+                    }
+                }
+                // Every bin's lock: operations, contended waits, wait time.
+                let nbins = mallctl_u32("arenas.nbins").unwrap_or(0);
+                let (mut ops, mut waits, mut wait_ns) = (0u64, 0u64, 0u64);
+                for b in 0..nbins {
+                    ops += mallctl_u64(&format!("stats.arenas.4096.bins.{b}.mutex.num_ops")).unwrap_or(0);
+                    waits += mallctl_u64(&format!("stats.arenas.4096.bins.{b}.mutex.num_wait")).unwrap_or(0);
+                    wait_ns += mallctl_u64(&format!("stats.arenas.4096.bins.{b}.mutex.total_wait_time")).unwrap_or(0);
+                }
+                mem.push_str(&format!(" bin_mutex_ops={ops} bin_mutex_waits={waits} bin_mutex_wait_ns={wait_ns}"));
+                eprintln!("{line}\n{mem}");
+            }
+        })
+        .expect("i8diag reporter");
+}

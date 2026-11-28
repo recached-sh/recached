@@ -1,0 +1,36 @@
+{
+ "name": "e7b",
+ "out": "~/recached-6oi8-bench/runs/e7b",
+ "labels": [
+  "h",
+  "p",
+  "px"
+ ],
+ "reps": 3,
+ "port_base": 31100,
+ "cells": [
+  {
+   "name": "c10k-repl-w4-diag2",
+   "primary": {
+    "workers": 3,
+    "cpus": "0-2"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1"
+   },
+   "load": {
+    "kind": "contend",
+    "tx_n": 10000,
+    "clients": 2,
+    "writers": 4
+   },
+   "warm": 20,
+   "measure": 120,
+   "post": 60,
+   "drain_max": 120,
+   "bin_suffix": "-diag2",
+   "replica_bin_suffix": ""
+  }
+ ]
+}

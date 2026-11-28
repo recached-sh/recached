@@ -1,0 +1,14 @@
+[package]
+name = "i8bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "6O-I8: transaction load (contention and paced) and exact keyspace verification"
+
+# Standalone: not a member of the Recached workspace.
+[workspace]
+
+[dependencies]
+
+[profile.release]
+debug = false

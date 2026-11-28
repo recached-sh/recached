@@ -1,0 +1,22 @@
+[2m2026-11-27T14:35:43.293318Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 3 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-27T14:35:43.293338Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-27T14:35:43.293349Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-27T14:35:43.293352Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-27T14:35:43.293354Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-27T14:35:43.293357Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 29041 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-27T14:35:43.293366Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 29041 to untrusted clients.
+[2m2026-11-27T14:35:43.293660Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m No snapshot at "/home/dennispaler/recached-6oi8-bench/runs/e4/1-c1000-repl-w4-h/data/dump-29040.rdb", starting fresh
+[2m2026-11-27T14:35:43.293678Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+[2m2026-11-27T14:35:43.293681Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Max connections: 1024
+[2m2026-11-27T14:35:43.293685Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Replication server ENABLED on port 29042 WITHOUT a password, on loopback only. It serves the entire keyspace to whoever connects — set RECACHED_REPL_PASSWORD before binding any other interface.
+[2m2026-11-27T14:35:43.293702Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication carries DEDUP state: a promoted replica answers retried writes it already applied with +DUP. Replicas must run 0.6 or later.
+[2m2026-11-27T14:35:43.293706Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication buffers: backlog=16777216 bytes, per-replica queue=8388608 bytes / 65536 frames (derived from the byte budget)
+[2m2026-11-27T14:35:43.293867Z[0m [32m INFO[0m [2mrecached_server::server_state[0m[2m:[0m Restored 0 dedup high-water mark(s)
+[2m2026-11-27T14:35:43.293875Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Autosave disabled (RECACHED_SAVE=0 or RECACHED_SAVE_INTERVAL=0). Use SAVE or BGSAVE manually.
+[2m2026-11-27T14:35:43.293977Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replication server listening on 127.0.0.1:29042 (plaintext)
+[2m2026-11-27T14:35:43.294020Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m TCP server listening on 127.0.0.1:29040 (3 accept loop(s))
+[2m2026-11-27T14:35:43.294033Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m WebSocket server listening on 127.0.0.1:29041
+[2m2026-11-27T14:35:43.545156Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:56016
+[2m2026-11-27T14:37:38.233621Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Shutdown signal received, saving final snapshot...
+[2m2026-11-27T14:37:38.379987Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved: 100000 entries → "/home/dennispaler/recached-6oi8-bench/runs/e4/1-c1000-repl-w4-h/data/dump-29040.rdb"
+[2m2026-11-27T14:37:38.380515Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Done. Goodbye.

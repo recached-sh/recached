@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""6O-I8: apply the temporary diagnostic instrumentation to a source tree.
+
+    apply_diag.py <tree> <h|i|p>
+
+Never merged. Every edit finds its anchor after a function signature and
+fails loudly if the anchor is missing, so a build is never silently partial.
+"""
+import pathlib
+import re
+import shutil
+import sys
+
+tree = pathlib.Path(sys.argv[1])
+kind = sys.argv[2]
+src = tree / "server-native" / "src"
+here = pathlib.Path(__file__).resolve().parent
+
+
+def edit(path, after, old, new, count=1):
+    p = src / path if not str(path).startswith("/") else pathlib.Path(path)
+    text = p.read_text()
+    start = 0
+    if after is not None:
+        start = text.find(after)
+        if start < 0:
+            sys.exit(f"{p}: anchor {after!r} not found")
+    at = text.find(old, start)
+    if at < 0:
+        sys.exit(f"{p}: {old!r} not found after {after!r}")
+    text = text[:at] + new + text[at + len(old):]
+    p.write_text(text)
+
+
+shutil.copy(here / "i8diag.rs", src / "i8diag.rs")
+
+# Cargo: jemalloc statistics and (runtime-off) heap profiling compiled in.
+cargo = tree / "server-native" / "Cargo.toml"
+text = cargo.read_text()
+old = 'tikv-jemallocator = { workspace = true, features = ["background_threads"] }'
+if old not in text:
+    sys.exit("server-native/Cargo.toml: jemallocator line not found")
+cargo.write_text(text.replace(old, 'tikv-jemallocator = { workspace = true, features = ["background_threads", "stats", "profiling"] }'))
+
+# main.rs: the module and the reporter.
+edit("main.rs", None, "mod aof_stats;\n", "mod aof_stats;\nmod i8diag;\n")
+edit("main.rs", "fn main() -> Result<(), Box<dyn std::error::Error>> {",
+     "{\n", "{\n    i8diag::start_reporter();\n")
+
+R = "replication.rs"
+# The stream lock.
+if kind == "h":
+    sig, group = "pub(crate) async fn fan_out(&self, bytes: Vec<u8>) {", "false"
+else:
+    sig, group = "fn publish(&self, frames:", "count >= 2"
+edit(R, sig, "let mut stream = self.stream();",
+     f"if {group} {{ crate::i8diag::GROUP_FRAMES.record(count as u64); }}\n"
+     f"        let (mut stream, __i8_t) = crate::i8diag::lock_stream(&self.stream, {group});"
+     if kind != "h" else
+     f"let (mut stream, __i8_t) = crate::i8diag::lock_stream(&self.stream, {group});")
+edit(R, sig, "drop(stream);", f"crate::i8diag::stream_released(__i8_t, {group});\n        drop(stream);")
+
+# Ordering stripes.
+edit(R, "pub(crate) struct OrderGuards<'a> {", "_closed: Option<GateClosed<'a>>,\n",
+     "_closed: Option<GateClosed<'a>>,\n    _i8: crate::i8diag::Hold,\n")
+edit(R, "async fn lock_stripe_list<'a>(", "stripes.dedup();\n",
+     "stripes.dedup();\n        let __i8_t = std::time::Instant::now();\n        let __i8_big = stripes.len() > 8;\n")
+edit(R, "async fn lock_stripe_list<'a>(", "OrderGuards {\n            _stripes: guards,\n            _closed: closed,\n",
+     "(if __i8_big { &crate::i8diag::STRIPE_WAIT_BIG } else { &crate::i8diag::STRIPE_WAIT_SMALL }).since(__i8_t);\n"
+     "        OrderGuards {\n            _stripes: guards,\n            _closed: closed,\n"
+     "            _i8: crate::i8diag::Hold::new(if __i8_big { &crate::i8diag::STRIPE_HOLD_BIG } else { &crate::i8diag::STRIPE_HOLD_SMALL }),\n")
+edit(R, "async fn lock_every_stripe<'a>(", "let mut guards = SmallVec::with_capacity(WRITE_ORDER_STRIPES);\n",
+     "let __i8_t = std::time::Instant::now();\n        let mut guards = SmallVec::with_capacity(WRITE_ORDER_STRIPES);\n")
+edit(R, "async fn lock_every_stripe<'a>(", "OrderGuards {\n            _stripes: guards,\n            _closed: Some(closed),\n",
+     "crate::i8diag::STRIPE_WAIT_ALL.since(__i8_t);\n        OrderGuards {\n            _stripes: guards,\n            _closed: Some(closed),\n"
+     "            _i8: crate::i8diag::Hold::new(&crate::i8diag::STRIPE_HOLD_ALL),\n")
+edit(R, "pub(crate) async fn close(&self) -> GateClosed<'_> {", "self.closed.fetch_add(1, Ordering::SeqCst);\n",
+     "let __i8_t = std::time::Instant::now();\n        self.closed.fetch_add(1, Ordering::SeqCst);\n")
+edit(R, "pub(crate) async fn close(&self) -> GateClosed<'_> {", "        closed\n    }",
+     "        crate::i8diag::GATE_CLOSE.since(__i8_t);\n        closed\n    }")
+
+# Replica: frame and group apply.
+edit(R, "async fn apply_repl_frame(", ") -> std::io::Result<()> {\n",
+     ") -> std::io::Result<()> {\n    let _i8_hold = crate::i8diag::one_in_16().then(|| crate::i8diag::Hold::new(&crate::i8diag::R_FRAME_APPLY16));\n")
+if kind != "h":
+    edit(R, "async fn apply_repl_group(", ") -> std::io::Result<()> {\n",
+         ") -> std::io::Result<()> {\n    let _i8_hold = crate::i8diag::Hold::new(&crate::i8diag::R_GROUP_APPLY);\n")
+# Replica: the streaming link reader and the applier's yields.
+S = "// 2. Stream write commands from primary"
+edit(R, S, "let mut buf = vec![0u8; REPL_RECV_BUFFER_BYTES];\n",
+     "let mut buf = vec![0u8; REPL_RECV_BUFFER_BYTES];\n        let mut __i8_last = std::time::Instant::now();\n")
+edit(R, S, "Ok(n) => Ok(buf[..n].to_vec()),",
+     "Ok(n) => { crate::i8diag::R_READ_GAP.since(__i8_last); __i8_last = std::time::Instant::now(); "
+     "crate::i8diag::R_READ_BYTES.record(n as u64); Ok(buf[..n].to_vec()) }")
+edit(R, S, "let mut since_yield = 0u32;\n",
+     "let mut since_yield = 0u32;\n        let mut __i8_run = std::time::Instant::now();\n        let mut __i8_off0 = resume.offset;\n")
+edit(R, S, "since_yield = 0;\n                tokio::task::yield_now().await;\n",
+     "since_yield = 0;\n                crate::i8diag::R_APPLY_RUN.since(__i8_run);\n"
+     "                crate::i8diag::R_APPLY_RUN_FRAMES.record(offset.saturating_sub(__i8_off0));\n"
+     "                tokio::task::yield_now().await;\n"
+     "                __i8_run = std::time::Instant::now();\n                __i8_off0 = offset;\n")
+
+# EXEC phases.
+T = "transaction.rs"
+edit(T, "pub(crate) async fn run_transaction_queue(", "    // ── Phase 1: apply",
+     "    let __i8_p1 = std::time::Instant::now();\n    // ── Phase 1: apply")
+edit(T, "pub(crate) async fn run_transaction_queue(", "    // ── Phase 2: effects",
+     "    crate::i8diag::TX_APPLY.since(__i8_p1);\n    // ── Phase 2: effects")
+edit(T, "pub(crate) async fn run_transaction_queue(",
+     "        state\n            .on_transaction_logged(&frames, !has_ws && !has_watch)\n            .await;\n",
+     "        let __i8_l = std::time::Instant::now();\n        state\n            .on_transaction_logged(&frames, !has_ws && !has_watch)\n            .await;\n"
+     "        crate::i8diag::TX_LOG.since(__i8_l);\n")
+print(f"diag applied to {tree} ({kind})")

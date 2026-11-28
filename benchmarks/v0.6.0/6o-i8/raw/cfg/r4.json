@@ -1,0 +1,37 @@
+{
+ "name": "r4",
+ "out": "~/recached-6oi8-bench/runs/r4",
+ "labels": [
+  "h",
+  "i",
+  "p"
+ ],
+ "reps": 1,
+ "port_base": 31500,
+ "cells": [
+  {
+   "name": "raof-1840-soak",
+   "primary": {
+    "workers": 1,
+    "cpus": "0"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1",
+    "aof": "everysec"
+   },
+   "load": {
+    "kind": "paced",
+    "rate": 1840,
+    "conns": 20,
+    "tx_n": 100,
+    "keys": 100000
+   },
+   "warm": 15,
+   "measure": 1800,
+   "post": 10,
+   "drain_max": 180,
+   "perf_stat": true
+  }
+ ]
+}

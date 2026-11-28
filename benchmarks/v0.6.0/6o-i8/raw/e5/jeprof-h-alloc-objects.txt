@@ -1,0 +1,358 @@
+Total: 471642139 objects
+471641617 100.0% 100.0% 471641617 100.0% prof_backtrace_impl
+     512   0.0% 100.0%      512   0.0% ::new (inline)
+       9   0.0% 100.0%        9   0.0% recached_server::run::{closure#0}::{closure#24} (inline)
+       0   0.0% 100.0%      198   0.0% ::_entry (inline)
+       0   0.0% 100.0%   155786   0.0% ::alloc_impl (inline)
+       0   0.0% 100.0%   155786   0.0% ::alloc_impl_runtime (inline)
+       0   0.0% 100.0%   155786   0.0% ::allocate (inline)
+       0   0.0% 100.0%    10705   0.0% ::append_elements (inline)
+       0   0.0% 100.0%    11341   0.0% ::call_once
+       0   0.0% 100.0% 471642139 100.0% ::call_once (inline)
+       0   0.0% 100.0% 471449056 100.0% ::call_once::{shim:vtable#0} (inline)
+       0   0.0% 100.0%   184375   0.0% ::checkpoint_locked_with::{closure#0}
+       0   0.0% 100.0%   184375   0.0% ::checkpoint_locked_with::{closure#0}::{closure#0}
+       0   0.0% 100.0%       10   0.0% ::checkpoint_locked_with::{closure#0}::{closure#0} (inline)
+       0   0.0% 100.0%     8192   0.0% ::clone_from_ref (inline)
+       0   0.0% 100.0%     8192   0.0% ::clone_from_ref_in (inline)
+       0   0.0% 100.0%   941962   0.2% ::decode_any
+       0   0.0% 100.0%   619811   0.1% ::decode_any (inline)
+       0   0.0% 100.0%        2   0.0% ::default (inline)
+       0   0.0% 100.0%   184365   0.0% ::durable_snapshot (inline)
+       0   0.0% 100.0% 78148514  16.6% ::execute_inner_ref
+       0   0.0% 100.0%    98310   0.0% ::execute_inner_ref (inline)
+       0   0.0% 100.0%       69   0.0% ::execute_ref_into (inline)
+       0   0.0% 100.0%        1   0.0% ::execute_ref_into::{closure#4} (inline)
+       0   0.0% 100.0%    10705   0.0% ::extend_from_slice (inline)
+       0   0.0% 100.0% 80050620  17.0% ::fan_out::{closure#0} (inline)
+       0   0.0% 100.0%  2290005   0.5% ::find_block (inline)
+       0   0.0% 100.0%    41789   0.0% ::finish_grow
+       0   0.0% 100.0%   425524   0.1% ::finish_grow (inline)
+       0   0.0% 100.0%       37   0.0% ::fmt
+       0   0.0% 100.0%     4582   0.0% ::fmt (inline)
+       0   0.0% 100.0%     8192   0.0% ::from (inline)
+       0   0.0% 100.0%   262167   0.1% ::from_value
+       0   0.0% 100.0%   262167   0.1% ::general
+       0   0.0% 100.0%   357644   0.1% ::general (inline)
+       0   0.0% 100.0%       22   0.0% ::grow
+       0   0.0% 100.0%    41789   0.0% ::grow (inline)
+       0   0.0% 100.0%    41789   0.0% ::grow_amortized (inline)
+       0   0.0% 100.0%    41789   0.0% ::grow_impl (inline)
+       0   0.0% 100.0%    41789   0.0% ::grow_impl_runtime (inline)
+       0   0.0% 100.0%    31084   0.0% ::grow_one
+       0   0.0% 100.0%   339519   0.1% ::grow_one (inline)
+       0   0.0% 100.0%     7540   0.0% ::lock_every_stripe::{closure#0} (inline)
+       0   0.0% 100.0%     7540   0.0% ::lock_transaction::::{closure#0}
+       0   0.0% 100.0%     8192   0.0% ::map:: (inline)
+       0   0.0% 100.0% 471449056 100.0% ::new::thread_start
+       0   0.0% 100.0%   356418   0.1% ::next (inline)
+       0   0.0% 100.0%   374975   0.1% ::on_write_logged::{closure#0}
+       0   0.0% 100.0%   359037   0.1% ::on_write_logged::{closure#0} (inline)
+       0   0.0% 100.0%     8195   0.0% ::poll (inline)
+       0   0.0% 100.0%        1   0.0% ::poll_write (inline)
+       0   0.0% 100.0%   102515   0.0% ::push (inline)
+       0   0.0% 100.0%    10705   0.0% ::push_str (inline)
+       0   0.0% 100.0%    10705   0.0% ::reserve (inline)
+       0   0.0% 100.0%    10705   0.0% ::reserve::do_reserve_and_handle::
+       0   0.0% 100.0%    75248   0.0% ::reserve::do_reserve_and_handle:: (inline)
+       0   0.0% 100.0%     1207   0.0% ::reserve_one_unchecked (inline)
+       0   0.0% 100.0%      198   0.0% ::reserve_rehash:: (inline)
+       0   0.0% 100.0%  2290005   0.5% ::retain::::{closure#0} (inline)
+       0   0.0% 100.0%    16548   0.0% ::run_probed_write_ordered::
+       0   0.0% 100.0% 78050204  16.5% ::run_probed_write_ordered:: (inline)
+       0   0.0% 100.0% 471437715 100.0% ::run_task (inline)
+       0   0.0% 100.0% 78165062  16.6% ::run_write_gated:: (inline)
+       0   0.0% 100.0%   184375   0.0% ::save::{closure#0} (inline)
+       0   0.0% 100.0%       52   0.0% ::serialize:: (inline)
+       0   0.0% 100.0%   104818   0.0% ::serialize_into
+       0   0.0% 100.0%    55989   0.0% ::serialize_into (inline)
+       0   0.0% 100.0% 78050204  16.5% ::set::
+       0   0.0% 100.0% 77943483  16.5% ::set:: (inline)
+       0   0.0% 100.0%   356440   0.1% ::snapshot (inline)
+       0   0.0% 100.0%    10705   0.0% ::spec_extend (inline)
+       0   0.0% 100.0%    10705   0.0% ::spec_write_fmt (inline)
+       0   0.0% 100.0%    16548   0.0% ::sync (inline)
+       0   0.0% 100.0% 156164021  33.1% ::to_command (inline)
+       0   0.0% 100.0%   147465   0.0% ::to_uppercase
+       0   0.0% 100.0%   147465   0.0% ::to_uppercase (inline)
+       0   0.0% 100.0%   276014   0.1% ::try_allocate_in (inline)
+       0   0.0% 100.0%     8192   0.0% ::try_clone_from_ref_in (inline)
+       0   0.0% 100.0%       68   0.0% ::try_grow (inline)
+       0   0.0% 100.0%   147594   0.0% ::with_capacity (inline)
+       0   0.0% 100.0%   147594   0.0% ::with_capacity_in (inline)
+       0   0.0% 100.0%      512   0.0% ::with_config (inline)
+       0   0.0% 100.0%    10705   0.0% ::write_fmt (inline)
+       0   0.0% 100.0%    10705   0.0% ::write_str
+       0   0.0% 100.0%       74   0.0% ::write_str (inline)
+       0   0.0% 100.0% 471449056 100.0% __clone3
+       0   0.0% 100.0%   193083   0.0% __libc_start_call_main
+       0   0.0% 100.0%   193083   0.0% __libc_start_main_alias_2
+       0   0.0% 100.0% 471237977  99.9% __rust_alloc (inline)
+       0   0.0% 100.0% 471437715 100.0% __rust_begin_short_backtrace
+       0   0.0% 100.0%   404161   0.1% __rust_realloc (inline)
+       0   0.0% 100.0%      198   0.0% _entry
+       0   0.0% 100.0% 471237455  99.9% _rjem_je_malloc_default
+       0   0.0% 100.0% 471641617 100.0% _rjem_je_prof_backtrace
+       0   0.0% 100.0% 471641617 100.0% _rjem_je_prof_tctx_create
+       0   0.0% 100.0%   193083   0.0% _start
+       0   0.0% 100.0% 471082191  99.9% alloc (inline)
+       0   0.0% 100.0%   155786   0.0% alloc::alloc::alloc (inline)
+       0   0.0% 100.0%    41789   0.0% alloc::alloc::realloc_nonnull (inline)
+       0   0.0% 100.0%    10834   0.0% alloc::fmt::format::format_inner
+       0   0.0% 100.0%      129   0.0% alloc::fmt::format::format_inner (inline)
+       0   0.0% 100.0%   147465   0.0% alloc::str::convert_while_ascii (inline)
+       0   0.0% 100.0%   110605   0.0% alloc::string::String, > (inline)
+       0   0.0% 100.0%   121439   0.0% alloc::string::String> (inline)
+       0   0.0% 100.0%   143395   0.0% alloc::vec::Vec, > (inline)
+       0   0.0% 100.0%   143395   0.0% alloc::vec::Vec> (inline)
+       0   0.0% 100.0% 468784057  99.4% alloc_impl (inline)
+       0   0.0% 100.0% 468784057  99.4% alloc_impl_runtime (inline)
+       0   0.0% 100.0% 468784255  99.4% allocate (inline)
+       0   0.0% 100.0%   106522   0.0% allocate_for_layout (inline)
+       0   0.0% 100.0%   106522   0.0% allocate_for_slice (inline)
+       0   0.0% 100.0%    75226   0.0% append_elements (inline)
+       0   0.0% 100.0% 155039318  32.9% apply_queued_write (inline)
+       0   0.0% 100.0% 155148712  32.9% apply_transaction (inline)
+       0   0.0% 100.0% 155707657  33.0% at_instant (inline)
+       0   0.0% 100.0%        9   0.0% bind (inline)
+       0   0.0% 100.0%        9   0.0% bind_new_task (inline)
+       0   0.0% 100.0%   184890   0.0% block_on (inline)
+       0   0.0% 100.0%   184890   0.0% block_on_inner (inline)
+       0   0.0% 100.0% 77859526  16.5% box_new_uninit (inline)
+       0   0.0% 100.0%    61477   0.0% broadcast_for_at
+       0   0.0% 100.0% 471622605 100.0% budget (inline)
+       0   0.0% 100.0%   320943   0.1% build
+       0   0.0% 100.0%     1207   0.0% build_ref
+       0   0.0% 100.0%   143395   0.0% bytes (inline)
+       0   0.0% 100.0% 471449056 100.0% call_once
+       0   0.0% 100.0% 471622068 100.0% call_once (inline)
+       0   0.0% 100.0% 471449056 100.0% catch_unwind (inline)
+       0   0.0% 100.0%       65   0.0% channel (inline)
+       0   0.0% 100.0%       65   0.0% channel_from_index (inline)
+       0   0.0% 100.0%   739044   0.2% collect (inline)
+       0   0.0% 100.0%       52   0.0% collect_seq (inline)
+       0   0.0% 100.0%        1   0.0% copy_from (inline)
+       0   0.0% 100.0%   106522   0.0% copy_from_slice (inline)
+       0   0.0% 100.0%    10779   0.0% core::fmt::write
+       0   0.0% 100.0%     1207   0.0% core::iter::adapters::try_process:: (inline)
+       0   0.0% 100.0%       52   0.0% core::iter::traits::iterator::Iterator::try_for_each::call::::{closure#0} (inline)
+       0   0.0% 100.0%   184890   0.0% core::result::Result>
+       0   0.0% 100.0%   184890   0.0% core::result::Result> (inline)
+       0   0.0% 100.0%   114702   0.0% core_engine::cmd::extract_string (inline)
+       0   0.0% 100.0%   320943   0.1% core_engine::request::build (inline)
+       0   0.0% 100.0%     1207   0.0% core_engine::request::build_ref (inline)
+       0   0.0% 100.0%      360   0.0% core_engine::resp::write_bulk (inline)
+       0   0.0% 100.0%        1   0.0% core_engine::resp::write_header (inline)
+       0   0.0% 100.0%   106720   0.0% core_engine::store::write_slot:: (inline)
+       0   0.0% 100.0%        2   0.0% default
+       0   0.0% 100.0%      198   0.0% do_alloc (inline)
+       0   0.0% 100.0% 471437715 100.0% do_call (inline)
+       0   0.0% 100.0%   404161   0.1% do_rallocx
+       0   0.0% 100.0%    75248   0.0% do_reserve_and_handle
+       0   0.0% 100.0%   184365   0.0% durable_snapshot
+       0   0.0% 100.0% 471622605 100.0% enter_runtime (inline)
+       0   0.0% 100.0% 78165062  16.6% execute_and_record_ref
+       0   0.0% 100.0%       69   0.0% execute_ref_into
+       0   0.0% 100.0% 78165062  16.6% execute_reporting_ref (inline)
+       0   0.0% 100.0%     1275   0.0% extend (inline)
+       0   0.0% 100.0%       22   0.0% extend_desugared (inline)
+       0   0.0% 100.0%    75226   0.0% extend_from_slice (inline)
+       0   0.0% 100.0%   242402   0.1% extend_trusted (inline)
+       0   0.0% 100.0%   114702   0.0% extract_string
+       0   0.0% 100.0%      198   0.0% fallible_with_capacity (inline)
+       0   0.0% 100.0%  2290005   0.5% find_block
+       0   0.0% 100.0%      198   0.0% find_or_find_insert_slot (inline)
+       0   0.0% 100.0%   383735   0.1% finish_grow
+       0   0.0% 100.0%   242402   0.1% fold (inline)
+       0   0.0% 100.0%   242402   0.1% for_each (inline)
+       0   0.0% 100.0%    10834   0.0% format (inline)
+       0   0.0% 100.0% 78414578  16.6% from (inline)
+       0   0.0% 100.0%   739044   0.2% from_iter (inline)
+       0   0.0% 100.0%   294984   0.1% from_slice (inline)
+       0   0.0% 100.0%   357644   0.1% general
+       0   0.0% 100.0%  2651425   0.6% grow (inline)
+       0   0.0% 100.0%   361420   0.1% grow_impl (inline)
+       0   0.0% 100.0%   361420   0.1% grow_impl_runtime (inline)
+       0   0.0% 100.0%   308434   0.1% grow_one
+       0   0.0% 100.0%   308434   0.1% grow_one (inline)
+       0   0.0% 100.0%     7779   0.0% hold_transaction (inline)
+       0   0.0% 100.0% 471237455  99.9% imalloc (inline)
+       0   0.0% 100.0% 471237455  99.9% imalloc_body (inline)
+       0   0.0% 100.0%    16548   0.0% insert (inline)
+       0   0.0% 100.0%    16548   0.0% insert_entry (inline)
+       0   0.0% 100.0%    16548   0.0% insert_recursing (inline)
+       0   0.0% 100.0%   106522   0.0% into (inline)
+       0   0.0% 100.0%   114702   0.0% into_owned (inline)
+       0   0.0% 100.0%   404161   0.1% irallocx_prof (inline)
+       0   0.0% 100.0%   110605   0.0% key (inline)
+       0   0.0% 100.0%   193083   0.0% main
+       0   0.0% 100.0%   356428   0.1% map (inline)
+       0   0.0% 100.0%    98310   0.0% mset (inline)
+       0   0.0% 100.0%      512   0.0% new
+       0   0.0% 100.0% 80166148  17.0% new (inline)
+       0   0.0% 100.0%      512   0.0% new_index (inline)
+       0   0.0% 100.0%        9   0.0% new_task (inline)
+       0   0.0% 100.0%    16548   0.0% new_uninit_in (inline)
+       0   0.0% 100.0%      198   0.0% new_uninitialized (inline)
+       0   0.0% 100.0%        2   0.0% new_with_config (inline)
+       0   0.0% 100.0%   356418   0.1% next
+       0   0.0% 100.0% 78165062  16.6% observing_expirations (inline)
+       0   0.0% 100.0% 78165062  16.6% observing_if (inline)
+       0   0.0% 100.0%       59   0.0% pin (inline)
+       0   0.0% 100.0% 471437715 100.0% poll
+       0   0.0% 100.0% 471437716 100.0% poll (inline)
+       0   0.0% 100.0% 471437715 100.0% poll_future (inline)
+       0   0.0% 100.0% 471437715 100.0% poll_inner (inline)
+       0   0.0% 100.0%        1   0.0% poll_write
+       0   0.0% 100.0%      198   0.0% prepare_resize (inline)
+       0   0.0% 100.0% 471641617 100.0% prof_alloc_prep (inline)
+       0   0.0% 100.0%       43   0.0% pubsub_channel
+       0   0.0% 100.0%   102515   0.0% push
+       0   0.0% 100.0%   236981   0.1% push (inline)
+       0   0.0% 100.0%       22   0.0% push_back (inline)
+       0   0.0% 100.0%     1099   0.0% push_str (inline)
+       0   0.0% 100.0%       68   0.0% read_many (inline)
+       0   0.0% 100.0%        1   0.0% read_str (inline)
+       0   0.0% 100.0%      951   0.0% realloc (inline)
+       0   0.0% 100.0%   362371   0.1% realloc_nonnull (inline)
+       0   0.0% 100.0% 78165062  16.6% recached_server::clients::execute_and_record_ref (inline)
+       0   0.0% 100.0% 471257168  99.9% recached_server::connection::handle_tcp_halves::::{closure#0}::{closure#0}
+       0   0.0% 100.0%   105208   0.0% recached_server::connection::handle_tcp_halves::::{closure#0}::{closure#0} (inline)
+       0   0.0% 100.0%    11341   0.0% recached_server::i8diag::start_reporter::{closure#0} (inline)
+       0   0.0% 100.0%      592   0.0% recached_server::info::render_info (inline)
+       0   0.0% 100.0%   184890   0.0% recached_server::main (inline)
+       0   0.0% 100.0%        1   0.0% recached_server::persistence::write_private_parts::{closure#0} (inline)
+       0   0.0% 100.0%  1162358   0.2% recached_server::propagation::apply_write_effects_identified::{closure#0}
+       0   0.0% 100.0% 77807847  16.5% recached_server::propagation::broadcast_for_at
+       0   0.0% 100.0%    61477   0.0% recached_server::propagation::broadcast_for_at (inline)
+       0   0.0% 100.0%  1729082   0.4% recached_server::propagation::execute_locked_write_identified::{closure#0}
+       0   0.0% 100.0%   566724   0.1% recached_server::propagation::execute_locked_write_identified::{closure#0}::{closure#1} (inline)
+       0   0.0% 100.0%  1729082   0.4% recached_server::propagation::execute_ordered_write::{closure#0}
+       0   0.0% 100.0% 77807847  16.5% recached_server::propagation::resp_push (inline)
+       0   0.0% 100.0%       69   0.0% recached_server::propagation::try_execute_borrowed
+       0   0.0% 100.0%       43   0.0% recached_server::pubsub::pubsub_channel (inline)
+       0   0.0% 100.0%       43   0.0% recached_server::replication::handle_replica::::{closure#0}
+       0   0.0% 100.0%   173444   0.0% recached_server::replication::handle_replica::::{closure#0} (inline)
+       0   0.0% 100.0%   180316   0.0% recached_server::replication::run_repl_server::{closure#0}::{closure#0}
+       0   0.0% 100.0%   184888   0.0% recached_server::run::{closure#0}
+       0   0.0% 100.0%        2   0.0% recached_server::run::{closure#0} (inline)
+       0   0.0% 100.0%       59   0.0% recached_server::run::{closure#0}::{closure#28} (inline)
+       0   0.0% 100.0% 471257328  99.9% recached_server::run::{closure#0}::{closure#28}::{closure#0} (inline)
+       0   0.0% 100.0% 312206205  66.2% recached_server::transaction::run_transaction_queue::{closure#0} (inline)
+       0   0.0% 100.0%       21   0.0% recached_server::watch::subscriber_channel (inline)
+       0   0.0% 100.0%       74   0.0% render (inline)
+       0   0.0% 100.0%      592   0.0% render_info
+       0   0.0% 100.0%    75316   0.0% reserve (inline)
+       0   0.0% 100.0%     7540   0.0% reserve_exact (inline)
+       0   0.0% 100.0%     1207   0.0% reserve_one_unchecked
+       0   0.0% 100.0%      198   0.0% reserve_rehash
+       0   0.0% 100.0%      198   0.0% reserve_rehash_inner (inline)
+       0   0.0% 100.0%      198   0.0% resize_inner (inline)
+       0   0.0% 100.0% 77807847  16.5% resp_push
+       0   0.0% 100.0%  2290005   0.5% retain (inline)
+       0   0.0% 100.0%       30   0.0% rmp::encode::str::write_str:: (inline)
+       0   0.0% 100.0%       52   0.0% rmp_serde::encode::to_vec:: (inline)
+       0   0.0% 100.0% 471437715 100.0% run (inline)
+       0   0.0% 100.0% 78050204  16.5% run_probed_write_ordered
+       0   0.0% 100.0% 471437715 100.0% run_task
+       0   0.0% 100.0% 471437715 100.0% run_worker (inline)
+       0   0.0% 100.0% 78165062  16.6% run_write_gated
+       0   0.0% 100.0% 471257198  99.9% scope_inner (inline)
+       0   0.0% 100.0%  2290005   0.5% send (inline)
+       0   0.0% 100.0%       52   0.0% serialize
+       0   0.0% 100.0%       52   0.0% serialize (inline)
+       0   0.0% 100.0%       19   0.0% serialize_bytes (inline)
+       0   0.0% 100.0%       52   0.0% serialize_element (inline)
+       0   0.0% 100.0%       52   0.0% serialize_field (inline)
+       0   0.0% 100.0%    31084   0.0% serialize_into
+       0   0.0% 100.0%        4   0.0% serialize_newtype_variant (inline)
+       0   0.0% 100.0%        1   0.0% serialize_none (inline)
+       0   0.0% 100.0%        1   0.0% serialize_unit (inline)
+       0   0.0% 100.0% 471437715 100.0% set (inline)
+       0   0.0% 100.0% 471437715 100.0% set_scheduler (inline)
+       0   0.0% 100.0%   356440   0.1% snapshot
+       0   0.0% 100.0%   356418   0.1% snapshot_entry (inline)
+       0   0.0% 100.0%       69   0.0% spawn (inline)
+       0   0.0% 100.0%        9   0.0% spawn_inner (inline)
+       0   0.0% 100.0%   674069   0.1% spec_extend (inline)
+       0   0.0% 100.0% 78119594  16.6% spec_to_string (inline)
+       0   0.0% 100.0%    16548   0.0% split (inline)
+       0   0.0% 100.0% 471449056 100.0% start_thread
+       0   0.0% 100.0%        2   0.0% std::io::stdio::Stdout> (inline)
+       0   0.0% 100.0%   193083   0.0% std::panic::catch_unwind:: (inline)
+       0   0.0% 100.0%   193083   0.0% std::panicking::catch_unwind:: (inline)
+       0   0.0% 100.0%   193083   0.0% std::panicking::catch_unwind::do_call:: (inline)
+       0   0.0% 100.0%     8192   0.0% std::rt::init (inline)
+       0   0.0% 100.0%   184890   0.0% std::rt::lang_start::::{closure#0}
+       0   0.0% 100.0%   193083   0.0% std::rt::lang_start_internal
+       0   0.0% 100.0%   193083   0.0% std::rt::lang_start_internal::{closure#0} (inline)
+       0   0.0% 100.0%    11341   0.0% std::sys::backtrace::__rust_begin_short_backtrace::
+       0   0.0% 100.0% 471437715 100.0% std::sys::backtrace::__rust_begin_short_backtrace:: (inline)
+       0   0.0% 100.0%     8192   0.0% std::sys::pal::unix::init (inline)
+       0   0.0% 100.0%     8192   0.0% std::sys::pal::unix::stack_overflow::imp::init (inline)
+       0   0.0% 100.0%     8192   0.0% std::sys::pal::unix::stack_overflow::thread_info::set_current_info
+       0   0.0% 100.0%     8192   0.0% std::sys::pal::unix::stack_overflow::thread_info::set_current_info (inline)
+       0   0.0% 100.0%     8192   0.0% std::sys::pal::unix::stack_overflow::thread_info::set_current_info::{closure#0} (inline)
+       0   0.0% 100.0%     8192   0.0% std::thread::current::try_with_current:: (inline)
+       0   0.0% 100.0%     8192   0.0% std::thread::current::with_current_name:: (inline)
+       0   0.0% 100.0%     8192   0.0% std::thread::current::with_current_name::::{closure#0} (inline)
+       0   0.0% 100.0%    11341   0.0% std::thread::lifecycle::spawn_unchecked::::{closure#1}::{closure#0}
+       0   0.0% 100.0%       21   0.0% subscriber_channel
+       0   0.0% 100.0%    16548   0.0% sync
+       0   0.0% 100.0% 77440980  16.4% then (inline)
+       0   0.0% 100.0%   188462   0.0% to_blob (inline)
+       0   0.0% 100.0% 156164021  33.1% to_command
+       0   0.0% 100.0% 156370937  33.2% to_owned (inline)
+       0   0.0% 100.0% 78119594  16.6% to_string (inline)
+       0   0.0% 100.0%       52   0.0% to_vec
+       0   0.0% 100.0% 312688408  66.3% to_vec (inline)
+       0   0.0% 100.0% 312688408  66.3% to_vec_in (inline)
+       0   0.0% 100.0% 471437715 100.0% tokio::runtime::task::raw::poll:: (inline)
+       0   0.0% 100.0%   128420   0.0% try_allocate_in
+       0   0.0% 100.0% 390650725  82.8% try_allocate_in (inline)
+       0   0.0% 100.0%       52   0.0% try_fold (inline)
+       0   0.0% 100.0%       52   0.0% try_for_each (inline)
+       0   0.0% 100.0%       68   0.0% try_grow
+       0   0.0% 100.0%     8747   0.0% try_grow (inline)
+       0   0.0% 100.0%    16548   0.0% try_new_uninit_in (inline)
+       0   0.0% 100.0%     1207   0.0% try_process
+       0   0.0% 100.0%       52   0.0% try_reserve (inline)
+       0   0.0% 100.0%     7540   0.0% try_reserve_exact (inline)
+       0   0.0% 100.0%  2290005   0.5% try_send (inline)
+       0   0.0% 100.0% 471437715 100.0% try_with (inline)
+       0   0.0% 100.0%  2909816   0.6% unwrap_or_else (inline)
+       0   0.0% 100.0% 471437715 100.0% with (inline)
+       0   0.0% 100.0% 471622605 100.0% with_budget (inline)
+       0   0.0% 100.0% 78098277  16.6% with_capacity (inline)
+       0   0.0% 100.0% 390779145  82.9% with_capacity_in (inline)
+       0   0.0% 100.0%      512   0.0% with_config
+       0   0.0% 100.0%        9   0.0% with_current (inline)
+       0   0.0% 100.0% 471437715 100.0% with_mut (inline)
+       0   0.0% 100.0%   356440   0.1% without_expiry (inline)
+       0   0.0% 100.0%        9   0.0% write (inline)
+       0   0.0% 100.0%       52   0.0% write_all (inline)
+       0   0.0% 100.0%       19   0.0% write_bin (inline)
+       0   0.0% 100.0%      360   0.0% write_bulk
+       0   0.0% 100.0%       52   0.0% write_bytes (inline)
+       0   0.0% 100.0%       74   0.0% write_fmt (inline)
+       0   0.0% 100.0%        1   0.0% write_header
+       0   0.0% 100.0%        1   0.0% write_map_len (inline)
+       0   0.0% 100.0%        4   0.0% write_marker (inline)
+       0   0.0% 100.0%        1   0.0% write_nil (inline)
+       0   0.0% 100.0%   106720   0.0% write_slot
+       0   0.0% 100.0%      104   0.0% write_str
+       0   0.0% 100.0%        2   0.0% write_str_len (inline)
+       0   0.0% 100.0%        4   0.0% write_u8 (inline)
+       0   0.0% 100.0% 471257328  99.9% {async_block#0}
+       0   0.0% 100.0%        9   0.0% {async_block#24}
+       0   0.0% 100.0%       59   0.0% {async_block#28}
+       0   0.0% 100.0% 313312410  66.4% {async_fn#0}
+       0   0.0% 100.0% 471257339  99.9% {async_fn#0} (inline)
+       0   0.0% 100.0%  2301398   0.5% {closure#0}
+       0   0.0% 100.0% 471622605 100.0% {closure#0} (inline)
+       0   0.0% 100.0%     8195   0.0% {closure#13} (inline)
+       0   0.0% 100.0%   566724   0.1% {closure#1}
+       0   0.0% 100.0% 471633409 100.0% {closure#1} (inline)
+       0   0.0% 100.0%       52   0.0% {closure#2} (inline)
+       0   0.0% 100.0% 155140932  32.9% {closure#3} (inline)
+       0   0.0% 100.0%        1   0.0% {closure#4}

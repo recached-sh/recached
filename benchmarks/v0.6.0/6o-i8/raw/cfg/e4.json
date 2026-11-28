@@ -1,0 +1,79 @@
+{
+ "name": "e4",
+ "out": "~/recached-6oi8-bench/runs/e4",
+ "labels": [
+  "h",
+  "i",
+  "p"
+ ],
+ "reps": 2,
+ "port_base": 29000,
+ "cells": [
+  {
+   "name": "c100-repl-w4",
+   "primary": {
+    "workers": 3,
+    "cpus": "0-2"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1"
+   },
+   "load": {
+    "kind": "contend",
+    "tx_n": 100,
+    "clients": 2,
+    "writers": 4
+   },
+   "warm": 20,
+   "measure": 60,
+   "post": 30,
+   "drain_max": 120,
+   "perf_stat": true
+  },
+  {
+   "name": "c1000-repl-w4",
+   "primary": {
+    "workers": 3,
+    "cpus": "0-2"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1"
+   },
+   "load": {
+    "kind": "contend",
+    "tx_n": 1000,
+    "clients": 2,
+    "writers": 4
+   },
+   "warm": 20,
+   "measure": 60,
+   "post": 30,
+   "drain_max": 120,
+   "perf_stat": true
+  },
+  {
+   "name": "c5000-repl-w4",
+   "primary": {
+    "workers": 3,
+    "cpus": "0-2"
+   },
+   "replica": {
+    "workers": 1,
+    "cpus": "1"
+   },
+   "load": {
+    "kind": "contend",
+    "tx_n": 5000,
+    "clients": 2,
+    "writers": 4
+   },
+   "warm": 20,
+   "measure": 60,
+   "post": 30,
+   "drain_max": 120,
+   "perf_stat": true
+  }
+ ]
+}

@@ -1,0 +1,70 @@
+[2m2026-11-27T05:39:06.834072Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 3 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-27T05:39:06.834095Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-27T05:39:06.834104Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-27T05:39:06.834107Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-27T05:39:06.834109Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-27T05:39:06.834112Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 30111 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-27T05:39:06.834127Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 30111 to untrusted clients.
+[2m2026-11-27T05:39:06.834335Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m No snapshot at "/home/dennispaler/recached-6oi8-bench/runs/e7/1-c10k-repl-w4-diag2-h/data/dump-30110.rdb", starting fresh
+[2m2026-11-27T05:39:06.834346Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+[2m2026-11-27T05:39:06.834348Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Max connections: 1024
+[2m2026-11-27T05:39:06.834353Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Replication server ENABLED on port 30112 WITHOUT a password, on loopback only. It serves the entire keyspace to whoever connects — set RECACHED_REPL_PASSWORD before binding any other interface.
+[2m2026-11-27T05:39:06.834370Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication carries DEDUP state: a promoted replica answers retried writes it already applied with +DUP. Replicas must run 0.6 or later.
+[2m2026-11-27T05:39:06.834374Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication buffers: backlog=16777216 bytes, per-replica queue=8388608 bytes / 65536 frames (derived from the byte budget)
+[2m2026-11-27T05:39:06.834399Z[0m [32m INFO[0m [2mrecached_server::server_state[0m[2m:[0m Restored 0 dedup high-water mark(s)
+[2m2026-11-27T05:39:06.834403Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Autosave disabled (RECACHED_SAVE=0 or RECACHED_SAVE_INTERVAL=0). Use SAVE or BGSAVE manually.
+[2m2026-11-27T05:39:06.834495Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replication server listening on 127.0.0.1:30112 (plaintext)
+[2m2026-11-27T05:39:06.834580Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m TCP server listening on 127.0.0.1:30110 (3 accept loop(s))
+[2m2026-11-27T05:39:06.834593Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m WebSocket server listening on 127.0.0.1:30111
+[2m2026-11-27T05:39:06.883558Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:38540
+[2m2026-11-27T05:39:16.813406Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:39:16.816624Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:38540 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:39:19.702633Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:59318
+[2m2026-11-27T05:39:25.184911Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:39:25.188023Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:59318 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:39:28.074974Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:52716
+[2m2026-11-27T05:39:33.381782Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:39:33.385297Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:52716 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:39:36.245922Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:40272
+[2m2026-11-27T05:39:41.427746Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:39:41.431385Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:40272 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:39:44.285721Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:40276
+[2m2026-11-27T05:39:49.532585Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:39:49.535797Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:40276 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:39:52.405507Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:60374
+[2m2026-11-27T05:39:58.629752Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:39:58.633026Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:60374 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:40:01.513363Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:39608
+[2m2026-11-27T05:40:07.090788Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:40:07.094791Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:39608 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:40:09.961607Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:54362
+[2m2026-11-27T05:40:15.708162Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:40:15.710871Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:54362 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:40:18.577683Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:56934
+[2m2026-11-27T05:40:24.058071Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:40:24.061630Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:56934 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:40:26.938681Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47366
+[2m2026-11-27T05:40:32.746218Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:40:32.750554Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:47366 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:40:35.618417Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:47372
+[2m2026-11-27T05:40:41.294100Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:40:41.297769Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:47372 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:40:44.157570Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:45748
+[2m2026-11-27T05:40:49.981398Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:40:49.984786Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:45748 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:40:52.859704Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:35592
+[2m2026-11-27T05:40:58.463390Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:40:58.467243Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:35592 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:41:01.331683Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:38736
+[2m2026-11-27T05:41:07.509033Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:41:07.513291Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:38736 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:41:10.406046Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:49254
+[2m2026-11-27T05:41:16.383333Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:41:16.387165Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:49254 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:41:19.255474Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:39000
+[2m2026-11-27T05:41:25.167241Z[0m [33m WARN[0m [2mrecached_server::replication[0m[2m:[0m Replica byte queue full — disconnecting so it can resync
+[2m2026-11-27T05:41:25.171381Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica 127.0.0.1:39000 disconnected: replica unregistered (its queue was full, or the primary is stopping)
+[2m2026-11-27T05:41:28.045585Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica connected from 127.0.0.1:55018
+[2m2026-11-27T05:42:32.246822Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Shutdown signal received, saving final snapshot...
+[2m2026-11-27T05:42:32.494213Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved: 100000 entries → "/home/dennispaler/recached-6oi8-bench/runs/e7/1-c10k-repl-w4-diag2-h/data/dump-30110.rdb"
+[2m2026-11-27T05:42:32.494576Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Done. Goodbye.

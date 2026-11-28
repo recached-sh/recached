@@ -1,0 +1,60 @@
+Total: 433820813 objects
+       0   0.0%   0.0% 433820813 100.0% ::call_once (inline)
+       0   0.0%   0.0% 433820556 100.0% _rjem_je_prof_backtrace
+       0   0.0%   0.0% 433820556 100.0% _rjem_je_prof_tctx_create
+       0   0.0%   0.0% 433820556 100.0% prof_alloc_prep (inline)
+433820556 100.0% 100.0% 433820556 100.0% prof_backtrace_impl
+       0   0.0% 100.0% 433810888 100.0% {closure#1} (inline)
+       0   0.0% 100.0% 433802315 100.0% budget (inline)
+       0   0.0% 100.0% 433802315 100.0% enter_runtime (inline)
+       0   0.0% 100.0% 433802315 100.0% with_budget (inline)
+       0   0.0% 100.0% 433802315 100.0% {closure#0} (inline)
+       0   0.0% 100.0% 433802290 100.0% call_once (inline)
+       0   0.0% 100.0% 433610147 100.0% ::call_once::{shim:vtable#0} (inline)
+       0   0.0% 100.0% 433610147 100.0% ::new::thread_start
+       0   0.0% 100.0% 433610147 100.0% __clone3
+       0   0.0% 100.0% 433610147 100.0% call_once
+       0   0.0% 100.0% 433610147 100.0% catch_unwind (inline)
+       0   0.0% 100.0% 433610147 100.0% start_thread
+       0   0.0% 100.0% 433601550  99.9% poll (inline)
+       0   0.0% 100.0% 433601549  99.9% ::run_task (inline)
+       0   0.0% 100.0% 433601549  99.9% __rust_begin_short_backtrace
+       0   0.0% 100.0% 433601549  99.9% do_call (inline)
+       0   0.0% 100.0% 433601549  99.9% poll
+       0   0.0% 100.0% 433601549  99.9% poll_future (inline)
+       0   0.0% 100.0% 433601549  99.9% poll_inner (inline)
+       0   0.0% 100.0% 433601549  99.9% run (inline)
+       0   0.0% 100.0% 433601549  99.9% run_task
+       0   0.0% 100.0% 433601549  99.9% run_worker (inline)
+       0   0.0% 100.0% 433601549  99.9% set (inline)
+       0   0.0% 100.0% 433601549  99.9% set_scheduler (inline)
+       0   0.0% 100.0% 433601549  99.9% std::sys::backtrace::__rust_begin_short_backtrace:: (inline)
+       0   0.0% 100.0% 433601549  99.9% tokio::runtime::task::raw::poll:: (inline)
+       0   0.0% 100.0% 433601549  99.9% try_with (inline)
+       0   0.0% 100.0% 433601549  99.9% with (inline)
+       0   0.0% 100.0% 433601549  99.9% with_mut (inline)
+       0   0.0% 100.0% 433589204  99.9% {async_fn#0} (inline)
+       0   0.0% 100.0% 433589203  99.9% {async_block#0}
+       0   0.0% 100.0% 433589031  99.9% recached_server::run::{closure#0}::{closure#28}::{closure#0} (inline)
+       0   0.0% 100.0% 433584705  99.9% scope_inner (inline)
+       0   0.0% 100.0% 433584685  99.9% recached_server::connection::handle_tcp_halves::::{closure#0}::{closure#0}
+       0   0.0% 100.0% 433451892  99.9% __rust_alloc (inline)
+       0   0.0% 100.0% 433451635  99.9% _rjem_je_malloc_default
+       0   0.0% 100.0% 433451635  99.9% imalloc (inline)
+       0   0.0% 100.0% 433451635  99.9% imalloc_body (inline)
+       0   0.0% 100.0% 433257191  99.9% alloc (inline)
+       0   0.0% 100.0% 431050087  99.4% allocate (inline)
+       0   0.0% 100.0% 431049937  99.4% alloc_impl (inline)
+       0   0.0% 100.0% 431049937  99.4% alloc_impl_runtime (inline)
+       0   0.0% 100.0% 359021565  82.8% with_capacity_in (inline)
+       0   0.0% 100.0% 358958034  82.7% try_allocate_in (inline)
+       0   0.0% 100.0% 287807622  66.3% {async_fn#0}
+       0   0.0% 100.0% 287368919  66.2% to_vec (inline)
+       0   0.0% 100.0% 287368919  66.2% to_vec_in (inline)
+       0   0.0% 100.0% 286983958  66.2% recached_server::transaction::run_transaction_queue::{closure#0} (inline)
+       0   0.0% 100.0% 214146315  49.4% {closure#3} (inline)
+       0   0.0% 100.0% 144094086  33.2% to_owned (inline)
+       0   0.0% 100.0% 143492762  33.1% ::to_command (inline)
+       0   0.0% 100.0% 143492762  33.1% to_command
+       0   0.0% 100.0% 143267789  33.0% collect (inline)
+       0   0.0% 100.0% 143267789  33.0% from_iter (inline)

@@ -1,0 +1,20 @@
+2026-11-27T02:56:52Z campaign e1d start: 3 reps x 1 cells x ['h', 'i', 'p']
+2026-11-27T02:56:52Z run rep=1 cell=c10k-repl-w4-decay0 label=h port=23010 attempt=0
+2026-11-27T03:00:18Z   valid=True why=[] load={'tx_per_s': 83.47, 'accepted_per_s': None, 'writer_ops_per_s': 399.3}
+2026-11-27T03:00:18Z run rep=1 cell=c10k-repl-w4-decay0 label=i port=23020 attempt=0
+2026-11-27T03:03:44Z   valid=True why=[] load={'tx_per_s': 77.84, 'accepted_per_s': None, 'writer_ops_per_s': 321.6}
+2026-11-27T03:03:44Z run rep=1 cell=c10k-repl-w4-decay0 label=p port=23030 attempt=0
+2026-11-27T03:07:09Z   valid=True why=[] load={'tx_per_s': 77.9, 'accepted_per_s': None, 'writer_ops_per_s': 332.2}
+2026-11-27T03:07:09Z run rep=2 cell=c10k-repl-w4-decay0 label=i port=23040 attempt=0
+2026-11-27T03:10:38Z   valid=True why=[] load={'tx_per_s': 75.47, 'accepted_per_s': None, 'writer_ops_per_s': 339.7}
+2026-11-27T03:10:38Z run rep=2 cell=c10k-repl-w4-decay0 label=p port=23050 attempt=0
+2026-11-27T03:20:24Z   valid=True why=[] load={'tx_per_s': 77.99, 'accepted_per_s': None, 'writer_ops_per_s': 357.6}
+2026-11-27T03:20:24Z run rep=2 cell=c10k-repl-w4-decay0 label=h port=23060 attempt=0
+2026-11-27T03:23:50Z   valid=True why=[] load={'tx_per_s': 83.54, 'accepted_per_s': None, 'writer_ops_per_s': 408.9}
+2026-11-27T03:23:50Z run rep=3 cell=c10k-repl-w4-decay0 label=p port=23070 attempt=0
+2026-11-27T03:27:16Z   valid=True why=[] load={'tx_per_s': 78.01, 'accepted_per_s': None, 'writer_ops_per_s': 324.6}
+2026-11-27T03:27:16Z run rep=3 cell=c10k-repl-w4-decay0 label=h port=23080 attempt=0
+2026-11-27T03:30:41Z   valid=True why=[] load={'tx_per_s': 84.01, 'accepted_per_s': None, 'writer_ops_per_s': 416.5}
+2026-11-27T03:30:41Z run rep=3 cell=c10k-repl-w4-decay0 label=i port=23090 attempt=0
+2026-11-27T03:34:07Z   valid=True why=[] load={'tx_per_s': 77.17, 'accepted_per_s': None, 'writer_ops_per_s': 332.9}
+2026-11-27T03:34:07Z campaign done

@@ -1,0 +1,1 @@
+mode=contend tx_n=10000 clients=2 writers=4 warm_s=20 measure_s=120.00 measure_start_ms=1795759447684 measure_end_ms=1795759567681 tx=12012 tx_per_s=100.10 p50_us=16208.7 p95_us=22232.2 p99_us=24882.0 max_us=32013.5 aborts=0 errors=0 wops=60585 writer_ops_per_s=504.9 w_p50_us=8913.1 w_p99_us=19062.5 w_max_us=33365.0 total_tx=14055

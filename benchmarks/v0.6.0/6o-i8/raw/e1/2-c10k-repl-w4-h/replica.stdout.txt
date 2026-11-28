@@ -1,0 +1,22 @@
+[2m2026-11-26T23:56:59.616312Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Command execution: 1 worker threads (pinned by RECACHED_WORKER_THREADS)
+[2m2026-11-26T23:56:59.616339Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Binding interface 127.0.0.1
+[2m2026-11-26T23:56:59.616350Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Prometheus metrics DISABLED (RECACHED_METRICS_PORT=0).
+[2m2026-11-26T23:56:59.616353Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Authentication DISABLED. Set RECACHED_PASSWORD to enable.
+[2m2026-11-26T23:56:59.616356Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m IP allowlist DISABLED. Accepting all connections.
+[2m2026-11-26T23:56:59.616358Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m WebSocket origin allowlist DISABLED. Any web page a user visits can open a socket to port 21064 — browsers apply neither CORS nor a preflight to WebSockets. Set RECACHED_ALLOWED_ORIGINS before exposing this port to a browser.
+[2m2026-11-26T23:56:59.616367Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Sync scoping DISABLED: every WebSocket client receives every mutation. Set RECACHED_SYNC_SECRET before exposing port 21064 to untrusted clients.
+[2m2026-11-26T23:56:59.616563Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m No snapshot at "/home/dennispaler/recached-6oi8-bench/runs/e1/2-c10k-repl-w4-h/data/dump-21063.rdb", starting fresh
+[2m2026-11-26T23:56:59.616580Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m TLS DISABLED. Set RECACHED_TLS_CERT and RECACHED_TLS_KEY to enable.
+[2m2026-11-26T23:56:59.616583Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Max connections: 1024
+[2m2026-11-26T23:56:59.616587Z[0m [33m WARN[0m [2mrecached_server[0m[2m:[0m Replication to the primary is PLAINTEXT — the password and the entire keyspace cross the network unencrypted, and the primary's identity is not verified. Set RECACHED_REPL_TLS_CA, or keep replication on a private network.
+[2m2026-11-26T23:56:59.616590Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Replication server DISABLED — port 6381 is not bound. Set RECACHED_REPL_ENABLE=1 on any node that serves replicas (including a replica serving sub-replicas).
+[2m2026-11-26T23:56:59.616716Z[0m [32m INFO[0m [2mrecached_server::server_state[0m[2m:[0m Restored 0 dedup high-water mark(s)
+[2m2026-11-26T23:56:59.616723Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Autosave disabled (RECACHED_SAVE=0 or RECACHED_SAVE_INTERVAL=0). Use SAVE or BGSAVE manually.
+[2m2026-11-26T23:56:59.616750Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Running as replica — writes are rejected until manually promoted with REPLICAOF NO ONE
+[2m2026-11-26T23:56:59.616891Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m TCP server listening on 127.0.0.1:21063 (1 accept loop(s))
+[2m2026-11-26T23:56:59.616910Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m WebSocket server listening on 127.0.0.1:21064
+[2m2026-11-26T23:56:59.616977Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: connecting to primary at 127.0.0.1:21062
+[2m2026-11-26T23:56:59.617357Z[0m [32m INFO[0m [2mrecached_server::replication[0m[2m:[0m Replica: full snapshot loaded (0 entries, 0 DEDUP client(s))
+[2m2026-11-27T00:00:24.350873Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Shutdown signal received, saving final snapshot...
+[2m2026-11-27T00:00:24.681371Z[0m [32m INFO[0m [2mrecached_server::persistence[0m[2m:[0m Snapshot saved: 100000 entries → "/home/dennispaler/recached-6oi8-bench/runs/e1/2-c10k-repl-w4-h/data/dump-21063.rdb"
+[2m2026-11-27T00:00:24.681654Z[0m [32m INFO[0m [2mrecached_server[0m[2m:[0m Done. Goodbye.
